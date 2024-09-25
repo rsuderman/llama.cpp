@@ -13,6 +13,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #if defined (__unix__) || (defined (__APPLE__) && defined (__MACH__))
@@ -135,6 +136,51 @@ static std::string chat_add_and_format(struct llama_model * model, std::vector<l
     return formatted;
 }
 
+struct dump_user_data {
+    int tensor_count = 0;
+    std::unordered_map<std::string, int32_t> counts;
+};
+
+bool dump_cb(struct ggml_tensor * tensor, bool ask, void * user_data_void) {
+    dump_user_data* user_data = (dump_user_data*) user_data_void;
+    int counter = 0;
+    if (user_data->counts.find(tensor->name) != user_data->counts.end()) {
+        counter = user_data->counts[tensor->name] + 1;
+    }
+
+    user_data->counts[tensor->name] = counter;
+    const char * type = "error";
+    switch (tensor->type) {
+        case 0:
+            type = "f32";
+            break;
+        case 1:
+            type = "f16";
+            break;
+        default:
+            printf("Found unknown type %s %d\n", tensor->name, tensor->type);
+            assert(false);
+            break;
+    }
+
+    char fname[512];
+    FILE* fptr;
+    // sprintf(fname, "/tmp/dump/%s_%d_%ld_%ld_%ld_%ld_%s.bin", tensor->name, counter, tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3], type);
+    sprintf(fname, "/tmp/dump/%s_%d_%s.bin", tensor->name, counter, type);
+    fptr = fopen(fname, "wb");
+    size_t type_size = ggml_type_size(tensor->type);
+    size_t element_count = 1;
+    for (int i = 0; i < 4; i++) {
+        element_count *= tensor->ne[i];
+    }
+    int written = fwrite(tensor->data, type_size, element_count, fptr);
+    if (written == 0 && element_count != 0)
+        printf("ERROR\n");
+    fclose(fptr);
+
+    return true;
+}
+
 int main(int argc, char ** argv) {
     gpt_params params;
     g_params = &params;
@@ -194,6 +240,10 @@ int main(int argc, char ** argv) {
     g_model = &model;
     g_ctx = &ctx;
     g_smpl = &smpl;
+
+    struct dump_user_data dump_cb_data;
+    params.cb_eval = dump_cb;
+    params.cb_eval_user_data = &dump_cb_data;
 
     // load the model and apply lora adapter, if any
     LOG_INF("%s: load the model and apply lora adapter, if any\n", __func__);
