@@ -12,6 +12,11 @@ struct hrx_block_q8_1_x4_rhs_q8 {
     int qs[32];
 };
 
+struct hrx_block_q8_1_mmq_d4_rhs_q8 {
+    float d4[4];
+    int8_t qs[128];
+};
+
 static __device__ __forceinline__ float4 hrx_load_float4_or_zero(const float * ptr, bool valid) {
     float4 value;
     value.x = 0.0f;
@@ -42,6 +47,63 @@ static __device__ __forceinline__ int hrx_q8_0_pack4(const hrx_block_q8_0 * bloc
     const uint16_t lo = *reinterpret_cast<const uint16_t *>(block->qs + iqs * 4);
     const uint16_t hi = *reinterpret_cast<const uint16_t *>(block->qs + iqs * 4 + 2);
     return static_cast<int>(static_cast<uint32_t>(lo) | (static_cast<uint32_t>(hi) << 16));
+}
+
+static __device__ __forceinline__ int hrx_get_int_b2(const void * ptr, int i32) {
+    const uint16_t * ptr16 = reinterpret_cast<const uint16_t *>(ptr);
+    return static_cast<int>(static_cast<uint32_t>(ptr16[2 * i32 + 0]) |
+            (static_cast<uint32_t>(ptr16[2 * i32 + 1]) << 16));
+}
+
+struct hrx_wmma_i32_16x8_i_mirror {
+    static constexpr int ne = 8;
+    int x[ne] = {};
+
+    static __device__ __forceinline__ int get_i() {
+        return static_cast<int>(__builtin_amdgcn_workitem_id_x() & 15u);
+    }
+
+    static __device__ __forceinline__ int get_j(int l) {
+        return l;
+    }
+};
+
+struct hrx_wmma_i32_16x16_j_major {
+    static constexpr int ne = 8;
+    int x[ne] = {};
+
+    static __device__ __forceinline__ int get_i(int l) {
+        return 2 * l + static_cast<int>(__builtin_amdgcn_workitem_id_x() >> 4);
+    }
+
+    static __device__ __forceinline__ int get_j() {
+        return static_cast<int>(__builtin_amdgcn_workitem_id_x() & 15u);
+    }
+};
+
+static __device__ __forceinline__ void hrx_wmma_load_16x8_i_mirror(
+        hrx_wmma_i32_16x8_i_mirror & t,
+        const int * ptr,
+        int stride) {
+    const int row = hrx_wmma_i32_16x8_i_mirror::get_i();
+#pragma unroll
+    for (int l = 0; l < hrx_wmma_i32_16x8_i_mirror::ne; ++l) {
+        t.x[l] = ptr[row * stride + hrx_wmma_i32_16x8_i_mirror::get_j(l)];
+    }
+}
+
+static __device__ __forceinline__ void hrx_wmma_mma_i32_16x16x16_iu8(
+        hrx_wmma_i32_16x16_j_major & d,
+        const hrx_wmma_i32_16x8_i_mirror & a,
+        const hrx_wmma_i32_16x8_i_mirror & b) {
+    using int32x4_t = __attribute__((__vector_size__(4 * sizeof(int)))) int;
+    using int32x8_t = __attribute__((__vector_size__(8 * sizeof(int)))) int;
+    int32x8_t * acc = reinterpret_cast<int32x8_t *>(d.x);
+    const int32x4_t * avec = reinterpret_cast<const int32x4_t *>(a.x);
+    const int32x4_t * bvec = reinterpret_cast<const int32x4_t *>(b.x);
+
+    acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32(true, avec[0], true, bvec[0], acc[0], true);
+    acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32(true, avec[1], true, bvec[1], acc[0], true);
 }
 
 static __device__ __forceinline__ void hrx_q8_0_mmqv_load_a(
@@ -613,6 +675,143 @@ extern "C" __global__ void hrx_mul_mat_vec_q8_0_add_q8_1_x4_mmq128x32_wg256_f32(
         if (col_base + col < cols) {
             const long long out_idx = (col_base + col) * rows + row;
             dst[out_idx] = sum[col] + bias[out_idx];
+        }
+    }
+}
+
+extern "C" __global__ void hrx_mul_mat_vec_q8_0_q8_1_mmq128x128_wg32x8_f32(
+        const hrx_block_q8_0 * src0,
+        const hrx_block_q8_1_mmq_d4_rhs_q8 * src1,
+        float * dst,
+        long long k,
+        long long rows,
+        long long cols) {
+    constexpr int BM = 128;
+    constexpr int BN = 128;
+    constexpr int TILE_NE_K = 32;
+    constexpr int TILE_Y_K = 33;
+    constexpr int TILE_X_K = 70;
+    constexpr int WARP_SIZE = 32;
+    constexpr int NWARPS = 8;
+    constexpr int TILE_Y_PADDED = 4608;
+    constexpr int TILE_X_INTS = BM * TILE_X_K;
+    constexpr int RHS_BLOCK_INTS = 36;
+    constexpr int BLOCKS_PER_ITER = 8;
+    constexpr int TILE_C_I = 16;
+    constexpr int TILE_C_J = 16;
+    constexpr int ROWS_PER_WARP = 32;
+    constexpr int NTX = ROWS_PER_WARP / TILE_C_I;
+    constexpr int SUM_J_TILES = BN / (NTX * TILE_C_J);
+    constexpr int SUM_COUNT = SUM_J_TILES * NTX * hrx_wmma_i32_16x16_j_major::ne;
+
+    const unsigned int tx = __builtin_amdgcn_workitem_id_x();
+    const unsigned int ty = __builtin_amdgcn_workitem_id_y();
+    const long long row_tile = static_cast<long long>(__builtin_amdgcn_workgroup_id_x()) * BM;
+    const long long col_tile = static_cast<long long>(__builtin_amdgcn_workgroup_id_y()) * BN;
+
+    const long long blocks_per_row = k / 32;
+    float sum[SUM_COUNT] = {};
+
+    __shared__ int tile_y[TILE_Y_PADDED];
+    __shared__ int tile_x[TILE_X_INTS];
+
+    for (long long kb0 = 0; kb0 < blocks_per_row; kb0 += BLOCKS_PER_ITER) {
+#pragma unroll
+        for (int i0 = 0; i0 < BM; i0 += NWARPS) {
+            const int i = i0 + static_cast<int>(ty);
+            const hrx_block_q8_0 * bxi = src0 + (row_tile + i) * blocks_per_row + kb0;
+            tile_x[i * TILE_X_K + tx] = hrx_get_int_b2(bxi[0].qs, static_cast<int>(tx));
+            tile_x[i * TILE_X_K + TILE_NE_K + tx] = hrx_get_int_b2(bxi[1].qs, static_cast<int>(tx));
+        }
+
+#pragma unroll
+        for (int i0 = 0; i0 < BM; i0 += NWARPS * 16) {
+            const int i = i0 + static_cast<int>(ty) * 16 + static_cast<int>(tx >> 1);
+            const int kbxd = static_cast<int>(tx & 1u);
+            const hrx_block_q8_0 * bxi = src0 + (row_tile + i) * blocks_per_row + kb0 + kbxd;
+            reinterpret_cast<float *>(tile_x + 2 * TILE_NE_K)[i * TILE_X_K + kbxd] =
+                __half2float(__ushort_as_half(bxi->d));
+        }
+
+        const int * rhs0 = reinterpret_cast<const int *>(src1) + cols * ((kb0 / 4) * RHS_BLOCK_INTS) +
+            col_tile * RHS_BLOCK_INTS;
+#pragma unroll
+        for (int l0 = 0; l0 < BN * TILE_Y_K; l0 += NWARPS * WARP_SIZE) {
+            const int l = l0 + static_cast<int>(ty) * WARP_SIZE + static_cast<int>(tx);
+            tile_y[l] = rhs0[l];
+        }
+
+        __syncthreads();
+
+        for (int pass = 0; pass < 2; ++pass) {
+            const int k00 = pass * TILE_NE_K;
+            const int * x_qs = tile_x;
+            const float * x_df = reinterpret_cast<const float *>(tile_x + 2 * TILE_NE_K);
+            const int y_col_shift = static_cast<int>(ty % NTX) * TILE_C_J;
+            const int * y_qs = tile_y + y_col_shift * TILE_Y_K + 4;
+            const float * y_df = reinterpret_cast<const float *>(tile_y);
+
+            const int i0 = static_cast<int>(ty / NTX) * ROWS_PER_WARP;
+
+#pragma unroll
+            for (int n = 0; n < NTX; ++n) {
+                hrx_wmma_i32_16x8_i_mirror a;
+                hrx_wmma_load_16x8_i_mirror(
+                    a,
+                    x_qs + (i0 + n * TILE_C_I) * TILE_X_K + k00,
+                    TILE_X_K);
+
+#pragma unroll
+                for (int jt = 0; jt < SUM_J_TILES; ++jt) {
+                    const int j0 = jt * NTX * TILE_C_J;
+                    hrx_wmma_i32_16x8_i_mirror b;
+                    hrx_wmma_load_16x8_i_mirror(b, y_qs + j0 * TILE_Y_K, TILE_Y_K);
+
+                    hrx_wmma_i32_16x16_j_major c_frag;
+                    hrx_wmma_mma_i32_16x16x16_iu8(c_frag, a, b);
+
+#pragma unroll
+                    for (int l = 0; l < hrx_wmma_i32_16x16_j_major::ne; ++l) {
+                        const int i = i0 + n * TILE_C_I + hrx_wmma_i32_16x16_j_major::get_i(l);
+                        const int j = y_col_shift + j0 + hrx_wmma_i32_16x16_j_major::get_j();
+                        const float d_a = x_df[i * TILE_X_K + k00 / 32];
+                        const float d_b = y_df[j * TILE_Y_K];
+                        sum[(jt * NTX + n) * hrx_wmma_i32_16x16_j_major::ne + l] +=
+                            static_cast<float>(c_frag.x[l]) * d_a * d_b;
+                    }
+                }
+            }
+
+            if (pass == 0) {
+                __syncthreads();
+                const int * rhs1 = reinterpret_cast<const int *>(src1) +
+                    cols * ((kb0 / 4) * RHS_BLOCK_INTS + RHS_BLOCK_INTS) + col_tile * RHS_BLOCK_INTS;
+#pragma unroll
+                for (int l0 = 0; l0 < BN * TILE_Y_K; l0 += NWARPS * WARP_SIZE) {
+                    const int l = l0 + static_cast<int>(ty) * WARP_SIZE + static_cast<int>(tx);
+                    tile_y[l] = rhs1[l];
+                }
+                __syncthreads();
+            }
+        }
+
+        __syncthreads();
+    }
+
+    const int i0 = static_cast<int>(ty / NTX) * ROWS_PER_WARP;
+    const int y_col_shift = static_cast<int>(ty % NTX) * TILE_C_J;
+
+#pragma unroll
+    for (int jt = 0; jt < SUM_J_TILES; ++jt) {
+#pragma unroll
+        for (int n = 0; n < NTX; ++n) {
+#pragma unroll
+            for (int l = 0; l < hrx_wmma_i32_16x16_j_major::ne; ++l) {
+                const long long row = row_tile + i0 + n * TILE_C_I + hrx_wmma_i32_16x16_j_major::get_i(l);
+                const long long col = col_tile + y_col_shift + jt * NTX * TILE_C_J +
+                    hrx_wmma_i32_16x16_j_major::get_j();
+                dst[col * rows + row] = sum[(jt * NTX + n) * hrx_wmma_i32_16x16_j_major::ne + l];
+            }
         }
     }
 }

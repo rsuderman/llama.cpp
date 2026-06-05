@@ -1111,6 +1111,7 @@ struct ggml_backend_hrx_device_context {
     ggml_backend_hrx_op_provider mul_mat_id_q4_k_mul_q8_1_provider;
     ggml_backend_hrx_op_provider quantize_q8_1_provider;
     ggml_backend_hrx_op_provider quantize_q8_1_x4_provider;
+    ggml_backend_hrx_op_provider quantize_mmq_q8_1_d4_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q4_k_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q4_k_q8_1_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q5_k_provider;
@@ -1139,6 +1140,7 @@ struct ggml_backend_hrx_device_context {
     ggml_backend_hrx_op_provider mul_mat_vec_q8_0_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q8_0_cols8_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q8_0_q8_1_x4_mmq128x32_wg256_provider;
+    ggml_backend_hrx_op_provider mul_mat_vec_q8_0_q8_1_mmq128x128_wg32x8_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q8_0_add_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q8_0_add_cols8_provider;
     ggml_backend_hrx_op_provider mul_mat_vec_q8_0_add_rows4_cols4_provider;
@@ -1313,6 +1315,7 @@ static void ggml_backend_hrx_reset_providers(ggml_backend_hrx_device_context * d
     device_context->mul_mat_id_q4_k_mul_q8_1_provider.reset();
     device_context->quantize_q8_1_provider.reset();
     device_context->quantize_q8_1_x4_provider.reset();
+    device_context->quantize_mmq_q8_1_d4_provider.reset();
     device_context->mul_mat_vec_q4_k_provider.reset();
     device_context->mul_mat_vec_q4_k_q8_1_provider.reset();
     device_context->mul_mat_vec_q5_k_provider.reset();
@@ -1351,6 +1354,7 @@ static void ggml_backend_hrx_reset_providers(ggml_backend_hrx_device_context * d
     device_context->mul_mat_vec_q8_0_provider.reset();
     device_context->mul_mat_vec_q8_0_cols8_provider.reset();
     device_context->mul_mat_vec_q8_0_q8_1_x4_mmq128x32_wg256_provider.reset();
+    device_context->mul_mat_vec_q8_0_q8_1_mmq128x128_wg32x8_provider.reset();
     device_context->mul_mat_vec_q8_0_add_provider.reset();
     device_context->mul_mat_vec_q8_0_add_cols8_provider.reset();
     device_context->mul_mat_vec_q8_0_add_rows4_cols4_provider.reset();
@@ -2877,6 +2881,9 @@ static bool ggml_backend_hrx_load_mul_mat_vec_providers(ggml_backend_hrx_device_
     ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_quantize_q8_1_x4_f32", &device_context->quantize_q8_1_x4_provider) || ok;
     ok = ggml_backend_hrx_load_catalog_provider(
+        device_context, "hrx_quantize_mmq_q8_1_d4_f32",
+        &device_context->quantize_mmq_q8_1_d4_provider) || ok;
+    ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_mul_mat_vec_q4_k_f32", &device_context->mul_mat_vec_q4_k_provider) || ok;
     ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_mul_mat_vec_q4_k_q8_1_f32", &device_context->mul_mat_vec_q4_k_q8_1_provider) || ok;
@@ -2964,6 +2971,9 @@ static bool ggml_backend_hrx_load_mul_mat_vec_providers(ggml_backend_hrx_device_
     ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_mul_mat_vec_q8_0_q8_1_x4_mmq128x32_wg256_f32",
         &device_context->mul_mat_vec_q8_0_q8_1_x4_mmq128x32_wg256_provider) || ok;
+    ok = ggml_backend_hrx_load_catalog_provider(
+        device_context, "hrx_mul_mat_vec_q8_0_q8_1_mmq128x128_wg32x8_f32",
+        &device_context->mul_mat_vec_q8_0_q8_1_mmq128x128_wg32x8_provider) || ok;
     ok = ggml_backend_hrx_load_catalog_provider(
         device_context, "hrx_mul_mat_vec_q8_0_add_f32",
         &device_context->mul_mat_vec_q8_0_add_provider) || ok;
@@ -5068,6 +5078,7 @@ static bool ggml_backend_hrx_supports_mul_mat_vec_k_quant_q8_1_shape(
 struct ggml_backend_hrx_q8_1_mmvq_variant {
     const ggml_backend_hrx_op_provider * provider = nullptr;
     bool x4_quant = false;
+    bool q8_1_mmq_d4 = false;
     uint32_t rows_per_workgroup = 1;
     uint32_t cols_per_workgroup = 1;
 };
@@ -5109,6 +5120,39 @@ static bool ggml_backend_hrx_supports_mul_mat_vec_q8_0_q8_1_x4_mmq128x32_prompt(
            src1->ne[1] >= 32 &&
            (src0->ne[0] % 128) == 0 &&
            (src0->ne[1] % 128) == 0 &&
+           ggml_is_contiguous(src0) &&
+           ggml_is_contiguous(src1) &&
+           ggml_is_contiguous(op);
+}
+
+static bool ggml_backend_hrx_supports_mul_mat_vec_q8_0_q8_1_mmq_d4_prompt(
+        const ggml_backend_hrx_device_context * device_context,
+        const ggml_tensor * op) {
+    if (!op ||
+        !ggml_backend_hrx_provider_available(device_context->quantize_mmq_q8_1_d4_provider) ||
+        !ggml_backend_hrx_provider_available(device_context->mul_mat_vec_q8_0_q8_1_mmq128x128_wg32x8_provider)) {
+        return false;
+    }
+
+    const ggml_tensor * src0 = op ? op->src[0] : nullptr;
+    const ggml_tensor * src1 = op ? op->src[1] : nullptr;
+    return src0 &&
+           src1 &&
+           src0->type == GGML_TYPE_Q8_0 &&
+           src1->type == GGML_TYPE_F32 &&
+           op->type == GGML_TYPE_F32 &&
+           src0->ne[0] == src1->ne[0] &&
+           op->ne[0] == src0->ne[1] &&
+           op->ne[1] == src1->ne[1] &&
+           src0->ne[2] == 1 && src0->ne[3] == 1 &&
+           src1->ne[2] == 1 && src1->ne[3] == 1 &&
+           op->ne[2] == 1 && op->ne[3] == 1 &&
+           src0->ne[0] > 0 &&
+           src0->ne[1] > 0 &&
+           src1->ne[1] >= 128 &&
+           (src0->ne[0] % 256) == 0 &&
+           (src0->ne[1] % 128) == 0 &&
+           (src1->ne[1] % 128) == 0 &&
            ggml_is_contiguous(src0) &&
            ggml_is_contiguous(src1) &&
            ggml_is_contiguous(op);
@@ -5246,6 +5290,13 @@ static ggml_backend_hrx_q8_1_mmvq_variant ggml_backend_hrx_mul_mat_vec_k_q8_1_va
             }
             return variant;
         case GGML_TYPE_Q8_0:
+            if (ggml_backend_hrx_supports_mul_mat_vec_q8_0_q8_1_mmq_d4_prompt(device_context, op)) {
+                variant.provider = &device_context->mul_mat_vec_q8_0_q8_1_mmq128x128_wg32x8_provider;
+                variant.q8_1_mmq_d4 = true;
+                variant.rows_per_workgroup = 128;
+                variant.cols_per_workgroup = 128;
+                return variant;
+            }
             if (has_q8_1_x4 &&
                 ggml_backend_hrx_supports_mul_mat_vec_q8_0_q8_1_x4_mmq128x32_prompt(
                     device_context,
@@ -8333,8 +8384,9 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_vec_k_q8_1(
         return GGML_STATUS_FAILED;
     }
 
+    const bool q8_1_packed128 = variant.x4_quant || variant.q8_1_mmq_d4;
     const int64_t q8_1_blocks = src1->ne[1] * (src1->ne[0] / 32);
-    const size_t q8_1_size = variant.x4_quant ?
+    const size_t q8_1_size = q8_1_packed128 ?
         static_cast<size_t>(((q8_1_blocks + 3) / 4) * 144) :
         static_cast<size_t>(q8_1_blocks * 36);
     hrx_buffer_ref_t q8_1_ref = {};
@@ -8353,15 +8405,21 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_vec_k_q8_1(
         /* .ne2  = */ src1->ne[2],
     };
 
-    const auto & quant_provider = variant.x4_quant ?
+    const auto & quant_provider = variant.q8_1_mmq_d4 ?
+        context->device_context->quantize_mmq_q8_1_d4_provider :
+        variant.x4_quant ?
         context->device_context->quantize_q8_1_x4_provider :
         context->device_context->quantize_q8_1_provider;
     const uint32_t quant_workgroup_size = quant_provider.export_info.workgroup_size[0] ?
-        quant_provider.export_info.workgroup_size[0] : (variant.x4_quant ? 128 : 32);
+        quant_provider.export_info.workgroup_size[0] : (q8_1_packed128 ? 128 : 32);
     hrx_dispatch_config_t quant_config = {
         /* .workgroup_count = */ {
-            static_cast<uint32_t>(variant.x4_quant ? quant_constants.ne0 / 128 : quant_constants.ne0 / 32),
-            static_cast<uint32_t>(quant_constants.ne1),
+            static_cast<uint32_t>(variant.q8_1_mmq_d4 ?
+                quant_constants.ne1 :
+                q8_1_packed128 ? quant_constants.ne0 / 128 : quant_constants.ne0 / 32),
+            static_cast<uint32_t>(variant.q8_1_mmq_d4 ?
+                quant_constants.ne0 / 512 :
+                quant_constants.ne1),
             static_cast<uint32_t>(src1->ne[2] * src1->ne[3]),
         },
         /* .workgroup_size = */ { quant_workgroup_size, 1, 1 },

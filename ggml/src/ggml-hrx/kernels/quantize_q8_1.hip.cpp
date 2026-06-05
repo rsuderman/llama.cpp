@@ -13,6 +13,11 @@ struct hrx_block_q8_1_x4_packed128 {
     int qs[32];
 };
 
+struct hrx_block_q8_1_mmq_d4 {
+    float d4[4];
+    int8_t qs[128];
+};
+
 struct hrx_quantize_q8_1_constants {
     long long ne00;
     long long s01;
@@ -116,5 +121,58 @@ extern "C" __global__ void hrx_quantize_q8_1_x4_f32(
     if (lane == 0) {
         out->ds[inner * 2 + 0] = __half_as_ushort(__float2half(d));
         out->ds[inner * 2 + 1] = __half_as_ushort(__float2half(sum * d));
+    }
+}
+
+extern "C" __global__ void hrx_quantize_mmq_q8_1_d4_f32(
+        const float * src, hrx_block_q8_1_mmq_d4 * dst,
+        hrx_quantize_q8_1_constants c) {
+    const long long i1 = static_cast<long long>(__builtin_amdgcn_workgroup_id_x());
+    const long long block_group = static_cast<long long>(__builtin_amdgcn_workgroup_id_y());
+    const long long z = static_cast<long long>(__builtin_amdgcn_workgroup_id_z());
+    const int tid = static_cast<int>(__builtin_amdgcn_workitem_id_x());
+
+    const long long i3 = z / c.ne2;
+    const long long i2 = z - i3 * c.ne2;
+    const long long i0 = (block_group * 128 + tid) * 4;
+    if (i0 >= c.ne0 || i1 >= c.ne1) {
+        return;
+    }
+
+    float4 values;
+    values.x = 0.0f;
+    values.y = 0.0f;
+    values.z = 0.0f;
+    values.w = 0.0f;
+    if (i0 < c.ne00) {
+        values = *reinterpret_cast<const float4 *>(
+            src + i3 * c.s03 + i2 * c.s02 + i1 * c.s01 + i0);
+    }
+
+    float amax = __builtin_fabsf(values.x);
+    amax = fmaxf(amax, __builtin_fabsf(values.y));
+    amax = fmaxf(amax, __builtin_fabsf(values.z));
+    amax = fmaxf(amax, __builtin_fabsf(values.w));
+
+    #pragma unroll
+    for (int offset = 4; offset > 0; offset >>= 1) {
+        amax = fmaxf(amax, __shfl_xor(amax, offset));
+    }
+
+    const float d = amax / 127.0f;
+    const float d_inv = amax == 0.0f ? 0.0f : 127.0f / amax;
+    char4 q;
+    q.x = static_cast<int8_t>(__builtin_rintf(values.x * d_inv));
+    q.y = static_cast<int8_t>(__builtin_rintf(values.y * d_inv));
+    q.z = static_cast<int8_t>(__builtin_rintf(values.z * d_inv));
+    q.w = static_cast<int8_t>(__builtin_rintf(values.w * d_inv));
+
+    const long long block = block_group * 4 + (tid / 32);
+    const int iqs = (tid & 31) * 4;
+    hrx_block_q8_1_mmq_d4 * out = dst + block * c.ne1 + i1;
+
+    *reinterpret_cast<char4 *>(out->qs + iqs) = q;
+    if ((iqs % 32) == 0) {
+        out->d4[iqs / 32] = d;
     }
 }

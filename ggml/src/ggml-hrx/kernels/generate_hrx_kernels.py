@@ -1199,6 +1199,14 @@ KERNELS = [
         "workgroup_size": (128, 1, 1),
     },
     {
+        "name": "hrx_quantize_mmq_q8_1_d4_f32",
+        "source": "quantize_q8_1.hip.cpp",
+        "format": None,
+        "binding_count": 2,
+        "constants_size": 56,
+        "workgroup_size": (128, 1, 1),
+    },
+    {
         "name": "hrx_mul_mat_vec_q4_k_q8_1_f32",
         "source": "mul_mat_vec_q4_k_q8_1.hip.cpp",
         "format": None,
@@ -1521,6 +1529,15 @@ KERNELS = [
         "parameter_count": 6,
         "constants_size": 24,
         "workgroup_size": (256, 1, 1),
+    },
+    {
+        "name": "hrx_mul_mat_vec_q8_0_q8_1_mmq128x128_wg32x8_f32",
+        "source": "mul_mat_vec_q8_0.hip.cpp",
+        "format": None,
+        "binding_count": 3,
+        "parameter_count": 6,
+        "constants_size": 24,
+        "workgroup_size": (32, 8, 1),
     },
     {
         "name": "hrx_mul_mat_vec_q8_0_add_f32",
