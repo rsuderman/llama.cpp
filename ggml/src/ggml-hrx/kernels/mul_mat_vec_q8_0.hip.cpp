@@ -687,13 +687,17 @@ extern "C" __global__ void hrx_mul_mat_vec_q8_0_q8_1_mmq128x128_wg32x8_f32(
         long long rows,
         long long cols) {
     constexpr int BM = 128;
+#if defined(__gfx1100__)
+    constexpr int BN = 32;
+#else
     constexpr int BN = 128;
+#endif
     constexpr int TILE_NE_K = 32;
-    constexpr int TILE_Y_K = 33;
-    constexpr int TILE_X_K = 70;
+    constexpr int TILE_Y_K = 36;
+    constexpr int TILE_X_K = 76;
     constexpr int WARP_SIZE = 32;
     constexpr int NWARPS = 8;
-    constexpr int TILE_Y_PADDED = 4608;
+    constexpr int TILE_Y_PADDED = BN * TILE_Y_K;
     constexpr int TILE_X_INTS = BM * TILE_X_K;
     constexpr int RHS_BLOCK_INTS = 36;
     constexpr int BLOCKS_PER_ITER = 8;
@@ -719,15 +723,17 @@ extern "C" __global__ void hrx_mul_mat_vec_q8_0_q8_1_mmq128x128_wg32x8_f32(
 #pragma unroll
         for (int i0 = 0; i0 < BM; i0 += NWARPS) {
             const int i = i0 + static_cast<int>(ty);
-            const hrx_block_q8_0 * bxi = src0 + (row_tile + i) * blocks_per_row + kb0;
-            tile_x[i * TILE_X_K + tx] = hrx_get_int_b2(bxi[0].qs, static_cast<int>(tx));
-            tile_x[i * TILE_X_K + TILE_NE_K + tx] = hrx_get_int_b2(bxi[1].qs, static_cast<int>(tx));
+            const int kbx = static_cast<int>(tx / 8);
+            const int kqsx = static_cast<int>(tx & 7u);
+            const hrx_block_q8_0 * bxi = src0 + (row_tile + i) * blocks_per_row + kb0 + kbx;
+            tile_x[i * TILE_X_K + tx] = hrx_get_int_b2(bxi[0].qs, kqsx);
+            tile_x[i * TILE_X_K + TILE_NE_K + tx] = hrx_get_int_b2(bxi[4].qs, kqsx);
         }
 
 #pragma unroll
-        for (int i0 = 0; i0 < BM; i0 += NWARPS * 16) {
-            const int i = i0 + static_cast<int>(ty) * 16 + static_cast<int>(tx >> 1);
-            const int kbxd = static_cast<int>(tx & 1u);
+        for (int i0 = 0; i0 < BM; i0 += NWARPS * 4) {
+            const int i = i0 + static_cast<int>(ty) * 4 + static_cast<int>(tx >> 3);
+            const int kbxd = static_cast<int>(tx & 7u);
             const hrx_block_q8_0 * bxi = src0 + (row_tile + i) * blocks_per_row + kb0 + kbxd;
             reinterpret_cast<float *>(tile_x + 2 * TILE_NE_K)[i * TILE_X_K + kbxd] =
                 __half2float(__ushort_as_half(bxi->d));
@@ -754,30 +760,35 @@ extern "C" __global__ void hrx_mul_mat_vec_q8_0_q8_1_mmq128x128_wg32x8_f32(
             const int i0 = static_cast<int>(ty / NTX) * ROWS_PER_WARP;
 
 #pragma unroll
-            for (int n = 0; n < NTX; ++n) {
-                hrx_wmma_i32_16x8_i_mirror a;
-                hrx_wmma_load_16x8_i_mirror(
-                    a,
-                    x_qs + (i0 + n * TILE_C_I) * TILE_X_K + k00,
-                    TILE_X_K);
+            for (int k01 = 0; k01 < TILE_NE_K; k01 += 8) {
+                const int k0 = k00 + k01;
 
 #pragma unroll
-                for (int jt = 0; jt < SUM_J_TILES; ++jt) {
-                    const int j0 = jt * NTX * TILE_C_J;
-                    hrx_wmma_i32_16x8_i_mirror b;
-                    hrx_wmma_load_16x8_i_mirror(b, y_qs + j0 * TILE_Y_K, TILE_Y_K);
-
-                    hrx_wmma_i32_16x16_j_major c_frag;
-                    hrx_wmma_mma_i32_16x16x16_iu8(c_frag, a, b);
+                for (int n = 0; n < NTX; ++n) {
+                    hrx_wmma_i32_16x8_i_mirror a;
+                    hrx_wmma_load_16x8_i_mirror(
+                        a,
+                        x_qs + (i0 + n * TILE_C_I) * TILE_X_K + k0,
+                        TILE_X_K);
 
 #pragma unroll
-                    for (int l = 0; l < hrx_wmma_i32_16x16_j_major::ne; ++l) {
-                        const int i = i0 + n * TILE_C_I + hrx_wmma_i32_16x16_j_major::get_i(l);
-                        const int j = y_col_shift + j0 + hrx_wmma_i32_16x16_j_major::get_j();
-                        const float d_a = x_df[i * TILE_X_K + k00 / 32];
-                        const float d_b = y_df[j * TILE_Y_K];
-                        sum[(jt * NTX + n) * hrx_wmma_i32_16x16_j_major::ne + l] +=
-                            static_cast<float>(c_frag.x[l]) * d_a * d_b;
+                    for (int jt = 0; jt < SUM_J_TILES; ++jt) {
+                        const int j0 = jt * NTX * TILE_C_J;
+                        hrx_wmma_i32_16x8_i_mirror b;
+                        hrx_wmma_load_16x8_i_mirror(b, y_qs + j0 * TILE_Y_K + k01, TILE_Y_K);
+
+                        hrx_wmma_i32_16x16_j_major c_frag;
+                        hrx_wmma_mma_i32_16x16x16_iu8(c_frag, a, b);
+
+#pragma unroll
+                        for (int l = 0; l < hrx_wmma_i32_16x16_j_major::ne; ++l) {
+                            const int i = i0 + n * TILE_C_I + hrx_wmma_i32_16x16_j_major::get_i(l);
+                            const int j = y_col_shift + j0 + hrx_wmma_i32_16x16_j_major::get_j();
+                            const float d_a = x_df[i * TILE_X_K + k0 / 8];
+                            const float d_b = y_df[j * TILE_Y_K + k01 / 8];
+                            sum[(jt * NTX + n) * hrx_wmma_i32_16x16_j_major::ne + l] +=
+                                static_cast<float>(c_frag.x[l]) * d_a * d_b;
+                        }
                     }
                 }
             }

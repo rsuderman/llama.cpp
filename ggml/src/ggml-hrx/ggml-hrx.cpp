@@ -5134,6 +5134,13 @@ static bool ggml_backend_hrx_supports_mul_mat_vec_q8_0_q8_1_mmq_d4_prompt(
         return false;
     }
 
+    // The D4 Q8 prompt kernel is currently tuned only for gfx1100 and gfx1151;
+    // other targets should keep using the existing fallback routes.
+    const char * target = ggml_backend_hrx_kernel_gfx_target(device_context);
+    if (std::strcmp(target, "gfx1100") != 0 && std::strcmp(target, "gfx1151") != 0) {
+        return false;
+    }
+
     const ggml_tensor * src0 = op ? op->src[0] : nullptr;
     const ggml_tensor * src1 = op ? op->src[1] : nullptr;
     return src0 &&
@@ -5294,7 +5301,8 @@ static ggml_backend_hrx_q8_1_mmvq_variant ggml_backend_hrx_mul_mat_vec_k_q8_1_va
                 variant.provider = &device_context->mul_mat_vec_q8_0_q8_1_mmq128x128_wg32x8_provider;
                 variant.q8_1_mmq_d4 = true;
                 variant.rows_per_workgroup = 128;
-                variant.cols_per_workgroup = 128;
+                variant.cols_per_workgroup =
+                    std::strcmp(ggml_backend_hrx_kernel_gfx_target(device_context), "gfx1100") == 0 ? 32 : 128;
                 return variant;
             }
             if (has_q8_1_x4 &&
@@ -8453,15 +8461,19 @@ static ggml_status ggml_backend_hrx_dispatch_mul_mat_vec_k_q8_1(
     };
 
     const auto & provider = *variant.provider;
-    const uint32_t workgroup_size = provider.export_info.workgroup_size[0] ?
+    const uint32_t workgroup_size_x = provider.export_info.workgroup_size[0] ?
         provider.export_info.workgroup_size[0] : 256;
+    const uint32_t workgroup_size_y = provider.export_info.workgroup_size[1] ?
+        provider.export_info.workgroup_size[1] : 1;
+    const uint32_t workgroup_size_z = provider.export_info.workgroup_size[2] ?
+        provider.export_info.workgroup_size[2] : 1;
     hrx_dispatch_config_t config = {
         /* .workgroup_count = */ {
             static_cast<uint32_t>((constants.rows + variant.rows_per_workgroup - 1) / variant.rows_per_workgroup),
             static_cast<uint32_t>((constants.cols + variant.cols_per_workgroup - 1) / variant.cols_per_workgroup),
             1,
         },
-        /* .workgroup_size = */ { workgroup_size, 1, 1 },
+        /* .workgroup_size = */ { workgroup_size_x, workgroup_size_y, workgroup_size_z },
         /* .subgroup_size = */ 0,
     };
 
