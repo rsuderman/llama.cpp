@@ -96,6 +96,7 @@
 
 /.venv
 __pycache__/
+*.py[cod]
 */poetry.lock
 poetry.toml
 poetry.lock
