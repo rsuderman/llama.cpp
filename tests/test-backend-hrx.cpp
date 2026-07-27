@@ -1880,7 +1880,7 @@ static void run_gated_delta_net_case(ggml_backend_t backend, bool kda) {
     ggml_tensor * g = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32, kda ? S : 1, H, T, B);
     ggml_tensor * beta = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32, 1, H, T, B);
     ggml_tensor * state = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, S * S * H, B);
-    ggml_tensor * out = ggml_gated_delta_net(ctx.get(), q, k, v, g, beta, state);
+    ggml_tensor * out = ggml_gated_delta_net(ctx.get(), q, k, v, g, beta, state, 1);
 
     ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 32, false);
     ggml_build_forward_expand(graph, out);
@@ -2327,7 +2327,7 @@ static void run_gated_delta_net_s128_beta_sigmoid_state_update_fusion_case(
     ggml_tensor * beta_raw = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32, 1, H, T, B);
     ggml_tensor * beta = ggml_sigmoid(ctx.get(), beta_raw);
     ggml_tensor * state = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, S * S, H, B);
-    ggml_tensor * gdn = ggml_gated_delta_net(ctx.get(), q, k, v, g, beta, state);
+    ggml_tensor * gdn = ggml_gated_delta_net(ctx.get(), q, k, v, g, beta, state, 1);
     ggml_tensor * state_view = ggml_view_1d(
         ctx.get(), gdn, STATE_ELEMS, static_cast<size_t>(ATTN_ELEMS) * sizeof(float));
     ggml_tensor * state_dst = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, STATE_ELEMS);
@@ -2415,7 +2415,7 @@ static void run_gated_delta_net_s128_beta_sigmoid_state_gather_fusion_case(
     ggml_tensor * state_src = scaled_state ?
         ggml_scale_bias_inplace(ctx.get(), state_base, SCALE, BIAS) : state_base;
     ggml_tensor * state = ggml_get_rows(ctx.get(), state_src, state_idx);
-    ggml_tensor * gdn = ggml_gated_delta_net(ctx.get(), q, k, v, g, beta, state);
+    ggml_tensor * gdn = ggml_gated_delta_net(ctx.get(), q, k, v, g, beta, state, 1);
     ggml_tensor * state_view = ggml_view_1d(
         ctx.get(), gdn, STATE_ELEMS, static_cast<size_t>(ATTN_ELEMS) * sizeof(float));
     ggml_tensor * state_dst = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, STATE_ELEMS);
@@ -2511,7 +2511,7 @@ static void run_gated_delta_net_state_update_negative_truncated_case(ggml_backen
     ggml_tensor * g = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32, 1, H, T, B);
     ggml_tensor * beta = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32, 1, H, T, B);
     ggml_tensor * state = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, S * S * H, B);
-    ggml_tensor * gdn = ggml_gated_delta_net(ctx.get(), q, k, v, g, beta, state);
+    ggml_tensor * gdn = ggml_gated_delta_net(ctx.get(), q, k, v, g, beta, state, 1);
     ggml_tensor * state_view = ggml_view_1d(
         ctx.get(), gdn, STATE_ELEMS - 1, static_cast<size_t>(ATTN_ELEMS) * sizeof(float));
     ggml_tensor * state_dst = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, STATE_ELEMS - 1);
@@ -2551,7 +2551,7 @@ static void run_gated_delta_net_state_update_negative_intervening_op_case(ggml_b
     ggml_tensor * g = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32, 1, H, T, B);
     ggml_tensor * beta = ggml_new_tensor_4d(ctx.get(), GGML_TYPE_F32, 1, H, T, B);
     ggml_tensor * state = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, S * S * H, B);
-    ggml_tensor * gdn = ggml_gated_delta_net(ctx.get(), q, k, v, g, beta, state);
+    ggml_tensor * gdn = ggml_gated_delta_net(ctx.get(), q, k, v, g, beta, state, 1);
     ggml_tensor * state_view = ggml_view_1d(
         ctx.get(), gdn, STATE_ELEMS, static_cast<size_t>(ATTN_ELEMS) * sizeof(float));
     ggml_tensor * state_dst = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, STATE_ELEMS);
