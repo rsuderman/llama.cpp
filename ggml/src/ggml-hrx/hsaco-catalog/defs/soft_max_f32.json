@@ -1,0 +1,38 @@
+{
+  "id": "soft_max_f32",
+  "op": "GGML_OP_SOFT_MAX",
+  "dtype": "F32",
+  "source": "sources/soft_max_f32.hip",
+  "source_basis": "ggml/src/ggml-cuda/softmax.cu",
+  "symbol": "hrx_soft_max_f32",
+  "abi": {
+    "binding_count": 2,
+    "parameter_count": 4,
+    "constant_byte_length": 16
+  },
+  "workgroup_size": [
+    256,
+    1,
+    1
+  ],
+  "parameters": [
+    {
+      "name": "ncols",
+      "type": "i64"
+    },
+    {
+      "name": "nrows",
+      "type": "i64"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "src",
+      "access": "read"
+    },
+    {
+      "name": "dst",
+      "access": "write"
+    }
+  ]
+}

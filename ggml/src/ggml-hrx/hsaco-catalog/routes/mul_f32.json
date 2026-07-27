@@ -1,0 +1,19 @@
+{
+  "schema": "ggml-hrx-hsaco-catalog-v0",
+  "id": "mul_f32_contiguous_row_broadcast_128x32",
+  "definition": "../defs/mul_f32.json",
+  "format": "amdgpu-hsaco",
+  "routing": {
+    "op": "GGML_OP_MUL",
+    "src0_type": "F32",
+    "src1_type": "F32",
+    "dst_type": "F32",
+    "src0_layout": "contiguous",
+    "src1_layout": "contiguous",
+    "dst_layout": "contiguous",
+    "shape": "src0_128x32_dst_same_src1_128x1"
+  },
+  "launch": {
+    "threads_per_block": 256
+  }
+}

@@ -32,6 +32,14 @@ struct ggml_backend_hrx_loaded_hsaco_route {
 static constexpr const char * GGML_HRX_ROUTE_SCALE_F32_CONTIGUOUS = "scale_f32_contiguous";
 static constexpr const char * GGML_HRX_ROUTE_CLAMP_F32_CONTIGUOUS = "clamp_f32_contiguous";
 static constexpr const char * GGML_HRX_ROUTE_ADD_F32_CONTIGUOUS = "add_f32_contiguous";
+static constexpr const char * GGML_HRX_ROUTE_MUL_F32_CONTIGUOUS_ROW_BROADCAST_128X32 =
+    "mul_f32_contiguous_row_broadcast_128x32";
+static constexpr const char * GGML_HRX_ROUTE_DIV_F32_CONTIGUOUS_SCALAR_8 = "div_f32_contiguous_scalar_8";
+static constexpr const char * GGML_HRX_ROUTE_SUM_ROWS_F32_CONTIGUOUS_NCOLS_8 = "sum_rows_f32_contiguous_ncols_8";
+static constexpr const char * GGML_HRX_ROUTE_SOFT_MAX_F32_CONTIGUOUS_NOMASK_NCOLS_128 =
+    "soft_max_f32_contiguous_nomask_ncols_128";
+static constexpr const char * GGML_HRX_ROUTE_ARGSORT_F32_I32_CONTIGUOUS_NCOLS_128 =
+    "argsort_f32_i32_contiguous_ncols_128";
 
 struct ggml_backend_hrx_scale_f32_constants {
     float scale;
@@ -54,6 +62,30 @@ struct ggml_backend_hrx_add_f32_constants {
 };
 
 static_assert(sizeof(ggml_backend_hrx_add_f32_constants) == 8, "unexpected add constant packing");
+
+struct ggml_backend_hrx_binary_broadcast_f32_constants {
+    int64_t nelements;
+    int64_t ncols;
+    int64_t src1_nelements;
+};
+
+static_assert(sizeof(ggml_backend_hrx_binary_broadcast_f32_constants) == 24, "unexpected binary constant packing");
+
+struct ggml_backend_hrx_rows_f32_constants {
+    int64_t ncols;
+    int64_t nrows;
+};
+
+static_assert(sizeof(ggml_backend_hrx_rows_f32_constants) == 16, "unexpected row constant packing");
+
+struct ggml_backend_hrx_argsort_f32_i32_constants {
+    int64_t ncols;
+    int64_t nrows;
+    int64_t ncols_pad;
+    int32_t order;
+} __attribute__((packed));
+
+static_assert(sizeof(ggml_backend_hrx_argsort_f32_i32_constants) == 28, "unexpected argsort constant packing");
 
 static bool ggml_backend_hrx_hsaco_log_status(hrx_status_t status, const char * expr, const char * file, int line) {
     if (hrx_status_is_ok(status)) {
@@ -140,6 +172,47 @@ static bool ggml_backend_hrx_hsaco_make_1d_dispatch_config(
         /* .subgroup_size = */ 0,
     };
     return true;
+}
+
+static bool ggml_backend_hrx_hsaco_make_row_dispatch_config(
+        const ggml_backend_hrx_hsaco_catalog_entry * entry,
+        int64_t nrows,
+        hrx_dispatch_config_t * out_config) {
+    if (!entry || !out_config || nrows < 0) {
+        return false;
+    }
+    if (static_cast<uint64_t>(nrows) > std::numeric_limits<uint32_t>::max()) {
+        GGML_LOG_ERROR("%s: row count is too large: %" PRId64 "\n", __func__, nrows);
+        return false;
+    }
+
+    *out_config = {
+        /* .workgroup_count = */ {static_cast<uint32_t>(nrows), 1, 1},
+        /* .workgroup_size = */ {
+            entry->workgroup_size[0],
+            entry->workgroup_size[1],
+            entry->workgroup_size[2],
+        },
+        /* .subgroup_size = */ 0,
+    };
+    return true;
+}
+
+static bool ggml_backend_hrx_hsaco_src1_supports_scalar_or_row_broadcast(
+        const ggml_tensor * src1,
+        const ggml_tensor * dst) {
+    if (ggml_nelements(src1) == 1) {
+        return true;
+    }
+    return src1->ne[0] == dst->ne[0] && src1->ne[1] == 1 && src1->ne[2] == 1 && src1->ne[3] == 1;
+}
+
+static int64_t ggml_backend_hrx_hsaco_next_power_of_2(int64_t value) {
+    int64_t result = 1;
+    while (result < value) {
+        result <<= 1;
+    }
+    return result;
 }
 
 } // namespace
@@ -315,6 +388,50 @@ static bool ggml_backend_hrx_hsaco_dispatch_1d(
         HRX_DISPATCH_FLAG_NONE));
 }
 
+static bool ggml_backend_hrx_hsaco_dispatch_rows(
+        ggml_backend_hrx_hsaco_catalog * catalog,
+        hrx_stream_t stream,
+        const char * route_id,
+        const void * constants,
+        size_t constants_size,
+        const hrx_buffer_ref_t * bindings,
+        size_t binding_count,
+        int64_t nrows) {
+    const ggml_backend_hrx_hsaco_catalog_entry * entry = ggml_backend_hrx_hsaco_find_entry(catalog, route_id);
+    auto * route = ggml_backend_hrx_hsaco_get_loaded_route(catalog, entry);
+    if (!route || !stream) {
+        return false;
+    }
+
+    if (constants_size != entry->constant_byte_length || binding_count != entry->binding_count) {
+        GGML_LOG_ERROR(
+            "%s: route %s dispatch ABI mismatch bindings=%zu expected=%u constants=%zu expected=%u\n",
+            __func__,
+            entry->id,
+            binding_count,
+            entry->binding_count,
+            constants_size,
+            entry->constant_byte_length);
+        return false;
+    }
+
+    hrx_dispatch_config_t dispatch_config = {};
+    if (!ggml_backend_hrx_hsaco_make_row_dispatch_config(entry, nrows, &dispatch_config)) {
+        return false;
+    }
+
+    return GGML_HRX_HSACO_CHECK(hrx_stream_dispatch(
+        stream,
+        route->executable,
+        route->export_ordinal,
+        &dispatch_config,
+        constants,
+        constants_size,
+        bindings,
+        binding_count,
+        HRX_DISPATCH_FLAG_NONE));
+}
+
 static ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_supports_scale_f32(
         ggml_backend_hrx_hsaco_catalog * catalog,
         const ggml_tensor * op) {
@@ -387,6 +504,126 @@ static ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_supports_add_f3
     return ggml_backend_hrx_hsaco_supported(GGML_HRX_ROUTE_ADD_F32_CONTIGUOUS);
 }
 
+static ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_supports_binary_broadcast_f32(
+        ggml_backend_hrx_hsaco_catalog * catalog,
+        const ggml_tensor * op,
+        ggml_op expected_op,
+        const char * route_id) {
+    if (!op || op->op != expected_op) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_NO_ROUTE);
+    }
+    if (!op->src[0] || !op->src[1]) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_SHAPE);
+    }
+    if (!ggml_backend_hrx_hsaco_route_available(catalog, route_id)) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_TARGET);
+    }
+    if (op->src[0]->type != GGML_TYPE_F32 || op->src[1]->type != GGML_TYPE_F32 || op->type != GGML_TYPE_F32) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_DTYPE);
+    }
+    if (!ggml_is_contiguous(op->src[0]) || !ggml_is_contiguous(op->src[1]) || !ggml_is_contiguous(op)) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_LAYOUT);
+    }
+    if (!ggml_are_same_shape(op->src[0], op) ||
+        !ggml_backend_hrx_hsaco_src1_supports_scalar_or_row_broadcast(op->src[1], op)) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_SHAPE);
+    }
+    if (expected_op == GGML_OP_MUL &&
+        (op->ne[0] != 128 || op->ne[1] != 32 || op->ne[2] != 1 || op->ne[3] != 1 ||
+         op->src[1]->ne[0] != 128 || op->src[1]->ne[1] != 1 ||
+         op->src[1]->ne[2] != 1 || op->src[1]->ne[3] != 1)) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_SHAPE);
+    }
+    if (expected_op == GGML_OP_DIV &&
+        (op->ne[0] != 8 || op->ne[1] != 1 || op->ne[2] != 1 || op->ne[3] != 1 ||
+         ggml_nelements(op->src[1]) != 1)) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_SHAPE);
+    }
+    return ggml_backend_hrx_hsaco_supported(route_id);
+}
+
+static ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_supports_sum_rows_f32(
+        ggml_backend_hrx_hsaco_catalog * catalog,
+        const ggml_tensor * op) {
+    if (!op || op->op != GGML_OP_SUM_ROWS) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_NO_ROUTE);
+    }
+    if (!op->src[0]) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_SHAPE);
+    }
+    if (!ggml_backend_hrx_hsaco_route_available(catalog, GGML_HRX_ROUTE_SUM_ROWS_F32_CONTIGUOUS_NCOLS_8)) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_TARGET);
+    }
+    if (op->src[0]->type != GGML_TYPE_F32 || op->type != GGML_TYPE_F32) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_DTYPE);
+    }
+    if (!ggml_is_contiguous(op->src[0]) || !ggml_is_contiguous(op)) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_LAYOUT);
+    }
+    if (op->src[0]->ne[0] != 8 ||
+        op->ne[0] != 1 ||
+        op->ne[1] != op->src[0]->ne[1] ||
+        op->ne[2] != op->src[0]->ne[2] ||
+        op->ne[3] != op->src[0]->ne[3]) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_SHAPE);
+    }
+    return ggml_backend_hrx_hsaco_supported(GGML_HRX_ROUTE_SUM_ROWS_F32_CONTIGUOUS_NCOLS_8);
+}
+
+static ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_supports_soft_max_f32(
+        ggml_backend_hrx_hsaco_catalog * catalog,
+        const ggml_tensor * op) {
+    if (!op || op->op != GGML_OP_SOFT_MAX) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_NO_ROUTE);
+    }
+    if (!op->src[0]) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_SHAPE);
+    }
+    if (!ggml_backend_hrx_hsaco_route_available(catalog, GGML_HRX_ROUTE_SOFT_MAX_F32_CONTIGUOUS_NOMASK_NCOLS_128)) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_TARGET);
+    }
+    if (op->src[0]->type != GGML_TYPE_F32 || op->type != GGML_TYPE_F32) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_DTYPE);
+    }
+    if (!ggml_is_contiguous(op->src[0]) || !ggml_is_contiguous(op)) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_LAYOUT);
+    }
+    if (!ggml_are_same_shape(op->src[0], op) || op->ne[0] != 128 || op->src[1] || op->src[2]) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_SHAPE);
+    }
+    if (ggml_get_op_params_f32(op, 0) != 1.0f || ggml_get_op_params_f32(op, 1) != 0.0f) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_SHAPE);
+    }
+    return ggml_backend_hrx_hsaco_supported(GGML_HRX_ROUTE_SOFT_MAX_F32_CONTIGUOUS_NOMASK_NCOLS_128);
+}
+
+static ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_supports_argsort_f32_i32(
+        ggml_backend_hrx_hsaco_catalog * catalog,
+        const ggml_tensor * op) {
+    if (!op || op->op != GGML_OP_ARGSORT) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_NO_ROUTE);
+    }
+    if (!op->src[0]) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_SHAPE);
+    }
+    if (!ggml_backend_hrx_hsaco_route_available(catalog, GGML_HRX_ROUTE_ARGSORT_F32_I32_CONTIGUOUS_NCOLS_128)) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_TARGET);
+    }
+    if (op->src[0]->type != GGML_TYPE_F32 || op->type != GGML_TYPE_I32) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_DTYPE);
+    }
+    if (!ggml_is_contiguous(op->src[0]) || !ggml_is_contiguous(op)) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_LAYOUT);
+    }
+    const int32_t order = ggml_get_op_params_i32(op, 0);
+    if (!ggml_are_same_shape(op->src[0], op) ||
+        op->ne[0] != 128 ||
+        (order != GGML_SORT_ORDER_ASC && order != GGML_SORT_ORDER_DESC)) {
+        return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_SHAPE);
+    }
+    return ggml_backend_hrx_hsaco_supported(GGML_HRX_ROUTE_ARGSORT_F32_I32_CONTIGUOUS_NCOLS_128);
+}
+
 ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_supports_op(
         ggml_backend_hrx_hsaco_catalog * catalog,
         const ggml_tensor * op) {
@@ -401,6 +638,18 @@ ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_supports_op(
             return ggml_backend_hrx_hsaco_supports_clamp_f32(catalog, op);
         case GGML_OP_ADD:
             return ggml_backend_hrx_hsaco_supports_add_f32(catalog, op);
+        case GGML_OP_MUL:
+            return ggml_backend_hrx_hsaco_supports_binary_broadcast_f32(
+                catalog, op, GGML_OP_MUL, GGML_HRX_ROUTE_MUL_F32_CONTIGUOUS_ROW_BROADCAST_128X32);
+        case GGML_OP_DIV:
+            return ggml_backend_hrx_hsaco_supports_binary_broadcast_f32(
+                catalog, op, GGML_OP_DIV, GGML_HRX_ROUTE_DIV_F32_CONTIGUOUS_SCALAR_8);
+        case GGML_OP_SUM_ROWS:
+            return ggml_backend_hrx_hsaco_supports_sum_rows_f32(catalog, op);
+        case GGML_OP_SOFT_MAX:
+            return ggml_backend_hrx_hsaco_supports_soft_max_f32(catalog, op);
+        case GGML_OP_ARGSORT:
+            return ggml_backend_hrx_hsaco_supports_argsort_f32_i32(catalog, op);
         default:
             return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_NO_ROUTE);
     }
@@ -490,6 +739,110 @@ static ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_invoke_add_f32(
     return ggml_backend_hrx_hsaco_supported(route_id);
 }
 
+static ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_invoke_binary_broadcast_f32(
+        ggml_backend_hrx_hsaco_catalog * catalog,
+        const ggml_backend_hrx_hsaco_op_request * request,
+        const char * route_id) {
+    const ggml_tensor * node = request->op;
+    hrx_buffer_ref_t bindings[3] = {};
+    if (!ggml_backend_hrx_hsaco_bind_tensor(request, node->src[0], &bindings[0]) ||
+        !ggml_backend_hrx_hsaco_bind_tensor(request, node->src[1], &bindings[1]) ||
+        !ggml_backend_hrx_hsaco_bind_tensor(request, node, &bindings[2])) {
+        GGML_LOG_ERROR("%s: failed to bind tensors for route %s\n", __func__, route_id);
+        return ggml_backend_hrx_hsaco_failed(route_id);
+    }
+
+    const int64_t nelements = ggml_nelements(node);
+    const ggml_backend_hrx_binary_broadcast_f32_constants constants = {
+        /* .nelements      = */ nelements,
+        /* .ncols          = */ node->ne[0],
+        /* .src1_nelements = */ ggml_nelements(node->src[1]),
+    };
+
+    if (!ggml_backend_hrx_hsaco_dispatch_1d(
+            catalog, request->stream, route_id, &constants, sizeof(constants), bindings, 3, nelements)) {
+        return ggml_backend_hrx_hsaco_failed(route_id);
+    }
+    return ggml_backend_hrx_hsaco_supported(route_id);
+}
+
+static ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_invoke_sum_rows_f32(
+        ggml_backend_hrx_hsaco_catalog * catalog,
+        const ggml_backend_hrx_hsaco_op_request * request,
+        const char * route_id) {
+    const ggml_tensor * node = request->op;
+    hrx_buffer_ref_t bindings[2] = {};
+    if (!ggml_backend_hrx_hsaco_bind_tensor(request, node->src[0], &bindings[0]) ||
+        !ggml_backend_hrx_hsaco_bind_tensor(request, node, &bindings[1])) {
+        GGML_LOG_ERROR("%s: failed to bind tensors for route %s\n", __func__, route_id);
+        return ggml_backend_hrx_hsaco_failed(route_id);
+    }
+
+    const int64_t nrows = ggml_nrows(node->src[0]);
+    const ggml_backend_hrx_rows_f32_constants constants = {
+        /* .ncols = */ node->src[0]->ne[0],
+        /* .nrows = */ nrows,
+    };
+
+    if (!ggml_backend_hrx_hsaco_dispatch_rows(
+            catalog, request->stream, route_id, &constants, sizeof(constants), bindings, 2, nrows)) {
+        return ggml_backend_hrx_hsaco_failed(route_id);
+    }
+    return ggml_backend_hrx_hsaco_supported(route_id);
+}
+
+static ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_invoke_rows_f32(
+        ggml_backend_hrx_hsaco_catalog * catalog,
+        const ggml_backend_hrx_hsaco_op_request * request,
+        const char * route_id) {
+    const ggml_tensor * node = request->op;
+    hrx_buffer_ref_t bindings[2] = {};
+    if (!ggml_backend_hrx_hsaco_bind_tensor(request, node->src[0], &bindings[0]) ||
+        !ggml_backend_hrx_hsaco_bind_tensor(request, node, &bindings[1])) {
+        GGML_LOG_ERROR("%s: failed to bind tensors for route %s\n", __func__, route_id);
+        return ggml_backend_hrx_hsaco_failed(route_id);
+    }
+
+    const int64_t nrows = ggml_nrows(node->src[0]);
+    const ggml_backend_hrx_rows_f32_constants constants = {
+        /* .ncols = */ node->src[0]->ne[0],
+        /* .nrows = */ nrows,
+    };
+
+    if (!ggml_backend_hrx_hsaco_dispatch_rows(
+            catalog, request->stream, route_id, &constants, sizeof(constants), bindings, 2, nrows)) {
+        return ggml_backend_hrx_hsaco_failed(route_id);
+    }
+    return ggml_backend_hrx_hsaco_supported(route_id);
+}
+
+static ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_invoke_argsort_f32_i32(
+        ggml_backend_hrx_hsaco_catalog * catalog,
+        const ggml_backend_hrx_hsaco_op_request * request,
+        const char * route_id) {
+    const ggml_tensor * node = request->op;
+    hrx_buffer_ref_t bindings[2] = {};
+    if (!ggml_backend_hrx_hsaco_bind_tensor(request, node->src[0], &bindings[0]) ||
+        !ggml_backend_hrx_hsaco_bind_tensor(request, node, &bindings[1])) {
+        GGML_LOG_ERROR("%s: failed to bind tensors for route %s\n", __func__, route_id);
+        return ggml_backend_hrx_hsaco_failed(route_id);
+    }
+
+    const int64_t nrows = ggml_nrows(node->src[0]);
+    const ggml_backend_hrx_argsort_f32_i32_constants constants = {
+        /* .ncols     = */ node->src[0]->ne[0],
+        /* .nrows     = */ nrows,
+        /* .ncols_pad = */ ggml_backend_hrx_hsaco_next_power_of_2(node->src[0]->ne[0]),
+        /* .order     = */ ggml_get_op_params_i32(node, 0),
+    };
+
+    if (!ggml_backend_hrx_hsaco_dispatch_rows(
+            catalog, request->stream, route_id, &constants, sizeof(constants), bindings, 2, nrows)) {
+        return ggml_backend_hrx_hsaco_failed(route_id);
+    }
+    return ggml_backend_hrx_hsaco_supported(route_id);
+}
+
 ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_invoke(
         ggml_backend_hrx_hsaco_catalog * catalog,
         const ggml_backend_hrx_hsaco_op_request * request) {
@@ -512,6 +865,15 @@ ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_invoke(
             return ggml_backend_hrx_hsaco_invoke_clamp_f32(catalog, request, support.route_id);
         case GGML_OP_ADD:
             return ggml_backend_hrx_hsaco_invoke_add_f32(catalog, request, support.route_id);
+        case GGML_OP_MUL:
+        case GGML_OP_DIV:
+            return ggml_backend_hrx_hsaco_invoke_binary_broadcast_f32(catalog, request, support.route_id);
+        case GGML_OP_SUM_ROWS:
+            return ggml_backend_hrx_hsaco_invoke_sum_rows_f32(catalog, request, support.route_id);
+        case GGML_OP_SOFT_MAX:
+            return ggml_backend_hrx_hsaco_invoke_rows_f32(catalog, request, support.route_id);
+        case GGML_OP_ARGSORT:
+            return ggml_backend_hrx_hsaco_invoke_argsort_f32_i32(catalog, request, support.route_id);
         default:
             return ggml_backend_hrx_hsaco_unsupported(GGML_BACKEND_HRX_HSACO_UNSUPPORTED_NO_ROUTE);
     }

@@ -1,0 +1,46 @@
+{
+  "id": "argsort_f32_i32",
+  "op": "GGML_OP_ARGSORT",
+  "dtype": "F32",
+  "source": "sources/argsort_f32_i32.hip",
+  "source_basis": "ggml/src/ggml-cuda/argsort.cu",
+  "symbol": "hrx_argsort_f32_i32",
+  "abi": {
+    "binding_count": 2,
+    "parameter_count": 6,
+    "constant_byte_length": 28
+  },
+  "workgroup_size": [
+    256,
+    1,
+    1
+  ],
+  "parameters": [
+    {
+      "name": "ncols",
+      "type": "i64"
+    },
+    {
+      "name": "nrows",
+      "type": "i64"
+    },
+    {
+      "name": "ncols_pad",
+      "type": "i64"
+    },
+    {
+      "name": "order",
+      "type": "i32"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "src",
+      "access": "read"
+    },
+    {
+      "name": "dst",
+      "access": "write"
+    }
+  ]
+}

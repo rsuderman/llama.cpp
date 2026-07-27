@@ -1,0 +1,46 @@
+{
+  "id": "div_f32",
+  "op": "GGML_OP_DIV",
+  "dtype": "F32",
+  "source": "sources/div_f32.hip",
+  "source_basis": "ggml/src/ggml-cuda/binbcast.cu",
+  "symbol": "hrx_div_f32",
+  "abi": {
+    "binding_count": 3,
+    "parameter_count": 6,
+    "constant_byte_length": 24
+  },
+  "workgroup_size": [
+    256,
+    1,
+    1
+  ],
+  "parameters": [
+    {
+      "name": "nelements",
+      "type": "i64"
+    },
+    {
+      "name": "ncols",
+      "type": "i64"
+    },
+    {
+      "name": "src1_nelements",
+      "type": "i64"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "src0",
+      "access": "read"
+    },
+    {
+      "name": "src1",
+      "access": "read"
+    },
+    {
+      "name": "dst",
+      "access": "write"
+    }
+  ]
+}

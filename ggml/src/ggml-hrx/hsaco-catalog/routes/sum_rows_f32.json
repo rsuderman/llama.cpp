@@ -1,0 +1,17 @@
+{
+  "schema": "ggml-hrx-hsaco-catalog-v0",
+  "id": "sum_rows_f32_contiguous_ncols_8",
+  "definition": "../defs/sum_rows_f32.json",
+  "format": "amdgpu-hsaco",
+  "routing": {
+    "op": "GGML_OP_SUM_ROWS",
+    "src0_type": "F32",
+    "dst_type": "F32",
+    "src0_layout": "contiguous",
+    "dst_layout": "contiguous",
+    "shape": "ncols_8_sum_rows"
+  },
+  "launch": {
+    "threads_per_block": 256
+  }
+}

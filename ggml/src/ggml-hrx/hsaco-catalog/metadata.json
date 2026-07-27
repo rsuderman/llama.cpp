@@ -7,6 +7,11 @@
   "routes": [
     "routes/scale_f32.json",
     "routes/clamp_f32.json",
-    "routes/add_f32.json"
+    "routes/add_f32.json",
+    "routes/mul_f32.json",
+    "routes/div_f32.json",
+    "routes/sum_rows_f32.json",
+    "routes/soft_max_f32.json",
+    "routes/argsort_f32_i32.json"
   ]
 }

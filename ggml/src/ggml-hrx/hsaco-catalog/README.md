@@ -8,9 +8,11 @@ CUDA kernel sources.
 
 - Schema: `ggml-hrx-hsaco-catalog-v0`
 - Initial target set: `gfx1100`
-- Initial ops: `GGML_OP_SCALE`, `GGML_OP_CLAMP`, `GGML_OP_ADD`
-- Initial routes: F32 input, F32 output, contiguous source and destination,
-  equal shape.
+- Initial ops: `GGML_OP_SCALE`, `GGML_OP_CLAMP`, `GGML_OP_ADD`,
+  `GGML_OP_MUL`, `GGML_OP_DIV`, `GGML_OP_SUM_ROWS`, `GGML_OP_SOFT_MAX`,
+  `GGML_OP_ARGSORT`
+- Initial routes: narrow F32 contiguous pointwise, row-reduction, row-softmax,
+  and small row-argsort cases.
 
 ## Source
 
@@ -29,6 +31,11 @@ The standalone HIP sources for catalog generation are:
 - `hsaco-catalog/sources/scale_f32.hip`
 - `hsaco-catalog/sources/clamp_f32.hip`
 - `hsaco-catalog/sources/add_f32.hip`
+- `hsaco-catalog/sources/mul_f32.hip`
+- `hsaco-catalog/sources/div_f32.hip`
+- `hsaco-catalog/sources/sum_rows_f32.hip`
+- `hsaco-catalog/sources/soft_max_f32.hip`
+- `hsaco-catalog/sources/argsort_f32_i32.hip`
 
 ## Routing And Artifacts
 
@@ -41,9 +48,16 @@ The v0 runtime predicates are deliberately simple:
 - select `hrx_scale_f32` for `GGML_OP_SCALE`
 - select `hrx_clamp_f32` for `GGML_OP_CLAMP`
 - select `hrx_add_f32` for `GGML_OP_ADD`
+- select `hrx_mul_f32` for `GGML_OP_MUL`
+- select `hrx_div_f32` for `GGML_OP_DIV`
+- select `hrx_sum_rows_f32` for `GGML_OP_SUM_ROWS`
+- select `hrx_soft_max_f32` for `GGML_OP_SOFT_MAX`
+- select `hrx_argsort_f32_i32` for `GGML_OP_ARGSORT`
 - require `GGML_TYPE_F32` source and destination tensors
 - require contiguous source and destination tensors
-- require source and destination shapes to match
+- require source and destination shapes to match, except `MUL` and `DIV`
+  support only the model-observed source1 broadcast shapes
+- limit `SUM_ROWS`, `SOFT_MAX`, and `ARGSORT` to model-observed column counts
 
 `ggml-hrx.cpp` selects a logical route and packs tensor bindings. The
 HSACO-catalog runtime owns target lookup, executable loading, export ABI

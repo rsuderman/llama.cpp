@@ -1,0 +1,18 @@
+{
+  "schema": "ggml-hrx-hsaco-catalog-v0",
+  "id": "argsort_f32_i32_contiguous_ncols_128",
+  "definition": "../defs/argsort_f32_i32.json",
+  "format": "amdgpu-hsaco",
+  "routing": {
+    "op": "GGML_OP_ARGSORT",
+    "src0_type": "F32",
+    "dst_type": "I32",
+    "src0_layout": "contiguous",
+    "dst_layout": "contiguous",
+    "shape": "same",
+    "columns": 128
+  },
+  "launch": {
+    "threads_per_block": 256
+  }
+}
