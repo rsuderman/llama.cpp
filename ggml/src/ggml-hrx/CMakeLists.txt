@@ -5,7 +5,7 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 option(GGML_HRX_EMBED_ROCM_LIBS "Bundle HRX/ROCm runtime libraries next to the HRX backend" OFF)
 set(GGML_HRX_EMBED_LIBRARY_DIRS "" CACHE STRING "Library directories to scan when GGML_HRX_EMBED_ROCM_LIBS=ON")
-set(GGML_HRX_HSACO_TARGET "gfx1100" CACHE STRING "AMDGPU target used for the v0 HRX HSACO catalog")
+set(GGML_HRX_HSACO_TARGETS "gfx1100" CACHE STRING "AMDGPU targets used for the v0 HRX HSACO catalog")
 
 if (NOT GGML_HRX_ROCM_PATH AND DEFINED ENV{ROCM_PATH})
     set(GGML_HRX_ROCM_PATH "$ENV{ROCM_PATH}")
@@ -44,28 +44,42 @@ add_custom_command(
         --out-h "${GGML_HRX_HSACO_GENERATED_H}"
         --hipcc "${GGML_HRX_HIPCC_EXECUTABLE}"
         --bundler "${GGML_HRX_CLANG_OFFLOAD_BUNDLER_EXECUTABLE}"
-        --target "${GGML_HRX_HSACO_TARGET}"
+        --targets "${GGML_HRX_HSACO_TARGETS}"
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hsaco_catalog.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/metadata.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/defs/clamp_f32.json"
         "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/defs/scale_f32.json"
-        "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/routes/gfx1100/scale_f32.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/routes/clamp_f32.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/routes/scale_f32.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/sources/clamp_f32.hip"
         "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/sources/scale_f32.hip"
     VERBATIM
 )
 
+add_custom_target(ggml-hrx-hsaco-catalog
+    DEPENDS
+        "${GGML_HRX_HSACO_GENERATED_CPP}"
+        "${GGML_HRX_HSACO_GENERATED_H}"
+)
+
 ggml_add_backend_library(ggml-hrx
                          ggml-hrx.cpp
+                         hsaco-catalog/ggml-hrx-hsaco-catalog-runtime.cpp
+                         hsaco-catalog/ggml-hrx-hsaco-catalog-runtime.h
                          "${GGML_HRX_HSACO_GENERATED_CPP}"
                          "${GGML_HRX_HSACO_GENERATED_H}"
                          ../../include/ggml-hrx.h
                         )
+
+add_dependencies(ggml-hrx ggml-hrx-hsaco-catalog)
 
 target_link_libraries(ggml-hrx PRIVATE
     hrx::hrx
 )
 target_include_directories(ggml-hrx PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../vendor
+    "${CMAKE_CURRENT_SOURCE_DIR}"
     "${GGML_HRX_HSACO_GENERATED_DIR}"
 )
 

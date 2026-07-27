@@ -1,14 +1,14 @@
 {
-  "id": "scale_f32",
-  "op": "GGML_OP_SCALE",
+  "id": "clamp_f32",
+  "op": "GGML_OP_CLAMP",
   "dtype": "F32",
-  "source": "sources/scale_f32.hip",
-  "source_basis": "ggml/src/ggml-cuda/scale.cu",
-  "symbol": "hrx_scale_f32",
+  "source": "sources/clamp_f32.hip",
+  "source_basis": "ggml/src/ggml-cuda/clamp.cu",
+  "symbol": "hrx_clamp_f32",
   "abi": {
     "binding_count": 2,
     "parameter_count": 5,
-    "constant_byte_length": 16
+    "constant_byte_length": 12
   },
   "workgroup_size": [
     256,
@@ -17,16 +17,16 @@
   ],
   "parameters": [
     {
-      "name": "scale",
+      "name": "minimum",
       "type": "f32"
     },
     {
-      "name": "bias",
+      "name": "maximum",
       "type": "f32"
     },
     {
       "name": "nelements",
-      "type": "i64"
+      "type": "i32"
     }
   ],
   "bindings": [

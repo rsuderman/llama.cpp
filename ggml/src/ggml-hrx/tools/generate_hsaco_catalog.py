@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -17,6 +18,13 @@ def require_list(data, key, source):
     value = data.get(key)
     if not isinstance(value, list) or not value:
         raise ValueError(f"{source}: expected non-empty list field {key}")
+    return value
+
+
+def require_int(data, key, source):
+    value = data.get(key)
+    if not isinstance(value, int):
+        raise ValueError(f"{source}: expected integer field {key}")
     return value
 
 
@@ -64,6 +72,16 @@ def c_array(data):
     return ",\n".join(rows)
 
 
+def parse_targets(value):
+    if value is None:
+        return []
+    return [target for target in re.split(r"[;,\s]+", value) if target]
+
+
+def c_identifier(value):
+    return re.sub(r"[^A-Za-z0-9_]", "_", value)
+
+
 def write_generated_header(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("""#pragma once
@@ -80,6 +98,9 @@ struct ggml_backend_hrx_hsaco_catalog_entry {
     size_t data_size;
     uint32_t workgroup_size[3];
     uint32_t threads_per_block;
+    uint32_t binding_count;
+    uint32_t parameter_count;
+    uint32_t constant_byte_length;
 };
 
 const ggml_backend_hrx_hsaco_catalog_entry * ggml_backend_hrx_hsaco_catalog_entries(size_t * count);
@@ -108,6 +129,9 @@ def write_generated_source(path, header_path, entries):
             f"        /* .data_size = */ sizeof({entry['array_name']}),\n"
             f"        /* .workgroup_size = */ {{{workgroup_size[0]}, {workgroup_size[1]}, {workgroup_size[2]}}},\n"
             f"        /* .threads_per_block = */ {entry['threads_per_block']},\n"
+            f"        /* .binding_count = */ {entry['binding_count']},\n"
+            f"        /* .parameter_count = */ {entry['parameter_count']},\n"
+            f"        /* .constant_byte_length = */ {entry['constant_byte_length']},\n"
             "    },\n"
         )
     chunks.append("};\n\n")
@@ -129,7 +153,7 @@ def main():
     parser.add_argument("--out-h", required=True)
     parser.add_argument("--hipcc", required=True)
     parser.add_argument("--bundler", required=True)
-    parser.add_argument("--target", required=True)
+    parser.add_argument("--targets")
     args = parser.parse_args()
 
     source_root = Path(args.source_root)
@@ -138,36 +162,49 @@ def main():
     metadata = read_json(metadata_path)
     if require_string(metadata, "schema", metadata_path) != "ggml-hrx-hsaco-catalog-v0":
         raise ValueError(f"{metadata_path}: unsupported schema")
+    targets = parse_targets(args.targets)
+    if not targets:
+        targets = require_list(metadata, "targets", metadata_path)
+    for target in targets:
+        if not isinstance(target, str) or not target:
+            raise ValueError(f"{metadata_path}: targets must contain non-empty strings")
 
     entries = []
     for route_name in require_list(metadata, "routes", metadata_path):
         route_path = source_root / route_name
         route = read_json(route_path)
-        if require_string(route, "target", route_path) != args.target:
-            continue
         definition_path = (route_path.parent / require_string(route, "definition", route_path)).resolve()
         definition = read_json(definition_path)
         source_path = (source_root / require_string(definition, "source", definition_path)).resolve()
         if not source_path.is_file():
             raise ValueError(f"{definition_path}: missing source {source_path}")
-        hsaco_path = compile_hsaco(args.hipcc, args.bundler, source_path, args.target, build_root / "artifacts" / args.target)
         launch = route.get("launch", {})
         workgroup_size = require_list(definition, "workgroup_size", definition_path)
         if len(workgroup_size) != 3:
             raise ValueError(f"{definition_path}: workgroup_size must have 3 values")
-        entries.append({
-            "id": require_string(route, "id", route_path),
-            "op": require_string(definition, "op", definition_path),
-            "target": args.target,
-            "symbol": require_string(definition, "symbol", definition_path),
-            "array_name": f"ggml_hrx_hsaco_{require_string(definition, 'id', definition_path)}_{args.target}",
-            "data": hsaco_path.read_bytes(),
-            "workgroup_size": [int(value) for value in workgroup_size],
-            "threads_per_block": int(launch.get("threads_per_block", workgroup_size[0])),
-        })
+        abi = definition.get("abi")
+        if not isinstance(abi, dict):
+            raise ValueError(f"{definition_path}: expected object field abi")
+        route_id = require_string(route, "id", route_path)
+        definition_id = require_string(definition, "id", definition_path)
+        for target in targets:
+            hsaco_path = compile_hsaco(args.hipcc, args.bundler, source_path, target, build_root / "artifacts" / target)
+            entries.append({
+                "id": route_id,
+                "op": require_string(definition, "op", definition_path),
+                "target": target,
+                "symbol": require_string(definition, "symbol", definition_path),
+                "array_name": f"ggml_hrx_hsaco_{c_identifier(definition_id)}_{c_identifier(route_id)}_{c_identifier(target)}",
+                "data": hsaco_path.read_bytes(),
+                "workgroup_size": [int(value) for value in workgroup_size],
+                "threads_per_block": int(launch.get("threads_per_block", workgroup_size[0])),
+                "binding_count": require_int(abi, "binding_count", definition_path),
+                "parameter_count": require_int(abi, "parameter_count", definition_path),
+                "constant_byte_length": require_int(abi, "constant_byte_length", definition_path),
+            })
 
     if not entries:
-        raise ValueError(f"{metadata_path}: no routes selected for target {args.target}")
+        raise ValueError(f"{metadata_path}: no routes selected for targets {targets}")
 
     write_generated_header(Path(args.out_h))
     write_generated_source(Path(args.out_cpp), Path(args.out_h), entries)

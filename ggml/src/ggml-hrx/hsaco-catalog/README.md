@@ -7,33 +7,45 @@ CUDA kernel sources.
 ## Version
 
 - Schema: `ggml-hrx-hsaco-catalog-v0`
-- Initial target: `gfx1100`
-- Initial op: `GGML_OP_SCALE`
-- Initial route: F32 input, F32 output, contiguous source and destination,
+- Initial target set: `gfx1100`
+- Initial ops: `GGML_OP_SCALE`, `GGML_OP_CLAMP`
+- Initial routes: F32 input, F32 output, contiguous source and destination,
   equal shape.
 
 ## Source
 
-The first kernel is derived from `ggml/src/ggml-cuda/scale.cu`. The CUDA launch
-wrapper and CUDA-only helpers are not copied. The retained device logic is:
+The first kernels are derived from `ggml/src/ggml-cuda/scale.cu` and
+`ggml/src/ggml-cuda/clamp.cu`. The CUDA launch wrappers and CUDA-only helpers
+are not copied. The retained `SCALE` device logic is:
 
 - one dimensional grid
 - 256 threads per block
 - strided loop over `nelements`
 - `dst[i] = scale * src[i] + bias`
 
-The standalone HIP source for catalog generation is
-`hsaco-catalog/sources/scale_f32.hip`.
+The standalone HIP sources for catalog generation are:
 
-## Routing
+- `hsaco-catalog/sources/scale_f32.hip`
+- `hsaco-catalog/sources/clamp_f32.hip`
 
-The v0 runtime route is deliberately hard-coded:
+## Routing And Artifacts
 
-- select `hrx_scale_f32` only for `GGML_OP_SCALE`
+Routes are logical and target independent. The generator compiles every route
+for each platform listed by `GGML_HRX_HSACO_TARGETS` and embeds one HSACO
+artifact per route and platform.
+
+The v0 runtime predicates are deliberately simple:
+
+- select `hrx_scale_f32` for `GGML_OP_SCALE`
+- select `hrx_clamp_f32` for `GGML_OP_CLAMP`
 - require `GGML_TYPE_F32` source and destination tensors
 - require contiguous source and destination tensors
 - require source and destination shapes to match
-- dispatch with `ceil(nelements / 256)` workgroups and 256 threads
+
+`ggml-hrx.cpp` selects a logical route and packs tensor bindings. The
+HSACO-catalog runtime owns target lookup, executable loading, export ABI
+validation, dispatch config construction, and the final `hrx_stream_dispatch`
+call.
 
 This routing is not the end goal. Later versions can replace it with generated
 shape predicates or a richer route table once more kernels exist.
@@ -42,7 +54,8 @@ shape predicates or a richer route table once more kernels exist.
 
 - [x] Add catalog metadata for the initial version, source kernel, and route.
 - [x] Generate raw HSACO artifacts at build time.
+- [x] Add an explicit CMake target for HSACO catalog generation.
+- [x] Generate platform-specific artifacts from generic route definitions.
 - [x] Embed the generated HSACO catalog into the HRX backend target.
-- [x] Load the selected executable through `hrx_executable_load_data`.
-- [x] Route supported tensor shapes to `hrx_stream_dispatch`.
-- [x] Add focused backend tests for supported and unsupported `SCALE` cases.
+- [x] Hide executable loading and dispatch behind the HSACO-catalog runtime.
+- [x] Add focused backend tests for supported and unsupported route cases.

@@ -66,6 +66,24 @@ static bool run_scale_support_case(ggml_backend_dev_t dev) {
     return scale_f32_supported;
 }
 
+static bool run_clamp_support_case(ggml_backend_dev_t dev) {
+    bool clamp_f32_supported = false;
+    {
+        ggml_context_ptr ctx = make_context();
+        ggml_tensor * src = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 16);
+        ggml_tensor * out = ggml_clamp(ctx.get(), src, -1.5f, 2.0f);
+        clamp_f32_supported = ggml_backend_dev_supports_op(dev, out);
+    }
+
+    {
+        ggml_context_ptr ctx = make_context();
+        ggml_tensor * src = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F16, 16);
+        ggml_tensor * out = ggml_clamp(ctx.get(), src, -1.5f, 2.0f);
+        GGML_ASSERT(!ggml_backend_dev_supports_op(dev, out));
+    }
+    return clamp_f32_supported;
+}
+
 static void run_scale_case(ggml_backend_t backend, ggml_backend_dev_t dev, int64_t n) {
     ggml_context_ptr ctx = make_context();
     ggml_tensor * src = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n);
@@ -91,6 +109,33 @@ static void run_scale_case(ggml_backend_t backend, ggml_backend_dev_t dev, int64
     std::vector<float> actual(n, -1.0f);
     ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
     expect_near(actual, expected, 1e-6f, "scale");
+}
+
+static void run_clamp_case(ggml_backend_t backend, ggml_backend_dev_t dev, int64_t n) {
+    ggml_context_ptr ctx = make_context();
+    ggml_tensor * src = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n);
+    ggml_tensor * out = ggml_clamp(ctx.get(), src, -1.5f, 2.0f);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, out));
+
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 16, false);
+    ggml_build_forward_expand(graph, out);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> src_data(n);
+    std::vector<float> expected(n);
+    for (int64_t i = 0; i < n; ++i) {
+        src_data[i] = static_cast<float>(i % 17) - 8.0f;
+        expected[i] = src_data[i] < -1.5f ? -1.5f : (src_data[i] > 2.0f ? 2.0f : src_data[i]);
+    }
+
+    ggml_backend_tensor_set(src, src_data.data(), 0, src_data.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> actual(n, -1.0f);
+    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+    expect_near(actual, expected, 1e-6f, "clamp");
 }
 
 } // namespace
@@ -131,6 +176,14 @@ int main() {
             ggml_backend_synchronize(backend.get());
             return 0;
         }
+        if (std::string(test_only) == "clamp") {
+            if (run_clamp_support_case(dev)) {
+                run_clamp_case(backend.get(), dev, 1);
+                run_clamp_case(backend.get(), dev, 512);
+            }
+            ggml_backend_synchronize(backend.get());
+            return 0;
+        }
         std::fprintf(stderr, "unknown GGML_HRX_TEST_ONLY=%s\n", test_only);
         return 1;
     }
@@ -139,6 +192,10 @@ int main() {
         run_scale_case(backend.get(), dev, 1);
         run_scale_case(backend.get(), dev, 256);
         run_scale_case(backend.get(), dev, 257);
+    }
+    if (run_clamp_support_case(dev)) {
+        run_clamp_case(backend.get(), dev, 1);
+        run_clamp_case(backend.get(), dev, 512);
     }
 
     ggml_backend_synchronize(backend.get());

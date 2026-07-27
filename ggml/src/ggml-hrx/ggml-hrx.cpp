@@ -5,7 +5,7 @@
 
 #include "hrx_runtime.h"
 
-#include "ggml-hrx-hsaco-catalog.h"
+#include "hsaco-catalog/ggml-hrx-hsaco-catalog-runtime.h"
 
 #include <cerrno>
 #include <algorithm>
@@ -35,7 +35,6 @@ static constexpr uintptr_t GGML_HRX_FAKE_PTR_BASE = 0x1000;
 static constexpr size_t GGML_HRX_STAGING_ARENA_DEFAULT_SIZE = 8 * 1024 * 1024;
 
 struct ggml_backend_hrx_reg_context;
-struct ggml_backend_hrx_loaded_hsaco_route;
 
 struct ggml_backend_hrx_options {
     std::string trace_jsonl_path;
@@ -65,8 +64,8 @@ struct ggml_backend_hrx_device_context {
     std::vector<hrx_stream_t> live_streams;
     std::vector<ggml_backend_hrx_staging_arena> staging_arenas;
     hrx_stream_t active_stream = nullptr;
-    std::mutex hsaco_routes_mutex;
-    std::vector<std::unique_ptr<ggml_backend_hrx_loaded_hsaco_route>> hsaco_routes;
+    std::mutex hsaco_route_cache_mutex;
+    ggml_backend_hrx_hsaco_route_cache * hsaco_route_cache = nullptr;
 };
 
 struct ggml_backend_hrx_reg_context {
@@ -90,19 +89,6 @@ struct ggml_backend_hrx_buffer_context {
     ggml_backend_hrx_device_context * device_context = nullptr;
     hrx_buffer_t buffer = nullptr;
     uint8_t * base = nullptr;
-};
-
-struct ggml_backend_hrx_loaded_hsaco_route {
-    const ggml_backend_hrx_hsaco_catalog_entry * entry = nullptr;
-    hrx_executable_t executable = nullptr;
-    uint32_t export_ordinal = 0;
-    hrx_executable_export_info_t export_info = {};
-
-    ~ggml_backend_hrx_loaded_hsaco_route() {
-        if (executable) {
-            hrx_executable_release(executable);
-        }
-    }
 };
 
 struct ggml_backend_hrx_context {
@@ -1019,36 +1005,36 @@ static bool ggml_backend_hrx_is_metadata_op(const ggml_tensor * op) {
     }
 }
 
-static std::string ggml_backend_hrx_architecture_base(const std::string & architecture) {
-    const size_t feature_pos = architecture.find(':');
-    return feature_pos == std::string::npos ? architecture : architecture.substr(0, feature_pos);
-}
+static constexpr const char * GGML_HRX_ROUTE_SCALE_F32_CONTIGUOUS = "scale_f32_contiguous";
+static constexpr const char * GGML_HRX_ROUTE_CLAMP_F32_CONTIGUOUS = "clamp_f32_contiguous";
 
-static const ggml_backend_hrx_hsaco_catalog_entry * ggml_backend_hrx_find_hsaco_entry(
-        const ggml_backend_hrx_device_context * device_context,
-        const char * op) {
-    if (!device_context || !op) {
+static ggml_backend_hrx_hsaco_route_cache * ggml_backend_hrx_get_hsaco_route_cache(
+        ggml_backend_hrx_device_context * device_context) {
+    if (!device_context) {
         return nullptr;
     }
 
-    const std::string target = ggml_backend_hrx_architecture_base(device_context->architecture);
-    size_t count = 0;
-    const ggml_backend_hrx_hsaco_catalog_entry * entries = ggml_backend_hrx_hsaco_catalog_entries(&count);
-    for (size_t i = 0; i < count; ++i) {
-        if (std::strcmp(entries[i].op, op) == 0 && target == entries[i].target) {
-            return &entries[i];
-        }
+    std::lock_guard<std::mutex> lock(device_context->hsaco_route_cache_mutex);
+    if (!device_context->hsaco_route_cache) {
+        device_context->hsaco_route_cache =
+            ggml_backend_hrx_hsaco_route_cache_new(device_context->device, device_context->architecture.c_str());
     }
-    return nullptr;
+    return device_context->hsaco_route_cache;
+}
+
+static bool ggml_backend_hrx_has_hsaco_route(
+        ggml_backend_hrx_device_context * device_context,
+        const char * route_id) {
+    return ggml_backend_hrx_hsaco_route_available(ggml_backend_hrx_get_hsaco_route_cache(device_context), route_id);
 }
 
 static bool ggml_backend_hrx_supports_scale_f32(
-        const ggml_backend_hrx_device_context * device_context,
+        ggml_backend_hrx_device_context * device_context,
         const ggml_tensor * op) {
     if (!op || op->op != GGML_OP_SCALE || !op->src[0]) {
         return false;
     }
-    if (!ggml_backend_hrx_find_hsaco_entry(device_context, "GGML_OP_SCALE")) {
+    if (!ggml_backend_hrx_has_hsaco_route(device_context, GGML_HRX_ROUTE_SCALE_F32_CONTIGUOUS)) {
         return false;
     }
     return op->src[0]->type == GGML_TYPE_F32 &&
@@ -1058,57 +1044,20 @@ static bool ggml_backend_hrx_supports_scale_f32(
         ggml_are_same_shape(op->src[0], op);
 }
 
-static ggml_backend_hrx_loaded_hsaco_route * ggml_backend_hrx_get_loaded_hsaco_route(
+static bool ggml_backend_hrx_supports_clamp_f32(
         ggml_backend_hrx_device_context * device_context,
-        const ggml_backend_hrx_hsaco_catalog_entry * entry) {
-    if (!device_context || !entry) {
-        return nullptr;
+        const ggml_tensor * op) {
+    if (!op || op->op != GGML_OP_CLAMP || !op->src[0]) {
+        return false;
     }
-
-    std::lock_guard<std::mutex> lock(device_context->hsaco_routes_mutex);
-    for (const auto & route : device_context->hsaco_routes) {
-        if (route->entry == entry) {
-            return route.get();
-        }
+    if (!ggml_backend_hrx_has_hsaco_route(device_context, GGML_HRX_ROUTE_CLAMP_F32_CONTIGUOUS)) {
+        return false;
     }
-
-    hrx_executable_t executable = nullptr;
-    if (!GGML_HRX_CHECK(hrx_executable_load_data(
-            device_context->device,
-            entry->data,
-            entry->data_size,
-            device_context->architecture.c_str(),
-            &executable))) {
-        return nullptr;
-    }
-
-    uint32_t export_ordinal = 0;
-    if (!GGML_HRX_CHECK(hrx_executable_lookup_export_by_name(executable, entry->symbol, &export_ordinal))) {
-        hrx_executable_release(executable);
-        return nullptr;
-    }
-
-    hrx_executable_export_info_t export_info = {};
-    if (!GGML_HRX_CHECK(hrx_executable_export_info(executable, export_ordinal, &export_info))) {
-        hrx_executable_release(executable);
-        return nullptr;
-    }
-
-    if (export_info.binding_count != 2 || export_info.parameter_count != 5 || export_info.constant_byte_length != 16) {
-        GGML_LOG_ERROR(
-            "%s: route %s export ABI mismatch bindings=%u parameters=%u constants=%u\n",
-            __func__, entry->id, export_info.binding_count, export_info.parameter_count, export_info.constant_byte_length);
-        hrx_executable_release(executable);
-        return nullptr;
-    }
-
-    auto route = std::make_unique<ggml_backend_hrx_loaded_hsaco_route>();
-    route->entry = entry;
-    route->executable = executable;
-    route->export_ordinal = export_ordinal;
-    route->export_info = export_info;
-    device_context->hsaco_routes.push_back(std::move(route));
-    return device_context->hsaco_routes.back().get();
+    return op->src[0]->type == GGML_TYPE_F32 &&
+        op->type == GGML_TYPE_F32 &&
+        ggml_is_contiguous(op->src[0]) &&
+        ggml_is_contiguous(op) &&
+        ggml_are_same_shape(op->src[0], op);
 }
 
 struct ggml_backend_hrx_scale_f32_constants {
@@ -1122,10 +1071,8 @@ static_assert(sizeof(ggml_backend_hrx_scale_f32_constants) == 16, "unexpected sc
 static bool ggml_backend_hrx_dispatch_scale_f32(
         ggml_backend_hrx_device_context * device_context,
         const ggml_tensor * node) {
-    const ggml_backend_hrx_hsaco_catalog_entry * entry =
-        ggml_backend_hrx_find_hsaco_entry(device_context, "GGML_OP_SCALE");
-    auto * route = ggml_backend_hrx_get_loaded_hsaco_route(device_context, entry);
-    if (!route || !device_context->active_stream) {
+    auto * route_cache = ggml_backend_hrx_get_hsaco_route_cache(device_context);
+    if (!route_cache || !device_context->active_stream) {
         return false;
     }
 
@@ -1136,52 +1083,82 @@ static bool ggml_backend_hrx_dispatch_scale_f32(
     }
 
     const int64_t nelements = ggml_nelements(node);
-    const uint32_t threads_per_block = entry->threads_per_block;
-    const uint64_t workgroup_count = (static_cast<uint64_t>(nelements) + threads_per_block - 1) / threads_per_block;
-    if (workgroup_count > std::numeric_limits<uint32_t>::max()) {
-        GGML_LOG_ERROR("%s: scale workgroup count is too large: %" PRIu64 "\n", __func__, workgroup_count);
-        return false;
-    }
-
     const ggml_backend_hrx_scale_f32_constants constants = {
         /* .scale     = */ ggml_get_op_params_f32(node, 0),
         /* .bias      = */ ggml_get_op_params_f32(node, 1),
         /* .nelements = */ nelements,
     };
-    hrx_dispatch_config_t dispatch_config = {
-        /* .workgroup_count = */ {static_cast<uint32_t>(workgroup_count), 1, 1},
-        /* .workgroup_size = */ {
-            entry->workgroup_size[0],
-            entry->workgroup_size[1],
-            entry->workgroup_size[2],
-        },
-        /* .subgroup_size = */ 0,
+
+    ggml_backend_hrx_trace_event(device_context->reg_context, {
+        {"event", "hsaco_route_dispatch"},
+        {"device", device_context->name},
+        {"route_id", GGML_HRX_ROUTE_SCALE_F32_CONTIGUOUS},
+        {"op", ggml_op_desc(node)},
+        {"nelements", nelements},
+    });
+
+    return ggml_backend_hrx_hsaco_dispatch_1d(
+        route_cache,
+        device_context->active_stream,
+        GGML_HRX_ROUTE_SCALE_F32_CONTIGUOUS,
+        &constants,
+        sizeof(constants),
+        bindings,
+        2,
+        nelements);
+}
+
+struct ggml_backend_hrx_clamp_f32_constants {
+    float minimum;
+    float maximum;
+    int32_t nelements;
+};
+
+static_assert(sizeof(ggml_backend_hrx_clamp_f32_constants) == 12, "unexpected clamp constant packing");
+
+static bool ggml_backend_hrx_dispatch_clamp_f32(
+        ggml_backend_hrx_device_context * device_context,
+        const ggml_tensor * node) {
+    auto * route_cache = ggml_backend_hrx_get_hsaco_route_cache(device_context);
+    if (!route_cache || !device_context->active_stream) {
+        return false;
+    }
+
+    const int64_t nelements = ggml_nelements(node);
+    if (nelements > std::numeric_limits<int32_t>::max()) {
+        GGML_LOG_ERROR("%s: clamp nelements is too large: %" PRId64 "\n", __func__, nelements);
+        return false;
+    }
+
+    hrx_buffer_ref_t bindings[2] = {};
+    if (!ggml_backend_hrx_make_tensor_binding(device_context, node->src[0], &bindings[0]) ||
+        !ggml_backend_hrx_make_tensor_binding(device_context, node, &bindings[1])) {
+        return false;
+    }
+
+    const ggml_backend_hrx_clamp_f32_constants constants = {
+        /* .minimum   = */ ggml_get_op_params_f32(node, 0),
+        /* .maximum   = */ ggml_get_op_params_f32(node, 1),
+        /* .nelements = */ static_cast<int32_t>(nelements),
     };
 
     ggml_backend_hrx_trace_event(device_context->reg_context, {
         {"event", "hsaco_route_dispatch"},
         {"device", device_context->name},
-        {"route_id", entry->id},
+        {"route_id", GGML_HRX_ROUTE_CLAMP_F32_CONTIGUOUS},
         {"op", ggml_op_desc(node)},
         {"nelements", nelements},
-        {"workgroup_count", dispatch_config.workgroup_count[0]},
-        {"workgroup_size", {
-            dispatch_config.workgroup_size[0],
-            dispatch_config.workgroup_size[1],
-            dispatch_config.workgroup_size[2],
-        }},
     });
 
-    return GGML_HRX_CHECK(hrx_stream_dispatch(
+    return ggml_backend_hrx_hsaco_dispatch_1d(
+        route_cache,
         device_context->active_stream,
-        route->executable,
-        route->export_ordinal,
-        &dispatch_config,
+        GGML_HRX_ROUTE_CLAMP_F32_CONTIGUOUS,
         &constants,
         sizeof(constants),
         bindings,
         2,
-        HRX_DISPATCH_FLAG_NONE));
+        nelements);
 }
 
 static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
@@ -1208,6 +1185,12 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
         }
         if (ggml_backend_hrx_supports_scale_f32(context->device_context, node)) {
             if (!ggml_backend_hrx_dispatch_scale_f32(context->device_context, node)) {
+                return GGML_STATUS_FAILED;
+            }
+            continue;
+        }
+        if (ggml_backend_hrx_supports_clamp_f32(context->device_context, node)) {
+            if (!ggml_backend_hrx_dispatch_clamp_f32(context->device_context, node)) {
                 return GGML_STATUS_FAILED;
             }
             continue;
@@ -1321,7 +1304,9 @@ static bool ggml_backend_hrx_device_supports_op(ggml_backend_dev_t dev, const gg
     if (ggml_backend_hrx_is_metadata_op(op)) {
         return true;
     }
-    return ggml_backend_hrx_supports_scale_f32(ggml_backend_hrx_get_device_context(dev), op);
+    auto * device_context = ggml_backend_hrx_get_device_context(dev);
+    return ggml_backend_hrx_supports_scale_f32(device_context, op) ||
+        ggml_backend_hrx_supports_clamp_f32(device_context, op);
 }
 
 static bool ggml_backend_hrx_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
@@ -1396,7 +1381,8 @@ ggml_backend_hrx_reg_context::~ggml_backend_hrx_reg_context() {
             device_context->transfer_stream = nullptr;
         }
         if (device_context) {
-            device_context->hsaco_routes.clear();
+            ggml_backend_hrx_hsaco_route_cache_free(device_context->hsaco_route_cache);
+            device_context->hsaco_route_cache = nullptr;
         }
         if (device_context && device_context->device) {
             hrx_device_release(device_context->device);

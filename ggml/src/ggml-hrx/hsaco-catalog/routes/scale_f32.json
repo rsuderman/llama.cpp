@@ -1,8 +1,7 @@
 {
   "schema": "ggml-hrx-hsaco-catalog-v0",
-  "id": "scale_f32_gfx1100",
-  "definition": "../../defs/scale_f32.json",
-  "target": "gfx1100",
+  "id": "scale_f32_contiguous",
+  "definition": "../defs/scale_f32.json",
   "format": "amdgpu-hsaco",
   "routing": {
     "op": "GGML_OP_SCALE",

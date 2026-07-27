@@ -5,6 +5,7 @@
     "gfx1100"
   ],
   "routes": [
-    "routes/gfx1100/scale_f32.json"
+    "routes/scale_f32.json",
+    "routes/clamp_f32.json"
   ]
 }
