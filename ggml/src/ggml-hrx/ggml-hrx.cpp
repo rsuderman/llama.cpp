@@ -1007,6 +1007,7 @@ static bool ggml_backend_hrx_is_metadata_op(const ggml_tensor * op) {
 
 static constexpr const char * GGML_HRX_ROUTE_SCALE_F32_CONTIGUOUS = "scale_f32_contiguous";
 static constexpr const char * GGML_HRX_ROUTE_CLAMP_F32_CONTIGUOUS = "clamp_f32_contiguous";
+static constexpr const char * GGML_HRX_ROUTE_ADD_F32_CONTIGUOUS = "add_f32_contiguous";
 
 static ggml_backend_hrx_hsaco_route_cache * ggml_backend_hrx_get_hsaco_route_cache(
         ggml_backend_hrx_device_context * device_context) {
@@ -1057,6 +1058,25 @@ static bool ggml_backend_hrx_supports_clamp_f32(
         op->type == GGML_TYPE_F32 &&
         ggml_is_contiguous(op->src[0]) &&
         ggml_is_contiguous(op) &&
+        ggml_are_same_shape(op->src[0], op);
+}
+
+static bool ggml_backend_hrx_supports_add_f32(
+        ggml_backend_hrx_device_context * device_context,
+        const ggml_tensor * op) {
+    if (!op || op->op != GGML_OP_ADD || !op->src[0] || !op->src[1]) {
+        return false;
+    }
+    if (!ggml_backend_hrx_has_hsaco_route(device_context, GGML_HRX_ROUTE_ADD_F32_CONTIGUOUS)) {
+        return false;
+    }
+    return op->src[0]->type == GGML_TYPE_F32 &&
+        op->src[1]->type == GGML_TYPE_F32 &&
+        op->type == GGML_TYPE_F32 &&
+        ggml_is_contiguous(op->src[0]) &&
+        ggml_is_contiguous(op->src[1]) &&
+        ggml_is_contiguous(op) &&
+        ggml_are_same_shape(op->src[0], op->src[1]) &&
         ggml_are_same_shape(op->src[0], op);
 }
 
@@ -1161,6 +1181,51 @@ static bool ggml_backend_hrx_dispatch_clamp_f32(
         nelements);
 }
 
+struct ggml_backend_hrx_add_f32_constants {
+    int64_t nelements;
+};
+
+static_assert(sizeof(ggml_backend_hrx_add_f32_constants) == 8, "unexpected add constant packing");
+
+static bool ggml_backend_hrx_dispatch_add_f32(
+        ggml_backend_hrx_device_context * device_context,
+        const ggml_tensor * node) {
+    auto * route_cache = ggml_backend_hrx_get_hsaco_route_cache(device_context);
+    if (!route_cache || !device_context->active_stream) {
+        return false;
+    }
+
+    hrx_buffer_ref_t bindings[3] = {};
+    if (!ggml_backend_hrx_make_tensor_binding(device_context, node->src[0], &bindings[0]) ||
+        !ggml_backend_hrx_make_tensor_binding(device_context, node->src[1], &bindings[1]) ||
+        !ggml_backend_hrx_make_tensor_binding(device_context, node, &bindings[2])) {
+        return false;
+    }
+
+    const int64_t nelements = ggml_nelements(node);
+    const ggml_backend_hrx_add_f32_constants constants = {
+        /* .nelements = */ nelements,
+    };
+
+    ggml_backend_hrx_trace_event(device_context->reg_context, {
+        {"event", "hsaco_route_dispatch"},
+        {"device", device_context->name},
+        {"route_id", GGML_HRX_ROUTE_ADD_F32_CONTIGUOUS},
+        {"op", ggml_op_desc(node)},
+        {"nelements", nelements},
+    });
+
+    return ggml_backend_hrx_hsaco_dispatch_1d(
+        route_cache,
+        device_context->active_stream,
+        GGML_HRX_ROUTE_ADD_F32_CONTIGUOUS,
+        &constants,
+        sizeof(constants),
+        bindings,
+        3,
+        nelements);
+}
+
 static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
     if (context->device_context->options && context->device_context->options->trace_graph) {
@@ -1191,6 +1256,12 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
         }
         if (ggml_backend_hrx_supports_clamp_f32(context->device_context, node)) {
             if (!ggml_backend_hrx_dispatch_clamp_f32(context->device_context, node)) {
+                return GGML_STATUS_FAILED;
+            }
+            continue;
+        }
+        if (ggml_backend_hrx_supports_add_f32(context->device_context, node)) {
+            if (!ggml_backend_hrx_dispatch_add_f32(context->device_context, node)) {
                 return GGML_STATUS_FAILED;
             }
             continue;
@@ -1306,7 +1377,8 @@ static bool ggml_backend_hrx_device_supports_op(ggml_backend_dev_t dev, const gg
     }
     auto * device_context = ggml_backend_hrx_get_device_context(dev);
     return ggml_backend_hrx_supports_scale_f32(device_context, op) ||
-        ggml_backend_hrx_supports_clamp_f32(device_context, op);
+        ggml_backend_hrx_supports_clamp_f32(device_context, op) ||
+        ggml_backend_hrx_supports_add_f32(device_context, op);
 }
 
 static bool ggml_backend_hrx_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {

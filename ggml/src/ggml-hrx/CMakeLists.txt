@@ -48,10 +48,13 @@ add_custom_command(
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hsaco_catalog.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/metadata.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/defs/add_f32.json"
         "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/defs/clamp_f32.json"
         "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/defs/scale_f32.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/routes/add_f32.json"
         "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/routes/clamp_f32.json"
         "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/routes/scale_f32.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/sources/add_f32.hip"
         "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/sources/clamp_f32.hip"
         "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/sources/scale_f32.hip"
     VERBATIM

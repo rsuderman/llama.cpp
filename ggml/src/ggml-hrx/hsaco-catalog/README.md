@@ -8,15 +8,16 @@ CUDA kernel sources.
 
 - Schema: `ggml-hrx-hsaco-catalog-v0`
 - Initial target set: `gfx1100`
-- Initial ops: `GGML_OP_SCALE`, `GGML_OP_CLAMP`
+- Initial ops: `GGML_OP_SCALE`, `GGML_OP_CLAMP`, `GGML_OP_ADD`
 - Initial routes: F32 input, F32 output, contiguous source and destination,
   equal shape.
 
 ## Source
 
-The first kernels are derived from `ggml/src/ggml-cuda/scale.cu` and
-`ggml/src/ggml-cuda/clamp.cu`. The CUDA launch wrappers and CUDA-only helpers
-are not copied. The retained `SCALE` device logic is:
+The first kernels are derived from `ggml/src/ggml-cuda/scale.cu`,
+`ggml/src/ggml-cuda/clamp.cu`, and `ggml/src/ggml-cuda/binbcast.cu`. The CUDA
+launch wrappers and CUDA-only helpers are not copied. The retained `SCALE`
+device logic is:
 
 - one dimensional grid
 - 256 threads per block
@@ -27,6 +28,7 @@ The standalone HIP sources for catalog generation are:
 
 - `hsaco-catalog/sources/scale_f32.hip`
 - `hsaco-catalog/sources/clamp_f32.hip`
+- `hsaco-catalog/sources/add_f32.hip`
 
 ## Routing And Artifacts
 
@@ -38,6 +40,7 @@ The v0 runtime predicates are deliberately simple:
 
 - select `hrx_scale_f32` for `GGML_OP_SCALE`
 - select `hrx_clamp_f32` for `GGML_OP_CLAMP`
+- select `hrx_add_f32` for `GGML_OP_ADD`
 - require `GGML_TYPE_F32` source and destination tensors
 - require contiguous source and destination tensors
 - require source and destination shapes to match
