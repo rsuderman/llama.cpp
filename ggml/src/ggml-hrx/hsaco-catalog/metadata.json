@@ -1,0 +1,10 @@
+{
+  "schema": "ggml-hrx-hsaco-catalog-v0",
+  "version": 0,
+  "targets": [
+    "gfx1100"
+  ],
+  "routes": [
+    "routes/gfx1100/scale_f32.json"
+  ]
+}

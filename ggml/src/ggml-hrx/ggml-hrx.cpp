@@ -5,6 +5,8 @@
 
 #include "hrx_runtime.h"
 
+#include "ggml-hrx-hsaco-catalog.h"
+
 #include <cerrno>
 #include <algorithm>
 #include <array>
@@ -33,6 +35,7 @@ static constexpr uintptr_t GGML_HRX_FAKE_PTR_BASE = 0x1000;
 static constexpr size_t GGML_HRX_STAGING_ARENA_DEFAULT_SIZE = 8 * 1024 * 1024;
 
 struct ggml_backend_hrx_reg_context;
+struct ggml_backend_hrx_loaded_hsaco_route;
 
 struct ggml_backend_hrx_options {
     std::string trace_jsonl_path;
@@ -62,6 +65,8 @@ struct ggml_backend_hrx_device_context {
     std::vector<hrx_stream_t> live_streams;
     std::vector<ggml_backend_hrx_staging_arena> staging_arenas;
     hrx_stream_t active_stream = nullptr;
+    std::mutex hsaco_routes_mutex;
+    std::vector<std::unique_ptr<ggml_backend_hrx_loaded_hsaco_route>> hsaco_routes;
 };
 
 struct ggml_backend_hrx_reg_context {
@@ -85,6 +90,19 @@ struct ggml_backend_hrx_buffer_context {
     ggml_backend_hrx_device_context * device_context = nullptr;
     hrx_buffer_t buffer = nullptr;
     uint8_t * base = nullptr;
+};
+
+struct ggml_backend_hrx_loaded_hsaco_route {
+    const ggml_backend_hrx_hsaco_catalog_entry * entry = nullptr;
+    hrx_executable_t executable = nullptr;
+    uint32_t export_ordinal = 0;
+    hrx_executable_export_info_t export_info = {};
+
+    ~ggml_backend_hrx_loaded_hsaco_route() {
+        if (executable) {
+            hrx_executable_release(executable);
+        }
+    }
 };
 
 struct ggml_backend_hrx_context {
@@ -237,6 +255,33 @@ static void ggml_backend_hrx_trace_event(
 
 static size_t ggml_backend_hrx_tensor_offset(const ggml_backend_hrx_buffer_context * context, const ggml_tensor * tensor) {
     return static_cast<size_t>(static_cast<const uint8_t *>(tensor->data) - context->base);
+}
+
+static ggml_backend_hrx_buffer_context * ggml_backend_hrx_tensor_buffer_context(const ggml_tensor * tensor) {
+    if (!tensor) {
+        return nullptr;
+    }
+    ggml_backend_buffer_t buffer = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+    if (!buffer || buffer->iface.get_base != ggml_backend_hrx_buffer_get_base) {
+        return nullptr;
+    }
+    return ggml_backend_hrx_get_buffer_context(buffer);
+}
+
+static bool ggml_backend_hrx_make_tensor_binding(
+        ggml_backend_hrx_device_context * device_context,
+        const ggml_tensor * tensor,
+        hrx_buffer_ref_t * out_ref) {
+    auto * buffer_context = ggml_backend_hrx_tensor_buffer_context(tensor);
+    if (!buffer_context || buffer_context->device_context != device_context || !buffer_context->buffer || !out_ref) {
+        return false;
+    }
+    *out_ref = {
+        /* .buffer = */ buffer_context->buffer,
+        /* .offset = */ ggml_backend_hrx_tensor_offset(buffer_context, tensor),
+        /* .length = */ ggml_nbytes(tensor),
+    };
+    return true;
 }
 
 static void ggml_backend_hrx_register_stream(ggml_backend_hrx_device_context * device_context, hrx_stream_t stream) {
@@ -974,6 +1019,171 @@ static bool ggml_backend_hrx_is_metadata_op(const ggml_tensor * op) {
     }
 }
 
+static std::string ggml_backend_hrx_architecture_base(const std::string & architecture) {
+    const size_t feature_pos = architecture.find(':');
+    return feature_pos == std::string::npos ? architecture : architecture.substr(0, feature_pos);
+}
+
+static const ggml_backend_hrx_hsaco_catalog_entry * ggml_backend_hrx_find_hsaco_entry(
+        const ggml_backend_hrx_device_context * device_context,
+        const char * op) {
+    if (!device_context || !op) {
+        return nullptr;
+    }
+
+    const std::string target = ggml_backend_hrx_architecture_base(device_context->architecture);
+    size_t count = 0;
+    const ggml_backend_hrx_hsaco_catalog_entry * entries = ggml_backend_hrx_hsaco_catalog_entries(&count);
+    for (size_t i = 0; i < count; ++i) {
+        if (std::strcmp(entries[i].op, op) == 0 && target == entries[i].target) {
+            return &entries[i];
+        }
+    }
+    return nullptr;
+}
+
+static bool ggml_backend_hrx_supports_scale_f32(
+        const ggml_backend_hrx_device_context * device_context,
+        const ggml_tensor * op) {
+    if (!op || op->op != GGML_OP_SCALE || !op->src[0]) {
+        return false;
+    }
+    if (!ggml_backend_hrx_find_hsaco_entry(device_context, "GGML_OP_SCALE")) {
+        return false;
+    }
+    return op->src[0]->type == GGML_TYPE_F32 &&
+        op->type == GGML_TYPE_F32 &&
+        ggml_is_contiguous(op->src[0]) &&
+        ggml_is_contiguous(op) &&
+        ggml_are_same_shape(op->src[0], op);
+}
+
+static ggml_backend_hrx_loaded_hsaco_route * ggml_backend_hrx_get_loaded_hsaco_route(
+        ggml_backend_hrx_device_context * device_context,
+        const ggml_backend_hrx_hsaco_catalog_entry * entry) {
+    if (!device_context || !entry) {
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(device_context->hsaco_routes_mutex);
+    for (const auto & route : device_context->hsaco_routes) {
+        if (route->entry == entry) {
+            return route.get();
+        }
+    }
+
+    hrx_executable_t executable = nullptr;
+    if (!GGML_HRX_CHECK(hrx_executable_load_data(
+            device_context->device,
+            entry->data,
+            entry->data_size,
+            device_context->architecture.c_str(),
+            &executable))) {
+        return nullptr;
+    }
+
+    uint32_t export_ordinal = 0;
+    if (!GGML_HRX_CHECK(hrx_executable_lookup_export_by_name(executable, entry->symbol, &export_ordinal))) {
+        hrx_executable_release(executable);
+        return nullptr;
+    }
+
+    hrx_executable_export_info_t export_info = {};
+    if (!GGML_HRX_CHECK(hrx_executable_export_info(executable, export_ordinal, &export_info))) {
+        hrx_executable_release(executable);
+        return nullptr;
+    }
+
+    if (export_info.binding_count != 2 || export_info.parameter_count != 5 || export_info.constant_byte_length != 16) {
+        GGML_LOG_ERROR(
+            "%s: route %s export ABI mismatch bindings=%u parameters=%u constants=%u\n",
+            __func__, entry->id, export_info.binding_count, export_info.parameter_count, export_info.constant_byte_length);
+        hrx_executable_release(executable);
+        return nullptr;
+    }
+
+    auto route = std::make_unique<ggml_backend_hrx_loaded_hsaco_route>();
+    route->entry = entry;
+    route->executable = executable;
+    route->export_ordinal = export_ordinal;
+    route->export_info = export_info;
+    device_context->hsaco_routes.push_back(std::move(route));
+    return device_context->hsaco_routes.back().get();
+}
+
+struct ggml_backend_hrx_scale_f32_constants {
+    float scale;
+    float bias;
+    int64_t nelements;
+};
+
+static_assert(sizeof(ggml_backend_hrx_scale_f32_constants) == 16, "unexpected scale constant packing");
+
+static bool ggml_backend_hrx_dispatch_scale_f32(
+        ggml_backend_hrx_device_context * device_context,
+        const ggml_tensor * node) {
+    const ggml_backend_hrx_hsaco_catalog_entry * entry =
+        ggml_backend_hrx_find_hsaco_entry(device_context, "GGML_OP_SCALE");
+    auto * route = ggml_backend_hrx_get_loaded_hsaco_route(device_context, entry);
+    if (!route || !device_context->active_stream) {
+        return false;
+    }
+
+    hrx_buffer_ref_t bindings[2] = {};
+    if (!ggml_backend_hrx_make_tensor_binding(device_context, node->src[0], &bindings[0]) ||
+        !ggml_backend_hrx_make_tensor_binding(device_context, node, &bindings[1])) {
+        return false;
+    }
+
+    const int64_t nelements = ggml_nelements(node);
+    const uint32_t threads_per_block = entry->threads_per_block;
+    const uint64_t workgroup_count = (static_cast<uint64_t>(nelements) + threads_per_block - 1) / threads_per_block;
+    if (workgroup_count > std::numeric_limits<uint32_t>::max()) {
+        GGML_LOG_ERROR("%s: scale workgroup count is too large: %" PRIu64 "\n", __func__, workgroup_count);
+        return false;
+    }
+
+    const ggml_backend_hrx_scale_f32_constants constants = {
+        /* .scale     = */ ggml_get_op_params_f32(node, 0),
+        /* .bias      = */ ggml_get_op_params_f32(node, 1),
+        /* .nelements = */ nelements,
+    };
+    hrx_dispatch_config_t dispatch_config = {
+        /* .workgroup_count = */ {static_cast<uint32_t>(workgroup_count), 1, 1},
+        /* .workgroup_size = */ {
+            entry->workgroup_size[0],
+            entry->workgroup_size[1],
+            entry->workgroup_size[2],
+        },
+        /* .subgroup_size = */ 0,
+    };
+
+    ggml_backend_hrx_trace_event(device_context->reg_context, {
+        {"event", "hsaco_route_dispatch"},
+        {"device", device_context->name},
+        {"route_id", entry->id},
+        {"op", ggml_op_desc(node)},
+        {"nelements", nelements},
+        {"workgroup_count", dispatch_config.workgroup_count[0]},
+        {"workgroup_size", {
+            dispatch_config.workgroup_size[0],
+            dispatch_config.workgroup_size[1],
+            dispatch_config.workgroup_size[2],
+        }},
+    });
+
+    return GGML_HRX_CHECK(hrx_stream_dispatch(
+        device_context->active_stream,
+        route->executable,
+        route->export_ordinal,
+        &dispatch_config,
+        &constants,
+        sizeof(constants),
+        bindings,
+        2,
+        HRX_DISPATCH_FLAG_NONE));
+}
+
 static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
     if (context->device_context->options && context->device_context->options->trace_graph) {
@@ -993,20 +1203,27 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
 
     for (int i = 0; cgraph && i < cgraph->n_nodes; ++i) {
         const ggml_tensor * node = cgraph->nodes[i];
-        if (!ggml_backend_hrx_is_metadata_op(node)) {
-            if (context->device_context->options && context->device_context->options->trace_graph) {
-                ggml_backend_hrx_trace_event(context->device_context->reg_context, {
-                    {"event", "unsupported_compute_node"},
-                    {"device", context->device_context->name},
-                    {"op", ggml_op_desc(node)},
-                    {"node", ggml_get_name(node)},
-                });
-            }
-            GGML_LOG_ERROR(
-                "%s: HRX backend has no compute implementation for op %s node=%s\n",
-                __func__, ggml_op_desc(node), ggml_get_name(node));
-            return GGML_STATUS_FAILED;
+        if (ggml_backend_hrx_is_metadata_op(node)) {
+            continue;
         }
+        if (ggml_backend_hrx_supports_scale_f32(context->device_context, node)) {
+            if (!ggml_backend_hrx_dispatch_scale_f32(context->device_context, node)) {
+                return GGML_STATUS_FAILED;
+            }
+            continue;
+        }
+        if (context->device_context->options && context->device_context->options->trace_graph) {
+            ggml_backend_hrx_trace_event(context->device_context->reg_context, {
+                {"event", "unsupported_compute_node"},
+                {"device", context->device_context->name},
+                {"op", ggml_op_desc(node)},
+                {"node", ggml_get_name(node)},
+            });
+        }
+        GGML_LOG_ERROR(
+            "%s: HRX backend has no compute implementation for op %s node=%s\n",
+            __func__, ggml_op_desc(node), ggml_get_name(node));
+        return GGML_STATUS_FAILED;
     }
 
     ggml_backend_hrx_synchronize(backend);
@@ -1101,11 +1318,10 @@ static ggml_backend_t ggml_backend_hrx_device_init_backend(ggml_backend_dev_t de
 }
 
 static bool ggml_backend_hrx_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
-    GGML_UNUSED(dev);
     if (ggml_backend_hrx_is_metadata_op(op)) {
         return true;
     }
-    return false;
+    return ggml_backend_hrx_supports_scale_f32(ggml_backend_hrx_get_device_context(dev), op);
 }
 
 static bool ggml_backend_hrx_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
@@ -1178,6 +1394,9 @@ ggml_backend_hrx_reg_context::~ggml_backend_hrx_reg_context() {
             ggml_backend_hrx_unregister_stream(device_context.get(), device_context->transfer_stream);
             hrx_stream_release(device_context->transfer_stream);
             device_context->transfer_stream = nullptr;
+        }
+        if (device_context) {
+            device_context->hsaco_routes.clear();
         }
         if (device_context && device_context->device) {
             hrx_device_release(device_context->device);

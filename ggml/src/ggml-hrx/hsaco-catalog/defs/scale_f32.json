@@ -1,0 +1,37 @@
+{
+  "id": "scale_f32",
+  "op": "GGML_OP_SCALE",
+  "dtype": "F32",
+  "source": "sources/scale_f32.hip",
+  "source_basis": "ggml/src/ggml-cuda/scale.cu",
+  "symbol": "hrx_scale_f32",
+  "workgroup_size": [
+    256,
+    1,
+    1
+  ],
+  "parameters": [
+    {
+      "name": "scale",
+      "type": "f32"
+    },
+    {
+      "name": "bias",
+      "type": "f32"
+    },
+    {
+      "name": "nelements",
+      "type": "i64"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "src",
+      "access": "read"
+    },
+    {
+      "name": "dst",
+      "access": "write"
+    }
+  ]
+}
