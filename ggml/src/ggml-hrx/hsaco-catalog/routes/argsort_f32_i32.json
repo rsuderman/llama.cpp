@@ -1,8 +1,40 @@
 {
-  "schema": "ggml-hrx-hsaco-catalog-v0",
+  "schema": "ggml-hrx-hsaco-route-v1",
   "id": "argsort_f32_i32_contiguous_ncols_128",
   "definition": "../defs/argsort_f32_i32.json",
   "format": "amdgpu-hsaco",
+  "priority": 100,
+  "match": {
+    "op": "GGML_OP_ARGSORT",
+    "tensors": {"src0": {"type": "F32"}, "dst": {"type": "I32"}},
+    "attributes": {"order": {"type": "i32"}},
+    "predicates": [
+      {"contiguous": "src0"},
+      {"contiguous": "dst"},
+      {"same_shape": ["src0", "dst"]},
+      {"field": "derived.ncols", "equals": 128},
+      {"field": "derived.order", "in": [0, 1]}
+    ]
+  },
+  "derived": {
+    "ncols": {"type": "i64", "field": "tensor.src0.dimensions.0"},
+    "nrows": {"type": "i64", "product": ["tensor.src0.dimensions.1", "tensor.src0.dimensions.2", "tensor.src0.dimensions.3"]},
+    "ncols_pad": {"type": "i64", "next_power_of_2": "derived.ncols"},
+    "order": {"type": "i32", "field": "attribute.order"}
+  },
+  "invocation": {
+    "buffers": [
+      {"name": "src", "tensor": "src0", "position": 0, "kind": "input"},
+      {"name": "dst", "tensor": "dst", "position": 1, "kind": "output"}
+    ],
+    "scalars": [
+      {"name": "ncols", "source": "derived.ncols", "type": "i64", "position": 0},
+      {"name": "nrows", "source": "derived.nrows", "type": "i64", "position": 1},
+      {"name": "ncols_pad", "source": "derived.ncols_pad", "type": "i64", "position": 2},
+      {"name": "order", "source": "derived.order", "type": "i32", "position": 3}
+    ],
+    "dispatch": {"kind": "rows_1d", "rows": "derived.nrows", "workgroup_size": [256, 1, 1]}
+  },
   "routing": {
     "op": "GGML_OP_ARGSORT",
     "src0_type": "F32",
@@ -12,7 +44,5 @@
     "shape": "same",
     "columns": 128
   },
-  "launch": {
-    "threads_per_block": 256
-  }
+  "launch": {"threads_per_block": 256}
 }

@@ -1,8 +1,42 @@
 {
-  "schema": "ggml-hrx-hsaco-catalog-v0",
+  "schema": "ggml-hrx-hsaco-route-v1",
   "id": "div_f32_contiguous_scalar_8",
   "definition": "../defs/div_f32.json",
   "format": "amdgpu-hsaco",
+  "priority": 100,
+  "match": {
+    "op": "GGML_OP_DIV",
+    "tensors": {"src0": {"type": "F32"}, "src1": {"type": "F32"}, "dst": {"type": "F32"}},
+    "predicates": [
+      {"contiguous": "src0"},
+      {"contiguous": "src1"},
+      {"contiguous": "dst"},
+      {"same_shape": ["src0", "dst"]},
+      {"field": "tensor.src0.dimensions.0", "equals": 8},
+      {"field": "tensor.src0.dimensions.1", "equals": 1},
+      {"field": "tensor.src0.dimensions.2", "equals": 1},
+      {"field": "tensor.src0.dimensions.3", "equals": 1},
+      {"field": "tensor.src1.element_count", "equals": 1}
+    ]
+  },
+  "derived": {
+    "nelements": {"type": "i64", "field": "tensor.dst.element_count"},
+    "ncols": {"type": "i64", "field": "tensor.dst.dimensions.0"},
+    "src1_nelements": {"type": "i64", "field": "tensor.src1.element_count"}
+  },
+  "invocation": {
+    "buffers": [
+      {"name": "src0", "tensor": "src0", "position": 0, "kind": "input"},
+      {"name": "src1", "tensor": "src1", "position": 1, "kind": "input"},
+      {"name": "dst", "tensor": "dst", "position": 2, "kind": "output"}
+    ],
+    "scalars": [
+      {"name": "nelements", "source": "derived.nelements", "type": "i64", "position": 0},
+      {"name": "ncols", "source": "derived.ncols", "type": "i64", "position": 1},
+      {"name": "src1_nelements", "source": "derived.src1_nelements", "type": "i64", "position": 2}
+    ],
+    "dispatch": {"kind": "flat_1d", "work_items": "derived.nelements", "workgroup_size": [256, 1, 1]}
+  },
   "routing": {
     "op": "GGML_OP_DIV",
     "src0_type": "F32",
@@ -13,7 +47,5 @@
     "dst_layout": "contiguous",
     "shape": "src0_8_dst_same_src1_scalar"
   },
-  "launch": {
-    "threads_per_block": 256
-  }
+  "launch": {"threads_per_block": 256}
 }

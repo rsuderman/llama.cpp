@@ -1,8 +1,30 @@
 {
-  "schema": "ggml-hrx-hsaco-catalog-v0",
+  "schema": "ggml-hrx-hsaco-route-v1",
   "id": "add_f32_contiguous",
   "definition": "../defs/add_f32.json",
   "format": "amdgpu-hsaco",
+  "priority": 100,
+  "match": {
+    "op": "GGML_OP_ADD",
+    "tensors": {"src0": {"type": "F32"}, "src1": {"type": "F32"}, "dst": {"type": "F32"}},
+    "predicates": [
+      {"contiguous": "src0"},
+      {"contiguous": "src1"},
+      {"contiguous": "dst"},
+      {"same_shape": ["src0", "src1"]},
+      {"same_shape": ["src0", "dst"]}
+    ]
+  },
+  "derived": {"nelements": {"type": "i64", "field": "tensor.dst.element_count"}},
+  "invocation": {
+    "buffers": [
+      {"name": "src0", "tensor": "src0", "position": 0, "kind": "input"},
+      {"name": "src1", "tensor": "src1", "position": 1, "kind": "input"},
+      {"name": "dst", "tensor": "dst", "position": 2, "kind": "output"}
+    ],
+    "scalars": [{"name": "nelements", "source": "derived.nelements", "type": "i64", "position": 0}],
+    "dispatch": {"kind": "flat_1d", "work_items": "derived.nelements", "workgroup_size": [256, 1, 1]}
+  },
   "routing": {
     "op": "GGML_OP_ADD",
     "src0_type": "F32",
@@ -13,7 +35,5 @@
     "dst_layout": "contiguous",
     "shape": "same"
   },
-  "launch": {
-    "threads_per_block": 256
-  }
+  "launch": {"threads_per_block": 256}
 }

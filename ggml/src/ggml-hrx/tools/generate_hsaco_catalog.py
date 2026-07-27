@@ -7,6 +7,9 @@ import subprocess
 from pathlib import Path
 
 
+CATALOG_SCHEMA_V0 = "ggml-hrx-hsaco-catalog-v0"
+
+
 def require_string(data, key, source):
     value = data.get(key)
     if not isinstance(value, str) or not value:
@@ -23,7 +26,7 @@ def require_list(data, key, source):
 
 def require_int(data, key, source):
     value = data.get(key)
-    if not isinstance(value, int):
+    if type(value) is not int:
         raise ValueError(f"{source}: expected integer field {key}")
     return value
 
@@ -160,7 +163,7 @@ def main():
     build_root = Path(args.build_root)
     metadata_path = source_root / "metadata.json"
     metadata = read_json(metadata_path)
-    if require_string(metadata, "schema", metadata_path) != "ggml-hrx-hsaco-catalog-v0":
+    if require_string(metadata, "schema", metadata_path) != CATALOG_SCHEMA_V0:
         raise ValueError(f"{metadata_path}: unsupported schema")
     targets = parse_targets(args.targets)
     if not targets:
