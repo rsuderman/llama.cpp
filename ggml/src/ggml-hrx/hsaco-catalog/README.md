@@ -93,10 +93,10 @@ ABI mappings, scalar packing, and dispatch sources with:
 python ggml/src/ggml-hrx/tools/validate_hsaco_routes.py --source-root ggml/src/ggml-hrx/hsaco-catalog
 ```
 
-Generate an includable C++ route implementation for one route with:
+Generate a C++ router implementation for one operation with:
 
 ```sh
-python ggml/src/ggml-hrx/tools/generate_hsaco_route_impl.py --source-root ggml/src/ggml-hrx/hsaco-catalog --route routes/add_f32.json --out /tmp/add_f32_route.inc
+python ggml/src/ggml-hrx/tools/generate_hsaco_route_impl.py --source-root ggml/src/ggml-hrx/hsaco-catalog --route routes/add_f32.json --out /tmp/add_router.cpp --op-router --op GGML_OP_ADD
 ```
 
 ## Integration Checklist

@@ -30,6 +30,69 @@ find_program(GGML_HRX_CLANG_OFFLOAD_BUNDLER_EXECUTABLE
 set(GGML_HRX_HSACO_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/hsaco-catalog")
 set(GGML_HRX_HSACO_GENERATED_CPP "${GGML_HRX_HSACO_GENERATED_DIR}/ggml-hrx-hsaco-catalog.cpp")
 set(GGML_HRX_HSACO_GENERATED_H "${GGML_HRX_HSACO_GENERATED_DIR}/ggml-hrx-hsaco-catalog.h")
+set(GGML_HRX_HSACO_ROUTE_DISPATCH_CPP "${GGML_HRX_HSACO_GENERATED_DIR}/ggml-hrx-hsaco-route-dispatch.cpp")
+set(GGML_HRX_HSACO_ROUTE_FILES
+    routes/scale_f32.json
+    routes/clamp_f32.json
+    routes/add_f32.json
+    routes/mul_f32.json
+    routes/div_f32.json
+    routes/sum_rows_f32.json
+    routes/soft_max_f32.json
+    routes/argsort_f32_i32.json
+)
+set(GGML_HRX_HSACO_ROUTE_OPS
+    GGML_OP_SCALE
+    GGML_OP_CLAMP
+    GGML_OP_ADD
+    GGML_OP_MUL
+    GGML_OP_DIV
+    GGML_OP_SUM_ROWS
+    GGML_OP_SOFT_MAX
+    GGML_OP_ARGSORT
+)
+set(GGML_HRX_HSACO_ROUTE_DEFS
+    "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/defs/add_f32.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/defs/argsort_f32_i32.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/defs/clamp_f32.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/defs/div_f32.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/defs/mul_f32.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/defs/scale_f32.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/defs/soft_max_f32.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/defs/sum_rows_f32.json"
+)
+set(GGML_HRX_HSACO_ROUTE_JSONS)
+set(GGML_HRX_HSACO_OP_ROUTER_CPPS)
+set(GGML_HRX_HSACO_ROUTE_ARGS)
+foreach(GGML_HRX_HSACO_ROUTE_FILE IN LISTS GGML_HRX_HSACO_ROUTE_FILES)
+    list(APPEND GGML_HRX_HSACO_ROUTE_JSONS "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog/${GGML_HRX_HSACO_ROUTE_FILE}")
+    list(APPEND GGML_HRX_HSACO_ROUTE_ARGS --route "${GGML_HRX_HSACO_ROUTE_FILE}")
+endforeach()
+foreach(GGML_HRX_HSACO_ROUTE_OP IN LISTS GGML_HRX_HSACO_ROUTE_OPS)
+    string(REPLACE "GGML_OP_" "" GGML_HRX_HSACO_OP_NAME "${GGML_HRX_HSACO_ROUTE_OP}")
+    string(TOLOWER "${GGML_HRX_HSACO_OP_NAME}" GGML_HRX_HSACO_OP_NAME_LOWER)
+    set(GGML_HRX_HSACO_OP_ROUTER_CPP
+        "${GGML_HRX_HSACO_GENERATED_DIR}/ggml-hrx-hsaco-router-${GGML_HRX_HSACO_OP_NAME_LOWER}.cpp")
+    add_custom_command(
+        OUTPUT
+            "${GGML_HRX_HSACO_OP_ROUTER_CPP}"
+        COMMAND
+            "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hsaco_route_impl.py"
+            --source-root "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog"
+            ${GGML_HRX_HSACO_ROUTE_ARGS}
+            --out "${GGML_HRX_HSACO_OP_ROUTER_CPP}"
+            --op-router
+            --op "${GGML_HRX_HSACO_ROUTE_OP}"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hsaco_route_impl.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_hsaco_routes.py"
+            ${GGML_HRX_HSACO_ROUTE_DEFS}
+            ${GGML_HRX_HSACO_ROUTE_JSONS}
+        VERBATIM
+    )
+    list(APPEND GGML_HRX_HSACO_OP_ROUTER_CPPS "${GGML_HRX_HSACO_OP_ROUTER_CPP}")
+endforeach()
 
 add_custom_command(
     OUTPUT
@@ -81,16 +144,44 @@ add_custom_target(ggml-hrx-hsaco-catalog
         "${GGML_HRX_HSACO_GENERATED_H}"
 )
 
+add_custom_command(
+    OUTPUT
+        "${GGML_HRX_HSACO_ROUTE_DISPATCH_CPP}"
+    COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hsaco_route_impl.py"
+        --source-root "${CMAKE_CURRENT_SOURCE_DIR}/hsaco-catalog"
+        ${GGML_HRX_HSACO_ROUTE_ARGS}
+        --out "${GGML_HRX_HSACO_ROUTE_DISPATCH_CPP}"
+        --dispatcher
+    DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hsaco_route_impl.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_hsaco_routes.py"
+        ${GGML_HRX_HSACO_ROUTE_DEFS}
+        ${GGML_HRX_HSACO_ROUTE_JSONS}
+    VERBATIM
+)
+
+add_custom_target(ggml-hrx-hsaco-route-impls
+    DEPENDS
+        ${GGML_HRX_HSACO_OP_ROUTER_CPPS}
+        "${GGML_HRX_HSACO_ROUTE_DISPATCH_CPP}"
+)
+
 ggml_add_backend_library(ggml-hrx
                          ggml-hrx.cpp
                          hsaco-catalog/ggml-hrx-hsaco-catalog-runtime.cpp
                          hsaco-catalog/ggml-hrx-hsaco-catalog-runtime.h
+                         hsaco-catalog/ggml-hrx-hsaco-catalog-runtime-internal.h
                          "${GGML_HRX_HSACO_GENERATED_CPP}"
                          "${GGML_HRX_HSACO_GENERATED_H}"
+                         ${GGML_HRX_HSACO_OP_ROUTER_CPPS}
+                         "${GGML_HRX_HSACO_ROUTE_DISPATCH_CPP}"
                          ../../include/ggml-hrx.h
                         )
 
 add_dependencies(ggml-hrx ggml-hrx-hsaco-catalog)
+add_dependencies(ggml-hrx ggml-hrx-hsaco-route-impls)
 
 target_link_libraries(ggml-hrx PRIVATE
     hrx::hrx
