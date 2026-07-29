@@ -1058,6 +1058,36 @@ static ggml_backend_hrx_loom_catalog * ggml_backend_hrx_get_loom_catalog(
 }
 #endif
 
+enum ggml_backend_hrx_route_family {
+    GGML_BACKEND_HRX_ROUTE_FAMILY_HSACO,
+#if defined(GGML_HRX_USE_LOOM)
+    GGML_BACKEND_HRX_ROUTE_FAMILY_LOOM,
+#endif
+};
+
+struct ggml_backend_hrx_route_family_order {
+    std::array<ggml_backend_hrx_route_family, 2> families = {};
+    size_t count = 0;
+};
+
+static ggml_backend_hrx_route_family_order ggml_backend_hrx_route_families(
+        const ggml_backend_hrx_device_context * device_context) {
+    ggml_backend_hrx_route_family_order order;
+#if defined(GGML_HRX_USE_LOOM)
+    const bool loom_first = ggml_backend_hrx_loom_first(device_context);
+    if (loom_first) {
+        order.families[order.count++] = GGML_BACKEND_HRX_ROUTE_FAMILY_LOOM;
+    }
+#endif
+    order.families[order.count++] = GGML_BACKEND_HRX_ROUTE_FAMILY_HSACO;
+#if defined(GGML_HRX_USE_LOOM)
+    if (ggml_backend_hrx_use_loom(device_context) && !loom_first) {
+        order.families[order.count++] = GGML_BACKEND_HRX_ROUTE_FAMILY_LOOM;
+    }
+#endif
+    return order;
+}
+
 static bool ggml_backend_hrx_bind_tensor_for_catalog(
         void * user_data,
         const ggml_tensor * tensor,
@@ -1166,44 +1196,38 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
         context->device_context->active_stream = context->stream;
     }
 
+    const ggml_backend_hrx_route_family_order route_families =
+        ggml_backend_hrx_route_families(context->device_context);
     for (int i = 0; cgraph && i < cgraph->n_nodes; ++i) {
         const ggml_tensor * node = cgraph->nodes[i];
         if (ggml_backend_hrx_is_metadata_op(node)) {
             continue;
         }
-        bool unsupported = true;
+        bool invoked = false;
+        for (size_t route_family_index = 0; route_family_index < route_families.count; ++route_family_index) {
+            bool unsupported = true;
+            enum ggml_status status = GGML_STATUS_FAILED;
+            switch (route_families.families[route_family_index]) {
+                case GGML_BACKEND_HRX_ROUTE_FAMILY_HSACO:
+                    status = ggml_backend_hrx_invoke_hsaco(context, node, &unsupported);
+                    break;
 #if defined(GGML_HRX_USE_LOOM)
-        if (ggml_backend_hrx_loom_first(context->device_context)) {
-            const enum ggml_status status = ggml_backend_hrx_invoke_loom(context, node, &unsupported);
+                case GGML_BACKEND_HRX_ROUTE_FAMILY_LOOM:
+                    status = ggml_backend_hrx_invoke_loom(context, node, &unsupported);
+                    break;
+#endif
+            }
             if (status != GGML_STATUS_SUCCESS) {
                 return status;
             }
             if (!unsupported) {
-                continue;
+                invoked = true;
+                break;
             }
         }
-#endif
-
-        enum ggml_status status = ggml_backend_hrx_invoke_hsaco(context, node, &unsupported);
-        if (status != GGML_STATUS_SUCCESS) {
-            return status;
-        }
-        if (!unsupported) {
+        if (invoked) {
             continue;
         }
-
-#if defined(GGML_HRX_USE_LOOM)
-        if (ggml_backend_hrx_use_loom(context->device_context) &&
-                !ggml_backend_hrx_loom_first(context->device_context)) {
-            status = ggml_backend_hrx_invoke_loom(context, node, &unsupported);
-            if (status != GGML_STATUS_SUCCESS) {
-                return status;
-            }
-            if (!unsupported) {
-                continue;
-            }
-        }
-#endif
 
         if (context->device_context->options && context->device_context->options->trace_graph) {
             ggml_backend_hrx_trace_event(context->device_context->reg_context, {
@@ -1315,21 +1339,24 @@ static bool ggml_backend_hrx_device_supports_op(ggml_backend_dev_t dev, const gg
         return true;
     }
     auto * device_context = ggml_backend_hrx_get_device_context(dev);
+    const ggml_backend_hrx_route_family_order route_families = ggml_backend_hrx_route_families(device_context);
+    for (size_t route_family_index = 0; route_family_index < route_families.count; ++route_family_index) {
+        switch (route_families.families[route_family_index]) {
+            case GGML_BACKEND_HRX_ROUTE_FAMILY_HSACO:
+                if (ggml_backend_hrx_supports_op_hsaco(device_context, op)) {
+                    return true;
+                }
+                break;
 #if defined(GGML_HRX_USE_LOOM)
-    if (ggml_backend_hrx_loom_first(device_context) && ggml_backend_hrx_supports_op_loom(device_context, op)) {
-        return true;
-    }
+            case GGML_BACKEND_HRX_ROUTE_FAMILY_LOOM:
+                if (ggml_backend_hrx_supports_op_loom(device_context, op)) {
+                    return true;
+                }
+                break;
 #endif
-    if (ggml_backend_hrx_supports_op_hsaco(device_context, op)) {
-        return true;
+        }
     }
-#if defined(GGML_HRX_USE_LOOM)
-    return ggml_backend_hrx_use_loom(device_context) &&
-        !ggml_backend_hrx_loom_first(device_context) &&
-        ggml_backend_hrx_supports_op_loom(device_context, op);
-#else
     return false;
-#endif
 }
 
 static bool ggml_backend_hrx_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
