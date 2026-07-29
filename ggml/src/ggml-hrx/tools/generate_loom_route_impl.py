@@ -5,13 +5,14 @@ import json
 import sys
 from pathlib import Path
 
-import generate_hsaco_route_impl as hsaco_route_impl
+import hrx_route_emit as route_emit
 import validate_loom_routes as route_validator
 
 
 hsaco = route_validator.hsaco
 
-CPP_SCALAR_TYPES = hsaco_route_impl.CPP_SCALAR_TYPES
+ATTRIBUTE_INDICES = route_emit.ATTRIBUTE_INDICES
+CPP_SCALAR_TYPES = route_emit.CPP_SCALAR_TYPES
 
 UNSUPPORTED_REASON_BY_PREDICATE = {
     "contiguous": "GGML_BACKEND_HRX_LOOM_UNSUPPORTED_LAYOUT",
@@ -81,29 +82,11 @@ DISPATCHER_FUNCTION_CLOSE_TEMPLATE = """        default:
 """
 
 
-def configure_shared_emitters():
-    hsaco_route_impl.route_validator = hsaco
-    hsaco_route_impl.UNSUPPORTED_REASON_BY_PREDICATE = UNSUPPORTED_REASON_BY_PREDICATE
-    hsaco_route_impl.route_response = route_response
-    hsaco_route_impl.route_id_constant = route_id_constant
-    hsaco_route_impl.route_function_name = route_function_name
-    hsaco_route_impl.op_router_function_name = op_router_function_name
-
-    def emit_next_power_of_2(value, context, scalar_type):
-        del context
-        expr = hsaco_route_impl.source_expr(value)
-        return hsaco_route_impl.typed_expr(f"ggml_backend_hrx_loom_next_power_of_2({expr})", scalar_type)
-
-    hsaco_route_impl.emit_next_power_of_2 = emit_next_power_of_2
-    hsaco_route_impl.DERIVED_EMITTERS["next_power_of_2"] = emit_next_power_of_2
-
-
-def cpp_string(value):
-    return json.dumps(value)
+cpp_string = route_emit.cpp_string
 
 
 def c_identifier(value):
-    return hsaco_route_impl.c_identifier(value)
+    return route_emit.c_identifier(value)
 
 
 def route_function_name(route_id):
@@ -145,27 +128,19 @@ def load_route(source_root, route_name):
 
 
 def scalar_offsets(scalars, route_path):
-    offsets = []
-    offset = 0
-    for scalar in scalars:
-        scalar_type = hsaco.require_string(scalar, "type", route_path)
-        size, alignment = hsaco.SUPPORTED_SCALAR_TYPES[scalar_type]
-        offset = hsaco.align_offset(offset, alignment)
-        offsets.append(offset)
-        offset += size
-    return offsets, offset
+    return route_emit.scalar_offsets(scalars, route_path, hsaco)
 
 
 def typed_expr(expr, scalar_type):
-    return hsaco_route_impl.typed_expr(expr, scalar_type)
+    return route_emit.typed_expr(expr, scalar_type)
 
 
 def scalar_literal(value, scalar_type):
-    return hsaco_route_impl.scalar_literal(value, scalar_type)
+    return route_emit.scalar_literal(value, scalar_type)
 
 
 def source_expr(source):
-    return hsaco_route_impl.source_expr(source)
+    return route_emit.source_expr(source)
 
 
 def config_value_expr(binding):
@@ -253,25 +228,11 @@ def emit_rows_1d_dispatch(dispatch, context, route_constant):
 
 
 def emit_integer_operand(value, context):
-    if hsaco.is_source_string(value):
-        return source_expr(value)
-    return str(int(value))
+    return route_emit.emit_integer_operand(value, context, hsaco)
 
 
 def emit_exact_3d_dispatch(dispatch, context, route_constant):
-    del route_constant
-    workgroup_count = hsaco.require_dict(dispatch, "workgroup_count", "route")
-    x = emit_integer_operand(workgroup_count["x"], context)
-    y = emit_integer_operand(workgroup_count["y"], context)
-    z = emit_integer_operand(workgroup_count["z"], context)
-    workgroup_size = dispatch["workgroup_size"]
-    return [
-        "    plan->dispatch = {",
-        f"        /* .workgroup_count = */ {{static_cast<uint32_t>({x}), static_cast<uint32_t>({y}), static_cast<uint32_t>({z})}},",
-        f"        /* .workgroup_size  = */ {{{workgroup_size[0]}, {workgroup_size[1]}, {workgroup_size[2]}}},",
-        "        /* .subgroup_size   = */ 0,",
-        "    };",
-    ]
+    return route_emit.emit_exact_3d_dispatch(dispatch, context, route_constant, hsaco)
 
 
 DISPATCH_EMITTERS = {
@@ -301,7 +262,7 @@ def emit_plan_materialization(lines, route, definition, context):
         position = hsaco.require_int(buffer, "position", "route")
         tensor = hsaco.require_string(buffer, "tensor", "route")
         lines.append(BIND_BUFFER_TEMPLATE.format(
-            tensor=hsaco_route_impl.role_var(tensor),
+            tensor=route_emit.role_var(tensor),
             position=position,
             route_id_constant=route_constant,
         ))
@@ -334,8 +295,7 @@ def emit_plan_materialization(lines, route, definition, context):
 
 
 def generate_route_impl(route_path, route, definition):
-    configure_shared_emitters()
-    hsaco_route_impl.validate_attribute_indices(route, route_path)
+    route_emit.validate_attribute_indices(route, route_path, hsaco, ATTRIBUTE_INDICES)
 
     match = hsaco.require_dict(route, "match", route_path)
     op = hsaco.require_string(match, "op", f"{route_path}: match")
@@ -357,12 +317,25 @@ def generate_route_impl(route_path, route, definition):
         op=op,
         route_id_constant=route_constant,
     ))
-    hsaco_route_impl.emit_tensor_setup(lines, route, op_rule)
-    hsaco_route_impl.emit_dtype_checks(lines, route)
-    hsaco_route_impl.emit_attributes(lines, route)
-    hsaco_route_impl.emit_shape_captures(lines, route)
-    hsaco_route_impl.emit_derived(lines, route, context)
-    hsaco_route_impl.emit_predicates(lines, route, context)
+    route_emit.emit_tensor_setup(
+        lines,
+        route,
+        op_rule,
+        hsaco,
+        route_response,
+        "GGML_BACKEND_HRX_LOOM_UNSUPPORTED_SHAPE",
+    )
+    route_emit.emit_dtype_checks(
+        lines,
+        route,
+        hsaco,
+        route_response,
+        "GGML_BACKEND_HRX_LOOM_UNSUPPORTED_DTYPE",
+    )
+    route_emit.emit_attributes(lines, route, hsaco, ATTRIBUTE_INDICES)
+    route_emit.emit_shape_captures(lines, route, hsaco)
+    route_emit.emit_derived(lines, route, context, hsaco, "ggml_backend_hrx_loom_next_power_of_2")
+    route_emit.emit_predicates(lines, route, context, hsaco, UNSUPPORTED_REASON_BY_PREDICATE, route_response)
     emit_config_materialization(lines, route)
     emit_plan_materialization(lines, route, definition, context)
     lines.append("}")
@@ -371,21 +344,9 @@ def generate_route_impl(route_path, route, definition):
 
 
 def generate_dispatcher_impl(routes):
-    configure_shared_emitters()
     lines = [DISPATCHER_CPP_HEADER_TEMPLATE]
-    route_infos = []
-    for route_path, route, _ in routes:
-        match = hsaco.require_dict(route, "match", "route")
-        op = hsaco.require_string(match, "op", "route")
-        route_id = hsaco.require_string(route, "id", "route")
-        priority = hsaco.require_int(route, "priority", route_path)
-        route_infos.append((op, -priority, route_id, route))
-
-    route_infos.sort()
-    ops = []
-    for op, _, _, _ in route_infos:
-        if op not in ops:
-            ops.append(op)
+    route_infos = route_emit.route_infos_for_dispatcher(routes, hsaco)
+    ops = route_emit.ops_from_route_infos(route_infos)
 
     for op in ops:
         lines.extend([
@@ -407,20 +368,9 @@ def generate_dispatcher_impl(routes):
 
 
 def generate_op_router_impl(routes, selected_op):
-    configure_shared_emitters()
     lines = [DISPATCHER_CPP_HEADER_TEMPLATE]
 
-    route_infos = []
-    for route_path, route, definition in routes:
-        match = hsaco.require_dict(route, "match", "route")
-        op = hsaco.require_string(match, "op", "route")
-        if op != selected_op:
-            continue
-        route_id = hsaco.require_string(route, "id", "route")
-        priority = hsaco.require_int(route, "priority", route_path)
-        route_infos.append((-priority, route_id, route_path, route, definition))
-
-    route_infos.sort()
+    route_infos = route_emit.route_infos_for_op(routes, selected_op, hsaco)
     if not route_infos:
         raise ValueError(f"no routes found for {selected_op}")
 
@@ -481,8 +431,6 @@ def main():
     parser.add_argument("--op-router", action="store_true")
     parser.add_argument("--op")
     args = parser.parse_args()
-
-    configure_shared_emitters()
 
     try:
         routes = [load_route(Path(args.source_root), route_name) for route_name in args.route]

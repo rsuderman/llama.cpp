@@ -103,6 +103,7 @@ foreach(GGML_HRX_HSACO_ROUTE_OP IN LISTS GGML_HRX_HSACO_ROUTE_OPS)
             --op-router
             --op "${GGML_HRX_HSACO_ROUTE_OP}"
         DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/hrx_route_emit.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hsaco_route_impl.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_hsaco_routes.py"
             ${GGML_HRX_HSACO_ROUTE_DEFS}
@@ -173,6 +174,7 @@ add_custom_command(
         --out "${GGML_HRX_HSACO_ROUTE_DISPATCH_CPP}"
         --dispatcher
     DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/hrx_route_emit.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hsaco_route_impl.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_hsaco_routes.py"
         ${GGML_HRX_HSACO_ROUTE_DEFS}
@@ -228,6 +230,7 @@ if (GGML_HRX_LOOM)
                 --op-router
                 --op "${GGML_HRX_LOOM_ROUTE_OP}"
             DEPENDS
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/hrx_route_emit.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loom_route_impl.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hsaco_route_impl.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_loom_routes.py"
@@ -282,6 +285,7 @@ if (GGML_HRX_LOOM)
             --out "${GGML_HRX_LOOM_ROUTE_DISPATCH_CPP}"
             --dispatcher
         DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/hrx_route_emit.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loom_route_impl.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hsaco_route_impl.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_loom_routes.py"

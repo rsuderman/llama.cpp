@@ -1,0 +1,506 @@
+import json
+import re
+
+
+ATTRIBUTE_INDICES = {
+    "GGML_OP_ARGSORT": {
+        "order": 0,
+    },
+    "GGML_OP_CLAMP": {
+        "minimum": 0,
+        "maximum": 1,
+    },
+    "GGML_OP_SCALE": {
+        "scale": 0,
+        "bias": 1,
+    },
+    "GGML_OP_SOFT_MAX": {
+        "scale": 0,
+        "max_bias": 1,
+    },
+}
+
+CPP_SCALAR_TYPES = {
+    "f32": "float",
+    "f64": "double",
+    "i32": "int32_t",
+    "i64": "int64_t",
+}
+
+CPP_DTYPE_NAMES = {
+    "F32": "GGML_TYPE_F32",
+    "I32": "GGML_TYPE_I32",
+}
+
+ATTRIBUTE_GETTERS = {
+    "f32": "ggml_get_op_params_f32",
+    "f64": "ggml_get_op_params_f32",
+    "i32": "ggml_get_op_params_i32",
+    "i64": "ggml_get_op_params_i32",
+}
+
+
+def cpp_string(value):
+    return json.dumps(value)
+
+
+def c_identifier(value):
+    return re.sub(r"[^A-Za-z0-9_]", "_", value)
+
+
+def role_expr(role):
+    if role == "dst":
+        return "node"
+    if role.startswith("src") and role[3:].isdigit():
+        return f"node->src[{int(role[3:])}]"
+    raise ValueError(f"unsupported tensor role {role}")
+
+
+def role_var(role):
+    return c_identifier(role)
+
+
+def derived_var(name):
+    return f"derived_{c_identifier(name)}"
+
+
+def attribute_var(name):
+    return f"attribute_{c_identifier(name)}"
+
+
+def shape_var(role, name):
+    return f"shape_{c_identifier(role)}_{c_identifier(name)}"
+
+
+def scalar_literal(value, scalar_type):
+    def float_text(number, precision):
+        text = f"{float(number):.{precision}g}"
+        if "e" not in text and "E" not in text and "." not in text:
+            text += ".0"
+        return text
+
+    if scalar_type == "f32":
+        return f"{float_text(value, 9)}f"
+    if scalar_type == "f64":
+        return float_text(value, 17)
+    if scalar_type in {"i32", "i64"}:
+        return str(int(value))
+    raise ValueError(f"unsupported scalar literal type {scalar_type}")
+
+
+def emit_tensor_type_source(tensor, parts):
+    if len(parts) != 3:
+        raise ValueError("tensor type source does not accept an index")
+    return f"{tensor}->type"
+
+
+def emit_tensor_rank_source(tensor, parts):
+    if len(parts) != 3:
+        raise ValueError("tensor rank source does not accept an index")
+    return f"ggml_n_dims({tensor})"
+
+
+def emit_tensor_element_count_source(tensor, parts):
+    if len(parts) != 3:
+        raise ValueError("tensor element_count source does not accept an index")
+    return f"ggml_nelements({tensor})"
+
+
+def emit_tensor_vector_source(tensor, parts, field):
+    if len(parts) == 3:
+        field_name = "ne" if field == "dimensions" else "nb"
+        return [f"{tensor}->{field_name}[{i}]" for i in range(4)]
+    field_name = "ne" if field == "dimensions" else "nb"
+    return f"{tensor}->{field_name}[{int(parts[3])}]"
+
+
+def emit_tensor_dimensions_source(tensor, parts):
+    return emit_tensor_vector_source(tensor, parts, "dimensions")
+
+
+def emit_tensor_strides_source(tensor, parts):
+    return emit_tensor_vector_source(tensor, parts, "strides")
+
+
+TENSOR_FIELD_EMITTERS = {
+    "type": emit_tensor_type_source,
+    "rank": emit_tensor_rank_source,
+    "element_count": emit_tensor_element_count_source,
+    "dimensions": emit_tensor_dimensions_source,
+    "strides": emit_tensor_strides_source,
+}
+
+
+def emit_tensor_source(parts):
+    if len(parts) not in {3, 4}:
+        raise ValueError("unsupported tensor source")
+    role = parts[1]
+    field = parts[2]
+    emitter = TENSOR_FIELD_EMITTERS.get(field)
+    if emitter is None:
+        raise ValueError(f"unsupported tensor source field {field}")
+    return emitter(role_var(role), parts)
+
+
+def emit_attribute_source(parts):
+    if len(parts) != 2:
+        raise ValueError("unsupported attribute source")
+    return attribute_var(parts[1])
+
+
+def emit_derived_source(parts):
+    if len(parts) != 2:
+        raise ValueError("unsupported derived source")
+    return derived_var(parts[1])
+
+
+def emit_shape_source(parts):
+    if len(parts) != 3:
+        raise ValueError("unsupported shape source")
+    return shape_var(parts[1], parts[2])
+
+
+SOURCE_EMITTERS = {
+    "tensor": emit_tensor_source,
+    "attribute": emit_attribute_source,
+    "derived": emit_derived_source,
+    "shape": emit_shape_source,
+}
+
+
+def source_expr(source):
+    parts = source.split(".")
+    emitter = SOURCE_EMITTERS.get(parts[0])
+    if emitter is None:
+        raise ValueError(f"unsupported source {source}")
+    return emitter(parts)
+
+
+def source_type(source, context):
+    return context.resolve_source(source, source)
+
+
+def typed_expr(expr, scalar_type):
+    return f"static_cast<{CPP_SCALAR_TYPES[scalar_type]}>({expr})"
+
+
+def scalar_offsets(scalars, route_path, schema):
+    offsets = []
+    offset = 0
+    for scalar in scalars:
+        scalar_type = schema.require_string(scalar, "type", route_path)
+        size, alignment = schema.SUPPORTED_SCALAR_TYPES[scalar_type]
+        offset = schema.align_offset(offset, alignment)
+        offsets.append(offset)
+        offset += size
+    return offsets, offset
+
+
+def validate_attribute_indices(route, route_path, schema, attribute_indices):
+    match = schema.require_dict(route, "match", route_path)
+    op = schema.require_string(match, "op", f"{route_path}: match")
+    attributes = match.get("attributes", {})
+    indices = attribute_indices.get(op, {})
+    for name in attributes:
+        if name not in indices:
+            raise ValueError(f"{route_path}: no generated C++ attribute index for {op}.{name}")
+
+
+def emit_tensor_setup(lines, route, op_rule, schema, route_response, unsupported_shape_reason):
+    tensors = schema.require_dict(schema.require_dict(route, "match", "route"), "tensors", "route")
+    for role in tensors:
+        lines.append(f"    const ggml_tensor * {role_var(role)} = {role_expr(role)};")
+
+    required = sorted(op_rule["required_tensors"] & set(tensors))
+    if required:
+        condition = " || ".join([f"!{role_var(role)}" for role in required])
+        lines.extend([
+            f"    if ({condition}) {{",
+            f"        {route_response(unsupported_shape_reason)}",
+            "    }",
+        ])
+
+    optional_present = []
+    for role, tensor in tensors.items():
+        if role in op_rule["optional_tensors"] and tensor.get("optional", False):
+            optional_present.append(role)
+    for role in optional_present:
+        lines.append(f"    const bool {role_var(role)}_present = {role_var(role)} != nullptr;")
+
+
+def emit_dtype_checks(lines, route, schema, route_response, unsupported_dtype_reason):
+    tensors = schema.require_dict(schema.require_dict(route, "match", "route"), "tensors", "route")
+    checks = []
+    for role, tensor in tensors.items():
+        dtype = schema.require_string(tensor, "type", "route")
+        cpp_dtype = CPP_DTYPE_NAMES[dtype]
+        if tensor.get("optional", False):
+            checks.append(f"({role_var(role)} && {role_var(role)}->type != {cpp_dtype})")
+        else:
+            checks.append(f"{role_var(role)}->type != {cpp_dtype}")
+    if checks:
+        lines.extend([
+            f"    if ({' || '.join(checks)}) {{",
+            f"        {route_response(unsupported_dtype_reason)}",
+            "    }",
+        ])
+
+
+def emit_attributes(lines, route, schema, attribute_indices):
+    match = schema.require_dict(route, "match", "route")
+    op = schema.require_string(match, "op", "route")
+    attributes = match.get("attributes", {})
+    if not attributes:
+        return
+    indices = attribute_indices[op]
+    for name, attr in attributes.items():
+        scalar_type = schema.require_string(attr, "type", "route")
+        getter = ATTRIBUTE_GETTERS[scalar_type]
+        cast = CPP_SCALAR_TYPES[scalar_type]
+        lines.append(f"    const {cast} {attribute_var(name)} = {getter}(node, {indices[name]});")
+
+
+def emit_shape_captures(lines, route, schema):
+    tensors = schema.require_dict(schema.require_dict(route, "match", "route"), "tensors", "route")
+    for role, tensor in tensors.items():
+        for i, name in enumerate(tensor.get("shape", [])):
+            lines.append(f"    const int64_t {shape_var(role, name)} = static_cast<int64_t>({role_var(role)}->ne[{i}]);")
+
+
+def emit_integer_operand(value, context, schema):
+    if schema.is_source_string(value):
+        return source_expr(value)
+    return str(int(value))
+
+
+def emit_product(value, context, scalar_type):
+    if isinstance(value, str):
+        operands = source_expr(value)
+    else:
+        operands = [source_expr(item) for item in value]
+    expr = " * ".join([typed_expr(operand, scalar_type) for operand in operands])
+    return expr if expr else scalar_literal(1, scalar_type)
+
+
+def emit_ceil_div(value, context, scalar_type, schema):
+    lhs = emit_integer_operand(value[0], context, schema)
+    rhs = emit_integer_operand(value[1], context, schema)
+    return typed_expr(f"({lhs} + {rhs} - 1) / {rhs}", scalar_type)
+
+
+def emit_next_power_of_2(value, context, scalar_type, next_power_of_2_function):
+    del context
+    expr = source_expr(value)
+    return typed_expr(f"{next_power_of_2_function}({expr})", scalar_type)
+
+
+def emit_derived_field(item, context, scalar_type, schema, next_power_of_2_function):
+    del context
+    del next_power_of_2_function
+    expr = source_expr(schema.require_string(item, "field", "route"))
+    return typed_expr(expr, scalar_type)
+
+
+def emit_derived_value(item, context, scalar_type, schema, next_power_of_2_function):
+    del context
+    del schema
+    del next_power_of_2_function
+    return scalar_literal(item["value"], scalar_type)
+
+
+def emit_derived_product(item, context, scalar_type, schema, next_power_of_2_function):
+    del schema
+    del next_power_of_2_function
+    return emit_product(item["product"], context, scalar_type)
+
+
+def emit_derived_ceil_div(item, context, scalar_type, schema, next_power_of_2_function):
+    del next_power_of_2_function
+    return emit_ceil_div(item["ceil_div"], context, scalar_type, schema)
+
+
+def emit_derived_next_power_of_2(item, context, scalar_type, schema, next_power_of_2_function):
+    return emit_next_power_of_2(schema.require_string(item, "next_power_of_2", "route"), context, scalar_type, next_power_of_2_function)
+
+
+DERIVED_EMITTERS = {
+    "field": emit_derived_field,
+    "value": emit_derived_value,
+    "product": emit_derived_product,
+    "ceil_div": emit_derived_ceil_div,
+    "next_power_of_2": emit_derived_next_power_of_2,
+}
+
+
+def emit_derived(lines, route, context, schema, next_power_of_2_function):
+    derived = schema.require_dict(route, "derived", "route")
+    for name, item in derived.items():
+        scalar_type = schema.require_string(item, "type", "route")
+        cpp_type = CPP_SCALAR_TYPES[scalar_type]
+        operation = next((key for key in DERIVED_EMITTERS if key in item), None)
+        if operation is None:
+            raise ValueError(f"unsupported derived operation for {name}")
+        expr = DERIVED_EMITTERS[operation](item, context, scalar_type, schema, next_power_of_2_function)
+        lines.append(f"    const {cpp_type} {derived_var(name)} = {expr};")
+
+
+def comparator_value_expr(value, field_type, context, schema):
+    del context
+    if schema.is_source_string(value):
+        return source_expr(value)
+    if field_type == "dtype":
+        return CPP_DTYPE_NAMES[value]
+    if field_type in CPP_SCALAR_TYPES:
+        return scalar_literal(value, field_type)
+    raise ValueError(f"unsupported comparator value type {field_type}")
+
+
+def emit_equals_comparator(lhs, value, field_type, context, schema):
+    return f"{lhs} == {comparator_value_expr(value, field_type, context, schema)}"
+
+
+def emit_in_comparator(lhs, value, field_type, context, schema):
+    return " || ".join([f"{lhs} == {comparator_value_expr(item, field_type, context, schema)}" for item in value])
+
+
+def emit_min_comparator(lhs, value, field_type, context, schema):
+    return f"{lhs} >= {comparator_value_expr(value, field_type, context, schema)}"
+
+
+def emit_max_comparator(lhs, value, field_type, context, schema):
+    return f"{lhs} <= {comparator_value_expr(value, field_type, context, schema)}"
+
+
+def emit_multiple_of_comparator(lhs, value, field_type, context, schema):
+    del field_type
+    del context
+    del schema
+    return f"{lhs} % {int(value)} == 0"
+
+
+COMPARATOR_EMITTERS = {
+    "equals": emit_equals_comparator,
+    "in": emit_in_comparator,
+    "min": emit_min_comparator,
+    "max": emit_max_comparator,
+    "multiple_of": emit_multiple_of_comparator,
+}
+
+
+def comparator_expr(lhs, comparator, value, field_type, context, schema):
+    emitter = COMPARATOR_EMITTERS.get(comparator)
+    if emitter is None:
+        raise ValueError(f"unsupported comparator {comparator}")
+    return emitter(lhs, value, field_type, context, schema)
+
+
+def emit_contiguous_predicate(predicate, context, schema):
+    del context
+    del schema
+    return f"ggml_is_contiguous({role_var(predicate['contiguous'])})"
+
+
+def emit_same_shape_predicate(predicate, context, schema):
+    del context
+    del schema
+    lhs, rhs = predicate["same_shape"]
+    return f"ggml_are_same_shape({role_var(lhs)}, {role_var(rhs)})"
+
+
+def emit_rank_predicate(predicate, context, schema):
+    del context
+    del schema
+    return f"ggml_n_dims({role_var(predicate['rank'])}) == {int(predicate['equals'])}"
+
+
+def emit_field_predicate(predicate, context, schema):
+    field = schema.require_string(predicate, "field", "route")
+    field_type = source_type(field, context)
+    lhs = source_expr(field)
+    comparator = next(key for key in COMPARATOR_EMITTERS if key in predicate)
+    return comparator_expr(lhs, comparator, predicate[comparator], field_type, context, schema)
+
+
+def emit_src_absent_predicate(predicate, context, schema):
+    del context
+    del schema
+    return f"{role_expr(predicate['src_absent'])} == nullptr"
+
+
+def emit_src_present_predicate(predicate, context, schema):
+    del context
+    del schema
+    return f"{role_expr(predicate['src_present'])} != nullptr"
+
+
+PREDICATE_EMITTERS = {
+    "contiguous": emit_contiguous_predicate,
+    "same_shape": emit_same_shape_predicate,
+    "rank": emit_rank_predicate,
+    "field": emit_field_predicate,
+    "src_absent": emit_src_absent_predicate,
+    "src_present": emit_src_present_predicate,
+}
+
+
+def emit_predicates(lines, route, context, schema, unsupported_reason_by_predicate, route_response):
+    match = schema.require_dict(route, "match", "route")
+    for predicate in match.get("predicates", []):
+        form = next(key for key in PREDICATE_EMITTERS if key in predicate)
+        reason = unsupported_reason_by_predicate[form]
+        condition = PREDICATE_EMITTERS[form](predicate, context, schema)
+        lines.extend([
+            f"    if (!({condition})) {{",
+            f"        {route_response(reason)}",
+            "    }",
+        ])
+
+
+def emit_exact_3d_dispatch(dispatch, context, route_constant, schema):
+    del route_constant
+    workgroup_count = schema.require_dict(dispatch, "workgroup_count", "route")
+    x = emit_integer_operand(workgroup_count["x"], context, schema)
+    y = emit_integer_operand(workgroup_count["y"], context, schema)
+    z = emit_integer_operand(workgroup_count["z"], context, schema)
+    workgroup_size = dispatch["workgroup_size"]
+    return [
+        "    plan->dispatch = {",
+        f"        /* .workgroup_count = */ {{static_cast<uint32_t>({x}), static_cast<uint32_t>({y}), static_cast<uint32_t>({z})}},",
+        f"        /* .workgroup_size  = */ {{{workgroup_size[0]}, {workgroup_size[1]}, {workgroup_size[2]}}},",
+        "        /* .subgroup_size   = */ 0,",
+        "    };",
+    ]
+
+
+def route_infos_for_dispatcher(routes, schema):
+    route_infos = []
+    for route_path, route, _ in routes:
+        match = schema.require_dict(route, "match", "route")
+        op = schema.require_string(match, "op", "route")
+        route_id = schema.require_string(route, "id", "route")
+        priority = schema.require_int(route, "priority", route_path)
+        route_infos.append((op, -priority, route_id, route))
+    route_infos.sort()
+    return route_infos
+
+
+def ops_from_route_infos(route_infos):
+    ops = []
+    for op, _, _, _ in route_infos:
+        if op not in ops:
+            ops.append(op)
+    return ops
+
+
+def route_infos_for_op(routes, selected_op, schema):
+    route_infos = []
+    for route_path, route, definition in routes:
+        match = schema.require_dict(route, "match", "route")
+        op = schema.require_string(match, "op", "route")
+        if op != selected_op:
+            continue
+        route_id = schema.require_string(route, "id", "route")
+        priority = schema.require_int(route, "priority", route_path)
+        route_infos.append((-priority, route_id, route_path, route, definition))
+    route_infos.sort()
+    return route_infos
