@@ -317,6 +317,7 @@ endif()
 
 ggml_add_backend_library(ggml-hrx
                          ggml-hrx.cpp
+                         ggml-hrx-runtime-util.h
                          hsaco-catalog/ggml-hrx-hsaco-catalog-runtime.cpp
                          hsaco-catalog/ggml-hrx-hsaco-catalog-runtime.h
                          hsaco-catalog/ggml-hrx-hsaco-catalog-runtime-internal.h

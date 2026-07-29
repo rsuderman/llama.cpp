@@ -1,4 +1,5 @@
 #include "ggml-hrx-hsaco-catalog-runtime-internal.h"
+#include "ggml-hrx-runtime-util.h"
 
 #include <cinttypes>
 #include <cstring>
@@ -24,31 +25,7 @@ struct ggml_backend_hrx_loaded_hsaco_route {
     }
 };
 
-static bool ggml_backend_hrx_hsaco_log_status(hrx_status_t status, const char * expr, const char * file, int line) {
-    if (hrx_status_is_ok(status)) {
-        return true;
-    }
-
-    char * message = nullptr;
-    size_t length  = 0;
-    hrx_status_to_string(status, &message, &length);
-    GGML_LOG_ERROR("%s:%d: %s failed: %s\n", file, line, expr, message ? message : "unknown HRX error");
-    hrx_status_free_message(message);
-    hrx_status_ignore(status);
-    return false;
-}
-
-#define GGML_HRX_HSACO_CHECK(expr) ggml_backend_hrx_hsaco_log_status((expr), #expr, __FILE__, __LINE__)
-
-static std::string ggml_backend_hrx_hsaco_architecture_base(const char * architecture) {
-    if (!architecture) {
-        return std::string();
-    }
-
-    const std::string architecture_string(architecture);
-    const size_t      feature_pos = architecture_string.find(':');
-    return feature_pos == std::string::npos ? architecture_string : architecture_string.substr(0, feature_pos);
-}
+#define GGML_HRX_HSACO_CHECK(expr) ggml_backend_hrx_log_hrx_status((expr), #expr, __FILE__, __LINE__)
 
 static ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_response(
     ggml_backend_hrx_hsaco_result             result,
@@ -205,13 +182,8 @@ static ggml_backend_hrx_loaded_hsaco_route * ggml_backend_hrx_hsaco_get_loaded_r
         return nullptr;
     }
 
-    if (export_info.binding_count != entry->binding_count || export_info.parameter_count != entry->parameter_count ||
-        export_info.constant_byte_length != entry->constant_byte_length) {
-        GGML_LOG_ERROR(
-            "%s: route %s export ABI mismatch bindings=%u expected=%u parameters=%u expected=%u constants=%u "
-            "expected=%u\n",
-            __func__, entry->id, export_info.binding_count, entry->binding_count, export_info.parameter_count,
-            entry->parameter_count, export_info.constant_byte_length, entry->constant_byte_length);
+    if (!ggml_backend_hrx_export_abi_matches(__func__, entry->id, export_info, entry->binding_count,
+                                             entry->parameter_count, entry->constant_byte_length)) {
         hrx_executable_release(executable);
         return nullptr;
     }
@@ -237,11 +209,9 @@ static bool ggml_backend_hrx_hsaco_dispatch_plan(ggml_backend_hrx_hsaco_catalog 
         return false;
     }
 
-    if (plan->constants_size != plan->entry->constant_byte_length ||
-        plan->binding_count != plan->entry->binding_count) {
-        GGML_LOG_ERROR("%s: route %s dispatch ABI mismatch bindings=%zu expected=%u constants=%zu expected=%u\n",
-                       __func__, plan->entry->id, plan->binding_count, plan->entry->binding_count, plan->constants_size,
-                       plan->entry->constant_byte_length);
+    if (!ggml_backend_hrx_dispatch_abi_matches(__func__, plan->entry->id, plan->binding_count,
+                                               plan->entry->binding_count, plan->constants_size,
+                                               plan->entry->constant_byte_length)) {
         return false;
     }
 
@@ -283,7 +253,7 @@ ggml_backend_hrx_hsaco_catalog * ggml_backend_hrx_hsaco_catalog_new(hrx_device_t
     hrx_device_retain(device);
     catalog->device       = device;
     catalog->architecture = architecture;
-    catalog->target       = ggml_backend_hrx_hsaco_architecture_base(architecture);
+    catalog->target       = ggml_backend_hrx_architecture_base(architecture);
     return catalog;
 }
 
