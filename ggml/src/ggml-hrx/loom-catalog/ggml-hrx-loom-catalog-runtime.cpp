@@ -417,6 +417,18 @@ bool ggml_backend_hrx_loom_bind_tensor(const ggml_backend_hrx_loom_op_request * 
     return request && request->bind_tensor && request->bind_tensor(request->bind_tensor_user_data, tensor, out_ref);
 }
 
+ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_match_request(
+    ggml_backend_hrx_loom_catalog * catalog, const ggml_backend_hrx_loom_op_request * request) {
+    return ggml_backend_hrx_loom_match_or_prepare_request(catalog, request, nullptr);
+}
+
+ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_prepare_plan(
+    ggml_backend_hrx_loom_catalog *          catalog,
+    const ggml_backend_hrx_loom_op_request * request,
+    ggml_backend_hrx_loom_execution_plan *   plan) {
+    return ggml_backend_hrx_loom_match_or_prepare_request(catalog, request, plan);
+}
+
 bool ggml_backend_hrx_loom_compile(const ggml_backend_hrx_loom_compile_input * input,
                                    ggml_backend_hrx_loom_compile_output *      output) {
     if (output) {
@@ -680,7 +692,7 @@ ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_supports_op(ggml_backend
         /* .bind_tensor           = */ nullptr,
         /* .bind_tensor_user_data = */ nullptr,
     };
-    return ggml_backend_hrx_loom_prepare_request(catalog, &request, nullptr);
+    return ggml_backend_hrx_loom_match_request(catalog, &request);
 }
 
 ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_invoke(ggml_backend_hrx_loom_catalog *          catalog,
@@ -690,7 +702,7 @@ ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_invoke(ggml_backend_hrx_
     }
 
     ggml_backend_hrx_loom_execution_plan plan     = {};
-    ggml_backend_hrx_loom_op_response    response = ggml_backend_hrx_loom_prepare_request(catalog, request, &plan);
+    ggml_backend_hrx_loom_op_response    response = ggml_backend_hrx_loom_prepare_plan(catalog, request, &plan);
     if (response.result != GGML_BACKEND_HRX_LOOM_INVOKED) {
         return response;
     }

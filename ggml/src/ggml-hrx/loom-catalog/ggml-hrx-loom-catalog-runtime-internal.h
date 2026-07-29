@@ -33,6 +33,10 @@ struct ggml_backend_hrx_loom_execution_plan {
     size_t                                      config_binding_count                                       = 0;
 };
 
+static inline bool ggml_backend_hrx_loom_match_only(const ggml_backend_hrx_loom_execution_plan * plan) {
+    return plan == nullptr;
+}
+
 struct ggml_backend_hrx_loom_compile_input {
     const void *                                 source_data;
     size_t                                       source_size;
@@ -137,7 +141,16 @@ bool ggml_backend_hrx_loom_bind_tensor(const ggml_backend_hrx_loom_op_request * 
                                        const ggml_tensor *                      tensor,
                                        hrx_buffer_ref_t *                       out_ref);
 
-ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_prepare_request(
+ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_match_request(
+    ggml_backend_hrx_loom_catalog *          catalog,
+    const ggml_backend_hrx_loom_op_request * request);
+
+ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_prepare_plan(
+    ggml_backend_hrx_loom_catalog *          catalog,
+    const ggml_backend_hrx_loom_op_request * request,
+    ggml_backend_hrx_loom_execution_plan *   plan);
+
+ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_match_or_prepare_request(
     ggml_backend_hrx_loom_catalog *          catalog,
     const ggml_backend_hrx_loom_op_request * request,
     ggml_backend_hrx_loom_execution_plan *   plan);

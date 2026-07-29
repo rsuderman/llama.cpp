@@ -21,6 +21,10 @@ struct ggml_backend_hrx_hsaco_execution_plan {
     size_t                                       constants_size                                       = 0;
 };
 
+static inline bool ggml_backend_hrx_hsaco_match_only(const ggml_backend_hrx_hsaco_execution_plan * plan) {
+    return plan == nullptr;
+}
+
 ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_unsupported(ggml_backend_hrx_hsaco_unsupported_reason reason);
 
 ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_supported(const char * route_id);
@@ -45,7 +49,16 @@ bool ggml_backend_hrx_hsaco_bind_tensor(const ggml_backend_hrx_hsaco_op_request 
                                         const ggml_tensor *                       tensor,
                                         hrx_buffer_ref_t *                        out_ref);
 
-ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_prepare_request(
+ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_match_request(
+    ggml_backend_hrx_hsaco_catalog *          catalog,
+    const ggml_backend_hrx_hsaco_op_request * request);
+
+ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_prepare_plan(
+    ggml_backend_hrx_hsaco_catalog *          catalog,
+    const ggml_backend_hrx_hsaco_op_request * request,
+    ggml_backend_hrx_hsaco_execution_plan *   plan);
+
+ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_match_or_prepare_request(
     ggml_backend_hrx_hsaco_catalog *          catalog,
     const ggml_backend_hrx_hsaco_op_request * request,
     ggml_backend_hrx_hsaco_execution_plan *   plan);

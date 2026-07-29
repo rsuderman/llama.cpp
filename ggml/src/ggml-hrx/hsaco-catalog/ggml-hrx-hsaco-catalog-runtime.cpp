@@ -258,6 +258,18 @@ bool ggml_backend_hrx_hsaco_bind_tensor(const ggml_backend_hrx_hsaco_op_request 
     return request && request->bind_tensor && request->bind_tensor(request->bind_tensor_user_data, tensor, out_ref);
 }
 
+ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_match_request(
+    ggml_backend_hrx_hsaco_catalog * catalog, const ggml_backend_hrx_hsaco_op_request * request) {
+    return ggml_backend_hrx_hsaco_match_or_prepare_request(catalog, request, nullptr);
+}
+
+ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_prepare_plan(
+    ggml_backend_hrx_hsaco_catalog *          catalog,
+    const ggml_backend_hrx_hsaco_op_request * request,
+    ggml_backend_hrx_hsaco_execution_plan *   plan) {
+    return ggml_backend_hrx_hsaco_match_or_prepare_request(catalog, request, plan);
+}
+
 ggml_backend_hrx_hsaco_catalog * ggml_backend_hrx_hsaco_catalog_new(hrx_device_t device, const char * architecture) {
     if (!device || !architecture || architecture[0] == '\0') {
         return nullptr;
@@ -291,7 +303,7 @@ ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_supports_op(ggml_backe
         /* .bind_tensor           = */ nullptr,
         /* .bind_tensor_user_data = */ nullptr,
     };
-    return ggml_backend_hrx_hsaco_prepare_request(catalog, &request, nullptr);
+    return ggml_backend_hrx_hsaco_match_request(catalog, &request);
 }
 
 ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_invoke(ggml_backend_hrx_hsaco_catalog *          catalog,
@@ -301,7 +313,7 @@ ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_invoke(ggml_backend_hr
     }
 
     ggml_backend_hrx_hsaco_execution_plan plan     = {};
-    ggml_backend_hrx_hsaco_op_response    response = ggml_backend_hrx_hsaco_prepare_request(catalog, request, &plan);
+    ggml_backend_hrx_hsaco_op_response    response = ggml_backend_hrx_hsaco_prepare_plan(catalog, request, &plan);
     if (response.result != GGML_BACKEND_HRX_HSACO_INVOKED) {
         return response;
     }
