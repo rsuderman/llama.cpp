@@ -2,58 +2,24 @@
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 
+import hrx_catalog_emit as catalog_emit
 import validate_loom_routes as loom
 
 
-def require_string(data, key, source):
-    value = data.get(key)
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{source}: expected non-empty string field {key}")
-    return value
-
-
-def require_list(data, key, source):
-    value = data.get(key)
-    if not isinstance(value, list) or not value:
-        raise ValueError(f"{source}: expected non-empty list field {key}")
-    return value
-
-
-def require_int(data, key, source):
-    value = data.get(key)
-    if type(value) is not int:
-        raise ValueError(f"{source}: expected integer field {key}")
-    return value
-
-
-def read_json(path):
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def c_array(data):
-    rows = []
-    for i in range(0, len(data), 12):
-        rows.append("    " + ", ".join(f"0x{byte:02x}" for byte in data[i:i + 12]))
-    return ",\n".join(rows)
+require_string = catalog_emit.require_string
+require_list = catalog_emit.require_list
+require_int = catalog_emit.require_int
+read_json = catalog_emit.read_json
+c_array = catalog_emit.c_array
+parse_targets = catalog_emit.parse_targets
+c_identifier = catalog_emit.c_identifier
 
 
 def c_string(value):
     return json.dumps(value, ensure_ascii=True)
-
-
-def parse_targets(value):
-    if value is None:
-        return []
-    return [target for target in re.split(r"[;,\s]+", value) if target]
-
-
-def c_identifier(value):
-    return re.sub(r"[^A-Za-z0-9_]", "_", value)
 
 
 def write_generated_header(path):
