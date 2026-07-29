@@ -6,10 +6,10 @@ import sys
 from pathlib import Path
 
 import hrx_route_emit as route_emit
+import hrx_route_schema as route_schema
 import validate_loom_routes as route_validator
 
 
-hsaco = route_validator.hsaco
 
 ATTRIBUTE_INDICES = route_emit.ATTRIBUTE_INDICES
 CPP_SCALAR_TYPES = route_emit.CPP_SCALAR_TYPES
@@ -121,14 +121,14 @@ def load_route(source_root, route_name):
 
     definitions = route_validator.load_definitions(source_root)
     route_validator.validate_route(route_path, definitions)
-    route = hsaco.read_json(route_path)
-    definition_path = (route_path.parent / hsaco.require_string(route, "definition", route_path)).resolve()
+    route = route_schema.read_json(route_path)
+    definition_path = (route_path.parent / route_schema.require_string(route, "definition", route_path)).resolve()
     definition = definitions[definition_path]
     return route_path, route, definition_path, definition
 
 
 def scalar_offsets(scalars, route_path):
-    return route_emit.scalar_offsets(scalars, route_path, hsaco)
+    return route_emit.scalar_offsets(scalars, route_path, route_schema)
 
 
 def typed_expr(expr, scalar_type):
@@ -144,9 +144,9 @@ def source_expr(source):
 
 
 def config_value_expr(binding):
-    scalar_type = hsaco.require_string(binding, "type", "route")
+    scalar_type = route_schema.require_string(binding, "type", "route")
     if "source" in binding:
-        return typed_expr(source_expr(hsaco.require_string(binding, "source", "route")), scalar_type)
+        return typed_expr(source_expr(route_schema.require_string(binding, "source", "route")), scalar_type)
     return scalar_literal(binding["value"], scalar_type)
 
 
@@ -161,22 +161,22 @@ def config_format_args(value_var, scalar_type):
 
 
 def config_value_var(binding):
-    return f"config_{c_identifier(hsaco.require_string(binding, 'name', 'route'))}_value"
+    return f"config_{c_identifier(route_schema.require_string(binding, 'name', 'route'))}_value"
 
 
 def config_text_var(binding):
-    return f"config_{c_identifier(hsaco.require_string(binding, 'name', 'route'))}_text"
+    return f"config_{c_identifier(route_schema.require_string(binding, 'name', 'route'))}_text"
 
 
 def config_length_var(binding):
-    return f"config_{c_identifier(hsaco.require_string(binding, 'name', 'route'))}_length"
+    return f"config_{c_identifier(route_schema.require_string(binding, 'name', 'route'))}_length"
 
 
 def emit_config_materialization(lines, route):
-    config = hsaco.require_dict(route, "config", "route")
-    bindings = hsaco.require_array(config, "bindings", "route")
+    config = route_schema.require_dict(route, "config", "route")
+    bindings = route_schema.require_array(config, "bindings", "route")
     for binding in bindings:
-        scalar_type = hsaco.require_string(binding, "type", "route")
+        scalar_type = route_schema.require_string(binding, "type", "route")
         cpp_type = CPP_SCALAR_TYPES[scalar_type]
         value_var = config_value_var(binding)
         text_var = config_text_var(binding)
@@ -193,11 +193,11 @@ def emit_config_materialization(lines, route):
 
 
 def emit_config_plan_copy(lines, route):
-    config = hsaco.require_dict(route, "config", "route")
-    bindings = hsaco.require_array(config, "bindings", "route")
+    config = route_schema.require_dict(route, "config", "route")
+    bindings = route_schema.require_array(config, "bindings", "route")
     for i, binding in enumerate(bindings):
-        name = hsaco.require_string(binding, "name", "route")
-        scalar_type = hsaco.require_string(binding, "type", "route")
+        name = route_schema.require_string(binding, "name", "route")
+        scalar_type = route_schema.require_string(binding, "type", "route")
         text_var = config_text_var(binding)
         lines.extend([
             f"    std::memcpy(plan->config_bindings[{i}].name, {cpp_string(name)}, sizeof({cpp_string(name)}));",
@@ -209,7 +209,7 @@ def emit_config_plan_copy(lines, route):
 
 def emit_flat_1d_dispatch(dispatch, context, route_constant):
     del context
-    work_items = source_expr(hsaco.require_string(dispatch, "work_items", "route"))
+    work_items = source_expr(route_schema.require_string(dispatch, "work_items", "route"))
     return [
         f"    if (!ggml_backend_hrx_loom_make_1d_dispatch_config(entry, {work_items}, &plan->dispatch)) {{",
         f"        return ggml_backend_hrx_loom_failed({route_constant});",
@@ -219,7 +219,7 @@ def emit_flat_1d_dispatch(dispatch, context, route_constant):
 
 def emit_rows_1d_dispatch(dispatch, context, route_constant):
     del context
-    rows = source_expr(hsaco.require_string(dispatch, "rows", "route"))
+    rows = source_expr(route_schema.require_string(dispatch, "rows", "route"))
     return [
         f"    if (!ggml_backend_hrx_loom_make_row_dispatch_config(entry, {rows}, &plan->dispatch)) {{",
         f"        return ggml_backend_hrx_loom_failed({route_constant});",
@@ -228,11 +228,11 @@ def emit_rows_1d_dispatch(dispatch, context, route_constant):
 
 
 def emit_integer_operand(value, context):
-    return route_emit.emit_integer_operand(value, context, hsaco)
+    return route_emit.emit_integer_operand(value, context, route_schema)
 
 
 def emit_exact_3d_dispatch(dispatch, context, route_constant):
-    return route_emit.emit_exact_3d_dispatch(dispatch, context, route_constant, hsaco)
+    return route_emit.emit_exact_3d_dispatch(dispatch, context, route_constant, route_schema)
 
 
 DISPATCH_EMITTERS = {
@@ -243,14 +243,14 @@ DISPATCH_EMITTERS = {
 
 
 def emit_plan_materialization(lines, route, definition, context):
-    route_id = hsaco.require_string(route, "id", "route")
+    route_id = route_schema.require_string(route, "id", "route")
     route_constant = route_id_constant(route_id)
-    invocation = hsaco.require_dict(route, "invocation", "route")
-    buffers = sorted(hsaco.require_array(invocation, "buffers", "route"), key=lambda item: item["position"])
-    scalars = sorted(hsaco.require_array(invocation, "scalars", "route"), key=lambda item: item["position"])
-    dispatch = hsaco.require_dict(invocation, "dispatch", "route")
-    abi = hsaco.require_dict(definition, "abi", "definition")
-    constant_byte_length = hsaco.require_int(abi, "constant_byte_length", "definition")
+    invocation = route_schema.require_dict(route, "invocation", "route")
+    buffers = sorted(route_schema.require_array(invocation, "buffers", "route"), key=lambda item: item["position"])
+    scalars = sorted(route_schema.require_array(invocation, "scalars", "route"), key=lambda item: item["position"])
+    dispatch = route_schema.require_dict(invocation, "dispatch", "route")
+    abi = route_schema.require_dict(definition, "abi", "definition")
+    constant_byte_length = route_schema.require_int(abi, "constant_byte_length", "definition")
     offsets, constants_size = scalar_offsets(scalars, "route")
     if constants_size != constant_byte_length:
         raise ValueError(f"route scalar size {constants_size} does not match definition constant bytes {constant_byte_length}")
@@ -259,8 +259,8 @@ def emit_plan_materialization(lines, route, definition, context):
     emit_config_plan_copy(lines, route)
 
     for buffer in buffers:
-        position = hsaco.require_int(buffer, "position", "route")
-        tensor = hsaco.require_string(buffer, "tensor", "route")
+        position = route_schema.require_int(buffer, "position", "route")
+        tensor = route_schema.require_string(buffer, "tensor", "route")
         lines.append(BIND_BUFFER_TEMPLATE.format(
             tensor=route_emit.role_var(tensor),
             position=position,
@@ -269,11 +269,11 @@ def emit_plan_materialization(lines, route, definition, context):
     lines.append(f"    plan->binding_count = {len(buffers)};")
 
     for scalar, offset in zip(scalars, offsets):
-        name = hsaco.require_string(scalar, "name", "route")
-        scalar_type = hsaco.require_string(scalar, "type", "route")
+        name = route_schema.require_string(scalar, "name", "route")
+        scalar_type = route_schema.require_string(scalar, "type", "route")
         cpp_type = CPP_SCALAR_TYPES[scalar_type]
         if "source" in scalar:
-            value = typed_expr(source_expr(hsaco.require_string(scalar, "source", "route")), scalar_type)
+            value = typed_expr(source_expr(route_schema.require_string(scalar, "source", "route")), scalar_type)
         else:
             value = scalar_literal(scalar["value"], scalar_type)
         temp = f"constant_{c_identifier(name)}"
@@ -285,7 +285,7 @@ def emit_plan_materialization(lines, route, definition, context):
         ))
     lines.append(f"    plan->constants_size = {constant_byte_length};")
 
-    kind = hsaco.require_string(dispatch, "kind", "route")
+    kind = route_schema.require_string(dispatch, "kind", "route")
     emitter = DISPATCH_EMITTERS.get(kind)
     if emitter is None:
         raise ValueError(f"unsupported dispatch kind {kind}")
@@ -295,20 +295,20 @@ def emit_plan_materialization(lines, route, definition, context):
 
 
 def generate_route_impl(route_path, route, definition):
-    route_emit.validate_attribute_indices(route, route_path, hsaco, ATTRIBUTE_INDICES)
+    route_emit.validate_attribute_indices(route, route_path, route_schema, ATTRIBUTE_INDICES)
 
-    match = hsaco.require_dict(route, "match", route_path)
-    op = hsaco.require_string(match, "op", f"{route_path}: match")
-    op_rule = hsaco.OP_RULES[op]
-    route_id = hsaco.require_string(route, "id", route_path)
+    match = route_schema.require_dict(route, "match", route_path)
+    op = route_schema.require_string(match, "op", f"{route_path}: match")
+    op_rule = route_schema.OP_RULES[op]
+    route_id = route_schema.require_string(route, "id", route_path)
     function_name = route_function_name(route_id)
     route_constant = route_id_constant(route_id)
-    context = hsaco.RouteContext(
+    context = route_schema.RouteContext(
         route_path,
         op_rule,
-        hsaco.require_dict(match, "tensors", route_path),
+        route_schema.require_dict(match, "tensors", route_path),
         match.get("attributes", {}),
-        hsaco.require_dict(route, "derived", route_path),
+        route_schema.require_dict(route, "derived", route_path),
     )
 
     lines = []
@@ -321,21 +321,21 @@ def generate_route_impl(route_path, route, definition):
         lines,
         route,
         op_rule,
-        hsaco,
+        route_schema,
         route_response,
         "GGML_BACKEND_HRX_LOOM_UNSUPPORTED_SHAPE",
     )
     route_emit.emit_dtype_checks(
         lines,
         route,
-        hsaco,
+        route_schema,
         route_response,
         "GGML_BACKEND_HRX_LOOM_UNSUPPORTED_DTYPE",
     )
-    route_emit.emit_attributes(lines, route, hsaco, ATTRIBUTE_INDICES)
-    route_emit.emit_shape_captures(lines, route, hsaco)
-    route_emit.emit_derived(lines, route, context, hsaco, "ggml_backend_hrx_loom_next_power_of_2")
-    route_emit.emit_predicates(lines, route, context, hsaco, UNSUPPORTED_REASON_BY_PREDICATE, route_response)
+    route_emit.emit_attributes(lines, route, route_schema, ATTRIBUTE_INDICES)
+    route_emit.emit_shape_captures(lines, route, route_schema)
+    route_emit.emit_derived(lines, route, context, route_schema, "ggml_backend_hrx_loom_next_power_of_2")
+    route_emit.emit_predicates(lines, route, context, route_schema, UNSUPPORTED_REASON_BY_PREDICATE, route_response)
     emit_config_materialization(lines, route)
     emit_plan_materialization(lines, route, definition, context)
     lines.append("}")
@@ -345,7 +345,7 @@ def generate_route_impl(route_path, route, definition):
 
 def generate_dispatcher_impl(routes):
     lines = [DISPATCHER_CPP_HEADER_TEMPLATE]
-    route_infos = route_emit.route_infos_for_dispatcher(routes, hsaco)
+    route_infos = route_emit.route_infos_for_dispatcher(routes, route_schema)
     ops = route_emit.ops_from_route_infos(route_infos)
 
     for op in ops:
@@ -370,12 +370,12 @@ def generate_dispatcher_impl(routes):
 def generate_op_router_impl(routes, selected_op):
     lines = [DISPATCHER_CPP_HEADER_TEMPLATE]
 
-    route_infos = route_emit.route_infos_for_op(routes, selected_op, hsaco)
+    route_infos = route_emit.route_infos_for_op(routes, selected_op, route_schema)
     if not route_infos:
         raise ValueError(f"no routes found for {selected_op}")
 
     for _, _, route_path, route, definition in route_infos:
-        route_id = hsaco.require_string(route, "id", route_path)
+        route_id = route_schema.require_string(route, "id", route_path)
         lines.extend([
             f"static constexpr const char * {route_id_constant(route_id)} = {cpp_string(route_id)};",
             "",

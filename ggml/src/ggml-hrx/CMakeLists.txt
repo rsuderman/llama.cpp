@@ -103,6 +103,7 @@ foreach(GGML_HRX_HSACO_ROUTE_OP IN LISTS GGML_HRX_HSACO_ROUTE_OPS)
             --op-router
             --op "${GGML_HRX_HSACO_ROUTE_OP}"
         DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/hrx_route_schema.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/hrx_route_emit.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hsaco_route_impl.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_hsaco_routes.py"
@@ -174,6 +175,7 @@ add_custom_command(
         --out "${GGML_HRX_HSACO_ROUTE_DISPATCH_CPP}"
         --dispatcher
     DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/hrx_route_schema.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/hrx_route_emit.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hsaco_route_impl.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_hsaco_routes.py"
@@ -230,11 +232,10 @@ if (GGML_HRX_LOOM)
                 --op-router
                 --op "${GGML_HRX_LOOM_ROUTE_OP}"
             DEPENDS
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/hrx_route_schema.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/hrx_route_emit.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loom_route_impl.py"
-                "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hsaco_route_impl.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_loom_routes.py"
-                "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_hsaco_routes.py"
                 ${GGML_HRX_LOOM_ROUTE_DEFS}
                 ${GGML_HRX_LOOM_ROUTE_JSONS}
             VERBATIM
@@ -258,9 +259,9 @@ if (GGML_HRX_LOOM)
             --out-h "${GGML_HRX_LOOM_GENERATED_H}"
             ${GGML_HRX_LOOM_TARGET_ARGS}
         DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/hrx_route_schema.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loom_catalog.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_loom_routes.py"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_hsaco_routes.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/metadata.json"
             "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/add_f32.json"
             "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/routes/add_f32.json"
@@ -285,11 +286,10 @@ if (GGML_HRX_LOOM)
             --out "${GGML_HRX_LOOM_ROUTE_DISPATCH_CPP}"
             --dispatcher
         DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/hrx_route_schema.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/hrx_route_emit.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loom_route_impl.py"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_hsaco_route_impl.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_loom_routes.py"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_hsaco_routes.py"
             ${GGML_HRX_LOOM_ROUTE_DEFS}
             ${GGML_HRX_LOOM_ROUTE_JSONS}
         VERBATIM
