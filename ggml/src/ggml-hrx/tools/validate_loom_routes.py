@@ -6,7 +6,7 @@ import re
 import sys
 from pathlib import Path
 
-import hrx_route_schema as route_schema
+from utils import hrx_route_schema as route_schema
 
 
 CATALOG_SCHEMA_V0 = "ggml-hrx-loom-catalog-v0"

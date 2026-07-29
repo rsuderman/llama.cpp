@@ -4,7 +4,7 @@ import argparse
 import subprocess
 from pathlib import Path
 
-import hrx_catalog_emit as catalog_emit
+from utils import hrx_catalog_emit as catalog_emit
 
 
 CATALOG_SCHEMA_V0 = "ggml-hrx-hsaco-catalog-v0"

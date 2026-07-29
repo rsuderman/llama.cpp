@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-import hrx_catalog_emit as catalog_emit
+from utils import hrx_catalog_emit as catalog_emit
 import validate_loom_routes as loom
 
 

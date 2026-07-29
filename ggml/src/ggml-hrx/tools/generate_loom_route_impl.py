@@ -5,8 +5,8 @@ import json
 import sys
 from pathlib import Path
 
-import hrx_route_emit as route_emit
-import hrx_route_schema as route_schema
+from utils import hrx_route_emit as route_emit
+from utils import hrx_route_schema as route_schema
 import validate_loom_routes as route_validator
 
 

@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-import hrx_route_emit as route_emit
+from utils import hrx_route_emit as route_emit
 import validate_hsaco_routes as route_validator
 
 
