@@ -153,6 +153,10 @@ def attribute_var(name):
     return f"attribute_{c_identifier(name)}"
 
 
+def shape_var(role, name):
+    return f"shape_{c_identifier(role)}_{c_identifier(name)}"
+
+
 def route_id_constant(route_id):
     return f"GGML_HRX_HSACO_ROUTE_ID_{c_identifier(route_id).upper()}"
 
@@ -239,10 +243,17 @@ def emit_derived_source(parts):
     return derived_var(parts[1])
 
 
+def emit_shape_source(parts):
+    if len(parts) != 3:
+        raise ValueError("unsupported shape source")
+    return shape_var(parts[1], parts[2])
+
+
 SOURCE_EMITTERS = {
     "tensor": emit_tensor_source,
     "attribute": emit_attribute_source,
     "derived": emit_derived_source,
+    "shape": emit_shape_source,
 }
 
 
@@ -355,6 +366,13 @@ def emit_attributes(lines, route):
         getter = "ggml_get_op_params_f32" if scalar_type in {"f32", "f64"} else "ggml_get_op_params_i32"
         cast = CPP_SCALAR_TYPES[scalar_type]
         lines.append(f"    const {cast} {attribute_var(name)} = {getter}(node, {indices[name]});")
+
+
+def emit_shape_captures(lines, route):
+    tensors = route_validator.require_dict(route_validator.require_dict(route, "match", "route"), "tensors", "route")
+    for role, tensor in tensors.items():
+        for i, name in enumerate(tensor.get("shape", [])):
+            lines.append(f"    const int64_t {shape_var(role, name)} = static_cast<int64_t>({role_var(role)}->ne[{i}]);")
 
 
 def emit_product(value, context, scalar_type):
@@ -654,6 +672,7 @@ def generate_route_impl(route_path, route, definition):
     emit_tensor_setup(lines, route, op_rule)
     emit_dtype_checks(lines, route)
     emit_attributes(lines, route)
+    emit_shape_captures(lines, route)
     emit_derived(lines, route, context)
     emit_predicates(lines, route, context)
     emit_plan_materialization(lines, route, definition, context)

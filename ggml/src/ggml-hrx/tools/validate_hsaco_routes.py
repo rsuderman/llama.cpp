@@ -24,7 +24,7 @@ TOP_LEVEL_FIELDS = {
     "launch",
 }
 MATCH_FIELDS = {"op", "tensors", "attributes", "predicates"}
-TENSOR_FIELDS = {"type", "optional"}
+TENSOR_FIELDS = {"type", "optional", "shape"}
 ATTRIBUTE_FIELDS = {"type", "default"}
 PREDICATE_FIELDS = {"contiguous", "same_shape", "rank", "field", "equals", "in", "min", "max", "multiple_of", "src_absent", "src_present"}
 DERIVED_FIELDS = {"type", "field", "value", "product", "ceil_div", "next_power_of_2"}
@@ -204,6 +204,7 @@ def is_source_string(value):
             value.startswith("tensor.")
             or value.startswith("attribute.")
             or value.startswith("derived.")
+            or value.startswith("shape.")
         )
     )
 
@@ -298,6 +299,9 @@ class RouteContext:
         self.tensors = tensors
         self.attributes = attributes
         self.derived = derived
+        self.shape_captures = {}
+        for role, tensor in tensors.items():
+            self.shape_captures[role] = tensor.get("shape", [])
 
     def validate_tensor_role(self, role, source, allow_optional=False, require_input=False):
         if not isinstance(role, str) or not role:
@@ -320,6 +324,8 @@ class RouteContext:
             return self.resolve_attribute_source(parts, source)
         if parts[0] == "derived":
             return self.resolve_derived_source(parts, source, derived_names)
+        if parts[0] == "shape":
+            return self.resolve_shape_source(parts, source)
         raise ValueError(f"{source}: unsupported source {value}")
 
     def resolve_tensor_source(self, parts, source):
@@ -360,6 +366,17 @@ class RouteContext:
         if name not in names:
             raise ValueError(f"{source}: derived value {name} is not available")
         return self.derived[name]["type"]
+
+    def resolve_shape_source(self, parts, source):
+        if len(parts) != 3:
+            raise ValueError(f"{source}: unsupported shape source")
+        role = parts[1]
+        name = parts[2]
+        self.validate_tensor_role(role, source)
+        captures = self.shape_captures.get(role, [])
+        if name not in captures:
+            raise ValueError(f"{source}: shape value {name} is not captured for tensor {role}")
+        return "i64"
 
 
 def validate_metadata(source_root):
@@ -431,6 +448,19 @@ def validate_tensors(match, route_path, op_rule):
             require_bool(tensor, "optional", tensor_source)
             if role not in op_rule["optional_tensors"]:
                 raise ValueError(f"{tensor_source}: optional is only supported for optional operation inputs")
+        if "shape" in tensor:
+            shape = tensor.get("shape")
+            if not isinstance(shape, list):
+                raise ValueError(f"{tensor_source}.shape: expected array")
+            if len(shape) > 4:
+                raise ValueError(f"{tensor_source}.shape: expected at most 4 names")
+            seen = set()
+            for i, name in enumerate(shape):
+                if not isinstance(name, str) or not name:
+                    raise ValueError(f"{tensor_source}.shape[{i}]: expected non-empty string")
+                if name in seen:
+                    raise ValueError(f"{tensor_source}.shape[{i}]: duplicate shape capture name")
+                seen.add(name)
     return tensors
 
 

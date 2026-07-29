@@ -1,5 +1,7 @@
 # HRX HSACO Catalog
 
+See [DESIGN.md](DESIGN.md) for the catalog design, route generation flow, and JSON file format notes.
+
 This catalog is the first HRX direct-dispatch catalog after the removed Loom
 catalog path. It uses build-generated HSACO artifacts compiled from existing
 CUDA kernel sources.
@@ -55,8 +57,9 @@ Routes in `routes/*.json` describe how to use one definition for a ggml op:
   literals, or earlier derived values.
 - `invocation` maps tensors and scalars to the kernel ABI and declares dispatch.
 
-Shape, layout, same-shape, optional-source, and numeric constraints belong in
-`match.predicates`. They are not tensor declaration fields.
+Layout, same-shape, optional-source, and numeric constraints belong in
+`match.predicates`. Reusable tensor shape values can be named with
+`match.tensors.<role>.shape`.
 
 The current runtime predicates are deliberately simple:
 

@@ -6,20 +6,25 @@
   "priority": 100,
   "match": {
     "op": "GGML_OP_ARGSORT",
-    "tensors": {"src0": {"type": "F32"}, "dst": {"type": "I32"}},
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": ["ncols", "nrows_0", "nrows_1", "nrows_2"]
+      },
+      "dst": {"type": "I32"}
+    },
     "attributes": {"order": {"type": "i32"}},
     "predicates": [
       {"contiguous": "src0"},
       {"contiguous": "dst"},
       {"same_shape": ["src0", "dst"]},
-      {"field": "derived.ncols", "equals": 128},
+      {"field": "shape.src0.ncols", "equals": 128},
       {"field": "derived.order", "in": [0, 1]}
     ]
   },
   "derived": {
-    "ncols": {"type": "i64", "field": "tensor.src0.dimensions.0"},
-    "nrows": {"type": "i64", "product": ["tensor.src0.dimensions.1", "tensor.src0.dimensions.2", "tensor.src0.dimensions.3"]},
-    "ncols_pad": {"type": "i64", "next_power_of_2": "derived.ncols"},
+    "nrows": {"type": "i64", "product": ["shape.src0.nrows_0", "shape.src0.nrows_1", "shape.src0.nrows_2"]},
+    "ncols_pad": {"type": "i64", "next_power_of_2": "shape.src0.ncols"},
     "order": {"type": "i32", "field": "attribute.order"}
   },
   "invocation": {
@@ -28,7 +33,7 @@
       {"name": "dst", "tensor": "dst", "position": 1, "kind": "output"}
     ],
     "scalars": [
-      {"name": "ncols", "source": "derived.ncols", "type": "i64", "position": 0},
+      {"name": "ncols", "source": "shape.src0.ncols", "type": "i64", "position": 0},
       {"name": "nrows", "source": "derived.nrows", "type": "i64", "position": 1},
       {"name": "ncols_pad", "source": "derived.ncols_pad", "type": "i64", "position": 2},
       {"name": "order", "source": "derived.order", "type": "i32", "position": 3}

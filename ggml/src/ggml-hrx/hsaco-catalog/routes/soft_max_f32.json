@@ -6,13 +6,16 @@
   "priority": 100,
   "match": {
     "op": "GGML_OP_SOFT_MAX",
-    "tensors": {"src0": {"type": "F32"}, "dst": {"type": "F32"}},
+    "tensors": {
+      "src0": {"type": "F32", "shape": ["ncols", "nrows_0", "nrows_1", "nrows_2"]},
+      "dst": {"type": "F32"}
+    },
     "attributes": {"scale": {"type": "f32", "default": 1.0}, "max_bias": {"type": "f32", "default": 0.0}},
     "predicates": [
       {"contiguous": "src0"},
       {"contiguous": "dst"},
       {"same_shape": ["src0", "dst"]},
-      {"field": "tensor.dst.dimensions.0", "equals": 128},
+      {"field": "shape.src0.ncols", "equals": 128},
       {"src_absent": "src1"},
       {"src_absent": "src2"},
       {"field": "attribute.scale", "equals": 1.0},
@@ -20,8 +23,7 @@
     ]
   },
   "derived": {
-    "ncols": {"type": "i64", "field": "tensor.src0.dimensions.0"},
-    "nrows": {"type": "i64", "product": ["tensor.src0.dimensions.1", "tensor.src0.dimensions.2", "tensor.src0.dimensions.3"]}
+    "nrows": {"type": "i64", "product": ["shape.src0.nrows_0", "shape.src0.nrows_1", "shape.src0.nrows_2"]}
   },
   "invocation": {
     "buffers": [
@@ -29,7 +31,7 @@
       {"name": "dst", "tensor": "dst", "position": 1, "kind": "output"}
     ],
     "scalars": [
-      {"name": "ncols", "source": "derived.ncols", "type": "i64", "position": 0},
+      {"name": "ncols", "source": "shape.src0.ncols", "type": "i64", "position": 0},
       {"name": "nrows", "source": "derived.nrows", "type": "i64", "position": 1}
     ],
     "dispatch": {"kind": "rows_1d", "rows": "derived.nrows", "workgroup_size": [256, 1, 1]}

@@ -6,20 +6,22 @@
   "priority": 100,
   "match": {
     "op": "GGML_OP_SUM_ROWS",
-    "tensors": {"src0": {"type": "F32"}, "dst": {"type": "F32"}},
+    "tensors": {
+      "src0": {"type": "F32", "shape": ["ncols", "nrows_0", "nrows_1", "nrows_2"]},
+      "dst": {"type": "F32", "shape": ["ncols", "nrows_0", "nrows_1", "nrows_2"]}
+    },
     "predicates": [
       {"contiguous": "src0"},
       {"contiguous": "dst"},
-      {"field": "tensor.src0.dimensions.0", "equals": 8},
-      {"field": "tensor.dst.dimensions.0", "equals": 1},
-      {"field": "tensor.dst.dimensions.1", "equals": "tensor.src0.dimensions.1"},
-      {"field": "tensor.dst.dimensions.2", "equals": "tensor.src0.dimensions.2"},
-      {"field": "tensor.dst.dimensions.3", "equals": "tensor.src0.dimensions.3"}
+      {"field": "shape.src0.ncols", "equals": 8},
+      {"field": "shape.dst.ncols", "equals": 1},
+      {"field": "shape.dst.nrows_0", "equals": "shape.src0.nrows_0"},
+      {"field": "shape.dst.nrows_1", "equals": "shape.src0.nrows_1"},
+      {"field": "shape.dst.nrows_2", "equals": "shape.src0.nrows_2"}
     ]
   },
   "derived": {
-    "ncols": {"type": "i64", "field": "tensor.src0.dimensions.0"},
-    "nrows": {"type": "i64", "product": ["tensor.src0.dimensions.1", "tensor.src0.dimensions.2", "tensor.src0.dimensions.3"]}
+    "nrows": {"type": "i64", "product": ["shape.src0.nrows_0", "shape.src0.nrows_1", "shape.src0.nrows_2"]}
   },
   "invocation": {
     "buffers": [
@@ -27,7 +29,7 @@
       {"name": "dst", "tensor": "dst", "position": 1, "kind": "output"}
     ],
     "scalars": [
-      {"name": "ncols", "source": "derived.ncols", "type": "i64", "position": 0},
+      {"name": "ncols", "source": "shape.src0.ncols", "type": "i64", "position": 0},
       {"name": "nrows", "source": "derived.nrows", "type": "i64", "position": 1}
     ],
     "dispatch": {"kind": "rows_1d", "rows": "derived.nrows", "workgroup_size": [256, 1, 1]}
