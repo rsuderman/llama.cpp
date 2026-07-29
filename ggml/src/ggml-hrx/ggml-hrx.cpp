@@ -6,6 +6,9 @@
 #include "hrx_runtime.h"
 
 #include "hsaco-catalog/ggml-hrx-hsaco-catalog-runtime.h"
+#if defined(GGML_HRX_USE_LOOM)
+#include "loom-catalog/ggml-hrx-loom-catalog-runtime.h"
+#endif
 
 #include <cerrno>
 #include <algorithm>
@@ -40,6 +43,10 @@ struct ggml_backend_hrx_options {
     std::string trace_jsonl_path;
     bool trace_graph = false;
     size_t staging_arena_size = GGML_HRX_STAGING_ARENA_DEFAULT_SIZE;
+#if defined(GGML_HRX_USE_LOOM)
+    bool enable_loom = false;
+    bool loom_first = false;
+#endif
 };
 
 struct ggml_backend_hrx_staging_arena {
@@ -66,6 +73,10 @@ struct ggml_backend_hrx_device_context {
     hrx_stream_t active_stream = nullptr;
     std::mutex hsaco_catalog_mutex;
     ggml_backend_hrx_hsaco_catalog * hsaco_catalog = nullptr;
+#if defined(GGML_HRX_USE_LOOM)
+    std::mutex loom_catalog_mutex;
+    ggml_backend_hrx_loom_catalog * loom_catalog = nullptr;
+#endif
 };
 
 struct ggml_backend_hrx_reg_context {
@@ -213,6 +224,10 @@ static ggml_backend_hrx_options ggml_backend_hrx_parse_options() {
     ggml_backend_hrx_options options;
     options.trace_jsonl_path = ggml_backend_hrx_env_string("GGML_HRX_TRACE_JSONL");
     options.trace_graph = ggml_backend_hrx_env_bool("GGML_HRX_TRACE_GRAPH");
+#if defined(GGML_HRX_USE_LOOM)
+    options.enable_loom = ggml_backend_hrx_env_bool("GGML_HRX_ENABLE_LOOM");
+    options.loom_first = options.enable_loom && ggml_backend_hrx_env_bool("GGML_HRX_LOOM_FIRST");
+#endif
 
     const std::string staging_size = ggml_backend_hrx_env_string("GGML_HRX_STAGING_ARENA_SIZE");
     if (!staging_size.empty()) {
@@ -1019,6 +1034,30 @@ static ggml_backend_hrx_hsaco_catalog * ggml_backend_hrx_get_hsaco_catalog(
     return device_context->hsaco_catalog;
 }
 
+#if defined(GGML_HRX_USE_LOOM)
+static bool ggml_backend_hrx_use_loom(const ggml_backend_hrx_device_context * device_context) {
+    return device_context && device_context->options && device_context->options->enable_loom;
+}
+
+static bool ggml_backend_hrx_loom_first(const ggml_backend_hrx_device_context * device_context) {
+    return ggml_backend_hrx_use_loom(device_context) && device_context->options->loom_first;
+}
+
+static ggml_backend_hrx_loom_catalog * ggml_backend_hrx_get_loom_catalog(
+        ggml_backend_hrx_device_context * device_context) {
+    if (!device_context || !ggml_backend_hrx_use_loom(device_context)) {
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(device_context->loom_catalog_mutex);
+    if (!device_context->loom_catalog) {
+        device_context->loom_catalog =
+            ggml_backend_hrx_loom_catalog_new(device_context->device, device_context->architecture.c_str());
+    }
+    return device_context->loom_catalog;
+}
+#endif
+
 static bool ggml_backend_hrx_bind_tensor_for_catalog(
         void * user_data,
         const ggml_tensor * tensor,
@@ -1026,6 +1065,89 @@ static bool ggml_backend_hrx_bind_tensor_for_catalog(
     auto * device_context = static_cast<ggml_backend_hrx_device_context *>(user_data);
     return ggml_backend_hrx_make_tensor_binding(device_context, tensor, out_ref);
 }
+
+static bool ggml_backend_hrx_supports_op_hsaco(
+        ggml_backend_hrx_device_context * device_context,
+        const ggml_tensor * op) {
+    const ggml_backend_hrx_hsaco_op_response response =
+        ggml_backend_hrx_hsaco_supports_op(ggml_backend_hrx_get_hsaco_catalog(device_context), op);
+    return response.result == GGML_BACKEND_HRX_HSACO_INVOKED;
+}
+
+static enum ggml_status ggml_backend_hrx_invoke_hsaco(
+        ggml_backend_hrx_context * context,
+        const ggml_tensor * node,
+        bool * unsupported) {
+    *unsupported = false;
+    const ggml_backend_hrx_hsaco_op_request request = {
+        /* .op                    = */ node,
+        /* .stream                = */ context->stream,
+        /* .bind_tensor           = */ ggml_backend_hrx_bind_tensor_for_catalog,
+        /* .bind_tensor_user_data = */ context->device_context,
+    };
+    const ggml_backend_hrx_hsaco_op_response response = ggml_backend_hrx_hsaco_invoke(
+        ggml_backend_hrx_get_hsaco_catalog(context->device_context),
+        &request);
+    if (response.result == GGML_BACKEND_HRX_HSACO_INVOKED) {
+        ggml_backend_hrx_trace_event(context->device_context->reg_context, {
+            {"event", "hsaco_route_dispatch"},
+            {"device", context->device_context->name},
+            {"route_id", response.route_id ? response.route_id : ""},
+            {"op", ggml_op_desc(node)},
+            {"nelements", ggml_nelements(node)},
+        });
+        return GGML_STATUS_SUCCESS;
+    }
+    if (response.result == GGML_BACKEND_HRX_HSACO_FAILED) {
+        return GGML_STATUS_FAILED;
+    }
+    *unsupported = true;
+    return GGML_STATUS_SUCCESS;
+}
+
+#if defined(GGML_HRX_USE_LOOM)
+static bool ggml_backend_hrx_supports_op_loom(
+        ggml_backend_hrx_device_context * device_context,
+        const ggml_tensor * op) {
+    if (!ggml_backend_hrx_use_loom(device_context)) {
+        return false;
+    }
+    const ggml_backend_hrx_loom_op_response response =
+        ggml_backend_hrx_loom_supports_op(ggml_backend_hrx_get_loom_catalog(device_context), op);
+    return response.result == GGML_BACKEND_HRX_LOOM_INVOKED;
+}
+
+static enum ggml_status ggml_backend_hrx_invoke_loom(
+        ggml_backend_hrx_context * context,
+        const ggml_tensor * node,
+        bool * unsupported) {
+    *unsupported = false;
+    const ggml_backend_hrx_loom_op_request request = {
+        /* .op                    = */ node,
+        /* .stream                = */ context->stream,
+        /* .bind_tensor           = */ ggml_backend_hrx_bind_tensor_for_catalog,
+        /* .bind_tensor_user_data = */ context->device_context,
+    };
+    const ggml_backend_hrx_loom_op_response response = ggml_backend_hrx_loom_invoke(
+        ggml_backend_hrx_get_loom_catalog(context->device_context),
+        &request);
+    if (response.result == GGML_BACKEND_HRX_LOOM_INVOKED) {
+        ggml_backend_hrx_trace_event(context->device_context->reg_context, {
+            {"event", "loom_route_dispatch"},
+            {"device", context->device_context->name},
+            {"route_id", response.route_id ? response.route_id : ""},
+            {"op", ggml_op_desc(node)},
+            {"nelements", ggml_nelements(node)},
+        });
+        return GGML_STATUS_SUCCESS;
+    }
+    if (response.result == GGML_BACKEND_HRX_LOOM_FAILED) {
+        return GGML_STATUS_FAILED;
+    }
+    *unsupported = true;
+    return GGML_STATUS_SUCCESS;
+}
+#endif
 
 static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
@@ -1049,28 +1171,40 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
         if (ggml_backend_hrx_is_metadata_op(node)) {
             continue;
         }
-        const ggml_backend_hrx_hsaco_op_request request = {
-            /* .op                    = */ node,
-            /* .stream                = */ context->stream,
-            /* .bind_tensor           = */ ggml_backend_hrx_bind_tensor_for_catalog,
-            /* .bind_tensor_user_data = */ context->device_context,
-        };
-        const ggml_backend_hrx_hsaco_op_response response = ggml_backend_hrx_hsaco_invoke(
-            ggml_backend_hrx_get_hsaco_catalog(context->device_context),
-            &request);
-        if (response.result == GGML_BACKEND_HRX_HSACO_INVOKED) {
-            ggml_backend_hrx_trace_event(context->device_context->reg_context, {
-                {"event", "hsaco_route_dispatch"},
-                {"device", context->device_context->name},
-                {"route_id", response.route_id ? response.route_id : ""},
-                {"op", ggml_op_desc(node)},
-                {"nelements", ggml_nelements(node)},
-            });
+        bool unsupported = true;
+#if defined(GGML_HRX_USE_LOOM)
+        if (ggml_backend_hrx_loom_first(context->device_context)) {
+            const enum ggml_status status = ggml_backend_hrx_invoke_loom(context, node, &unsupported);
+            if (status != GGML_STATUS_SUCCESS) {
+                return status;
+            }
+            if (!unsupported) {
+                continue;
+            }
+        }
+#endif
+
+        enum ggml_status status = ggml_backend_hrx_invoke_hsaco(context, node, &unsupported);
+        if (status != GGML_STATUS_SUCCESS) {
+            return status;
+        }
+        if (!unsupported) {
             continue;
         }
-        if (response.result == GGML_BACKEND_HRX_HSACO_FAILED) {
-            return GGML_STATUS_FAILED;
+
+#if defined(GGML_HRX_USE_LOOM)
+        if (ggml_backend_hrx_use_loom(context->device_context) &&
+                !ggml_backend_hrx_loom_first(context->device_context)) {
+            status = ggml_backend_hrx_invoke_loom(context, node, &unsupported);
+            if (status != GGML_STATUS_SUCCESS) {
+                return status;
+            }
+            if (!unsupported) {
+                continue;
+            }
         }
+#endif
+
         if (context->device_context->options && context->device_context->options->trace_graph) {
             ggml_backend_hrx_trace_event(context->device_context->reg_context, {
                 {"event", "unsupported_compute_node"},
@@ -1181,9 +1315,21 @@ static bool ggml_backend_hrx_device_supports_op(ggml_backend_dev_t dev, const gg
         return true;
     }
     auto * device_context = ggml_backend_hrx_get_device_context(dev);
-    const ggml_backend_hrx_hsaco_op_response response =
-        ggml_backend_hrx_hsaco_supports_op(ggml_backend_hrx_get_hsaco_catalog(device_context), op);
-    return response.result == GGML_BACKEND_HRX_HSACO_INVOKED;
+#if defined(GGML_HRX_USE_LOOM)
+    if (ggml_backend_hrx_loom_first(device_context) && ggml_backend_hrx_supports_op_loom(device_context, op)) {
+        return true;
+    }
+#endif
+    if (ggml_backend_hrx_supports_op_hsaco(device_context, op)) {
+        return true;
+    }
+#if defined(GGML_HRX_USE_LOOM)
+    return ggml_backend_hrx_use_loom(device_context) &&
+        !ggml_backend_hrx_loom_first(device_context) &&
+        ggml_backend_hrx_supports_op_loom(device_context, op);
+#else
+    return false;
+#endif
 }
 
 static bool ggml_backend_hrx_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
@@ -1258,6 +1404,10 @@ ggml_backend_hrx_reg_context::~ggml_backend_hrx_reg_context() {
             device_context->transfer_stream = nullptr;
         }
         if (device_context) {
+#if defined(GGML_HRX_USE_LOOM)
+            ggml_backend_hrx_loom_catalog_free(device_context->loom_catalog);
+            device_context->loom_catalog = nullptr;
+#endif
             ggml_backend_hrx_hsaco_catalog_free(device_context->hsaco_catalog);
             device_context->hsaco_catalog = nullptr;
         }

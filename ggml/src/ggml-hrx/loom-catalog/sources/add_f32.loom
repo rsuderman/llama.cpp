@@ -1,0 +1,27 @@
+config.decl @nelements : index
+config.decl @workgroup_size_x : index
+
+kernel.def export("hrx_add_f32") @hrx_add_f32() {
+  %unit = index.constant 1 : index
+  %nelements = config.get @nelements : index
+  %workgroup_size_x = config.get @workgroup_size_x : index
+  %rounding = index.sub %workgroup_size_x, %unit : index
+  %rounded = index.add %nelements, %rounding : index
+  %workgroups_x = index.div %rounded, %workgroup_size_x : index
+  kernel.launch.config workgroups(%workgroups_x, %unit, %unit) workgroup_size(%workgroup_size_x, %unit, %unit) : index
+} launch(%src0: buffer, %src1: buffer, %dst: buffer, %nelements: i64) {
+  %base = index.constant 0 : offset
+  %linear = kernel.workitem.dispatch.id<x> : index
+  %element_count = config.get @nelements : index
+  %src0_view = buffer.view %src0[%base] : buffer -> view<[%element_count]xf32, #dense>
+  %src1_view = buffer.view %src1[%base] : buffer -> view<[%element_count]xf32, #dense>
+  %dst_view = buffer.view %dst[%base] : buffer -> view<[%element_count]xf32, #dense>
+  %in_bounds = index.cmp ult, %linear, %element_count : index
+  scf.if %in_bounds {
+    %lhs = view.load %src0_view[%linear] : view<[%element_count]xf32, #dense> -> f32
+    %rhs = view.load %src1_view[%linear] : view<[%element_count]xf32, #dense> -> f32
+    %sum = scalar.addf %lhs, %rhs : f32
+    view.store %sum, %dst_view[%linear] : f32, view<[%element_count]xf32, #dense>
+  }
+  kernel.return
+}

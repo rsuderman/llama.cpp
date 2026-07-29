@@ -189,7 +189,7 @@ static ggml_backend_hrx_loaded_hsaco_route * ggml_backend_hrx_hsaco_get_loaded_r
 
     hrx_executable_t executable = nullptr;
     if (!GGML_HRX_HSACO_CHECK(hrx_executable_load_data(catalog->device, entry->data, entry->data_size,
-                                                       catalog->architecture.c_str(), &executable))) {
+                                                       "amdgpu", catalog->target.c_str(), &executable))) {
         return nullptr;
     }
 

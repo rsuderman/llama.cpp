@@ -1,0 +1,10 @@
+{
+  "schema": "ggml-hrx-loom-catalog-v0",
+  "version": 0,
+  "targets": [
+    "gfx1100"
+  ],
+  "routes": [
+    "routes/add_f32.json"
+  ]
+}

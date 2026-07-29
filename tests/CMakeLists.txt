@@ -264,8 +264,46 @@ if (NOT LLAMA_SANITIZE_ADDRESS AND NOT GGML_SCHED_NO_REALLOC)
   llama_build_and_test(test-opt.cpp)
 endif()
 llama_build_and_test(test-backend-ops.cpp)
+find_package(Python3 COMPONENTS Interpreter)
+if (Python3_Interpreter_FOUND)
+    llama_test_cmd(
+        ${Python3_EXECUTABLE}
+        NAME test-hrx-loom-route-validator
+        LABEL python
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        ARGS ${PROJECT_SOURCE_DIR}/ggml/src/ggml-hrx/tools/test_validate_loom_routes.py
+    )
+endif()
 if (GGML_HRX)
     llama_build_and_test(test-backend-hrx.cpp)
+endif()
+if (GGML_HRX AND GGML_HRX_LOOM)
+    if (NOT TARGET hrx::hrx)
+        find_package(hrx CONFIG REQUIRED)
+    endif()
+    get_target_property(GGML_HRX_TEST_IMPORTED_INCLUDES hrx::hrx INTERFACE_INCLUDE_DIRECTORIES)
+    if (GGML_HRX_TEST_IMPORTED_INCLUDES)
+        set(GGML_HRX_TEST_FILTERED_IMPORTED_INCLUDES)
+        foreach(GGML_HRX_TEST_IMPORTED_INCLUDE IN LISTS GGML_HRX_TEST_IMPORTED_INCLUDES)
+            set(GGML_HRX_TEST_IMPORTED_INCLUDE_PATH "${GGML_HRX_TEST_IMPORTED_INCLUDE}")
+            if (GGML_HRX_TEST_IMPORTED_INCLUDE_PATH MATCHES "^\\$<BUILD_INTERFACE:(.*)>$")
+                set(GGML_HRX_TEST_IMPORTED_INCLUDE_PATH "${CMAKE_MATCH_1}")
+            endif()
+            if (EXISTS "${GGML_HRX_TEST_IMPORTED_INCLUDE_PATH}")
+                list(APPEND GGML_HRX_TEST_FILTERED_IMPORTED_INCLUDES "${GGML_HRX_TEST_IMPORTED_INCLUDE}")
+            endif()
+        endforeach()
+        set_target_properties(hrx::hrx PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${GGML_HRX_TEST_FILTERED_IMPORTED_INCLUDES}")
+    endif()
+    llama_build_and_test(test-hrx-loom-cache.cpp)
+    target_link_libraries(test-hrx-loom-cache PRIVATE hrx::hrx)
+    target_include_directories(test-hrx-loom-cache PRIVATE
+        ${PROJECT_SOURCE_DIR}/ggml/src
+        ${PROJECT_SOURCE_DIR}/ggml/src/ggml-hrx
+        ${CMAKE_BINARY_DIR}/ggml/src/ggml-hrx/loom-catalog
+    )
+    add_dependencies(test-hrx-loom-cache ggml-hrx-loom-catalog)
 endif()
 
 llama_build_and_test(test-model-load-cancel.cpp LABEL "model")

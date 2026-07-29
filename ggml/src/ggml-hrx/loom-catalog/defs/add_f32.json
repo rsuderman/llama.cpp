@@ -1,0 +1,38 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "add_f32",
+  "op": "GGML_OP_ADD",
+  "source": "sources/add_f32.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx_add_f32",
+  "abi": {
+    "binding_count": 3,
+    "parameter_count": 4,
+    "constant_byte_length": 8
+  },
+  "workgroup_size": [
+    256,
+    1,
+    1
+  ],
+  "parameters": [
+    {
+      "name": "nelements",
+      "type": "i64"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "src0",
+      "access": "read"
+    },
+    {
+      "name": "src1",
+      "access": "read"
+    },
+    {
+      "name": "dst",
+      "access": "write"
+    }
+  ]
+}
