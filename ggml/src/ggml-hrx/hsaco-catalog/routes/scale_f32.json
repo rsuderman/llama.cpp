@@ -24,7 +24,7 @@
       {"name": "bias", "source": "attribute.bias", "type": "f32", "position": 1},
       {"name": "nelements", "source": "derived.nelements", "type": "i64", "position": 2}
     ],
-    "dispatch": {"kind": "flat_1d", "work_items": "derived.nelements", "workgroup_size": [256, 1, 1]}
+    "dispatch": {"work_items": ["derived.nelements"], "workgroup_size": [256, 1, 1]}
   },
   "routing": {
     "op": "GGML_OP_SCALE",
@@ -33,6 +33,5 @@
     "src0_layout": "contiguous",
     "dst_layout": "contiguous",
     "shape": "same"
-  },
-  "launch": {"threads_per_block": 256}
+  }
 }

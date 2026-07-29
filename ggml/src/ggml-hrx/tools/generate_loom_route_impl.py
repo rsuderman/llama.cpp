@@ -112,6 +112,10 @@ def route_response(reason):
     return f"return ggml_backend_hrx_loom_unsupported({loom_reason(reason)});"
 
 
+def failed_response(route_constant):
+    return f"return ggml_backend_hrx_loom_failed({route_constant});"
+
+
 def load_route(source_root, route_name):
     source_root = source_root.resolve()
     route_path = Path(route_name)
@@ -207,39 +211,8 @@ def emit_config_plan_copy(lines, route):
     lines.append(f"    plan->config_binding_count = {len(bindings)};")
 
 
-def emit_flat_1d_dispatch(dispatch, context, route_constant):
-    del context
-    work_items = source_expr(route_schema.require_string(dispatch, "work_items", "route"))
-    return [
-        f"    if (!ggml_backend_hrx_loom_make_1d_dispatch_config(entry, {work_items}, &plan->dispatch)) {{",
-        f"        return ggml_backend_hrx_loom_failed({route_constant});",
-        "    }",
-    ]
-
-
-def emit_rows_1d_dispatch(dispatch, context, route_constant):
-    del context
-    rows = source_expr(route_schema.require_string(dispatch, "rows", "route"))
-    return [
-        f"    if (!ggml_backend_hrx_loom_make_row_dispatch_config(entry, {rows}, &plan->dispatch)) {{",
-        f"        return ggml_backend_hrx_loom_failed({route_constant});",
-        "    }",
-    ]
-
-
 def emit_integer_operand(value, context):
     return route_emit.emit_integer_operand(value, context, route_schema)
-
-
-def emit_exact_3d_dispatch(dispatch, context, route_constant):
-    return route_emit.emit_exact_3d_dispatch(dispatch, context, route_constant, route_schema)
-
-
-DISPATCH_EMITTERS = {
-    "flat_1d": emit_flat_1d_dispatch,
-    "rows_1d": emit_rows_1d_dispatch,
-    "exact_3d": emit_exact_3d_dispatch,
-}
 
 
 def emit_plan_materialization(lines, route, definition, context):
@@ -285,11 +258,7 @@ def emit_plan_materialization(lines, route, definition, context):
         ))
     lines.append(f"    plan->constants_size = {constant_byte_length};")
 
-    kind = route_schema.require_string(dispatch, "kind", "route")
-    emitter = DISPATCH_EMITTERS.get(kind)
-    if emitter is None:
-        raise ValueError(f"unsupported dispatch kind {kind}")
-    lines.extend(emitter(dispatch, context, route_constant))
+    lines.extend(route_emit.emit_dispatch_config(dispatch, context, route_constant, failed_response, route_schema))
 
     lines.append(f"    return ggml_backend_hrx_loom_supported({route_constant});")
 

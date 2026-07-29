@@ -84,8 +84,8 @@ call.
 
 This routing is not the end goal. The route JSON now contains enough metadata
 to generate explicit route matcher/materializer functions, but the transitional
-top-level `routing` and `launch` fields remain until generic generated
-invocation replaces the handwritten route helpers.
+top-level `routing` field remains until generic generated invocation replaces
+the handwritten route helpers.
 
 ## Validation
 

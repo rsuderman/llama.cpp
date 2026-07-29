@@ -2,8 +2,9 @@
 
 #include "ggml-hrx-loom-catalog-runtime.h"
 #include "ggml-hrx-loom-catalog.h"
-#include "ggml.h"
+#include "ggml-hrx-runtime-util.h"
 #include "ggml-impl.h"
+#include "ggml.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -127,28 +128,18 @@ const ggml_backend_hrx_loom_catalog_entry * ggml_backend_hrx_loom_find_entry(
     const ggml_backend_hrx_loom_catalog * catalog,
     const char *                          route_id);
 
-bool ggml_backend_hrx_loom_make_1d_dispatch_config(const ggml_backend_hrx_loom_catalog_entry * entry,
-                                                   int64_t                                     nelements,
-                                                   hrx_dispatch_config_t *                     out_config);
-
-bool ggml_backend_hrx_loom_make_row_dispatch_config(const ggml_backend_hrx_loom_catalog_entry * entry,
-                                                    int64_t                                     nrows,
-                                                    hrx_dispatch_config_t *                     out_config);
-
 int64_t ggml_backend_hrx_loom_next_power_of_2(int64_t value);
 
 bool ggml_backend_hrx_loom_bind_tensor(const ggml_backend_hrx_loom_op_request * request,
                                        const ggml_tensor *                      tensor,
                                        hrx_buffer_ref_t *                       out_ref);
 
-ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_match_request(
-    ggml_backend_hrx_loom_catalog *          catalog,
-    const ggml_backend_hrx_loom_op_request * request);
+ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_match_request(ggml_backend_hrx_loom_catalog *          catalog,
+                                                                      const ggml_backend_hrx_loom_op_request * request);
 
-ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_prepare_plan(
-    ggml_backend_hrx_loom_catalog *          catalog,
-    const ggml_backend_hrx_loom_op_request * request,
-    ggml_backend_hrx_loom_execution_plan *   plan);
+ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_prepare_plan(ggml_backend_hrx_loom_catalog *          catalog,
+                                                                     const ggml_backend_hrx_loom_op_request * request,
+                                                                     ggml_backend_hrx_loom_execution_plan *   plan);
 
 ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_match_or_prepare_request(
     ggml_backend_hrx_loom_catalog *          catalog,

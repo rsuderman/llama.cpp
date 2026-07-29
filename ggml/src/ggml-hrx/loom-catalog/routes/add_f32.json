@@ -103,8 +103,9 @@
       }
     ],
     "dispatch": {
-      "kind": "flat_1d",
-      "work_items": "derived.nelements",
+      "work_items": [
+        "derived.nelements"
+      ],
       "workgroup_size": [
         256,
         1,

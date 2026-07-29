@@ -41,7 +41,7 @@
       {"name": "ncols", "source": "shape.src0.ncols", "type": "i64", "position": 1},
       {"name": "src1_nelements", "source": "derived.src1_nelements", "type": "i64", "position": 2}
     ],
-    "dispatch": {"kind": "flat_1d", "work_items": "derived.nelements", "workgroup_size": [256, 1, 1]}
+    "dispatch": {"work_items": ["derived.nelements"], "workgroup_size": [256, 1, 1]}
   },
   "routing": {
     "op": "GGML_OP_MUL",
@@ -52,6 +52,5 @@
     "src1_layout": "contiguous",
     "dst_layout": "contiguous",
     "shape": "src0_128x32_dst_same_src1_128x1"
-  },
-  "launch": {"threads_per_block": 256}
+  }
 }

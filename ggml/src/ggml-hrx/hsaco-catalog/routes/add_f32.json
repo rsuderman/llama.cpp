@@ -27,7 +27,7 @@
       {"name": "dst", "tensor": "dst", "position": 2, "kind": "output"}
     ],
     "scalars": [{"name": "nelements", "source": "derived.nelements", "type": "i64", "position": 0}],
-    "dispatch": {"kind": "flat_1d", "work_items": "derived.nelements", "workgroup_size": [256, 1, 1]}
+    "dispatch": {"work_items": ["derived.nelements"], "workgroup_size": [256, 1, 1]}
   },
   "routing": {
     "op": "GGML_OP_ADD",
@@ -38,6 +38,5 @@
     "src1_layout": "contiguous",
     "dst_layout": "contiguous",
     "shape": "same"
-  },
-  "launch": {"threads_per_block": 256}
+  }
 }

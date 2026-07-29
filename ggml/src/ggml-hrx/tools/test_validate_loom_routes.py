@@ -42,6 +42,13 @@ def expect_valid(source_root):
     loom.validate_catalog(source_root)
 
 
+def expect_valid_mutation(name, mutator):
+    with tempfile.TemporaryDirectory(prefix=f"{name}-") as tmpdir:
+        source_root = copy_catalog(tmpdir)
+        mutate_route(source_root, mutator)
+        loom.validate_catalog(source_root)
+
+
 def expect_invalid(name, mutator, expected):
     with tempfile.TemporaryDirectory(prefix=f"{name}-") as tmpdir:
         source_root = copy_catalog(tmpdir)
@@ -58,8 +65,29 @@ def expect_invalid(name, mutator, expected):
 
 def main():
     expect_valid(CATALOG_ROOT)
+    expect_valid_mutation(
+        "workgroups-dispatch",
+        lambda route: route["invocation"].update({
+            "dispatch": {"workgroups": ["derived.nelements"], "workgroup_size": [256, 1, 1]}
+        }),
+    )
 
     cases = [
+        (
+            "ambiguous-dispatch",
+            lambda route: route["invocation"]["dispatch"].update({"workgroups": ["derived.nelements"]}),
+            "expects exactly one of work_items or workgroups",
+        ),
+        (
+            "scalar-dispatch",
+            lambda route: route["invocation"]["dispatch"].update({"work_items": "derived.nelements"}),
+            "expected an array with 1 to 3 integer values",
+        ),
+        (
+            "too-many-dispatch-axes",
+            lambda route: route["invocation"]["dispatch"].update({"work_items": [1, 1, 1, 1]}),
+            "expected an array with 1 to 3 integer values",
+        ),
         (
             "missing-config",
             lambda route: route.pop("config"),

@@ -38,7 +38,7 @@
       {"name": "ncols_pad", "source": "derived.ncols_pad", "type": "i64", "position": 2},
       {"name": "order", "source": "derived.order", "type": "i32", "position": 3}
     ],
-    "dispatch": {"kind": "rows_1d", "rows": "derived.nrows", "workgroup_size": [256, 1, 1]}
+    "dispatch": {"workgroups": ["derived.nrows"], "workgroup_size": [256, 1, 1]}
   },
   "routing": {
     "op": "GGML_OP_ARGSORT",
@@ -48,6 +48,5 @@
     "dst_layout": "contiguous",
     "shape": "same",
     "columns": 128
-  },
-  "launch": {"threads_per_block": 256}
+  }
 }

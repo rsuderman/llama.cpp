@@ -34,7 +34,7 @@
       {"name": "ncols", "source": "shape.src0.ncols", "type": "i64", "position": 0},
       {"name": "nrows", "source": "derived.nrows", "type": "i64", "position": 1}
     ],
-    "dispatch": {"kind": "rows_1d", "rows": "derived.nrows", "workgroup_size": [256, 1, 1]}
+    "dispatch": {"workgroups": ["derived.nrows"], "workgroup_size": [256, 1, 1]}
   },
   "routing": {
     "op": "GGML_OP_SOFT_MAX",
@@ -45,6 +45,5 @@
     "shape": "same",
     "columns": 128,
     "mask": "none"
-  },
-  "launch": {"threads_per_block": 256}
+  }
 }

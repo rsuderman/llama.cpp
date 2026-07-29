@@ -2,6 +2,7 @@
 
 #include "ggml-hrx-hsaco-catalog-runtime.h"
 #include "ggml-hrx-hsaco-catalog.h"
+#include "ggml-hrx-runtime-util.h"
 #include "ggml-impl.h"
 #include "ggml.h"
 
@@ -34,14 +35,6 @@ ggml_backend_hrx_hsaco_op_response ggml_backend_hrx_hsaco_failed(const char * ro
 const ggml_backend_hrx_hsaco_catalog_entry * ggml_backend_hrx_hsaco_find_entry(
     const ggml_backend_hrx_hsaco_catalog * catalog,
     const char *                           route_id);
-
-bool ggml_backend_hrx_hsaco_make_1d_dispatch_config(const ggml_backend_hrx_hsaco_catalog_entry * entry,
-                                                    int64_t                                      nelements,
-                                                    hrx_dispatch_config_t *                      out_config);
-
-bool ggml_backend_hrx_hsaco_make_row_dispatch_config(const ggml_backend_hrx_hsaco_catalog_entry * entry,
-                                                     int64_t                                      nrows,
-                                                     hrx_dispatch_config_t *                      out_config);
 
 int64_t ggml_backend_hrx_hsaco_next_power_of_2(int64_t value);
 

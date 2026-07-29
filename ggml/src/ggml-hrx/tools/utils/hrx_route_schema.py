@@ -8,9 +8,8 @@ PREDICATE_FIELDS = {"contiguous", "same_shape", "rank", "field", "equals", "in",
 DERIVED_FIELDS = {"type", "field", "value", "product", "ceil_div", "next_power_of_2"}
 BUFFER_FIELDS = {"name", "tensor", "position", "kind"}
 SCALAR_FIELDS = {"name", "source", "value", "type", "position"}
-DISPATCH_FIELDS = {"kind", "work_items", "rows", "workgroup_count", "workgroup_size"}
+DISPATCH_FIELDS = {"work_items", "workgroups", "workgroup_size"}
 INVOCATION_FIELDS = {"buffers", "scalars", "dispatch"}
-WORKGROUP_COUNT_FIELDS = {"x", "y", "z"}
 
 SCALAR_TYPES = {"i32", "i64", "f32", "f64"}
 INTEGER_TYPES = {"i32", "i64"}
@@ -658,31 +657,26 @@ def validate_scalars(scalars, route_path, definition, context):
 
 def validate_dispatch(dispatch, route_path, definition, context):
     unknown_fields(dispatch, DISPATCH_FIELDS, f"{route_path}: invocation.dispatch")
-    kind = require_string(dispatch, "kind", f"{route_path}: invocation.dispatch")
     workgroup_size = dispatch.get("workgroup_size")
     validate_workgroup_size(workgroup_size, f"{route_path}: invocation.dispatch")
     definition_workgroup_size = require_array(definition, "workgroup_size", route_path)
     if workgroup_size != definition_workgroup_size:
         raise ValueError(f"{route_path}: invocation.dispatch.workgroup_size does not match definition workgroup_size")
-    if kind == "flat_1d":
-        if set(dispatch) != {"kind", "work_items", "workgroup_size"}:
-            raise ValueError(f"{route_path}: flat_1d dispatch requires kind, work_items, and workgroup_size")
-        validate_integer_source(dispatch["work_items"], context, f"{route_path}: invocation.dispatch.work_items")
-    elif kind == "rows_1d":
-        if set(dispatch) != {"kind", "rows", "workgroup_size"}:
-            raise ValueError(f"{route_path}: rows_1d dispatch requires kind, rows, and workgroup_size")
-        validate_integer_source(dispatch["rows"], context, f"{route_path}: invocation.dispatch.rows")
-    elif kind == "exact_3d":
-        if set(dispatch) != {"kind", "workgroup_count", "workgroup_size"}:
-            raise ValueError(f"{route_path}: exact_3d dispatch requires kind, workgroup_count, and workgroup_size")
-        workgroup_count = require_dict(dispatch, "workgroup_count", f"{route_path}: invocation.dispatch")
-        unknown_fields(workgroup_count, WORKGROUP_COUNT_FIELDS, f"{route_path}: invocation.dispatch.workgroup_count")
-        if set(workgroup_count) != WORKGROUP_COUNT_FIELDS:
-            raise ValueError(f"{route_path}: invocation.dispatch.workgroup_count requires x, y, and z")
-        for axis in ("x", "y", "z"):
-            validate_integer_operand(workgroup_count[axis], context, f"{route_path}: invocation.dispatch.workgroup_count.{axis}")
+    has_work_items = "work_items" in dispatch
+    has_workgroups = "workgroups" in dispatch
+    if has_work_items == has_workgroups:
+        raise ValueError(f"{route_path}: invocation.dispatch expects exactly one of work_items or workgroups")
+    if has_work_items:
+        validate_dispatch_axis_list(dispatch["work_items"], context, f"{route_path}: invocation.dispatch.work_items")
     else:
-        raise ValueError(f"{route_path}: unsupported dispatch kind {kind}")
+        validate_dispatch_axis_list(dispatch["workgroups"], context, f"{route_path}: invocation.dispatch.workgroups")
+
+
+def validate_dispatch_axis_list(values, context, source):
+    if not isinstance(values, list) or not values or len(values) > 3:
+        raise ValueError(f"{source}: expected an array with 1 to 3 integer values")
+    for i, value in enumerate(values):
+        validate_integer_operand(value, context, f"{source}[{i}]")
 
 
 def validate_integer_source(value, context, source):

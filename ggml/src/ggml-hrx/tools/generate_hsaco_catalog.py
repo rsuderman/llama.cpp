@@ -66,7 +66,6 @@ struct ggml_backend_hrx_hsaco_catalog_entry {
     const unsigned char * data;
     size_t data_size;
     uint32_t workgroup_size[3];
-    uint32_t threads_per_block;
     uint32_t binding_count;
     uint32_t parameter_count;
     uint32_t constant_byte_length;
@@ -97,7 +96,6 @@ def write_generated_source(path, header_path, entries):
             f"        /* .data = */ {entry['array_name']},\n"
             f"        /* .data_size = */ sizeof({entry['array_name']}),\n"
             f"        /* .workgroup_size = */ {{{workgroup_size[0]}, {workgroup_size[1]}, {workgroup_size[2]}}},\n"
-            f"        /* .threads_per_block = */ {entry['threads_per_block']},\n"
             f"        /* .binding_count = */ {entry['binding_count']},\n"
             f"        /* .parameter_count = */ {entry['parameter_count']},\n"
             f"        /* .constant_byte_length = */ {entry['constant_byte_length']},\n"
@@ -147,7 +145,6 @@ def main():
         source_path = (source_root / require_string(definition, "source", definition_path)).resolve()
         if not source_path.is_file():
             raise ValueError(f"{definition_path}: missing source {source_path}")
-        launch = route.get("launch", {})
         workgroup_size = require_list(definition, "workgroup_size", definition_path)
         if len(workgroup_size) != 3:
             raise ValueError(f"{definition_path}: workgroup_size must have 3 values")
@@ -166,7 +163,6 @@ def main():
                 "array_name": f"ggml_hrx_hsaco_{c_identifier(definition_id)}_{c_identifier(route_id)}_{c_identifier(target)}",
                 "data": hsaco_path.read_bytes(),
                 "workgroup_size": [int(value) for value in workgroup_size],
-                "threads_per_block": int(launch.get("threads_per_block", workgroup_size[0])),
                 "binding_count": require_int(abi, "binding_count", definition_path),
                 "parameter_count": require_int(abi, "parameter_count", definition_path),
                 "constant_byte_length": require_int(abi, "constant_byte_length", definition_path),

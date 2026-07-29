@@ -4,10 +4,8 @@
 #include <loomc/loomc.h>
 #include <loomc/target/amdgpu.h>
 
-#include <cinttypes>
 #include <cstdlib>
 #include <cstring>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -177,59 +175,6 @@ ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_supported(const char * r
 ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_failed(const char * route_id) {
     return ggml_backend_hrx_loom_response(GGML_BACKEND_HRX_LOOM_FAILED, GGML_BACKEND_HRX_LOOM_UNSUPPORTED_NONE,
                                           route_id);
-}
-
-bool ggml_backend_hrx_loom_make_1d_dispatch_config(const ggml_backend_hrx_loom_catalog_entry * entry,
-                                                   int64_t                                     nelements,
-                                                   hrx_dispatch_config_t *                     out_config) {
-    if (!entry || !out_config || entry->workgroup_size[0] == 0 || nelements < 0) {
-        return false;
-    }
-
-    const uint64_t threads_per_block = entry->workgroup_size[0];
-    const uint64_t workgroup_count   = (static_cast<uint64_t>(nelements) + threads_per_block - 1) / threads_per_block;
-    if (workgroup_count > std::numeric_limits<uint32_t>::max()) {
-        GGML_LOG_ERROR("%s: workgroup count is too large: %" PRIu64 "\n", __func__, workgroup_count);
-        return false;
-    }
-
-    *out_config = {
-        /* .workgroup_count = */ { static_cast<uint32_t>(workgroup_count), 1, 1 },
-        /* .workgroup_size = */
-        {
-                                  entry->workgroup_size[0],
-                                  entry->workgroup_size[1],
-                                  entry->workgroup_size[2],
-                                  },
-        /* .subgroup_size = */
-        0,
-    };
-    return true;
-}
-
-bool ggml_backend_hrx_loom_make_row_dispatch_config(const ggml_backend_hrx_loom_catalog_entry * entry,
-                                                    int64_t                                     nrows,
-                                                    hrx_dispatch_config_t *                     out_config) {
-    if (!entry || !out_config || nrows < 0) {
-        return false;
-    }
-    if (static_cast<uint64_t>(nrows) > std::numeric_limits<uint32_t>::max()) {
-        GGML_LOG_ERROR("%s: row count is too large: %" PRId64 "\n", __func__, nrows);
-        return false;
-    }
-
-    *out_config = {
-        /* .workgroup_count = */ { static_cast<uint32_t>(nrows), 1, 1 },
-        /* .workgroup_size = */
-        {
-                                  entry->workgroup_size[0],
-                                  entry->workgroup_size[1],
-                                  entry->workgroup_size[2],
-                                  },
-        /* .subgroup_size = */
-        0,
-    };
-    return true;
 }
 
 int64_t ggml_backend_hrx_loom_next_power_of_2(int64_t value) {

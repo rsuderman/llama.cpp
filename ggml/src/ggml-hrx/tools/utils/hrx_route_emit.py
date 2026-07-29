@@ -456,19 +456,30 @@ def emit_predicates(lines, route, context, schema, unsupported_reason_by_predica
         ])
 
 
-def emit_exact_3d_dispatch(dispatch, context, route_constant, schema):
-    del route_constant
-    workgroup_count = schema.require_dict(dispatch, "workgroup_count", "route")
-    x = emit_integer_operand(workgroup_count["x"], context, schema)
-    y = emit_integer_operand(workgroup_count["y"], context, schema)
-    z = emit_integer_operand(workgroup_count["z"], context, schema)
-    workgroup_size = dispatch["workgroup_size"]
+def dispatch_axis_exprs(values, context, schema):
+    axes = [emit_integer_operand(value, context, schema) for value in values]
+    while len(axes) < 3:
+        axes.append("1")
+    return axes
+
+
+def emit_dispatch_config(dispatch, context, route_constant, failed_response, schema):
+    if "work_items" in dispatch:
+        helper = "ggml_backend_hrx_make_work_items_dispatch_config"
+        field = "work_items"
+        values = schema.require_array(dispatch, field, "route")
+        value_name = "dispatch_work_items"
+    else:
+        helper = "ggml_backend_hrx_make_workgroup_dispatch_config"
+        field = "workgroups"
+        values = schema.require_array(dispatch, field, "route")
+        value_name = "dispatch_workgroups"
+    x, y, z = dispatch_axis_exprs(values, context, schema)
     return [
-        "    plan->dispatch = {",
-        f"        /* .workgroup_count = */ {{static_cast<uint32_t>({x}), static_cast<uint32_t>({y}), static_cast<uint32_t>({z})}},",
-        f"        /* .workgroup_size  = */ {{{workgroup_size[0]}, {workgroup_size[1]}, {workgroup_size[2]}}},",
-        "        /* .subgroup_size   = */ 0,",
-        "    };",
+        f"    const int64_t {value_name}[3] = {{{x}, {y}, {z}}};",
+        f"    if (!{helper}(entry->workgroup_size, {value_name}, &plan->dispatch)) {{",
+        f"        {failed_response(route_constant)}",
+        "    }",
     ]
 
 

@@ -23,7 +23,6 @@ TOP_LEVEL_FIELDS = {
     "invocation",
     "tests",
     "routing",
-    "launch",
 }
 
 MATCH_FIELDS = route_schema.MATCH_FIELDS
@@ -35,7 +34,6 @@ BUFFER_FIELDS = route_schema.BUFFER_FIELDS
 SCALAR_FIELDS = route_schema.SCALAR_FIELDS
 DISPATCH_FIELDS = route_schema.DISPATCH_FIELDS
 INVOCATION_FIELDS = route_schema.INVOCATION_FIELDS
-WORKGROUP_COUNT_FIELDS = route_schema.WORKGROUP_COUNT_FIELDS
 
 SCALAR_TYPES = route_schema.SCALAR_TYPES
 INTEGER_TYPES = route_schema.INTEGER_TYPES
@@ -129,8 +127,6 @@ def validate_route(route_path, definitions):
         require_dict(route, "tests", route_path)
     if "routing" in route:
         require_dict(route, "routing", route_path)
-    if "launch" in route:
-        require_dict(route, "launch", route_path)
 
     definition_path = (route_path.parent / require_string(route, "definition", route_path)).resolve()
     definition = definitions.get(definition_path)
