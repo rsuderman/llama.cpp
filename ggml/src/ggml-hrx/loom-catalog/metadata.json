@@ -2,5 +2,5 @@
   "schema": "ggml-hrx-loom-catalog-v0",
   "version": 0,
   "targets": ["gfx1100"],
-  "routes": ["routes/add/f32/contiguous.json", "routes/argsort/f32_i32/contiguous_wg256.json"]
+  "routes": ["routes/add/f32/contiguous.json", "routes/argsort/f32_i32/contiguous_wg256.json", "routes/sum_rows/f32/contiguous_4d.json"]
 }
