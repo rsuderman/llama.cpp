@@ -53,12 +53,12 @@ cmake -S . -B build-hrx -DGGML_HRX=ON -DGGML_HRX_LOOM=ON \
 
 `GGML_HRX_LOOM=ON` requires both the HRX runtime package and the Loom C API package. The first supported source format is `loom-text`, which is compiled in-process through `loomc` and emitted as AMDGPU HSACO before loading through HRX.
 
-Even in a Loom-enabled build, Loom routing is disabled at runtime unless `GGML_HRX_ENABLE_LOOM` is set. HRX tries HSACO first by default. Set `GGML_HRX_LOOM_FIRST=1` together with `GGML_HRX_ENABLE_LOOM=1` to try Loom routes before HSACO routes during development.
+In a Loom-enabled build, Loom routing is enabled at runtime by default. Set `GGML_HRX_DISABLE_LOOM=1` to disable Loom routing. HRX tries HSACO first by default. Set `GGML_HRX_LOOM_FIRST=1` to try Loom routes before HSACO routes during development.
 
 The focused ADD execution command is:
 
 ```sh
-GGML_HRX_ENABLE_LOOM=1 GGML_HRX_LOOM_FIRST=1 GGML_HRX_TEST_ONLY=add build-hrx/bin/test-backend-hrx
+GGML_HRX_LOOM_FIRST=1 GGML_HRX_TEST_ONLY=add build-hrx/bin/test-backend-hrx
 ```
 
 That command exercises route matching, config materialization, embedded Loom source compilation, HSACO emission, HRX executable loading, dispatch, and numeric validation for ADD sizes 1, 257, and 2048. HRX device access may require unsandboxed execution.

@@ -44,7 +44,7 @@ struct ggml_backend_hrx_options {
     bool trace_graph = false;
     size_t staging_arena_size = GGML_HRX_STAGING_ARENA_DEFAULT_SIZE;
 #if defined(GGML_HRX_USE_LOOM)
-    bool enable_loom = false;
+    bool enable_loom = true;
     bool loom_first = false;
 #endif
 };
@@ -225,7 +225,7 @@ static ggml_backend_hrx_options ggml_backend_hrx_parse_options() {
     options.trace_jsonl_path = ggml_backend_hrx_env_string("GGML_HRX_TRACE_JSONL");
     options.trace_graph = ggml_backend_hrx_env_bool("GGML_HRX_TRACE_GRAPH");
 #if defined(GGML_HRX_USE_LOOM)
-    options.enable_loom = ggml_backend_hrx_env_bool("GGML_HRX_ENABLE_LOOM");
+    options.enable_loom = !ggml_backend_hrx_env_bool("GGML_HRX_DISABLE_LOOM");
     options.loom_first = options.enable_loom && ggml_backend_hrx_env_bool("GGML_HRX_LOOM_FIRST");
 #endif
 
