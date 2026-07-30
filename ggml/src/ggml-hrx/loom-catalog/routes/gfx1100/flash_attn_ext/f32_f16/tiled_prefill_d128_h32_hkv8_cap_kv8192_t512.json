@@ -1,0 +1,113 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "flash_attn_ext_f32_f16_tiled_prefill_d128_h32_hkv8_cap_kv8192_t512",
+  "definition": "../../../../defs/gfx1100/flash_attn_ext/f32_f16/tiled_prefill_d128_h32_hkv8_cap_kv8192_t512.json",
+  "format": "loom",
+  "priority": 103,
+  "match": {
+    "op": "GGML_OP_FLASH_ATTN_EXT",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": ["d0", "d1", "d2", "d3"]
+      },
+      "src1": {
+        "type": "F16",
+        "shape": ["d0", "d1", "d2", "d3"]
+      },
+      "src2": {
+        "type": "F16",
+        "shape": ["d0", "d1", "d2", "d3"]
+      },
+      "src3": {
+        "type": "F16",
+        "shape": ["d0", "d1", "d2", "d3"]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": ["d0", "d1", "d2", "d3"]
+      }
+    },
+    "attributes": {
+      "precision": {"type": "i32"},
+      "scale": {"type": "f32"},
+      "logit_softcap": {"type": "f32"},
+      "max_bias": {"type": "f32"}
+    },
+    "predicates": [
+      {"src_absent": "src4"},
+      {"field": "attribute.precision", "equals": 10},
+      {"field": "attribute.logit_softcap", "equals": 0.0},
+      {"field": "attribute.max_bias", "equals": 0.0},
+      {"field": "shape.dst.d0", "equals": 128},
+      {"field": "shape.dst.d1", "equals": 32},
+      {"field": "shape.dst.d2", "min": 2},
+      {"field": "shape.dst.d2", "max": 512},
+      {"field": "shape.src1.d1", "min": 512},
+      {"field": "shape.src1.d1", "max": 8192},
+      {"field": "shape.src1.d1", "multiple_of": 512},
+      {"field": "shape.src1.d2", "equals": 8},
+      {"field": "shape.src0.d0", "equals": 128},
+      {"field": "shape.src1.d0", "equals": 128},
+      {"field": "shape.src2.d0", "equals": 128},
+      {"field": "shape.src0.d3", "equals": 1},
+      {"field": "shape.src1.d3", "equals": 1},
+      {"field": "shape.src2.d3", "equals": 1},
+      {"field": "shape.src3.d2", "equals": 1},
+      {"field": "shape.src3.d3", "equals": 1},
+      {"field": "shape.dst.d3", "equals": 1},
+      {"field": "tensor.src0.permutation.0", "equals": 0},
+      {"field": "tensor.src0.permutation.1", "equals": 2},
+      {"field": "tensor.src0.permutation.2", "equals": 1},
+      {"field": "tensor.src0.permutation.3", "equals": 3},
+      {"field": "tensor.src1.permutation.0", "equals": 0},
+      {"field": "tensor.src1.permutation.1", "equals": 2},
+      {"field": "tensor.src1.permutation.2", "equals": 1},
+      {"field": "tensor.src1.permutation.3", "equals": 3},
+      {"field": "tensor.src2.permutation.0", "equals": 0},
+      {"field": "tensor.src2.permutation.1", "equals": 2},
+      {"field": "tensor.src2.permutation.2", "equals": 1},
+      {"field": "tensor.src2.permutation.3", "equals": 3},
+      {"field": "shape.dst.d2", "equals": "shape.src0.d1"},
+      {"field": "shape.dst.d2", "equals": "shape.src3.d1"},
+      {"field": "shape.dst.d1", "equals": "shape.src0.d2"},
+      {"field": "shape.src1.d1", "equals": "shape.src2.d1"},
+      {"field": "shape.src1.d1", "equals": "shape.src3.d0"},
+      {"field": "shape.src1.d2", "equals": "shape.src2.d2"},
+      {"contiguous": "src0"},
+      {"contiguous": "src1"},
+      {"contiguous": "src2"},
+      {"contiguous": "src3"},
+      {"contiguous": "dst"}
+    ]
+  },
+  "derived": {},
+  "config": {
+    "mode": "compile",
+    "bindings": [
+      {"name": "shape_flash_attn_ext_head_dim", "type": "i64", "source": "shape.dst.d0"},
+      {"name": "shape_flash_attn_ext_heads", "type": "i64", "source": "shape.dst.d1"},
+      {"name": "shape_flash_attn_ext_tokens", "type": "i64", "source": "shape.dst.d2"},
+      {"name": "shape_flash_attn_ext_kv_len", "type": "i64", "source": "shape.src1.d1"},
+      {"name": "shape_flash_attn_ext_kv_heads", "type": "i64", "source": "shape.src1.d2"},
+      {"name": "tuning_flash_attn_ext_workgroup_size", "type": "i64", "value": 256}
+    ]
+  },
+  "invocation": {
+    "buffers": [
+      {"name": "q", "tensor": "src0", "position": 0, "kind": "input"},
+      {"name": "kbuf", "tensor": "src1", "position": 1, "kind": "input"},
+      {"name": "vbuf", "tensor": "src2", "position": 2, "kind": "input"},
+      {"name": "mask", "tensor": "src3", "position": 3, "kind": "input"},
+      {"name": "dst", "tensor": "dst", "position": 4, "kind": "output"}
+    ],
+    "scalars": [
+      {"name": "scale", "type": "f32", "position": 0, "source": "attribute.scale"}
+    ],
+    "dispatch": {
+      "workgroups": ["shape.dst.d1", "shape.dst.d0", "shape.dst.d2"],
+      "workgroup_size": [256, 1, 1]
+    }
+  },
+  "architectures": ["gfx1100"]
+}

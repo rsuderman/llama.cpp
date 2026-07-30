@@ -1,0 +1,16 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "mul_mat_f32_f32_large_tiled_4d",
+  "op": "GGML_OP_MUL_MAT",
+  "source": "sources/generic/mul_mat/f32_f32/large_tiled.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_mul_mat_f32_f32_large_tiled",
+  "abi": {"binding_count": 3, "parameter_count": 3, "constant_byte_length": 0},
+  "workgroup_size": [32, 1, 1],
+  "parameters": [],
+  "bindings": [
+    {"name": "src0", "access": "read"},
+    {"name": "src1", "access": "read"},
+    {"name": "dst", "access": "write"}
+  ]
+}

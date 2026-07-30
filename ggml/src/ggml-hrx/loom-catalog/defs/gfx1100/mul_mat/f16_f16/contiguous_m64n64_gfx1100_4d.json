@@ -1,0 +1,16 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "mul_mat_f16_f16_contiguous_m64n64_gfx1100_4d",
+  "op": "GGML_OP_MUL_MAT",
+  "source": "sources/gfx1100/mul_mat/f16_f16/contiguous_m64n64_gfx1100.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_mul_mat_f16_f16_contiguous_m64n64_gfx1100",
+  "abi": {"binding_count": 3, "parameter_count": 3, "constant_byte_length": 0},
+  "workgroup_size": [32, 1, 1],
+  "parameters": [],
+  "bindings": [
+    {"name": "src0", "access": "read"},
+    {"name": "src1", "access": "read"},
+    {"name": "dst", "access": "write"}
+  ]
+}

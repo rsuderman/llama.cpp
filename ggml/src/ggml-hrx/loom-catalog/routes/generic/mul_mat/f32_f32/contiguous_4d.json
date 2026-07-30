@@ -1,0 +1,93 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "mul_mat_f32_f32_contiguous_4d",
+  "definition": "../../../../defs/generic/mul_mat/f32_f32/contiguous_4d.json",
+  "format": "loom",
+  "priority": 118,
+  "match": {
+    "op": "GGML_OP_MUL_MAT",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": ["d0", "d1", "d2", "d3"]
+      },
+      "src1": {
+        "type": "F32",
+        "shape": ["d0", "d1", "d2", "d3"]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": ["d0", "d1", "d2", "d3"]
+      }
+    },
+    "attributes": {},
+    "predicates": [
+      {"field": "derived.k", "min": 1},
+      {"field": "derived.k", "max": 8192},
+      {"field": "derived.rows", "min": 1},
+      {"field": "derived.rows", "max": 8192},
+      {"field": "derived.cols", "min": 1},
+      {"field": "derived.cols", "max": 512},
+      {"field": "shape.src0.d2", "equals": 1},
+      {"field": "shape.src0.d3", "equals": 1},
+      {"field": "shape.src1.d2", "equals": 1},
+      {"field": "shape.src1.d3", "equals": 1},
+      {"field": "shape.dst.d2", "equals": 1},
+      {"field": "shape.dst.d3", "equals": 1},
+      {"field": "derived.k", "equals": "derived.src1_k"},
+      {"field": "derived.rows", "equals": "derived.src0_rows"},
+      {"field": "derived.cols", "equals": "derived.src1_cols"},
+      {"contiguous": "src0"},
+      {"contiguous": "src1"},
+      {"contiguous": "dst"}
+    ]
+  },
+  "derived": {
+    "k": {
+      "type": "i64",
+      "product": ["shape.src0.d0"]
+    },
+    "src1_k": {
+      "type": "i64",
+      "product": ["shape.src1.d0"]
+    },
+    "rows": {
+      "type": "i64",
+      "product": ["shape.dst.d0"]
+    },
+    "src0_rows": {
+      "type": "i64",
+      "product": ["shape.src0.d1", "shape.src0.d2", "shape.src0.d3"]
+    },
+    "cols": {
+      "type": "i64",
+      "product": ["shape.dst.d1", "shape.dst.d2", "shape.dst.d3"]
+    },
+    "src1_cols": {
+      "type": "i64",
+      "product": ["shape.src1.d1", "shape.src1.d2", "shape.src1.d3"]
+    }
+  },
+  "config": {
+    "mode": "compile",
+    "bindings": [
+      {"name": "shape_mul_mat_f32_f32_contiguous_k", "type": "i64", "source": "derived.k"},
+      {"name": "shape_mul_mat_f32_f32_contiguous_rows", "type": "i64", "source": "derived.rows"},
+      {"name": "shape_mul_mat_f32_f32_contiguous_cols", "type": "i64", "source": "derived.cols"},
+      {"name": "tuning_mul_mat_f32_f32_contiguous_workgroup_size", "type": "i64", "value": 256}
+    ]
+  },
+  "invocation": {
+    "buffers": [
+      {"name": "src0", "tensor": "src0", "position": 0, "kind": "input"},
+      {"name": "src1", "tensor": "src1", "position": 1, "kind": "input"},
+      {"name": "dst", "tensor": "dst", "position": 2, "kind": "output"}
+    ],
+    "scalars": [],
+    "dispatch": {
+      "workgroups": ["derived.rows", "derived.cols"],
+      "workgroup_size": [256, 1, 1]
+    }
+  },
+  "architectures": ["*"]
+}

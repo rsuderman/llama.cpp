@@ -1,0 +1,121 @@
+amdgpu.target<gfx1100> @gfx1100_wave32 {subgroup_size = 32}
+
+config.decl @shape_mul_mat_f16_f16_contiguous_m64n64_gfx1100_k : %value: index where [range(%value, 4096, 14336), mul(%value, 16)]
+config.decl @shape_mul_mat_f16_f16_contiguous_m64n64_gfx1100_rows : %value: index where [range(%value, 1024, 14336), mul(%value, 64)]
+config.decl @shape_mul_mat_f16_f16_contiguous_m64n64_gfx1100_cols : %value: index where [range(%value, 512, 512), mul(%value, 64)]
+
+kernel.def target(@gfx1100_wave32) export("hrx2_mul_mat_f16_f16_contiguous_m64n64_gfx1100") @hrx2_mul_mat_f16_f16_contiguous_m64n64_gfx1100() {
+  %unit = index.constant 1 : index
+  %thirty_two = index.constant 32 : index
+  %sixty_four = index.constant 64 : index
+  %rows = config.get @shape_mul_mat_f16_f16_contiguous_m64n64_gfx1100_rows : index
+  %cols = config.get @shape_mul_mat_f16_f16_contiguous_m64n64_gfx1100_cols : index
+  %row_tiles = index.div %rows, %sixty_four : index
+  %col_tiles = index.div %cols, %sixty_four : index
+  kernel.launch.config workgroups(%row_tiles, %col_tiles, %unit) workgroup_size(%thirty_two, %unit, %unit) : index
+} launch(%src0: buffer, %src1: buffer, %dst: buffer) {
+  %row_quad = kernel.workgroup.id<x> : index
+  %col_quad = kernel.workgroup.id<y> : index
+  func.apply<hrx2.mul_mat_f16_f16.contiguous_m64n64.gfx1100>(%src0, %src1, %dst, %row_quad, %col_quad) : (buffer, buffer, buffer, index, index)
+  kernel.return
+}
+
+func.template<hrx2.mul_mat_f16_f16.contiguous_m64n64.gfx1100> target(@gfx1100_wave32) priority(20) @hrx2_mul_mat_f16_f16_contiguous_m64n64_gfx1100_tile_m64n64(%src0: buffer, %src1: buffer, %dst: buffer, %row_quad: index, %col_quad: index) {
+  %base = index.constant 0 : offset
+  %zero = index.constant 0 : index
+  %one = index.constant 1 : index
+  %sixteen = index.constant 16 : index
+  %thirty_two = index.constant 32 : index
+  %sixty_four = index.constant 64 : index
+  %k = config.get @shape_mul_mat_f16_f16_contiguous_m64n64_gfx1100_k : index
+  %rows = config.get @shape_mul_mat_f16_f16_contiguous_m64n64_gfx1100_rows : index
+  %cols = config.get @shape_mul_mat_f16_f16_contiguous_m64n64_gfx1100_cols : index
+  %k_tile_count = index.div %k, %sixteen : index
+  %row_origin0 = index.mul %row_quad, %sixty_four : index
+  %row_origin1 = index.add %row_origin0, %sixteen : index
+  %row_origin2 = index.add %row_origin1, %sixteen : index
+  %row_origin3 = index.add %row_origin2, %sixteen : index
+  %col_origin0 = index.mul %col_quad, %sixty_four : index
+  %col_origin1 = index.add %col_origin0, %sixteen : index
+  %col_origin2 = index.add %col_origin1, %sixteen : index
+  %col_origin3 = index.add %col_origin2, %sixteen : index
+  %m = index.constant 16 : index
+  %n = index.constant 16 : index
+  %fragment_k = index.constant 16 : index
+  %src1_layout = encoding.layout.strided [1, %k] : encoding<layout>
+  %dst_layout = encoding.layout.strided [1, %rows] : encoding<layout>
+  %zero_acc = vector.constant 0.0 : vector<8xf32>
+
+  %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0, %src1, %dst : buffer, buffer, buffer
+  %src0_global = buffer.assume.memory_space<global> %src0_noalias : buffer
+  %src1_global = buffer.assume.memory_space<global> %src1_noalias : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst_noalias : buffer
+  %src0_aligned = buffer.assume.alignment %src0_global {minimum_alignment = 16} : buffer
+  %src1_aligned = buffer.assume.alignment %src1_global {minimum_alignment = 16} : buffer
+  %dst_aligned = buffer.assume.alignment %dst_global {minimum_alignment = 16} : buffer
+  %src0_view = buffer.view %src0_aligned[%base] : buffer -> view<[%rows]x[%k]xf16, #dense>
+  %src1_view = buffer.view %src1_aligned[%base] : buffer -> view<[%k]x[%cols]xf16, %src1_layout>
+  %dst_view = buffer.view %dst_aligned[%base] : buffer -> view<[%rows]x[%cols]xf32, %dst_layout>
+  %init00 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init01 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init02 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init03 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init10 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init11 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init12 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init13 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init20 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init21 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init22 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init23 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init30 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init31 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init32 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+  %init33 = vector.fragment<init> %zero_acc shape [%m, %n] : vector<8xf32>
+
+  %result00, %result01, %result02, %result03, %result10, %result11, %result12, %result13, %result20, %result21, %result22, %result23, %result30, %result31, %result32, %result33 = scf.for %k_tile = [%zero to %k_tile_count step %one](%acc00 = %init00 : vector<8xf32>, %acc01 = %init01 : vector<8xf32>, %acc02 = %init02 : vector<8xf32>, %acc03 = %init03 : vector<8xf32>, %acc10 = %init10 : vector<8xf32>, %acc11 = %init11 : vector<8xf32>, %acc12 = %init12 : vector<8xf32>, %acc13 = %init13 : vector<8xf32>, %acc20 = %init20 : vector<8xf32>, %acc21 = %init21 : vector<8xf32>, %acc22 = %init22 : vector<8xf32>, %acc23 = %init23 : vector<8xf32>, %acc30 = %init30 : vector<8xf32>, %acc31 = %init31 : vector<8xf32>, %acc32 = %init32 : vector<8xf32>, %acc33 = %init33 : vector<8xf32>) -> (vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>) {
+    %k_origin = index.mul %k_tile, %sixteen : index
+    %lhs0 = vector.fragment.load<lhs> %src0_view[%row_origin0, %k_origin] shape [%m, %fragment_k] : view<[%rows]x[%k]xf16, #dense> -> vector<16xf16>
+    %lhs1 = vector.fragment.load<lhs> %src0_view[%row_origin1, %k_origin] shape [%m, %fragment_k] : view<[%rows]x[%k]xf16, #dense> -> vector<16xf16>
+    %lhs2 = vector.fragment.load<lhs> %src0_view[%row_origin2, %k_origin] shape [%m, %fragment_k] : view<[%rows]x[%k]xf16, #dense> -> vector<16xf16>
+    %lhs3 = vector.fragment.load<lhs> %src0_view[%row_origin3, %k_origin] shape [%m, %fragment_k] : view<[%rows]x[%k]xf16, #dense> -> vector<16xf16>
+    %rhs0 = vector.fragment.load<rhs> %src1_view[%k_origin, %col_origin0] shape [%fragment_k, %n] : view<[%k]x[%cols]xf16, %src1_layout> -> vector<16xf16>
+    %rhs1 = vector.fragment.load<rhs> %src1_view[%k_origin, %col_origin1] shape [%fragment_k, %n] : view<[%k]x[%cols]xf16, %src1_layout> -> vector<16xf16>
+    %rhs2 = vector.fragment.load<rhs> %src1_view[%k_origin, %col_origin2] shape [%fragment_k, %n] : view<[%k]x[%cols]xf16, %src1_layout> -> vector<16xf16>
+    %rhs3 = vector.fragment.load<rhs> %src1_view[%k_origin, %col_origin3] shape [%fragment_k, %n] : view<[%k]x[%cols]xf16, %src1_layout> -> vector<16xf16>
+    %next00 = vector.mma %lhs0, %rhs0, %acc00 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next01 = vector.mma %lhs0, %rhs1, %acc01 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next02 = vector.mma %lhs0, %rhs2, %acc02 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next03 = vector.mma %lhs0, %rhs3, %acc03 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next10 = vector.mma %lhs1, %rhs0, %acc10 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next11 = vector.mma %lhs1, %rhs1, %acc11 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next12 = vector.mma %lhs1, %rhs2, %acc12 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next13 = vector.mma %lhs1, %rhs3, %acc13 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next20 = vector.mma %lhs2, %rhs0, %acc20 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next21 = vector.mma %lhs2, %rhs1, %acc21 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next22 = vector.mma %lhs2, %rhs2, %acc22 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next23 = vector.mma %lhs2, %rhs3, %acc23 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next30 = vector.mma %lhs3, %rhs0, %acc30 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next31 = vector.mma %lhs3, %rhs1, %acc31 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next32 = vector.mma %lhs3, %rhs2, %acc32 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    %next33 = vector.mma %lhs3, %rhs3, %acc33 : vector<16xf16>, vector<16xf16>, vector<8xf32>
+    scf.yield %next00, %next01, %next02, %next03, %next10, %next11, %next12, %next13, %next20, %next21, %next22, %next23, %next30, %next31, %next32, %next33 : vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>
+  }
+  vector.fragment.store<result> %result00, %dst_view[%row_origin0, %col_origin0] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result01, %dst_view[%row_origin0, %col_origin1] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result02, %dst_view[%row_origin0, %col_origin2] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result03, %dst_view[%row_origin0, %col_origin3] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result10, %dst_view[%row_origin1, %col_origin0] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result11, %dst_view[%row_origin1, %col_origin1] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result12, %dst_view[%row_origin1, %col_origin2] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result13, %dst_view[%row_origin1, %col_origin3] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result20, %dst_view[%row_origin2, %col_origin0] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result21, %dst_view[%row_origin2, %col_origin1] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result22, %dst_view[%row_origin2, %col_origin2] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result23, %dst_view[%row_origin2, %col_origin3] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result30, %dst_view[%row_origin3, %col_origin0] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result31, %dst_view[%row_origin3, %col_origin1] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result32, %dst_view[%row_origin3, %col_origin2] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  vector.fragment.store<result> %result33, %dst_view[%row_origin3, %col_origin3] shape [%m, %n] : vector<8xf32>, view<[%rows]x[%cols]xf32, %dst_layout>
+  func.return
+}

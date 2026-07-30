@@ -13,7 +13,7 @@ INVOCATION_FIELDS = {"buffers", "scalars", "dispatch"}
 
 SCALAR_TYPES = {"i32", "i64", "f32", "f64"}
 INTEGER_TYPES = {"i32", "i64"}
-DTYPES = {"BF16", "F16", "F32", "I32", "I64", "Q4_K"}
+DTYPES = {"BF16", "F16", "F32", "I32", "I64", "Q4_K", "Q5_K", "Q6_K", "Q8_0"}
 SUPPORTED_BINDING_ACCESSES = {"read", "write", "read_write"}
 SUPPORTED_SCALAR_TYPES = {
     "f32": (4, 4),
@@ -52,6 +52,17 @@ OP_RULES = {
         "input_tensors": {"src0", "src1"},
         "attributes": {},
     },
+    "GGML_OP_FLASH_ATTN_EXT": {
+        "required_tensors": {"src0", "src1", "src2", "src3", "dst"},
+        "optional_tensors": {"src4"},
+        "input_tensors": {"src0", "src1", "src2", "src3", "src4"},
+        "attributes": {
+            "logit_softcap": "f32",
+            "max_bias": "f32",
+            "precision": "i32",
+            "scale": "f32",
+        },
+    },
     "GGML_OP_GET_ROWS": {
         "required_tensors": {"src0", "src1", "dst"},
         "optional_tensors": set(),
@@ -65,6 +76,12 @@ OP_RULES = {
         "attributes": {"glu_op": "i32"},
     },
     "GGML_OP_MUL": {
+        "required_tensors": {"src0", "src1", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0", "src1"},
+        "attributes": {},
+    },
+    "GGML_OP_MUL_MAT": {
         "required_tensors": {"src0", "src1", "dst"},
         "optional_tensors": set(),
         "input_tensors": {"src0", "src1"},
@@ -365,7 +382,7 @@ class RouteContext:
             return "i64"
         if field == "element_count" and len(parts) == 3:
             return "i64"
-        if field in {"dimensions", "strides", "element_strides"}:
+        if field in {"dimensions", "strides", "element_strides", "permutation"}:
             if len(parts) == 3:
                 return "vector_i64"
             index = parts[3]

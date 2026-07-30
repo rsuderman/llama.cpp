@@ -1,0 +1,188 @@
+config.decl @shape_mul_mat_f32_f32_large_tiled_k : %value: index where [range(%value, 1, 16384)]
+config.decl @shape_mul_mat_f32_f32_large_tiled_rows : %value: index where [range(%value, 8, 131072), mul(%value, 8)]
+config.decl @shape_mul_mat_f32_f32_large_tiled_cols : %value: index where [range(%value, 128, 512), mul(%value, 8)]
+config.decl @tuning_mul_mat_f32_f32_large_tiled_workgroup_size : %value: index where [range(%value, 32, 32), mul(%value, 32)]
+
+kernel.def export("hrx2_mul_mat_f32_f32_large_tiled") @hrx2_mul_mat_f32_f32_large_tiled() {
+  %unit = index.constant 1 : index
+  %eight = index.constant 8 : index
+  %rows = config.get @shape_mul_mat_f32_f32_large_tiled_rows : index
+  %cols = config.get @shape_mul_mat_f32_f32_large_tiled_cols : index
+  %row_tiles = index.div %rows, %eight : index
+  %col_tiles = index.div %cols, %eight : index
+  %workgroup_size = config.get @tuning_mul_mat_f32_f32_large_tiled_workgroup_size : index
+  kernel.launch.config workgroups(%row_tiles, %col_tiles, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
+} launch(%src0: buffer, %src1: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %zero_vec = vector.constant 0.0 : vector<8xf32>
+  %zero_i32 = scalar.constant 0 : i32
+  %unit = index.constant 1 : index
+  %eight = index.constant 8 : index
+
+  %k = config.get @shape_mul_mat_f32_f32_large_tiled_k : index
+  %rows = config.get @shape_mul_mat_f32_f32_large_tiled_rows : index
+  %cols = config.get @shape_mul_mat_f32_f32_large_tiled_cols : index
+  %workgroup_size = config.get @tuning_mul_mat_f32_f32_large_tiled_workgroup_size : index
+  %k_bounded = index.assume %k [range(%k, 1, 16384)] : index
+  %rows_bounded = index.assume %rows [range(%rows, 8, 131072), mul(%rows, 8)] : index
+  %cols_bounded = index.assume %cols [range(%cols, 128, 512), mul(%cols, 8)] : index
+
+  %row_tile0 = kernel.workgroup.id<x> : index
+  %row_tile = index.assume %row_tile0 [range(%row_tile0, 0, 16383)] : index
+  %col_tile0 = kernel.workgroup.id<y> : index
+  %col_tile = index.assume %col_tile0 [range(%col_tile0, 0, 63)] : index
+  %lane0 = kernel.workitem.id<x> : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
+
+  %src0_count = index.mul %rows_bounded, %k_bounded : index
+  %src1_count = index.mul %cols_bounded, %k_bounded : index
+  %dst_count = index.mul %cols_bounded, %rows_bounded : index
+
+  %src0_global = buffer.assume.memory_space<global> %src0 : buffer
+  %src1_global = buffer.assume.memory_space<global> %src1 : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf32, #dense>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32, #dense>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+
+  %row0_unbounded = index.mul %row_tile, %eight : index
+  %row0 = index.assume %row0_unbounded [range(%row0_unbounded, 0, 131064)] : index
+  %row1_unbounded = index.add %row0, %unit : index
+  %row1 = index.assume %row1_unbounded [range(%row1_unbounded, 1, 131065)] : index
+  %row2_unbounded = index.add %row1, %unit : index
+  %row2 = index.assume %row2_unbounded [range(%row2_unbounded, 2, 131066)] : index
+  %row3_unbounded = index.add %row2, %unit : index
+  %row3 = index.assume %row3_unbounded [range(%row3_unbounded, 3, 131067)] : index
+  %row4_unbounded = index.add %row3, %unit : index
+  %row4 = index.assume %row4_unbounded [range(%row4_unbounded, 4, 131068)] : index
+  %row5_unbounded = index.add %row4, %unit : index
+  %row5 = index.assume %row5_unbounded [range(%row5_unbounded, 5, 131069)] : index
+  %row6_unbounded = index.add %row5, %unit : index
+  %row6 = index.assume %row6_unbounded [range(%row6_unbounded, 6, 131070)] : index
+  %row7_unbounded = index.add %row6, %unit : index
+  %row7 = index.assume %row7_unbounded [range(%row7_unbounded, 7, 131071)] : index
+  %col0_unbounded = index.mul %col_tile, %eight : index
+  %col0 = index.assume %col0_unbounded [range(%col0_unbounded, 0, 504)] : index
+  %col1_unbounded = index.add %col0, %unit : index
+  %col1 = index.assume %col1_unbounded [range(%col1_unbounded, 1, 505)] : index
+  %col2_unbounded = index.add %col1, %unit : index
+  %col2 = index.assume %col2_unbounded [range(%col2_unbounded, 2, 506)] : index
+  %col3_unbounded = index.add %col2, %unit : index
+  %col3 = index.assume %col3_unbounded [range(%col3_unbounded, 3, 507)] : index
+  %col4_unbounded = index.add %col3, %unit : index
+  %col4 = index.assume %col4_unbounded [range(%col4_unbounded, 4, 508)] : index
+  %col5_unbounded = index.add %col4, %unit : index
+  %col5 = index.assume %col5_unbounded [range(%col5_unbounded, 5, 509)] : index
+  %col6_unbounded = index.add %col5, %unit : index
+  %col6 = index.assume %col6_unbounded [range(%col6_unbounded, 6, 510)] : index
+  %col7_unbounded = index.add %col6, %unit : index
+  %col7 = index.assume %col7_unbounded [range(%col7_unbounded, 7, 511)] : index
+
+  %src0_row0_base = index.mul %row0, %k_bounded : index
+  %src0_row1_base = index.mul %row1, %k_bounded : index
+  %src0_row2_base = index.mul %row2, %k_bounded : index
+  %src0_row3_base = index.mul %row3, %k_bounded : index
+  %src0_row4_base = index.mul %row4, %k_bounded : index
+  %src0_row5_base = index.mul %row5, %k_bounded : index
+  %src0_row6_base = index.mul %row6, %k_bounded : index
+  %src0_row7_base = index.mul %row7, %k_bounded : index
+  %src1_col0_base = index.mul %col0, %k_bounded : index
+  %src1_col1_base = index.mul %col1, %k_bounded : index
+  %src1_col2_base = index.mul %col2, %k_bounded : index
+  %src1_col3_base = index.mul %col3, %k_bounded : index
+  %src1_col4_base = index.mul %col4, %k_bounded : index
+  %src1_col5_base = index.mul %col5, %k_bounded : index
+  %src1_col6_base = index.mul %col6, %k_bounded : index
+  %src1_col7_base = index.mul %col7, %k_bounded : index
+  %sum0, %sum1, %sum2, %sum3, %sum4, %sum5, %sum6, %sum7 = scf.for %i = [%lane to %k_bounded step %workgroup_size](%acc0 = %zero_vec, %acc1 = %zero_vec, %acc2 = %zero_vec, %acc3 = %zero_vec, %acc4 = %zero_vec, %acc5 = %zero_vec, %acc6 = %zero_vec, %acc7 = %zero_vec : vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>) -> (vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>) {
+    %src0_row0_index = index.add %src0_row0_base, %i : index
+    %src0_row1_index = index.add %src0_row1_base, %i : index
+    %src0_row2_index = index.add %src0_row2_base, %i : index
+    %src0_row3_index = index.add %src0_row3_base, %i : index
+    %src0_row4_index = index.add %src0_row4_base, %i : index
+    %src0_row5_index = index.add %src0_row5_base, %i : index
+    %src0_row6_index = index.add %src0_row6_base, %i : index
+    %src0_row7_index = index.add %src0_row7_base, %i : index
+    %src1_col0_index = index.add %src1_col0_base, %i : index
+    %src1_col1_index = index.add %src1_col1_base, %i : index
+    %src1_col2_index = index.add %src1_col2_base, %i : index
+    %src1_col3_index = index.add %src1_col3_base, %i : index
+    %src1_col4_index = index.add %src1_col4_base, %i : index
+    %src1_col5_index = index.add %src1_col5_base, %i : index
+    %src1_col6_index = index.add %src1_col6_base, %i : index
+    %src1_col7_index = index.add %src1_col7_base, %i : index
+    %a0 = view.load %src0_view[%src0_row0_index] : view<[%src0_count]xf32, #dense> -> f32
+    %a1 = view.load %src0_view[%src0_row1_index] : view<[%src0_count]xf32, #dense> -> f32
+    %a2 = view.load %src0_view[%src0_row2_index] : view<[%src0_count]xf32, #dense> -> f32
+    %a3 = view.load %src0_view[%src0_row3_index] : view<[%src0_count]xf32, #dense> -> f32
+    %a4 = view.load %src0_view[%src0_row4_index] : view<[%src0_count]xf32, #dense> -> f32
+    %a5 = view.load %src0_view[%src0_row5_index] : view<[%src0_count]xf32, #dense> -> f32
+    %a6 = view.load %src0_view[%src0_row6_index] : view<[%src0_count]xf32, #dense> -> f32
+    %a7 = view.load %src0_view[%src0_row7_index] : view<[%src0_count]xf32, #dense> -> f32
+    %b0 = view.load %src1_view[%src1_col0_index] : view<[%src1_count]xf32, #dense> -> f32
+    %b1 = view.load %src1_view[%src1_col1_index] : view<[%src1_count]xf32, #dense> -> f32
+    %b2 = view.load %src1_view[%src1_col2_index] : view<[%src1_count]xf32, #dense> -> f32
+    %b3 = view.load %src1_view[%src1_col3_index] : view<[%src1_count]xf32, #dense> -> f32
+    %b4 = view.load %src1_view[%src1_col4_index] : view<[%src1_count]xf32, #dense> -> f32
+    %b5 = view.load %src1_view[%src1_col5_index] : view<[%src1_count]xf32, #dense> -> f32
+    %b6 = view.load %src1_view[%src1_col6_index] : view<[%src1_count]xf32, #dense> -> f32
+    %b7 = view.load %src1_view[%src1_col7_index] : view<[%src1_count]xf32, #dense> -> f32
+    %a_vec = vector.from_elements %a0, %a1, %a2, %a3, %a4, %a5, %a6, %a7 : vector<8xf32>
+    %b0_vec = vector.splat %b0 : vector<8xf32>
+    %next0 = vector.fmaf<reassoc|nnan|ninf|nsz> %a_vec, %b0_vec, %acc0 : vector<8xf32>
+    %b1_vec = vector.splat %b1 : vector<8xf32>
+    %next1 = vector.fmaf<reassoc|nnan|ninf|nsz> %a_vec, %b1_vec, %acc1 : vector<8xf32>
+    %b2_vec = vector.splat %b2 : vector<8xf32>
+    %next2 = vector.fmaf<reassoc|nnan|ninf|nsz> %a_vec, %b2_vec, %acc2 : vector<8xf32>
+    %b3_vec = vector.splat %b3 : vector<8xf32>
+    %next3 = vector.fmaf<reassoc|nnan|ninf|nsz> %a_vec, %b3_vec, %acc3 : vector<8xf32>
+    %b4_vec = vector.splat %b4 : vector<8xf32>
+    %next4 = vector.fmaf<reassoc|nnan|ninf|nsz> %a_vec, %b4_vec, %acc4 : vector<8xf32>
+    %b5_vec = vector.splat %b5 : vector<8xf32>
+    %next5 = vector.fmaf<reassoc|nnan|ninf|nsz> %a_vec, %b5_vec, %acc5 : vector<8xf32>
+    %b6_vec = vector.splat %b6 : vector<8xf32>
+    %next6 = vector.fmaf<reassoc|nnan|ninf|nsz> %a_vec, %b6_vec, %acc6 : vector<8xf32>
+    %b7_vec = vector.splat %b7 : vector<8xf32>
+    %next7 = vector.fmaf<reassoc|nnan|ninf|nsz> %a_vec, %b7_vec, %acc7 : vector<8xf32>
+    scf.yield %next0, %next1, %next2, %next3, %next4, %next5, %next6, %next7 : vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>, vector<8xf32>
+  }
+  %dot_vec0 = kernel.workgroup.reduce<addf> %sum0 : vector<8xf32>
+  %dot_vec1 = kernel.workgroup.reduce<addf> %sum1 : vector<8xf32>
+  %dot_vec2 = kernel.workgroup.reduce<addf> %sum2 : vector<8xf32>
+  %dot_vec3 = kernel.workgroup.reduce<addf> %sum3 : vector<8xf32>
+  %dot_vec4 = kernel.workgroup.reduce<addf> %sum4 : vector<8xf32>
+  %dot_vec5 = kernel.workgroup.reduce<addf> %sum5 : vector<8xf32>
+  %dot_vec6 = kernel.workgroup.reduce<addf> %sum6 : vector<8xf32>
+  %dot_vec7 = kernel.workgroup.reduce<addf> %sum7 : vector<8xf32>
+
+  %dst_col0_base = index.mul %col0, %rows_bounded : index
+  %dst_col1_base = index.mul %col1, %rows_bounded : index
+  %dst_col2_base = index.mul %col2, %rows_bounded : index
+  %dst_col3_base = index.mul %col3, %rows_bounded : index
+  %dst_col4_base = index.mul %col4, %rows_bounded : index
+  %dst_col5_base = index.mul %col5, %rows_bounded : index
+  %dst_col6_base = index.mul %col6, %rows_bounded : index
+  %dst_col7_base = index.mul %col7, %rows_bounded : index
+  %dst_index0 = index.add %dst_col0_base, %row0 : index
+  %dst_index1 = index.add %dst_col1_base, %row0 : index
+  %dst_index2 = index.add %dst_col2_base, %row0 : index
+  %dst_index3 = index.add %dst_col3_base, %row0 : index
+  %dst_index4 = index.add %dst_col4_base, %row0 : index
+  %dst_index5 = index.add %dst_col5_base, %row0 : index
+  %dst_index6 = index.add %dst_col6_base, %row0 : index
+  %dst_index7 = index.add %dst_col7_base, %row0 : index
+  %lane_i32 = index.cast %lane : index to i32
+  %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
+  scf.if %is_lane0 {
+    vector.store %dot_vec0, %dst_view[%dst_index0] : vector<8xf32>, view<[%dst_count]xf32, #dense>
+    vector.store %dot_vec1, %dst_view[%dst_index1] : vector<8xf32>, view<[%dst_count]xf32, #dense>
+    vector.store %dot_vec2, %dst_view[%dst_index2] : vector<8xf32>, view<[%dst_count]xf32, #dense>
+    vector.store %dot_vec3, %dst_view[%dst_index3] : vector<8xf32>, view<[%dst_count]xf32, #dense>
+    vector.store %dot_vec4, %dst_view[%dst_index4] : vector<8xf32>, view<[%dst_count]xf32, #dense>
+    vector.store %dot_vec5, %dst_view[%dst_index5] : vector<8xf32>, view<[%dst_count]xf32, #dense>
+    vector.store %dot_vec6, %dst_view[%dst_index6] : vector<8xf32>, view<[%dst_count]xf32, #dense>
+    vector.store %dot_vec7, %dst_view[%dst_index7] : vector<8xf32>, view<[%dst_count]xf32, #dense>
+  }
+  kernel.return
+}

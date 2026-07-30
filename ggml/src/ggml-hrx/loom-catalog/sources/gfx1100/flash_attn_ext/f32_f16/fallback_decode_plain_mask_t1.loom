@@ -1,0 +1,239 @@
+config.decl @shape_flash_attn_ext_qk_dim : %value: index where [range(%value, 1, 1024)]
+config.decl @shape_flash_attn_ext_value_dim : %value: index where [range(%value, 1, 1024)]
+config.decl @shape_flash_attn_ext_tokens : %value: index where [range(%value, 1, 1)]
+config.decl @shape_flash_attn_ext_heads : %value: index where [range(%value, 1, 64)]
+config.decl @shape_flash_attn_ext_kv_heads : %value: index where [range(%value, 1, 16)]
+config.decl @shape_flash_attn_ext_kv_len : %value: index where [range(%value, 1, 8192)]
+config.decl @shape_flash_attn_ext_batch : %value: index where [range(%value, 1, 4)]
+config.decl @layout_flash_attn_ext_q_stride_dim : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_q_stride_token : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_q_stride_head : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_q_stride_batch : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_k_stride_dim : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_k_stride_kv : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_k_stride_head : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_k_stride_batch : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_v_stride_dim : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_v_stride_kv : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_v_stride_head : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_v_stride_batch : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_mask_stride_kv : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_mask_stride_token : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_mask_stride_batch : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_dst_stride_dim : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_dst_stride_token : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_dst_stride_head : %value: index where [range(%value, 1, 1073741824)]
+config.decl @layout_flash_attn_ext_dst_stride_batch : %value: index where [range(%value, 1, 1073741824)]
+config.decl @mode_flash_attn_ext_has_mask : %value: index where [range(%value, 0, 1)]
+config.decl @mode_flash_attn_ext_sinks : %value: index where [range(%value, 0, 1)]
+config.decl @mode_flash_attn_ext_precision : %value: index where [range(%value, 0, 10)]
+config.decl @mode_flash_attn_ext_max_bias_enabled : %value: index where [range(%value, 0, 1)]
+config.decl @mode_flash_attn_ext_logit_softcap_enabled : %value: index where [range(%value, 0, 1)]
+config.decl @tuning_flash_attn_ext_workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+config.decl @tuning_flash_attn_ext_block_kv : %value: index where [range(%value, 1, 8192)]
+config.decl @tuning_flash_attn_ext_block_tokens : %value: index where [range(%value, 1, 1)]
+
+amdgpu.target<gfx1100> @hrx2_gfx1100_wave64 {subgroup_size = 64}
+
+kernel.def target(@hrx2_gfx1100_wave64) export("hrx2_flash_attn_ext_f32_f16_fallback_decode_plain_mask_t1") @hrx2_flash_attn_ext_f32_f16_fallback_decode_plain_mask_t1() {
+  %one = index.constant 1 : index
+  %heads = config.get @shape_flash_attn_ext_heads : index
+  %value_dim = config.get @shape_flash_attn_ext_value_dim : index
+  %batch = config.get @shape_flash_attn_ext_batch : index
+  %wg = config.get @tuning_flash_attn_ext_workgroup_size : index
+  kernel.launch.config workgroups(%heads, %value_dim, %batch) workgroup_size(%wg, %one, %one) : index
+} launch(%scale: f32, %q: buffer, %kbuf: buffer, %vbuf: buffer, %mask: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %zero = index.constant 0 : index
+  %one = index.constant 1 : index
+  %qk_dim0 = config.get @shape_flash_attn_ext_qk_dim : index
+  %value_dim0 = config.get @shape_flash_attn_ext_value_dim : index
+  %tokens0 = config.get @shape_flash_attn_ext_tokens : index
+  %heads0 = config.get @shape_flash_attn_ext_heads : index
+  %kv_heads0 = config.get @shape_flash_attn_ext_kv_heads : index
+  %kv_len0 = config.get @shape_flash_attn_ext_kv_len : index
+  %batch0 = config.get @shape_flash_attn_ext_batch : index
+  %q_stride_dim0 = config.get @layout_flash_attn_ext_q_stride_dim : index
+  %q_stride_token0 = config.get @layout_flash_attn_ext_q_stride_token : index
+  %q_stride_head0 = config.get @layout_flash_attn_ext_q_stride_head : index
+  %q_stride_batch0 = config.get @layout_flash_attn_ext_q_stride_batch : index
+  %k_stride_dim0 = config.get @layout_flash_attn_ext_k_stride_dim : index
+  %k_stride_kv0 = config.get @layout_flash_attn_ext_k_stride_kv : index
+  %k_stride_head0 = config.get @layout_flash_attn_ext_k_stride_head : index
+  %k_stride_batch0 = config.get @layout_flash_attn_ext_k_stride_batch : index
+  %v_stride_dim0 = config.get @layout_flash_attn_ext_v_stride_dim : index
+  %v_stride_kv0 = config.get @layout_flash_attn_ext_v_stride_kv : index
+  %v_stride_head0 = config.get @layout_flash_attn_ext_v_stride_head : index
+  %v_stride_batch0 = config.get @layout_flash_attn_ext_v_stride_batch : index
+  %mask_stride_kv0 = config.get @layout_flash_attn_ext_mask_stride_kv : index
+  %mask_stride_token0 = config.get @layout_flash_attn_ext_mask_stride_token : index
+  %mask_stride_batch0 = config.get @layout_flash_attn_ext_mask_stride_batch : index
+  %dst_stride_dim0 = config.get @layout_flash_attn_ext_dst_stride_dim : index
+  %dst_stride_token0 = config.get @layout_flash_attn_ext_dst_stride_token : index
+  %dst_stride_head0 = config.get @layout_flash_attn_ext_dst_stride_head : index
+  %dst_stride_batch0 = config.get @layout_flash_attn_ext_dst_stride_batch : index
+  %has_mask0 = config.get @mode_flash_attn_ext_has_mask : index
+  %sinks0 = config.get @mode_flash_attn_ext_sinks : index
+  %precision0 = config.get @mode_flash_attn_ext_precision : index
+  %max_bias0 = config.get @mode_flash_attn_ext_max_bias_enabled : index
+  %softcap0 = config.get @mode_flash_attn_ext_logit_softcap_enabled : index
+  %wg0 = config.get @tuning_flash_attn_ext_workgroup_size : index
+  %block_kv0 = config.get @tuning_flash_attn_ext_block_kv : index
+  %block_tokens0 = config.get @tuning_flash_attn_ext_block_tokens : index
+
+  %qk_dim = index.assume %qk_dim0 [range(%qk_dim0, 1, 1024)] : index
+  %value_dim = index.assume %value_dim0 [range(%value_dim0, 1, 1024)] : index
+  %tokens = index.assume %tokens0 [range(%tokens0, 1, 1)] : index
+  %heads = index.assume %heads0 [range(%heads0, 1, 64)] : index
+  %kv_heads = index.assume %kv_heads0 [range(%kv_heads0, 1, 16)] : index
+  %kv_len = index.assume %kv_len0 [range(%kv_len0, 1, 8192)] : index
+  %batch_count = index.assume %batch0 [range(%batch0, 1, 4)] : index
+  %q_stride_dim = index.assume %q_stride_dim0 [range(%q_stride_dim0, 1, 1073741824)] : index
+  %q_stride_token = index.assume %q_stride_token0 [range(%q_stride_token0, 1, 1073741824)] : index
+  %q_stride_head = index.assume %q_stride_head0 [range(%q_stride_head0, 1, 1073741824)] : index
+  %q_stride_batch = index.assume %q_stride_batch0 [range(%q_stride_batch0, 1, 1073741824)] : index
+  %k_stride_dim = index.assume %k_stride_dim0 [range(%k_stride_dim0, 1, 1073741824)] : index
+  %k_stride_kv = index.assume %k_stride_kv0 [range(%k_stride_kv0, 1, 1073741824)] : index
+  %k_stride_head = index.assume %k_stride_head0 [range(%k_stride_head0, 1, 1073741824)] : index
+  %k_stride_batch = index.assume %k_stride_batch0 [range(%k_stride_batch0, 1, 1073741824)] : index
+  %v_stride_dim = index.assume %v_stride_dim0 [range(%v_stride_dim0, 1, 1073741824)] : index
+  %v_stride_kv = index.assume %v_stride_kv0 [range(%v_stride_kv0, 1, 1073741824)] : index
+  %v_stride_head = index.assume %v_stride_head0 [range(%v_stride_head0, 1, 1073741824)] : index
+  %v_stride_batch = index.assume %v_stride_batch0 [range(%v_stride_batch0, 1, 1073741824)] : index
+  %mask_stride_kv = index.assume %mask_stride_kv0 [range(%mask_stride_kv0, 1, 1073741824)] : index
+  %mask_stride_token = index.assume %mask_stride_token0 [range(%mask_stride_token0, 1, 1073741824)] : index
+  %mask_stride_batch = index.assume %mask_stride_batch0 [range(%mask_stride_batch0, 1, 1073741824)] : index
+  %dst_stride_dim = index.assume %dst_stride_dim0 [range(%dst_stride_dim0, 1, 1073741824)] : index
+  %dst_stride_token = index.assume %dst_stride_token0 [range(%dst_stride_token0, 1, 1073741824)] : index
+  %dst_stride_head = index.assume %dst_stride_head0 [range(%dst_stride_head0, 1, 1073741824)] : index
+  %dst_stride_batch = index.assume %dst_stride_batch0 [range(%dst_stride_batch0, 1, 1073741824)] : index
+  %has_mask = index.assume %has_mask0 [range(%has_mask0, 1, 1)] : index
+  %sinks = index.assume %sinks0 [range(%sinks0, 0, 0)] : index
+  %precision = index.assume %precision0 [range(%precision0, 10, 10)] : index
+  %max_bias = index.assume %max_bias0 [range(%max_bias0, 0, 0)] : index
+  %softcap = index.assume %softcap0 [range(%softcap0, 0, 0)] : index
+  %wg = index.assume %wg0 [range(%wg0, 32, 1024), mul(%wg0, 32)] : index
+  %block_kv = index.assume %block_kv0 [range(%block_kv0, 1, 8192)] : index
+  %block_tokens = index.assume %block_tokens0 [range(%block_tokens0, 1, 1)] : index
+  %zero_f32 = scalar.constant 0.0 : f32
+  %minus_inf = scalar.constant -3.4028234663852886e+38 : f32
+
+  %head0 = kernel.workgroup.id<x> : index
+  %dim0 = kernel.workgroup.id<y> : index
+  %batch_id0 = kernel.workgroup.id<z> : index
+  %lane0 = kernel.workitem.id<x> : index
+  %head = index.assume %head0 [range(%head0, 0, 63)] : index
+  %dim = index.assume %dim0 [range(%dim0, 0, 1023)] : index
+  %batch_id = index.assume %batch_id0 [range(%batch_id0, 0, 3)] : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
+
+  %heads_per_kv = index.div %heads, %kv_heads : index
+  %kv_head = index.div %head, %heads_per_kv : index
+  %token = index.assume %zero [range(%zero, 0, 0)] : index
+
+  %q_global = buffer.assume.memory_space<global> %q : buffer
+  %k_global = buffer.assume.memory_space<global> %kbuf : buffer
+  %v_global = buffer.assume.memory_space<global> %vbuf : buffer
+  %mask_global = buffer.assume.memory_space<global> %mask : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %q_noalias, %k_noalias, %v_noalias, %mask_noalias, %dst_noalias = buffer.assume.noalias %q_global, %k_global, %v_global, %mask_global, %dst_global : buffer, buffer, buffer, buffer, buffer
+  %q_view = buffer.view %q_noalias[%base] : buffer -> view<1073741824xf32, #dense>
+  %k_view = buffer.view %k_noalias[%base] : buffer -> view<1073741824xf16, #dense>
+  %v_view = buffer.view %v_noalias[%base] : buffer -> view<1073741824xf16, #dense>
+  %mask_view = buffer.view %mask_noalias[%base] : buffer -> view<1073741824xf16, #dense>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xf32, #dense>
+
+  %q_token_offset = index.mul %token, %q_stride_token : index
+  %q_head_offset = index.mul %head, %q_stride_head : index
+  %q_batch_offset = index.mul %batch_id, %q_stride_batch : index
+  %q_base0 = index.add %q_token_offset, %q_head_offset : index
+  %q_base = index.add %q_base0, %q_batch_offset : index
+  %k_head_offset = index.mul %kv_head, %k_stride_head : index
+  %k_batch_offset = index.mul %batch_id, %k_stride_batch : index
+  %k_base = index.add %k_head_offset, %k_batch_offset : index
+  %v_head_offset = index.mul %kv_head, %v_stride_head : index
+  %v_batch_offset = index.mul %batch_id, %v_stride_batch : index
+  %v_base = index.add %v_head_offset, %v_batch_offset : index
+  %mask_token_offset = index.mul %token, %mask_stride_token : index
+  %mask_batch_offset = index.mul %batch_id, %mask_stride_batch : index
+  %mask_base = index.add %mask_token_offset, %mask_batch_offset : index
+
+  %thread_max = scf.for %kv = [%lane to %kv_len step %wg](%acc = %minus_inf : f32) -> (f32) {
+    %kv_k_offset = index.mul %kv, %k_stride_kv : index
+    %k_kv_base = index.add %k_base, %kv_k_offset : index
+    %dot = scf.for %d = [%zero to %qk_dim step %one](%dot_acc = %zero_f32 : f32) -> (f32) {
+      %q_d_offset = index.mul %d, %q_stride_dim : index
+      %k_d_offset = index.mul %d, %k_stride_dim : index
+      %q_idx = index.add %q_base, %q_d_offset : index
+      %k_idx = index.add %k_kv_base, %k_d_offset : index
+      %q_value = view.load %q_view[%q_idx] : view<1073741824xf32, #dense> -> f32
+      %k_half = view.load %k_view[%k_idx] : view<1073741824xf16, #dense> -> f16
+      %k_value = scalar.extf %k_half : f16 to f32
+      %product = scalar.mulf<reassoc|nnan|ninf|nsz> %q_value, %k_value : f32
+      %next_dot = scalar.addf<reassoc|nnan|ninf|nsz> %dot_acc, %product : f32
+      scf.yield %next_dot : f32
+    }
+    %mask_kv_offset = index.mul %kv, %mask_stride_kv : index
+    %mask_idx = index.add %mask_base, %mask_kv_offset : index
+    %mask_half = view.load %mask_view[%mask_idx] : view<1073741824xf16, #dense> -> f16
+    %mask_value = scalar.extf %mask_half : f16 to f32
+    %scaled = scalar.mulf<nnan|ninf|nsz> %dot, %scale : f32
+    %score = scalar.addf<nnan|ninf|nsz> %scaled, %mask_value : f32
+    %next = scalar.maxnumf %acc, %score : f32
+    scf.yield %next : f32
+  }
+  %row_max = kernel.workgroup.reduce<maxnumf> %thread_max : f32
+
+  %thread_sum, %thread_dot = scf.for %kv = [%lane to %kv_len step %wg](%acc_sum = %zero_f32 : f32, %acc_dot = %zero_f32 : f32) -> (f32, f32) {
+    %kv_k_offset = index.mul %kv, %k_stride_kv : index
+    %k_kv_base = index.add %k_base, %kv_k_offset : index
+    %dot = scf.for %d = [%zero to %qk_dim step %one](%dot_acc = %zero_f32 : f32) -> (f32) {
+      %q_d_offset = index.mul %d, %q_stride_dim : index
+      %k_d_offset = index.mul %d, %k_stride_dim : index
+      %q_idx = index.add %q_base, %q_d_offset : index
+      %k_idx = index.add %k_kv_base, %k_d_offset : index
+      %q_value = view.load %q_view[%q_idx] : view<1073741824xf32, #dense> -> f32
+      %k_half = view.load %k_view[%k_idx] : view<1073741824xf16, #dense> -> f16
+      %k_value = scalar.extf %k_half : f16 to f32
+      %product = scalar.mulf<reassoc|nnan|ninf|nsz> %q_value, %k_value : f32
+      %next_dot = scalar.addf<reassoc|nnan|ninf|nsz> %dot_acc, %product : f32
+      scf.yield %next_dot : f32
+    }
+    %mask_kv_offset = index.mul %kv, %mask_stride_kv : index
+    %mask_idx = index.add %mask_base, %mask_kv_offset : index
+    %mask_half = view.load %mask_view[%mask_idx] : view<1073741824xf16, #dense> -> f16
+    %mask_value = scalar.extf %mask_half : f16 to f32
+    %scaled = scalar.mulf<nnan|ninf|nsz> %dot, %scale : f32
+    %score = scalar.addf<nnan|ninf|nsz> %scaled, %mask_value : f32
+    %shift = scalar.subf<nnan|ninf|nsz> %score, %row_max : f32
+    %weight = scalar.expf<afn> %shift : f32
+    %kv_v_offset = index.mul %kv, %v_stride_kv : index
+    %dim_v_offset = index.mul %dim, %v_stride_dim : index
+    %v_kv_base = index.add %v_base, %kv_v_offset : index
+    %v_idx = index.add %v_kv_base, %dim_v_offset : index
+    %v_half = view.load %v_view[%v_idx] : view<1073741824xf16, #dense> -> f16
+    %v_value = scalar.extf %v_half : f16 to f32
+    %next_sum = scalar.addf<reassoc|nnan|ninf|nsz> %acc_sum, %weight : f32
+    %weighted_v = scalar.mulf<reassoc|nnan|ninf|nsz> %v_value, %weight : f32
+    %next_dot = scalar.addf<reassoc|nnan|ninf|nsz> %acc_dot, %weighted_v : f32
+    scf.yield %next_sum, %next_dot : f32, f32
+  }
+  %row_sum = kernel.workgroup.reduce<addf> %thread_sum : f32
+  %row_dot = kernel.workgroup.reduce<addf> %thread_dot : f32
+  %result = scalar.divf<nnan|ninf|nsz|arcp> %row_dot, %row_sum : f32
+
+  %lane_i32 = index.cast %lane : index to i32
+  %zero_i32 = scalar.constant 0 : i32
+  %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
+  scf.if %is_lane0 {
+    %dst_dim_offset = index.mul %dim, %dst_stride_dim : index
+    %dst_token_offset = index.mul %token, %dst_stride_token : index
+    %dst_head_offset = index.mul %head, %dst_stride_head : index
+    %dst_batch_offset = index.mul %batch_id, %dst_stride_batch : index
+    %dst_offset0 = index.add %dst_dim_offset, %dst_token_offset : index
+    %dst_offset1 = index.add %dst_offset0, %dst_head_offset : index
+    %dst_idx = index.add %dst_offset1, %dst_batch_offset : index
+    view.store %result, %dst_view[%dst_idx] : f32, view<1073741824xf32, #dense>
+  }
+  kernel.return
+}

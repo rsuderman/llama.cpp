@@ -250,6 +250,29 @@ if (GGML_HRX_LOOM)
         routes/generic/get_rows/q4_k_f32/contiguous_rows_4d.json
         routes/generic/set_rows/f32_f16/cont.json
         routes/generic/swiglu/f32/split_strided_4d.json
+        routes/gfx1100/flash_attn_ext/f32_f16/tiled_decode_d128_h32_hkv4_kv512_40960_t1.json
+        routes/gfx1100/flash_attn_ext/f32_f16/tiled_decode_d128_h32_hkv8_kv512_8192_t1.json
+        routes/gfx1100/flash_attn_ext/f32_f16/tiled_prefill_d128_h32_hkv4_cap_kv40960_t512.json
+        routes/gfx1100/flash_attn_ext/f32_f16/tiled_prefill_d128_h32_hkv8_cap_kv8192_t512.json
+        routes/gfx1100/flash_attn_ext/f32_f16/fallback_decode_plain_mask_t1.json
+        routes/generic/mul_mat/q8_0_f32/contiguous_c4_4d.json
+        routes/generic/mul_mat/q8_0_f32/contiguous_c1_4d.json
+        routes/generic/mul_mat/q8_0_f32/contiguous_4d.json
+        routes/generic/mul_mat/q4_k_f32/skinny_4d.json
+        routes/generic/mul_mat/q4_k_f32/contiguous_c4_4d.json
+        routes/generic/mul_mat/q4_k_f32/contiguous_4d.json
+        routes/generic/mul_mat/q5_k_f32/contiguous_4d.json
+        routes/generic/mul_mat/q6_k_f32/skinny_4d.json
+        routes/generic/mul_mat/q6_k_f32/contiguous_c4_4d.json
+        routes/generic/mul_mat/q6_k_f32/contiguous_4d.json
+        routes/generic/mul_mat/f32_f32/skinny_4d.json
+        routes/gfx1100/mul_mat/f32_f32/large_tiled_8x8_gfx1100_4d.json
+        routes/generic/mul_mat/f32_f32/large_tiled_4d.json
+        routes/generic/mul_mat/f32_f32/contiguous_4d.json
+        routes/generic/mul_mat/f16_f32/contiguous_4d.json
+        routes/gfx1100/mul_mat/f16_f16/contiguous_m64n64_gfx1100_4d.json
+        routes/gfx1100/mul_mat/f16_f16/contiguous_c1_gfx1100_4d.json
+        routes/generic/mul_mat/f16_f16/contiguous_4d.json
     )
     set(GGML_HRX_LOOM_ROUTE_OPS
         GGML_OP_ADD
@@ -257,9 +280,11 @@ if (GGML_HRX_LOOM)
         GGML_OP_CLAMP
         GGML_OP_CPY
         GGML_OP_DIV
+        GGML_OP_FLASH_ATTN_EXT
         GGML_OP_GET_ROWS
         GGML_OP_GLU
         GGML_OP_MUL
+        GGML_OP_MUL_MAT
         GGML_OP_RMS_NORM
         GGML_OP_ROPE
         GGML_OP_SET_ROWS

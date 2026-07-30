@@ -10,6 +10,12 @@ ATTRIBUTE_INDICES = {
         "minimum": 0,
         "maximum": 1,
     },
+    "GGML_OP_FLASH_ATTN_EXT": {
+        "scale": 0,
+        "max_bias": 1,
+        "logit_softcap": 2,
+        "precision": 3,
+    },
     "GGML_OP_GLU": {
         "glu_op": 0,
     },
@@ -51,6 +57,9 @@ CPP_DTYPE_NAMES = {
     "I32": "GGML_TYPE_I32",
     "I64": "GGML_TYPE_I64",
     "Q4_K": "GGML_TYPE_Q4_K",
+    "Q5_K": "GGML_TYPE_Q5_K",
+    "Q6_K": "GGML_TYPE_Q6_K",
+    "Q8_0": "GGML_TYPE_Q8_0",
 }
 
 ATTRIBUTE_GETTERS = {
@@ -152,6 +161,15 @@ def emit_tensor_element_strides_source(tensor, parts):
     return f"({tensor}->nb[{int(parts[3])}] / ggml_type_size({tensor}->type))"
 
 
+def emit_tensor_permutation_source(tensor, parts):
+    if len(parts) == 3:
+        return [
+            f"ggml_backend_hrx_loom_tensor_permutation_axis({tensor}, {i})"
+            for i in range(4)
+        ]
+    return f"ggml_backend_hrx_loom_tensor_permutation_axis({tensor}, {int(parts[3])})"
+
+
 TENSOR_FIELD_EMITTERS = {
     "type": emit_tensor_type_source,
     "rank": emit_tensor_rank_source,
@@ -159,6 +177,7 @@ TENSOR_FIELD_EMITTERS = {
     "dimensions": emit_tensor_dimensions_source,
     "strides": emit_tensor_strides_source,
     "element_strides": emit_tensor_element_strides_source,
+    "permutation": emit_tensor_permutation_source,
 }
 
 
