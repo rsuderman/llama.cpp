@@ -7,6 +7,7 @@
     "routes/argsort/f32_i32/contiguous_wg256.json",
     "routes/sum_rows/f32/contiguous_4d.json",
     "routes/rope/f32/neox.json",
-    "routes/rms_norm/f32/contiguous_4d.json"
+    "routes/rms_norm/f32/contiguous_4d.json",
+    "routes/clamp/f32/contiguous_4d.json"
   ]
 }

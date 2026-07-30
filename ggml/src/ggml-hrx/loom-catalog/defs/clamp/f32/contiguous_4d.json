@@ -1,0 +1,18 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "clamp_f32_contiguous_4d",
+  "op": "GGML_OP_CLAMP",
+  "source": "sources/clamp/f32/contiguous_4d.loom",
+  "source_format": "loom-text",
+  "symbol": "clamp_f32",
+  "abi": {"binding_count": 2, "parameter_count": 4, "constant_byte_length": 8},
+  "workgroup_size": [256, 1, 1],
+  "parameters": [
+    {"name": "min", "type": "f32"},
+    {"name": "max", "type": "f32"}
+  ],
+  "bindings": [
+    {"name": "src0", "access": "read"},
+    {"name": "dst", "access": "write"}
+  ]
+}
