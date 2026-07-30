@@ -98,6 +98,10 @@ def attribute_var(name):
     return f"attribute_{c_identifier(name)}"
 
 
+def fusion_attribute_var(op_name, name):
+    return f"attribute_{c_identifier(op_name)}_{c_identifier(name)}"
+
+
 def shape_var(role, name):
     return f"shape_{c_identifier(role)}_{c_identifier(name)}"
 
@@ -193,9 +197,12 @@ def emit_tensor_source(parts):
 
 
 def emit_attribute_source(parts):
-    if len(parts) != 2:
+    if len(parts) == 2:
+        return attribute_var(parts[1])
+    if len(parts) == 3:
+        return fusion_attribute_var(parts[1], parts[2])
+    else:
         raise ValueError("unsupported attribute source")
-    return attribute_var(parts[1])
 
 
 def emit_derived_source(parts):
@@ -248,6 +255,15 @@ def scalar_offsets(scalars, route_path, schema):
 
 def validate_attribute_indices(route, route_path, schema, attribute_indices):
     match = schema.require_dict(route, "match", route_path)
+    if "ops" in match:
+        for op_name, op_match in schema.require_dict(match, "ops", route_path).items():
+            op = schema.require_string(op_match, "op", f"{route_path}: match.ops.{op_name}")
+            attributes = op_match.get("attributes", {})
+            indices = attribute_indices.get(op, {})
+            for name in attributes:
+                if name not in indices:
+                    raise ValueError(f"{route_path}: no generated C++ attribute index for {op}.{name}")
+        return
     op = schema.require_string(match, "op", f"{route_path}: match")
     attributes = match.get("attributes", {})
     indices = attribute_indices.get(op, {})
@@ -257,7 +273,7 @@ def validate_attribute_indices(route, route_path, schema, attribute_indices):
 
 
 def emit_tensor_setup(lines, route, op_rule, schema, route_response, unsupported_shape_reason):
-    tensors = schema.require_dict(schema.require_dict(route, "match", "route"), "tensors", "route")
+    tensors = schema.route_tensors(route, "route")
     for role in tensors:
         lines.append(f"    const ggml_tensor * {role_var(role)} = {role_expr(role)};")
 
@@ -279,7 +295,7 @@ def emit_tensor_setup(lines, route, op_rule, schema, route_response, unsupported
 
 
 def emit_dtype_checks(lines, route, schema, route_response, unsupported_dtype_reason):
-    tensors = schema.require_dict(schema.require_dict(route, "match", "route"), "tensors", "route")
+    tensors = schema.route_tensors(route, "route")
     checks = []
     for role, tensor in tensors.items():
         dtype = schema.require_string(tensor, "type", "route")
@@ -311,10 +327,43 @@ def emit_attributes(lines, route, schema, attribute_indices):
 
 
 def emit_shape_captures(lines, route, schema):
-    tensors = schema.require_dict(schema.require_dict(route, "match", "route"), "tensors", "route")
+    tensors = schema.route_tensors(route, "route")
     for role, tensor in tensors.items():
         for i, name in enumerate(tensor.get("shape", [])):
-            lines.append(f"    const int64_t {shape_var(role, name)} = static_cast<int64_t>({role_var(role)}->ne[{i}]);")
+            if isinstance(name, str):
+                lines.append(f"    const int64_t {shape_var(role, name)} = static_cast<int64_t>({role_var(role)}->ne[{i}]);")
+
+
+def emit_tensor_declaration_checks(lines, route, schema, route_response, unsupported_shape_reason, unsupported_layout_reason):
+    tensors = schema.route_tensors(route, "route")
+    shape_symbols = {}
+    for role, tensor in tensors.items():
+        for i, dim in enumerate(tensor.get("shape", [])):
+            if isinstance(dim, str):
+                value = shape_var(role, dim)
+                if dim in shape_symbols:
+                    lines.extend([
+                        f"    if ({value} != {shape_symbols[dim]}) {{",
+                        f"        {route_response(unsupported_shape_reason)}",
+                        "    }",
+                    ])
+                else:
+                    shape_symbols[dim] = value
+            else:
+                lines.extend([
+                    f"    if ({role_var(role)}->ne[{i}] != {int(dim)}) {{",
+                    f"        {route_response(unsupported_shape_reason)}",
+                    "    }",
+                ])
+        layout = tensor.get("layout")
+        if layout == "contiguous":
+            lines.extend([
+                f"    if (!ggml_is_contiguous({role_var(role)})) {{",
+                f"        {route_response(unsupported_layout_reason)}",
+                "    }",
+            ])
+        elif layout is not None:
+            raise ValueError(f"unsupported tensor layout {layout}")
 
 
 def emit_integer_operand(value, context, schema):
@@ -459,8 +508,24 @@ def emit_contiguous_predicate(predicate, context, schema):
 def emit_same_shape_predicate(predicate, context, schema):
     del context
     del schema
-    lhs, rhs = predicate["same_shape"]
-    return f"ggml_are_same_shape({role_var(lhs)}, {role_var(rhs)})"
+    values = predicate["same_shape"]
+    if len(values) <= 1:
+        return "true"
+    lhs = values[0]
+    return " && ".join([f"ggml_are_same_shape({role_var(lhs)}, {role_var(rhs)})" for rhs in values[1:]])
+
+
+def emit_same_layout_predicate(predicate, context, schema):
+    del context
+    del schema
+    values = predicate["same_layout"]
+    if len(values) <= 1:
+        return "true"
+    lhs = values[0]
+    return " && ".join([
+        f"ggml_backend_hrx_loom_tensors_have_same_layout({role_var(lhs)}, {role_var(rhs)})"
+        for rhs in values[1:]
+    ])
 
 
 def emit_rank_predicate(predicate, context, schema):
@@ -489,13 +554,32 @@ def emit_src_present_predicate(predicate, context, schema):
     return f"{role_expr(predicate['src_present'])} != nullptr"
 
 
+def emit_transients_predicate(predicate, context, schema):
+    del context
+    del schema
+    return " && ".join([
+        f"ggml_backend_hrx_loom_tensor_is_transient(request, {role_var(tensor)}, matched_node_count)"
+        for tensor in predicate["transients"]
+    ])
+
+
+def emit_no_overlap_predicate(predicate, context, schema):
+    del context
+    del schema
+    lhs, rhs = predicate["no_overlap"]
+    return f"!ggml_backend_hrx_loom_tensors_overlap({role_var(lhs)}, {role_var(rhs)})"
+
+
 PREDICATE_EMITTERS = {
     "contiguous": emit_contiguous_predicate,
     "same_shape": emit_same_shape_predicate,
+    "same_layout": emit_same_layout_predicate,
     "rank": emit_rank_predicate,
     "field": emit_field_predicate,
     "src_absent": emit_src_absent_predicate,
     "src_present": emit_src_present_predicate,
+    "transients": emit_transients_predicate,
+    "no_overlap": emit_no_overlap_predicate,
 }
 
 
@@ -539,11 +623,22 @@ def emit_dispatch_config(dispatch, context, route_constant, failed_response, sch
     ]
 
 
+def anchor_op(route, schema):
+    match = schema.require_dict(route, "match", "route")
+    if "op" in match:
+        return schema.require_string(match, "op", "route")
+    ops = schema.require_dict(match, "ops", "route")
+    anchors = match.get("anchors", [])
+    if anchors:
+        return schema.require_string(ops[anchors[0]], "op", "route")
+    first_op = next(iter(ops.values()))
+    return schema.require_string(first_op, "op", "route")
+
+
 def route_infos_for_dispatcher(routes, schema):
     route_infos = []
     for route_path, route, _ in routes:
-        match = schema.require_dict(route, "match", "route")
-        op = schema.require_string(match, "op", "route")
+        op = anchor_op(route, schema)
         route_id = schema.require_string(route, "id", "route")
         priority = schema.require_int(route, "priority", route_path)
         route_infos.append((op, -priority, route_id, route))
@@ -562,8 +657,7 @@ def ops_from_route_infos(route_infos):
 def route_infos_for_op(routes, selected_op, schema):
     route_infos = []
     for route_path, route, definition in routes:
-        match = schema.require_dict(route, "match", "route")
-        op = schema.require_string(match, "op", "route")
+        op = anchor_op(route, schema)
         if op != selected_op:
             continue
         route_id = schema.require_string(route, "id", "route")

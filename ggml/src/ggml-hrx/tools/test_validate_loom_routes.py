@@ -13,7 +13,8 @@ import validate_loom_routes as loom
 TOOLS_DIR = Path(__file__).resolve().parent
 CATALOG_ROOT = TOOLS_DIR.parent / "loom-catalog"
 METADATA_PATH = Path("metadata.json")
-ROUTE_PATH = Path("routes/add_f32.json")
+ROUTE_PATH = Path("routes/generic/add/f32/contiguous.json")
+FUSION_ROUTE_PATH = Path("routes/generic/rms_norm_mul/f32/contiguous_4d.json")
 TEST_TARGET_A = "__test_target_a"
 TEST_TARGET_B = "__test_target_b"
 TEST_TARGET_MISSING = "__test_missing_target"
@@ -33,11 +34,16 @@ def write_json(path, data):
 def copy_catalog(tmpdir):
     copied = Path(tmpdir) / "loom-catalog"
     copytree(CATALOG_ROOT, copied)
+    mutate_metadata(copied, lambda metadata: metadata.update({"routes": [str(ROUTE_PATH)]}))
     return copied
 
 
 def mutate_route(source_root, mutator):
-    path = source_root / ROUTE_PATH
+    mutate_route_at(source_root, ROUTE_PATH, mutator)
+
+
+def mutate_route_at(source_root, route_path, mutator):
+    path = source_root / route_path
     route = read_json(path)
     mutator(route)
     write_json(path, route)
@@ -109,6 +115,21 @@ def expect_invalid_catalog_mutation(name, mutator, expected):
         raise AssertionError(f"{name}: validator accepted invalid catalog")
 
 
+def expect_invalid_full_catalog_mutation(name, route_path, mutator, expected):
+    with tempfile.TemporaryDirectory(prefix=f"{name}-") as tmpdir:
+        source_root = Path(tmpdir) / "loom-catalog"
+        copytree(CATALOG_ROOT, source_root)
+        mutate_route_at(source_root, route_path, mutator)
+        try:
+            loom.validate_catalog(source_root)
+        except ValueError as err:
+            message = str(err)
+            if expected in message:
+                return
+            raise AssertionError(f"{name}: expected error containing {expected!r}, got {message!r}") from err
+        raise AssertionError(f"{name}: validator accepted invalid catalog")
+
+
 def expect_generation_valid(name, mutator, targets, expected_entries):
     with tempfile.TemporaryDirectory(prefix=f"{name}-") as tmpdir:
         source_root = copy_catalog(tmpdir)
@@ -142,7 +163,7 @@ def main():
     expect_valid_mutation(
         "workgroups-dispatch",
         lambda route: route["invocation"].update({
-            "dispatch": {"workgroups": ["derived.nelements"], "workgroup_size": [256, 1, 1]}
+            "dispatch": {"workgroups": ["derived.total_size"], "workgroup_size": [256, 1, 1]}
         }),
     )
 
@@ -189,12 +210,12 @@ def main():
         ),
         (
             "ambiguous-dispatch",
-            lambda route: route["invocation"]["dispatch"].update({"workgroups": ["derived.nelements"]}),
+            lambda route: route["invocation"]["dispatch"].update({"workgroups": ["derived.total_size"]}),
             "expects exactly one of work_items or workgroups",
         ),
         (
             "scalar-dispatch",
-            lambda route: route["invocation"]["dispatch"].update({"work_items": "derived.nelements"}),
+            lambda route: route["invocation"]["dispatch"].update({"work_items": "derived.total_size"}),
             "expected an array with 1 to 3 integer values",
         ),
         (
@@ -209,8 +230,8 @@ def main():
         ),
         (
             "duplicate-config-names",
-            lambda route: route["config"]["bindings"][1].update({"name": "nelements"}),
-            "duplicate config binding name nelements",
+            lambda route: route["config"]["bindings"][1].update({"name": "shape_pointwise_total_size"}),
+            "duplicate config binding name shape_pointwise_total_size",
         ),
         (
             "unresolved-config-source",
@@ -236,6 +257,19 @@ def main():
 
     for name, mutator, expected in cases:
         expect_invalid(name, mutator, expected)
+
+    expect_invalid_full_catalog_mutation(
+        "fusion-unknown-transient",
+        FUSION_ROUTE_PATH,
+        lambda route: route["match"]["predicates"][2].update({"transients": ["missing"]}),
+        "tensor missing is not declared in tensors",
+    )
+    expect_invalid_full_catalog_mutation(
+        "fusion-no-overlap-arity",
+        FUSION_ROUTE_PATH,
+        lambda route: route["match"]["predicates"][3].update({"no_overlap": ["x"]}),
+        "expected two tensor names",
+    )
 
     expect_invalid_catalog_mutation(
         "missing-metadata-targets",

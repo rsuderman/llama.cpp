@@ -219,6 +219,7 @@ if (GGML_HRX_LOOM)
         routes/generic/sum_rows/f32/contiguous_4d.json
         routes/generic/rope/f32/neox.json
         routes/generic/rms_norm/f32/contiguous_4d.json
+        routes/generic/rms_norm_mul/f32/contiguous_4d.json
         routes/generic/clamp/f32/contiguous_4d.json
         routes/generic/add/f16/contiguous.json
         routes/generic/add/f16/non_contiguous_4d.json

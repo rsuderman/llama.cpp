@@ -1,0 +1,38 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "rms_norm_mul_f32_contiguous_4d",
+  "op": "GGML_OP_RMS_NORM",
+  "source": "sources/generic/rms_norm_mul/f32/contiguous_4d.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_rms_norm_mul_f32",
+  "abi": {
+    "binding_count": 3,
+    "parameter_count": 4,
+    "constant_byte_length": 4
+  },
+  "workgroup_size": [
+    32,
+    1,
+    1
+  ],
+  "parameters": [
+    {
+      "name": "eps",
+      "type": "f32"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "x",
+      "access": "read"
+    },
+    {
+      "name": "weight",
+      "access": "read"
+    },
+    {
+      "name": "y",
+      "access": "write"
+    }
+  ]
+}

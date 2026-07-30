@@ -12,6 +12,8 @@ from utils import hrx_route_schema as route_schema
 CATALOG_SCHEMA_V0 = "ggml-hrx-loom-catalog-v0"
 DEFINITION_SCHEMA_V1 = "ggml-hrx-loom-def-v1"
 ROUTE_SCHEMA_V1 = "ggml-hrx-loom-route-v1"
+ROUTE_SCHEMA_V2 = "ggml-hrx-loom-route-v2"
+FUSION_ROUTE_SCHEMA_V2 = "ggml-hrx-loom-fusion-route-v2"
 ROUTE_FORMAT = "loom"
 ARCHITECTURE_ANY = "*"
 
@@ -37,6 +39,7 @@ TOP_LEVEL_FIELDS = {
     "definition",
     "format",
     "priority",
+    "tensors",
     "match",
     "derived",
     "config",
@@ -185,7 +188,7 @@ def validate_route(route_path, definitions, metadata_targets):
     route = route_schema.read_json(route_path)
     route_schema.unknown_fields(route, TOP_LEVEL_FIELDS, route_path)
     schema = route_schema.require_string(route, "schema", route_path)
-    if schema != ROUTE_SCHEMA_V1:
+    if schema not in {ROUTE_SCHEMA_V1, ROUTE_SCHEMA_V2, FUSION_ROUTE_SCHEMA_V2}:
         raise ValueError(f"{route_path}: unsupported route schema {schema}")
     route_schema.require_string(route, "id", route_path)
     architectures = validate_architectures(route, route_path, metadata_targets)
@@ -201,9 +204,13 @@ def validate_route(route_path, definitions, metadata_targets):
     if definition is None:
         raise ValueError(f"{route_path}: missing definition {definition_path}")
 
-    op_rule, tensors, attributes, predicates = route_schema.validate_match(route, route_path, definition)
     derived = route_schema.require_dict(route, "derived", route_path)
-    context = route_schema.RouteContext(route_path, op_rule, tensors, attributes, derived)
+    if schema == FUSION_ROUTE_SCHEMA_V2:
+        tensors, attributes, predicates = route_schema.validate_fusion_match(route, route_path, definition)
+        context = route_schema.FusionRouteContext(route_path, tensors, attributes, derived)
+    else:
+        op_rule, tensors, attributes, predicates = route_schema.validate_match(route, route_path, definition)
+        context = route_schema.RouteContext(route_path, op_rule, tensors, attributes, derived)
     route_schema.validate_derived(route, route_path, context)
     route_schema.validate_predicates(predicates, route_path, context)
     validate_config(route, route_path, context)

@@ -1151,18 +1151,24 @@ static bool ggml_backend_hrx_supports_op_loom(
 
 static enum ggml_status ggml_backend_hrx_invoke_loom(
         ggml_backend_hrx_context * context,
+        const ggml_cgraph * cgraph,
+        int node_index,
         const ggml_tensor * node,
-        bool * unsupported) {
+        bool * unsupported,
+        ggml_backend_hrx_loom_consumed_nodes * consumed_nodes) {
     *unsupported = false;
     const ggml_backend_hrx_loom_op_request request = {
         /* .op                    = */ node,
+        /* .cgraph                = */ cgraph,
+        /* .node_index            = */ node_index,
         /* .stream                = */ context->stream,
         /* .bind_tensor           = */ ggml_backend_hrx_bind_tensor_for_catalog,
         /* .bind_tensor_user_data = */ context->device_context,
     };
     const ggml_backend_hrx_loom_op_response response = ggml_backend_hrx_loom_invoke(
         ggml_backend_hrx_get_loom_catalog(context->device_context),
-        &request);
+        &request,
+        consumed_nodes);
     if (response.result == GGML_BACKEND_HRX_LOOM_INVOKED) {
         ggml_backend_hrx_trace_event(context->device_context->reg_context, {
             {"event", "loom_route_dispatch"},
@@ -1170,6 +1176,7 @@ static enum ggml_status ggml_backend_hrx_invoke_loom(
             {"route_id", response.route_id ? response.route_id : ""},
             {"op", ggml_op_desc(node)},
             {"nelements", ggml_nelements(node)},
+            {"consumed_node_count", consumed_nodes ? consumed_nodes->count : 0},
         });
         return GGML_STATUS_SUCCESS;
     }
@@ -1178,6 +1185,86 @@ static enum ggml_status ggml_backend_hrx_invoke_loom(
     }
     *unsupported = true;
     return GGML_STATUS_SUCCESS;
+}
+
+static bool ggml_backend_hrx_consumed_nodes_contains(
+        const ggml_backend_hrx_loom_consumed_nodes * consumed_nodes,
+        int node_index) {
+    if (!consumed_nodes) {
+        return false;
+    }
+    for (int i = 0; i < consumed_nodes->count; ++i) {
+        if (consumed_nodes->indices[i] == node_index) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int ggml_backend_hrx_graph_node_index(const ggml_cgraph * cgraph, const ggml_tensor * tensor) {
+    if (!cgraph || !tensor) {
+        return -1;
+    }
+    for (int i = 0; i < cgraph->n_nodes; ++i) {
+        if (cgraph->nodes[i] == tensor) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static bool ggml_backend_hrx_validate_consumed_nodes(
+        const ggml_cgraph * cgraph,
+        int node_index,
+        const ggml_backend_hrx_loom_consumed_nodes * consumed_nodes,
+        const std::vector<bool> & visited_nodes) {
+    if (!cgraph || !consumed_nodes || node_index < 0 || node_index >= cgraph->n_nodes ||
+            consumed_nodes->count < 1 ||
+            consumed_nodes->count > GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES) {
+        return false;
+    }
+
+    bool has_current_node = false;
+    for (int i = 0; i < consumed_nodes->count; ++i) {
+        const int consumed_index = consumed_nodes->indices[i];
+        if (consumed_index < node_index || consumed_index >= cgraph->n_nodes || visited_nodes[consumed_index]) {
+            return false;
+        }
+        if (ggml_backend_hrx_is_metadata_op(cgraph->nodes[consumed_index])) {
+            return false;
+        }
+        if (consumed_index == node_index) {
+            has_current_node = true;
+        }
+        for (int j = i + 1; j < consumed_nodes->count; ++j) {
+            if (consumed_index == consumed_nodes->indices[j]) {
+                return false;
+            }
+        }
+    }
+    if (!has_current_node) {
+        return false;
+    }
+
+    for (int i = 0; i < consumed_nodes->count; ++i) {
+        const ggml_tensor * consumed_node = cgraph->nodes[consumed_nodes->indices[i]];
+        for (int j = 0; j < GGML_MAX_SRC; ++j) {
+            const int producer_index = ggml_backend_hrx_graph_node_index(cgraph, consumed_node->src[j]);
+            if (producer_index >= node_index && !visited_nodes[producer_index] &&
+                    !ggml_backend_hrx_consumed_nodes_contains(consumed_nodes, producer_index)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static void ggml_backend_hrx_mark_consumed_nodes(
+        const ggml_backend_hrx_loom_consumed_nodes * consumed_nodes,
+        std::vector<bool> & visited_nodes) {
+    for (int i = 0; i < consumed_nodes->count; ++i) {
+        visited_nodes[consumed_nodes->indices[i]] = true;
+    }
 }
 #endif
 
@@ -1200,22 +1287,44 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
 
     const ggml_backend_hrx_route_family_order route_families =
         ggml_backend_hrx_route_families(context->device_context);
+#if defined(GGML_HRX_USE_LOOM)
+    std::vector<bool> visited_nodes(cgraph ? cgraph->n_nodes : 0, false);
+#endif
     for (int i = 0; cgraph && i < cgraph->n_nodes; ++i) {
+#if defined(GGML_HRX_USE_LOOM)
+        if (visited_nodes[i]) {
+            continue;
+        }
+#endif
         const ggml_tensor * node = cgraph->nodes[i];
         if (ggml_backend_hrx_is_metadata_op(node)) {
             continue;
         }
         bool invoked = false;
+#if defined(GGML_HRX_USE_LOOM)
+        ggml_backend_hrx_loom_consumed_nodes consumed_nodes = {
+            /* .count   = */ 1,
+            /* .indices = */ {i},
+        };
+#endif
         for (size_t route_family_index = 0; route_family_index < route_families.count; ++route_family_index) {
             bool unsupported = true;
             enum ggml_status status = GGML_STATUS_FAILED;
             switch (route_families.families[route_family_index]) {
                 case GGML_BACKEND_HRX_ROUTE_FAMILY_HSACO:
                     status = ggml_backend_hrx_invoke_hsaco(context, node, &unsupported);
+#if defined(GGML_HRX_USE_LOOM)
+                    if (status == GGML_STATUS_SUCCESS && !unsupported) {
+                        consumed_nodes = {
+                            /* .count   = */ 1,
+                            /* .indices = */ {i},
+                        };
+                    }
+#endif
                     break;
 #if defined(GGML_HRX_USE_LOOM)
                 case GGML_BACKEND_HRX_ROUTE_FAMILY_LOOM:
-                    status = ggml_backend_hrx_invoke_loom(context, node, &unsupported);
+                    status = ggml_backend_hrx_invoke_loom(context, cgraph, i, node, &unsupported, &consumed_nodes);
                     break;
 #endif
             }
@@ -1228,6 +1337,12 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
             }
         }
         if (invoked) {
+#if defined(GGML_HRX_USE_LOOM)
+            if (!ggml_backend_hrx_validate_consumed_nodes(cgraph, i, &consumed_nodes, visited_nodes)) {
+                return GGML_STATUS_FAILED;
+            }
+            ggml_backend_hrx_mark_consumed_nodes(&consumed_nodes, visited_nodes);
+#endif
             continue;
         }
 

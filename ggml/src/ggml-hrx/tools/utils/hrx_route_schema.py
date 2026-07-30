@@ -2,9 +2,12 @@ import json
 
 
 MATCH_FIELDS = {"op", "tensors", "attributes", "predicates"}
-TENSOR_FIELDS = {"type", "optional", "shape"}
-ATTRIBUTE_FIELDS = {"type", "default"}
-PREDICATE_FIELDS = {"contiguous", "same_shape", "rank", "field", "equals", "in", "min", "max", "multiple_of", "divisible_by", "src_absent", "src_present"}
+SINGLE_MATCH_V2_FIELDS = {"op", "attributes", "predicates"}
+FUSION_MATCH_FIELDS = {"anchors", "ops", "predicates"}
+FUSION_OP_FIELDS = {"op", "tensors", "attributes"}
+TENSOR_FIELDS = {"type", "optional", "shape", "layout"}
+ATTRIBUTE_FIELDS = {"type", "source", "default"}
+PREDICATE_FIELDS = {"contiguous", "same_shape", "same_layout", "rank", "field", "equals", "in", "min", "max", "multiple_of", "divisible_by", "src_absent", "src_present", "transients", "no_overlap"}
 DERIVED_FIELDS = {"type", "field", "value", "product", "ceil_div", "next_power_of_2"}
 BUFFER_FIELDS = {"name", "tensor", "position", "kind"}
 SCALAR_FIELDS = {"name", "source", "value", "type", "position"}
@@ -212,6 +215,28 @@ def require_non_empty_dict(data, key, source):
     if not value:
         raise ValueError(f"{source}: expected non-empty object field {key}")
     return value
+
+
+def route_schema(route, route_path):
+    return require_string(route, "schema", route_path)
+
+
+def route_is_v1(route, route_path):
+    return route_schema(route, route_path).endswith("-route-v1")
+
+
+def route_is_v2(route, route_path):
+    return route_schema(route, route_path) == "ggml-hrx-loom-route-v2"
+
+
+def route_is_fusion_v2(route, route_path):
+    return route_schema(route, route_path) == "ggml-hrx-loom-fusion-route-v2"
+
+
+def route_tensors(route, route_path):
+    if route_is_v1(route, route_path):
+        return require_dict(require_dict(route, "match", route_path), "tensors", f"{route_path}: match")
+    return require_dict(route, "tensors", route_path)
 
 
 def align_offset(offset, alignment):
@@ -427,9 +452,96 @@ class RouteContext:
         return "i64"
 
 
+class FusionRouteContext:
+    def __init__(self, route_path, tensors, attributes, derived):
+        self.route_path = route_path
+        self.tensors = tensors
+        self.attributes = attributes
+        self.derived = derived
+        self.shape_captures = {}
+        for name, tensor in tensors.items():
+            self.shape_captures[name] = tensor.get("shape", [])
+
+    def validate_tensor_role(self, role, source, allow_optional=False, require_input=False):
+        del allow_optional
+        del require_input
+        if not isinstance(role, str) or not role:
+            raise ValueError(f"{source}: expected non-empty tensor name")
+        if role not in self.tensors:
+            raise ValueError(f"{source}: tensor {role} is not declared in tensors")
+
+    def resolve_source(self, value, source, derived_names=None):
+        if not is_source_string(value):
+            raise ValueError(f"{source}: expected source string")
+        parts = value.split(".")
+        if parts[0] == "tensor":
+            return self.resolve_tensor_source(parts, source)
+        if parts[0] == "attribute":
+            return self.resolve_attribute_source(parts, source)
+        if parts[0] == "derived":
+            return self.resolve_derived_source(parts, source, derived_names)
+        if parts[0] == "shape":
+            return self.resolve_shape_source(parts, source)
+        raise ValueError(f"{source}: unsupported source {value}")
+
+    def resolve_tensor_source(self, parts, source):
+        if len(parts) not in {3, 4}:
+            raise ValueError(f"{source}: unsupported tensor source")
+        name = parts[1]
+        self.validate_tensor_role(name, source)
+        field = parts[2]
+        if field == "type" and len(parts) == 3:
+            return "dtype"
+        if field == "rank" and len(parts) == 3:
+            return "i64"
+        if field == "element_count" and len(parts) == 3:
+            return "i64"
+        if field in {"dimensions", "strides", "element_strides", "permutation"}:
+            if len(parts) == 3:
+                return "vector_i64"
+            index = parts[3]
+            if not index.isdigit():
+                raise ValueError(f"{source}: tensor {field} index must be a non-negative integer")
+            return "i64"
+        raise ValueError(f"{source}: unsupported tensor source")
+
+    def resolve_attribute_source(self, parts, source):
+        if len(parts) != 3:
+            raise ValueError(f"{source}: unsupported attribute source")
+        op_name = parts[1]
+        name = parts[2]
+        attr = self.attributes.get(op_name, {}).get(name)
+        if attr is None:
+            raise ValueError(f"{source}: attribute {op_name}.{name} is not declared in match.ops attributes")
+        return attr["type"]
+
+    def resolve_derived_source(self, parts, source, derived_names):
+        if len(parts) != 2:
+            raise ValueError(f"{source}: unsupported derived source")
+        name = parts[1]
+        names = self.derived if derived_names is None else derived_names
+        if name not in names:
+            raise ValueError(f"{source}: derived value {name} is not available")
+        return self.derived[name]["type"]
+
+    def resolve_shape_source(self, parts, source):
+        if len(parts) != 3:
+            raise ValueError(f"{source}: unsupported shape source")
+        tensor = parts[1]
+        name = parts[2]
+        self.validate_tensor_role(tensor, source)
+        captures = self.shape_captures.get(tensor, [])
+        if name not in captures:
+            raise ValueError(f"{source}: shape value {name} is not captured for tensor {tensor}")
+        return "i64"
+
+
 def validate_match(route, route_path, definition):
     match = require_dict(route, "match", route_path)
-    unknown_fields(match, MATCH_FIELDS, f"{route_path}: match")
+    if route_is_v2(route, route_path):
+        unknown_fields(match, SINGLE_MATCH_V2_FIELDS, f"{route_path}: match")
+    else:
+        unknown_fields(match, MATCH_FIELDS, f"{route_path}: match")
     op = require_string(match, "op", f"{route_path}: match")
     if op not in OP_RULES:
         raise ValueError(f"{route_path}: unsupported match.op {op}")
@@ -438,7 +550,7 @@ def validate_match(route, route_path, definition):
         raise ValueError(f"{route_path}: match.op {op} does not match definition op {definition_op}")
 
     op_rule = OP_RULES[op]
-    tensors = validate_tensors(match, route_path, op_rule)
+    tensors = validate_tensors(route, route_path, op_rule)
     attributes = validate_attributes(match, route_path, op_rule)
     predicates = match.get("predicates", [])
     if not isinstance(predicates, list):
@@ -446,16 +558,24 @@ def validate_match(route, route_path, definition):
     return op_rule, tensors, attributes, predicates
 
 
-def validate_tensors(match, route_path, op_rule):
-    tensors = require_non_empty_dict(match, "tensors", f"{route_path}: match")
+def validate_tensors(route, route_path, op_rule):
+    tensors = route_tensors(route, route_path)
+    if not tensors:
+        raise ValueError(f"{route_path}: expected non-empty tensor table")
     known_tensors = op_rule["required_tensors"] | op_rule["optional_tensors"]
     missing = sorted(op_rule["required_tensors"] - set(tensors))
     if missing:
-        raise ValueError(f"{route_path}: match.tensors missing required roles {', '.join(missing)}")
+        raise ValueError(f"{route_path}: tensor table missing required roles {', '.join(missing)}")
 
-    for role, tensor in tensors.items():
-        tensor_source = f"{route_path}: match.tensors.{role}"
-        if role not in known_tensors:
+    validate_tensor_table(tensors, route_path, known_tensors, op_rule["optional_tensors"])
+    return tensors
+
+
+def validate_tensor_table(tensors, route_path, known_tensors=None, optional_tensors=None):
+    optional_tensors = optional_tensors or set()
+    for name, tensor in tensors.items():
+        tensor_source = f"{route_path}: tensors.{name}"
+        if known_tensors is not None and name not in known_tensors:
             raise ValueError(f"{tensor_source}: unsupported tensor role")
         if not isinstance(tensor, dict):
             raise ValueError(f"{tensor_source}: expected object")
@@ -465,7 +585,7 @@ def validate_tensors(match, route_path, op_rule):
             raise ValueError(f"{tensor_source}: unsupported tensor type {tensor_type}")
         if "optional" in tensor:
             require_bool(tensor, "optional", tensor_source)
-            if role not in op_rule["optional_tensors"]:
+            if known_tensors is not None and name not in optional_tensors:
                 raise ValueError(f"{tensor_source}: optional is only supported for optional operation inputs")
         if "shape" in tensor:
             shape = tensor.get("shape")
@@ -474,13 +594,16 @@ def validate_tensors(match, route_path, op_rule):
             if len(shape) > 4:
                 raise ValueError(f"{tensor_source}.shape: expected at most 4 names")
             seen = set()
-            for i, name in enumerate(shape):
-                if not isinstance(name, str) or not name:
-                    raise ValueError(f"{tensor_source}.shape[{i}]: expected non-empty string")
-                if name in seen:
+            for i, dim in enumerate(shape):
+                if type(dim) is int:
+                    if dim < 0:
+                        raise ValueError(f"{tensor_source}.shape[{i}]: expected non-negative integer")
+                    continue
+                if not isinstance(dim, str) or not dim:
+                    raise ValueError(f"{tensor_source}.shape[{i}]: expected non-empty string or non-negative integer")
+                if dim in seen:
                     raise ValueError(f"{tensor_source}.shape[{i}]: duplicate shape capture name")
-                seen.add(name)
-    return tensors
+                seen.add(dim)
 
 
 def validate_attributes(match, route_path, op_rule):
@@ -502,7 +625,97 @@ def validate_attributes(match, route_path, op_rule):
             raise ValueError(f"{attr_source}: type {attr_type} does not match operation type {expected_type}")
         if "default" in attribute:
             validate_literal(attribute["default"], attr_type, f"{attr_source}.default")
+        if "source" in attribute:
+            source = require_string(attribute, "source", attr_source)
+            if not source.startswith("op_param."):
+                raise ValueError(f"{attr_source}.source: expected op_param source")
     return attributes
+
+
+def validate_fusion_match(route, route_path, definition):
+    tensors = require_non_empty_dict(route, "tensors", route_path)
+    validate_tensor_table(tensors, route_path)
+
+    match = require_dict(route, "match", route_path)
+    unknown_fields(match, FUSION_MATCH_FIELDS, f"{route_path}: match")
+    ops = require_non_empty_dict(match, "ops", f"{route_path}: match")
+    if len(ops) < 2:
+        raise ValueError(f"{route_path}: match.ops expects at least two operations")
+
+    anchors = match.get("anchors", [])
+    if anchors is not None and not isinstance(anchors, list):
+        raise ValueError(f"{route_path}: match.anchors must be an array")
+    if not anchors:
+        anchors = [next(iter(ops))]
+    for i, anchor in enumerate(anchors):
+        if not isinstance(anchor, str) or not anchor:
+            raise ValueError(f"{route_path}: match.anchors[{i}] expected non-empty string")
+        if anchor not in ops:
+            raise ValueError(f"{route_path}: match anchor {anchor} is not declared in match.ops")
+    if anchors[0] != next(iter(ops)):
+        raise ValueError(f"{route_path}: first match.ops entry must be the first anchor")
+
+    attributes = {}
+    produced_tensors = set()
+    consumed_tensors = set()
+    for op_name, op_match in ops.items():
+        op_source = f"{route_path}: match.ops.{op_name}"
+        if not isinstance(op_name, str) or not op_name:
+            raise ValueError(f"{route_path}: match.ops names must be non-empty strings")
+        if not isinstance(op_match, dict):
+            raise ValueError(f"{op_source}: expected object")
+        unknown_fields(op_match, FUSION_OP_FIELDS, op_source)
+
+        op = require_string(op_match, "op", op_source)
+        op_rule = OP_RULES.get(op)
+        if op_rule is None:
+            raise ValueError(f"{op_source}: unsupported op {op}")
+        op_tensors = require_non_empty_dict(op_match, "tensors", op_source)
+        known_roles = op_rule["required_tensors"] | op_rule["optional_tensors"]
+        missing = sorted(op_rule["required_tensors"] - set(op_tensors))
+        if missing:
+            raise ValueError(f"{op_source}: tensors missing required roles {', '.join(missing)}")
+        for role, tensor_name in op_tensors.items():
+            tensor_source = f"{op_source}.tensors.{role}"
+            if role not in known_roles:
+                raise ValueError(f"{tensor_source}: unsupported tensor role")
+            if not isinstance(tensor_name, str) or not tensor_name:
+                raise ValueError(f"{tensor_source}: expected non-empty tensor name")
+            if tensor_name not in tensors:
+                raise ValueError(f"{tensor_source}: tensor {tensor_name} is not declared in tensors")
+            if role == "dst":
+                produced_tensors.add(tensor_name)
+            else:
+                consumed_tensors.add(tensor_name)
+
+        op_attributes = validate_attributes(op_match, f"{route_path}: match.ops.{op_name}", op_rule)
+        attributes[op_name] = op_attributes
+
+    definition_op = require_string(definition, "op", route_path)
+    anchor_op = require_string(ops[anchors[0]], "op", f"{route_path}: match.ops.{anchors[0]}")
+    if definition_op != anchor_op:
+        raise ValueError(f"{route_path}: definition op {definition_op} does not match anchor op {anchor_op}")
+
+    predicates = match.get("predicates", [])
+    if not isinstance(predicates, list):
+        raise ValueError(f"{route_path}: match.predicates must be an array")
+    for i, predicate in enumerate(predicates):
+        source = f"{route_path}: match.predicates[{i}]"
+        if not isinstance(predicate, dict):
+            raise ValueError(f"{source}: expected object")
+        if "transients" in predicate:
+            values = predicate["transients"]
+            if not isinstance(values, list) or not values:
+                raise ValueError(f"{source}.transients: expected non-empty tensor list")
+            for j, tensor_name in enumerate(values):
+                if tensor_name not in tensors:
+                    raise ValueError(f"{source}.transients[{j}]: tensor {tensor_name} is not declared in tensors")
+                if tensor_name not in produced_tensors:
+                    raise ValueError(f"{source}.transients[{j}]: tensor {tensor_name} is not produced inside the fusion")
+                if tensor_name not in consumed_tensors:
+                    raise ValueError(f"{source}.transients[{j}]: tensor {tensor_name} is not consumed inside the fusion")
+
+    return tensors, attributes, predicates
 
 
 def validate_derived(route, route_path, context):
@@ -580,7 +793,19 @@ def validate_predicates(predicates, route_path, context):
             raise ValueError(f"{source}: expected object")
         unknown_fields(predicate, PREDICATE_FIELDS, source)
         keys = set(predicate)
-        forms = [key for key in ("contiguous", "same_shape", "rank", "field", "src_absent", "src_present") if key in keys]
+        forms = [
+            key for key in (
+                "contiguous",
+                "same_shape",
+                "same_layout",
+                "rank",
+                "field",
+                "src_absent",
+                "src_present",
+                "transients",
+                "no_overlap",
+            ) if key in keys
+        ]
         if len(forms) != 1:
             raise ValueError(f"{source}: expected exactly one predicate form")
         form = forms[0]
@@ -592,6 +817,10 @@ def validate_predicates(predicates, route_path, context):
             validate_same_shape_predicate(predicate["same_shape"], source, context)
             if len(keys) != 1:
                 raise ValueError(f"{source}: same_shape predicate does not accept extra fields")
+        elif form == "same_layout":
+            validate_tensor_list_predicate(predicate["same_layout"], source, context, "same_layout")
+            if len(keys) != 1:
+                raise ValueError(f"{source}: same_layout predicate does not accept extra fields")
         elif form == "rank":
             context.validate_tensor_role(predicate["rank"], f"{source}.rank")
             if keys != {"rank", "equals"}:
@@ -604,13 +833,32 @@ def validate_predicates(predicates, route_path, context):
             context.validate_tensor_role(predicate[form], f"{source}.{form}", allow_optional=True, require_input=True)
             if len(keys) != 1:
                 raise ValueError(f"{source}: {form} predicate does not accept extra fields")
+        elif form == "transients":
+            validate_tensor_list_predicate(predicate["transients"], source, context, "transients")
+            if len(keys) != 1:
+                raise ValueError(f"{source}: transients predicate does not accept extra fields")
+        elif form == "no_overlap":
+            validate_tensor_pair_predicate(predicate["no_overlap"], source, context, "no_overlap")
+            if len(keys) != 1:
+                raise ValueError(f"{source}: no_overlap predicate does not accept extra fields")
 
 
 def validate_same_shape_predicate(value, source, context):
+    validate_tensor_list_predicate(value, source, context, "same_shape")
+
+
+def validate_tensor_list_predicate(value, source, context, name):
+    if not isinstance(value, list) or len(value) < 1:
+        raise ValueError(f"{source}.{name}: expected non-empty tensor list")
+    for i, item in enumerate(value):
+        context.validate_tensor_role(item, f"{source}.{name}[{i}]")
+
+
+def validate_tensor_pair_predicate(value, source, context, name):
     if not isinstance(value, list) or len(value) != 2:
-        raise ValueError(f"{source}.same_shape: expected two tensor roles")
-    context.validate_tensor_role(value[0], f"{source}.same_shape[0]")
-    context.validate_tensor_role(value[1], f"{source}.same_shape[1]")
+        raise ValueError(f"{source}.{name}: expected two tensor names")
+    context.validate_tensor_role(value[0], f"{source}.{name}[0]")
+    context.validate_tensor_role(value[1], f"{source}.{name}[1]")
 
 
 def validate_field_predicate(predicate, source, context):

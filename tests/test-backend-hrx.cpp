@@ -339,6 +339,57 @@ static void run_mul_row_broadcast_case(ggml_backend_t backend, ggml_backend_dev_
     expect_near(actual, expected, 1e-6f, "mul");
 }
 
+static void run_rms_norm_mul_case(ggml_backend_t backend) {
+    const float eps = 1e-6f;
+    const int64_t ncols = 64;
+    const int64_t n1 = 3;
+    const int64_t n2 = 2;
+    const int64_t n3 = 2;
+    const int64_t ne[4] = { ncols, n1, n2, n3 };
+    const int64_t weight_ne[4] = { ncols, 1, 1, 1 };
+    const int64_t nrows = n1 * n2 * n3;
+
+    ggml_context_ptr ctx = make_context();
+    ggml_tensor * src = ggml_new_tensor(ctx.get(), GGML_TYPE_F32, 4, ne);
+    ggml_tensor * weight = ggml_new_tensor(ctx.get(), GGML_TYPE_F32, 4, weight_ne);
+    ggml_tensor * out = ggml_mul(ctx.get(), ggml_rms_norm(ctx.get(), src, eps), weight);
+
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 16, false);
+    ggml_build_forward_expand(graph, out);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> src_data(ncols * nrows);
+    std::vector<float> weight_data(ncols);
+    std::vector<float> expected(src_data.size());
+    for (int64_t i = 0; i < ncols * nrows; ++i) {
+        src_data[i] = static_cast<float>((i % 31) - 15) * 0.125f;
+    }
+    for (int64_t col = 0; col < ncols; ++col) {
+        weight_data[col] = 0.5f + static_cast<float>(col % 11) * 0.0625f;
+    }
+    for (int64_t row = 0; row < nrows; ++row) {
+        float sum = 0.0f;
+        for (int64_t col = 0; col < ncols; ++col) {
+            const float value = src_data[row * ncols + col];
+            sum += value * value;
+        }
+        const float scale = 1.0f / std::sqrt(sum / static_cast<float>(ncols) + eps);
+        for (int64_t col = 0; col < ncols; ++col) {
+            expected[row * ncols + col] = src_data[row * ncols + col] * scale * weight_data[col];
+        }
+    }
+
+    ggml_backend_tensor_set(src, src_data.data(), 0, src_data.size() * sizeof(float));
+    ggml_backend_tensor_set(weight, weight_data.data(), 0, weight_data.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> actual(expected.size(), -1.0f);
+    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+    expect_near(actual, expected, 1e-5f, "rms_norm_mul");
+}
+
 static void run_div_scalar_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
     ggml_context_ptr ctx = make_context();
     ggml_tensor * lhs = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 8);
@@ -540,6 +591,11 @@ int main() {
             if (run_mul_support_case(dev)) {
                 run_mul_row_broadcast_case(backend.get(), dev);
             }
+            ggml_backend_synchronize(backend.get());
+            return 0;
+        }
+        if (std::string(test_only) == "rms_norm_mul") {
+            run_rms_norm_mul_case(backend.get());
             ggml_backend_synchronize(backend.get());
             return 0;
         }

@@ -55,6 +55,7 @@ require_int = route_schema.require_int
 require_list = route_schema.require_list
 require_non_empty_dict = route_schema.require_non_empty_dict
 require_string = route_schema.require_string
+route_tensors = route_schema.route_tensors
 unknown_fields = route_schema.unknown_fields
 validate_attributes = route_schema.validate_attributes
 validate_buffers = route_schema.validate_buffers

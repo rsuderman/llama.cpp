@@ -601,6 +601,8 @@ ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_supports_op(ggml_backend
 
     const ggml_backend_hrx_loom_op_request request = {
         /* .op                    = */ op,
+        /* .cgraph                = */ nullptr,
+        /* .node_index            = */ -1,
         /* .stream                = */ nullptr,
         /* .bind_tensor           = */ nullptr,
         /* .bind_tensor_user_data = */ nullptr,
@@ -608,8 +610,13 @@ ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_supports_op(ggml_backend
     return ggml_backend_hrx_loom_match_request(catalog, &request);
 }
 
-ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_invoke(ggml_backend_hrx_loom_catalog *          catalog,
-                                                               const ggml_backend_hrx_loom_op_request * request) {
+ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_invoke(
+    ggml_backend_hrx_loom_catalog *          catalog,
+    const ggml_backend_hrx_loom_op_request * request,
+    ggml_backend_hrx_loom_consumed_nodes *   consumed_nodes) {
+    if (consumed_nodes) {
+        *consumed_nodes = {};
+    }
     if (!catalog || !request || !request->op) {
         return ggml_backend_hrx_loom_failed(nullptr);
     }
@@ -621,6 +628,14 @@ ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_invoke(ggml_backend_hrx_
     }
     if (!ggml_backend_hrx_loom_dispatch_plan(catalog, request->stream, &plan)) {
         return ggml_backend_hrx_loom_failed(response.route_id);
+    }
+    if (consumed_nodes) {
+        consumed_nodes->count = plan.consumed_node_count;
+        const int copy_count = plan.consumed_node_count < GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES ?
+            plan.consumed_node_count : GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES;
+        for (int i = 0; i < copy_count; ++i) {
+            consumed_nodes->indices[i] = plan.consumed_node_indices[i];
+        }
     }
     return response;
 }

@@ -32,6 +32,8 @@ struct ggml_backend_hrx_loom_execution_plan {
     size_t                                      constants_size                                             = 0;
     ggml_backend_hrx_loom_config_binding        config_bindings[GGML_BACKEND_HRX_LOOM_MAX_CONFIG_BINDINGS] = {};
     size_t                                      config_binding_count                                       = 0;
+    int                                         consumed_node_indices[GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES] = {};
+    int                                         consumed_node_count                                        = 0;
 };
 
 static inline bool ggml_backend_hrx_loom_match_only(const ggml_backend_hrx_loom_execution_plan * plan) {
