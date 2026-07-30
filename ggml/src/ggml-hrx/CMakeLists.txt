@@ -206,22 +206,26 @@ if (GGML_HRX_LOOM)
         routes/argsort/f32_i32/contiguous_wg256.json
         routes/sum_rows/f32/contiguous_4d.json
         routes/rope/f32/neox.json
+        routes/rms_norm/f32/contiguous_4d.json
     )
     set(GGML_HRX_LOOM_ROUTE_OPS
         GGML_OP_ADD
         GGML_OP_ARGSORT
+        GGML_OP_RMS_NORM
         GGML_OP_ROPE
         GGML_OP_SUM_ROWS
     )
     set(GGML_HRX_LOOM_ROUTE_DEFS
         "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/add/f32/contiguous.json"
         "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/argsort/f32_i32/contiguous_wg256.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/rms_norm/f32/contiguous_4d.json"
         "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/rope/f32/neox.json"
         "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/sum_rows/f32/contiguous_4d.json"
     )
     set(GGML_HRX_LOOM_SOURCE_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/add/f32/contiguous.loom"
         "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/argsort/f32_i32/contiguous_wg256.loom"
+        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/rms_norm/f32/contiguous_4d.loom"
         "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/rope/f32/neox.loom"
         "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/sum_rows/f32/contiguous_4d.loom"
     )

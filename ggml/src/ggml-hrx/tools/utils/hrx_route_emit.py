@@ -21,6 +21,9 @@ ATTRIBUTE_INDICES = {
         "beta_fast": 9,
         "beta_slow": 10,
     },
+    "GGML_OP_RMS_NORM": {
+        "eps": 0,
+    },
     "GGML_OP_SCALE": {
         "scale": 0,
         "bias": 1,

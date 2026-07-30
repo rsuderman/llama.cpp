@@ -68,6 +68,12 @@ OP_RULES = {
             "n_dims": "i32",
         },
     },
+    "GGML_OP_RMS_NORM": {
+        "required_tensors": {"src0", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0"},
+        "attributes": {"eps": "f32"},
+    },
     "GGML_OP_SCALE": {
         "required_tensors": {"src0", "dst"},
         "optional_tensors": set(),
