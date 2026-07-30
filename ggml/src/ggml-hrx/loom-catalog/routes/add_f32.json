@@ -1,6 +1,9 @@
 {
   "schema": "ggml-hrx-loom-route-v1",
   "id": "add_f32_contiguous",
+  "architectures": [
+    "*"
+  ],
   "definition": "../defs/add_f32.json",
   "format": "loom",
   "priority": 100,

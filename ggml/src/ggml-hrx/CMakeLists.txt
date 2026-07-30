@@ -237,6 +237,7 @@ if (GGML_HRX_LOOM)
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/utils/hrx_route_emit.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loom_route_impl.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_loom_routes.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/metadata.json"
                 ${GGML_HRX_LOOM_ROUTE_DEFS}
                 ${GGML_HRX_LOOM_ROUTE_JSONS}
             VERBATIM
@@ -292,6 +293,7 @@ if (GGML_HRX_LOOM)
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/utils/hrx_route_emit.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loom_route_impl.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_loom_routes.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/metadata.json"
             ${GGML_HRX_LOOM_ROUTE_DEFS}
             ${GGML_HRX_LOOM_ROUTE_JSONS}
         VERBATIM

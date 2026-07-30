@@ -13,6 +13,7 @@ CATALOG_SCHEMA_V0 = "ggml-hrx-loom-catalog-v0"
 DEFINITION_SCHEMA_V1 = "ggml-hrx-loom-def-v1"
 ROUTE_SCHEMA_V1 = "ggml-hrx-loom-route-v1"
 ROUTE_FORMAT = "loom"
+ARCHITECTURE_ANY = "*"
 
 SOURCE_FORMATS = {"loom-text", "loom-bytecode", "amdgpu-hsaco"}
 
@@ -32,6 +33,7 @@ DEFINITION_FIELDS = {
 TOP_LEVEL_FIELDS = {
     "schema",
     "id",
+    "architectures",
     "definition",
     "format",
     "priority",
@@ -62,9 +64,13 @@ def validate_metadata(source_root):
     if route_schema.require_string(metadata, "schema", metadata_path) != CATALOG_SCHEMA_V0:
         raise ValueError(f"{metadata_path}: unsupported schema")
     route_schema.require_int(metadata, "version", metadata_path)
+    targets = {}
     for target in route_schema.require_list(metadata, "targets", metadata_path):
         if not isinstance(target, str) or not target:
             raise ValueError(f"{metadata_path}: targets must contain non-empty strings")
+        if target in targets:
+            raise ValueError(f"{metadata_path}: duplicate target {target}")
+        targets[target] = True
     return metadata_path, metadata
 
 
@@ -96,6 +102,15 @@ def load_definitions(source_root):
         definition_ids[definition_id] = definition_path
         definitions[definition_path.resolve()] = definition
     return definitions
+
+
+def metadata_targets(metadata_path, metadata):
+    return set(route_schema.require_list(metadata, "targets", metadata_path))
+
+
+def load_metadata_targets(source_root):
+    metadata_path, metadata = validate_metadata(source_root)
+    return metadata_targets(metadata_path, metadata)
 
 
 def validate_config(route, route_path, context):
@@ -144,13 +159,36 @@ def validate_config(route, route_path, context):
                 raise ValueError(f"{source}.value: string representation must fit in 127 bytes")
 
 
-def validate_route(route_path, definitions):
+def validate_architectures(route, route_path, metadata_targets):
+    architectures = route_schema.require_array(route, "architectures", route_path)
+    if not architectures:
+        raise ValueError(f"{route_path}: architectures must not be empty")
+
+    names = {}
+    for i, architecture in enumerate(architectures):
+        source = f"{route_path}: architectures[{i}]"
+        if not isinstance(architecture, str) or not architecture:
+            raise ValueError(f"{source}: expected non-empty string")
+        if architecture in names:
+            raise ValueError(f"{route_path}: duplicate architecture {architecture}")
+        if architecture != ARCHITECTURE_ANY and architecture not in metadata_targets:
+            raise ValueError(f"{source}: architecture {architecture} is not listed in metadata targets")
+        names[architecture] = True
+    if ARCHITECTURE_ANY in names:
+        if len(names) != 1:
+            raise ValueError(f"{route_path}: architecture {ARCHITECTURE_ANY} cannot be combined with explicit architectures")
+        return set(metadata_targets)
+    return set(names)
+
+
+def validate_route(route_path, definitions, metadata_targets):
     route = route_schema.read_json(route_path)
     route_schema.unknown_fields(route, TOP_LEVEL_FIELDS, route_path)
     schema = route_schema.require_string(route, "schema", route_path)
     if schema != ROUTE_SCHEMA_V1:
         raise ValueError(f"{route_path}: unsupported route schema {schema}")
     route_schema.require_string(route, "id", route_path)
+    architectures = validate_architectures(route, route_path, metadata_targets)
     route_format = route_schema.require_string(route, "format", route_path)
     if route_format != ROUTE_FORMAT:
         raise ValueError(f"{route_path}: unsupported route format {route_format}")
@@ -170,19 +208,24 @@ def validate_route(route_path, definitions):
     route_schema.validate_predicates(predicates, route_path, context)
     validate_config(route, route_path, context)
     route_schema.validate_invocation(route, route_path, definition, context)
+    return architectures
 
 
 def validate_catalog(source_root):
     metadata_path, metadata = validate_metadata(source_root)
+    targets = metadata_targets(metadata_path, metadata)
     definitions = load_definitions(source_root)
     route_names = route_schema.require_list(metadata, "routes", metadata_path)
+    covered_targets = set()
     for route_name in route_names:
         if not isinstance(route_name, str) or not route_name:
             raise ValueError(f"{metadata_path}: routes must contain non-empty strings")
         route_path = source_root / route_name
         if not route_path.is_file():
             raise ValueError(f"{metadata_path}: missing route {route_path}")
-        validate_route(route_path, definitions)
+        covered_targets.update(validate_route(route_path, definitions, targets))
+    for target in sorted(targets - covered_targets):
+        raise ValueError(f"{metadata_path}: metadata target {target} is not covered by any route architecture")
 
 
 def main():

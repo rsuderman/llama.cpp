@@ -123,8 +123,9 @@ def load_route(source_root, route_name):
         route_path = source_root / route_path
     route_path = route_path.resolve()
 
+    metadata_targets = route_validator.load_metadata_targets(source_root)
     definitions = route_validator.load_definitions(source_root)
-    route_validator.validate_route(route_path, definitions)
+    route_validator.validate_route(route_path, definitions, metadata_targets)
     route = route_schema.read_json(route_path)
     definition_path = (route_path.parent / route_schema.require_string(route, "definition", route_path)).resolve()
     definition = definitions[definition_path]

@@ -90,12 +90,20 @@ def write_generated_source(path, header_path, entries):
 def build_entries(source_root, targets):
     metadata_path = source_root / "metadata.json"
     metadata = read_json(metadata_path)
+    metadata_targets = loom.metadata_targets(metadata_path, metadata)
     selected_targets = targets
     if not selected_targets:
         selected_targets = require_list(metadata, "targets", metadata_path)
+    selected_target_names = {}
     for target in selected_targets:
         if not isinstance(target, str) or not target:
             raise ValueError(f"{metadata_path}: targets must contain non-empty strings")
+        if target in selected_target_names:
+            raise ValueError(f"{metadata_path}: duplicate selected target {target}")
+        if target not in metadata_targets:
+            raise ValueError(f"{metadata_path}: selected target {target} is not listed in metadata targets")
+        selected_target_names[target] = True
+    selected_target_entries = {target: 0 for target in selected_targets}
 
     entries = []
     for route_name in require_list(metadata, "routes", metadata_path):
@@ -123,7 +131,11 @@ def build_entries(source_root, targets):
         route_id = require_string(route, "id", route_path)
         definition_id = require_string(definition, "id", definition_path)
         source_data = source_path.read_bytes()
+        route_architectures = set(require_list(route, "architectures", route_path))
         for target in selected_targets:
+            if loom.ARCHITECTURE_ANY not in route_architectures and target not in route_architectures:
+                continue
+            selected_target_entries[target] += 1
             entries.append({
                 "id": route_id,
                 "op": require_string(definition, "op", definition_path),
@@ -144,6 +156,9 @@ def build_entries(source_root, targets):
 
     if not entries:
         raise ValueError(f"{metadata_path}: no routes selected for targets {selected_targets}")
+    for target, entry_count in selected_target_entries.items():
+        if entry_count == 0:
+            raise ValueError(f"{metadata_path}: no Loom routes support selected target {target}")
     return entries
 
 
