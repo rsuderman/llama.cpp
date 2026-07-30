@@ -273,6 +273,8 @@ if (GGML_HRX_LOOM)
         routes/gfx1100/mul_mat/f16_f16/contiguous_m64n64_gfx1100_4d.json
         routes/gfx1100/mul_mat/f16_f16/contiguous_c1_gfx1100_4d.json
         routes/generic/mul_mat/f16_f16/contiguous_4d.json
+        routes/generic/soft_max/f32/skinny_contiguous_4d.json
+        routes/generic/soft_max/f32/contiguous_4d.json
     )
     set(GGML_HRX_LOOM_ROUTE_OPS
         GGML_OP_ADD
@@ -288,6 +290,7 @@ if (GGML_HRX_LOOM)
         GGML_OP_RMS_NORM
         GGML_OP_ROPE
         GGML_OP_SET_ROWS
+        GGML_OP_SOFT_MAX
         GGML_OP_SUB
         GGML_OP_SUM_ROWS
     )

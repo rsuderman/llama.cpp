@@ -1,0 +1,137 @@
+config.decl @shape_soft_max_ncols : %value: index where [range(%value, 1, 128)]
+config.decl @shape_soft_max_nrows : %value: index where [range(%value, 1, 16)]
+config.decl @tuning_soft_max_workgroup_size : %value: index where [range(%value, 32, 128), mul(%value, 32)]
+
+kernel.def export("hrx2_soft_max_f32_skinny") @hrx2_soft_max_f32_skinny() {
+  %unit = index.constant 1 : index
+  %nrows = config.get @shape_soft_max_nrows : index
+  %workgroup_size = config.get @tuning_soft_max_workgroup_size : index
+  kernel.launch.config workgroups(%nrows, %unit, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
+} launch(%scale: f32, %src0: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %one = index.constant 1 : index
+  %two = index.constant 2 : index
+  %three = index.constant 3 : index
+  %four = index.constant 4 : index
+  %ncols = config.get @shape_soft_max_ncols : index
+  %nrows = config.get @shape_soft_max_nrows : index
+  %workgroup_size = config.get @tuning_soft_max_workgroup_size : index
+  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 128)] : index
+  %nrows_bounded = index.assume %nrows [range(%nrows, 1, 16)] : index
+  %full_vec_cols = index.div %ncols_bounded, %four : index
+  %tail_start = index.mul %full_vec_cols, %four : index
+  %element_count = index.mul %ncols_bounded, %nrows_bounded : index
+  %row0 = kernel.workgroup.id<x> : index
+  %row = index.assume %row0 [range(%row0, 0, 15)] : index
+  %lane0 = kernel.workitem.id<x> : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 127)] : index
+  %minus_inf = scalar.constant -3.4028234663852886e+38 : f32
+  %zero_f32 = scalar.constant 0.0 : f32
+
+  %src0_global = buffer.assume.memory_space<global> %src0 : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %src0_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %dst_global : buffer, buffer
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%element_count]xf32, #dense>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%element_count]xf32, #dense>
+
+  %row_offset = index.mul %row, %ncols_bounded : index
+  %scale_vec = vector.splat %scale : vector<4xf32>
+
+  %max_vec = scf.for %vcol = [%lane to %full_vec_cols step %workgroup_size](%acc = %minus_inf : f32) -> (f32) {
+    %col0 = index.mul %vcol, %four : index
+    %linear = index.add %row_offset, %col0 : index
+    %values = vector.load %src0_view[%linear] : view<[%element_count]xf32, #dense> -> vector<4xf32>
+    %scaled = vector.mulf<nnan|ninf|nsz> %values, %scale_vec : vector<4xf32>
+    %next = vector.reduce<maxnumf, reassoc|nnan|nsz> %scaled, %acc : vector<4xf32>, f32
+    scf.yield %next : f32
+  }
+
+  %tail_lane0 = index.add %tail_start, %lane : index
+  %thread_max = scf.for %col = [%tail_lane0 to %ncols_bounded step %workgroup_size](%acc = %max_vec : f32) -> (f32) {
+    %linear = index.add %row_offset, %col : index
+    %x = view.load %src0_view[%linear] : view<[%element_count]xf32, #dense> -> f32
+    %scaled = scalar.mulf<nnan|ninf|nsz> %x, %scale : f32
+    %next = scalar.maxnumf %acc, %scaled : f32
+    scf.yield %next : f32
+  }
+
+  %row_max = kernel.workgroup.reduce<maxnumf> %thread_max : f32
+
+  %sum_vec = scf.for %vcol = [%lane to %full_vec_cols step %workgroup_size](%acc = %zero_f32 : f32) -> (f32) {
+    %col0 = index.mul %vcol, %four : index
+    %linear0 = index.add %row_offset, %col0 : index
+    %values = vector.load %src0_view[%linear0] : view<[%element_count]xf32, #dense> -> vector<4xf32>
+    %scaled = vector.mulf<nnan|ninf|nsz> %values, %scale_vec : vector<4xf32>
+    %s0 = vector.extract %scaled[0] : vector<4xf32> -> f32
+    %s1 = vector.extract %scaled[1] : vector<4xf32> -> f32
+    %s2 = vector.extract %scaled[2] : vector<4xf32> -> f32
+    %s3 = vector.extract %scaled[3] : vector<4xf32> -> f32
+    %d0 = scalar.subf<nnan|ninf|nsz> %s0, %row_max : f32
+    %d1 = scalar.subf<nnan|ninf|nsz> %s1, %row_max : f32
+    %d2 = scalar.subf<nnan|ninf|nsz> %s2, %row_max : f32
+    %d3 = scalar.subf<nnan|ninf|nsz> %s3, %row_max : f32
+    %e0 = scalar.expf<afn> %d0 : f32
+    %e1 = scalar.expf<afn> %d1 : f32
+    %e2 = scalar.expf<afn> %d2 : f32
+    %e3 = scalar.expf<afn> %d3 : f32
+    %sum01 = scalar.addf<nnan|ninf|nsz> %e0, %e1 : f32
+    %sum23 = scalar.addf<nnan|ninf|nsz> %e2, %e3 : f32
+    %sum03 = scalar.addf<nnan|ninf|nsz> %sum01, %sum23 : f32
+    %next = scalar.addf<nnan|ninf|nsz> %acc, %sum03 : f32
+    scf.yield %next : f32
+  }
+
+  %thread_sum = scf.for %col = [%tail_lane0 to %ncols_bounded step %workgroup_size](%acc = %sum_vec : f32) -> (f32) {
+    %linear = index.add %row_offset, %col : index
+    %x = view.load %src0_view[%linear] : view<[%element_count]xf32, #dense> -> f32
+    %scaled = scalar.mulf<nnan|ninf|nsz> %x, %scale : f32
+    %shifted = scalar.subf<nnan|ninf|nsz> %scaled, %row_max : f32
+    %exp = scalar.expf<afn> %shifted : f32
+    %next = scalar.addf<nnan|ninf|nsz> %acc, %exp : f32
+    scf.yield %next : f32
+  }
+
+  %row_sum = kernel.workgroup.reduce<addf> %thread_sum : f32
+
+  scf.for %vcol = [%lane to %full_vec_cols step %workgroup_size] {
+    %col0 = index.mul %vcol, %four : index
+    %linear0 = index.add %row_offset, %col0 : index
+    %linear1 = index.add %linear0, %one : index
+    %linear2 = index.add %linear0, %two : index
+    %linear3 = index.add %linear0, %three : index
+    %values = vector.load %src0_view[%linear0] : view<[%element_count]xf32, #dense> -> vector<4xf32>
+    %scaled = vector.mulf<nnan|ninf|nsz> %values, %scale_vec : vector<4xf32>
+    %s0 = vector.extract %scaled[0] : vector<4xf32> -> f32
+    %s1 = vector.extract %scaled[1] : vector<4xf32> -> f32
+    %s2 = vector.extract %scaled[2] : vector<4xf32> -> f32
+    %s3 = vector.extract %scaled[3] : vector<4xf32> -> f32
+    %d0 = scalar.subf<nnan|ninf|nsz> %s0, %row_max : f32
+    %d1 = scalar.subf<nnan|ninf|nsz> %s1, %row_max : f32
+    %d2 = scalar.subf<nnan|ninf|nsz> %s2, %row_max : f32
+    %d3 = scalar.subf<nnan|ninf|nsz> %s3, %row_max : f32
+    %e0 = scalar.expf<afn> %d0 : f32
+    %e1 = scalar.expf<afn> %d1 : f32
+    %e2 = scalar.expf<afn> %d2 : f32
+    %e3 = scalar.expf<afn> %d3 : f32
+    %n0 = scalar.divf<nnan|ninf|nsz|arcp> %e0, %row_sum : f32
+    %n1 = scalar.divf<nnan|ninf|nsz|arcp> %e1, %row_sum : f32
+    %n2 = scalar.divf<nnan|ninf|nsz|arcp> %e2, %row_sum : f32
+    %n3 = scalar.divf<nnan|ninf|nsz|arcp> %e3, %row_sum : f32
+    view.store %n0, %dst_view[%linear0] : f32, view<[%element_count]xf32, #dense>
+    view.store %n1, %dst_view[%linear1] : f32, view<[%element_count]xf32, #dense>
+    view.store %n2, %dst_view[%linear2] : f32, view<[%element_count]xf32, #dense>
+    view.store %n3, %dst_view[%linear3] : f32, view<[%element_count]xf32, #dense>
+  }
+
+  scf.for %col = [%tail_lane0 to %ncols_bounded step %workgroup_size] {
+    %linear = index.add %row_offset, %col : index
+    %x = view.load %src0_view[%linear] : view<[%element_count]xf32, #dense> -> f32
+    %scaled = scalar.mulf<nnan|ninf|nsz> %x, %scale : f32
+    %shifted = scalar.subf<nnan|ninf|nsz> %scaled, %row_max : f32
+    %exp = scalar.expf<afn> %shifted : f32
+    %norm = scalar.divf<nnan|ninf|nsz|arcp> %exp, %row_sum : f32
+    view.store %norm, %dst_view[%linear] : f32, view<[%element_count]xf32, #dense>
+  }
+
+  kernel.return
+}

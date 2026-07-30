@@ -61,6 +61,8 @@
     "routes/generic/mul_mat/f16_f32/contiguous_4d.json",
     "routes/gfx1100/mul_mat/f16_f16/contiguous_m64n64_gfx1100_4d.json",
     "routes/gfx1100/mul_mat/f16_f16/contiguous_c1_gfx1100_4d.json",
-    "routes/generic/mul_mat/f16_f16/contiguous_4d.json"
+    "routes/generic/mul_mat/f16_f16/contiguous_4d.json",
+    "routes/generic/soft_max/f32/skinny_contiguous_4d.json",
+    "routes/generic/soft_max/f32/contiguous_4d.json"
   ]
 }

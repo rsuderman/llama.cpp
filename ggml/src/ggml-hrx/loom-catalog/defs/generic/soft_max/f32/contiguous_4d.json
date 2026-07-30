@@ -1,0 +1,17 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "soft_max_f32_contiguous_4d",
+  "op": "GGML_OP_SOFT_MAX",
+  "source": "sources/generic/soft_max/f32/contiguous.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_soft_max_f32",
+  "abi": {"binding_count": 2, "parameter_count": 3, "constant_byte_length": 4},
+  "workgroup_size": [1024, 1, 1],
+  "parameters": [
+    {"name": "scale", "type": "f32"}
+  ],
+  "bindings": [
+    {"name": "src0", "access": "read"},
+    {"name": "dst", "access": "write"}
+  ]
+}
