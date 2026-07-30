@@ -20,6 +20,7 @@ if (GGML_HRX_IMPORTED_INCLUDES)
 endif()
 
 option(GGML_HRX_EMBED_ROCM_LIBS "Bundle HRX/ROCm runtime libraries next to the HRX backend" OFF)
+option(GGML_HRX_HSACO_ROUTER "Enable the HRX HSACO route catalog" ON)
 option(GGML_HRX_LOOM "Generate and compile the HRX Loom catalog" OFF)
 set(GGML_HRX_EMBED_LIBRARY_DIRS "" CACHE STRING "Library directories to scan when GGML_HRX_EMBED_ROCM_LIBS=ON")
 set(GGML_HRX_HSACO_TARGETS "gfx1100" CACHE STRING "AMDGPU targets used for the v0 HRX HSACO catalog")
@@ -364,6 +365,9 @@ target_include_directories(ggml-hrx PRIVATE
 
 if (GGML_HRX_LOOM)
     target_compile_definitions(ggml-hrx PRIVATE GGML_HRX_USE_LOOM)
+endif()
+if (NOT GGML_HRX_HSACO_ROUTER)
+    target_compile_definitions(ggml-hrx PRIVATE GGML_HRX_DISABLE_HSACO_ROUTER)
 endif()
 
 if (GGML_HRX_EMBED_ROCM_LIBS)

@@ -1079,7 +1079,9 @@ static ggml_backend_hrx_route_family_order ggml_backend_hrx_route_families(
         order.families[order.count++] = GGML_BACKEND_HRX_ROUTE_FAMILY_LOOM;
     }
 #endif
+#if !defined(GGML_HRX_DISABLE_HSACO_ROUTER)
     order.families[order.count++] = GGML_BACKEND_HRX_ROUTE_FAMILY_HSACO;
+#endif
 #if defined(GGML_HRX_USE_LOOM)
     if (ggml_backend_hrx_use_loom(device_context) && !loom_first) {
         order.families[order.count++] = GGML_BACKEND_HRX_ROUTE_FAMILY_LOOM;
