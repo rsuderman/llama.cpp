@@ -1,0 +1,79 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "swiglu_f32_split_strided_4d",
+  "definition": "../../../../defs/generic/swiglu/f32/split_strided_4d.json",
+  "format": "loom",
+  "priority": 104,
+  "match": {
+    "op": "GGML_OP_GLU",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": ["d0", "d1", "d2", "d3"]
+      },
+      "src1": {
+        "type": "F32",
+        "shape": ["d0", "d1", "d2", "d3"]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": ["d0", "d1", "d2", "d3"]
+      }
+    },
+    "attributes": {
+      "glu_op": {"type": "i32"}
+    },
+    "predicates": [
+      {"field": "attribute.glu_op", "equals": 2},
+      {"field": "derived.total_size", "min": 1},
+      {"field": "derived.total_size", "max": 1073741824},
+      {
+        "same_shape": ["src0", "src1"]
+      },
+      {
+        "same_shape": ["src0", "dst"]
+      },
+      {"contiguous": "dst"}
+    ]
+  },
+  "derived": {
+    "total_size": {
+      "type": "i64",
+      "product": ["shape.dst.d0", "shape.dst.d1", "shape.dst.d2", "shape.dst.d3"]
+    },
+    "nrows": {
+      "type": "i64",
+      "product": ["shape.dst.d1", "shape.dst.d2", "shape.dst.d3"]
+    }
+  },
+  "config": {
+    "mode": "compile",
+    "bindings": [
+      {"name": "shape_swiglu_ncols", "type": "i64", "source": "shape.dst.d0"},
+      {"name": "shape_swiglu_nrows", "type": "i64", "source": "derived.nrows"},
+      {"name": "shape_swiglu_d1", "type": "i64", "source": "shape.dst.d1"},
+      {"name": "shape_swiglu_d2", "type": "i64", "source": "shape.dst.d2"},
+      {"name": "shape_swiglu_d3", "type": "i64", "source": "shape.dst.d3"},
+      {"name": "shape_swiglu_src0_stride1", "type": "i64", "source": "tensor.src0.element_strides.1"},
+      {"name": "shape_swiglu_src0_stride2", "type": "i64", "source": "tensor.src0.element_strides.2"},
+      {"name": "shape_swiglu_src0_stride3", "type": "i64", "source": "tensor.src0.element_strides.3"},
+      {"name": "shape_swiglu_src1_stride1", "type": "i64", "source": "tensor.src1.element_strides.1"},
+      {"name": "shape_swiglu_src1_stride2", "type": "i64", "source": "tensor.src1.element_strides.2"},
+      {"name": "shape_swiglu_src1_stride3", "type": "i64", "source": "tensor.src1.element_strides.3"},
+      {"name": "tuning_swiglu_workgroup_size", "type": "i64", "value": 256}
+    ]
+  },
+  "invocation": {
+    "buffers": [
+      {"name": "src0", "tensor": "src0", "position": 0, "kind": "input"},
+      {"name": "src1", "tensor": "src1", "position": 1, "kind": "input"},
+      {"name": "dst", "tensor": "dst", "position": 2, "kind": "output"}
+    ],
+    "scalars": [],
+    "dispatch": {
+      "work_items": ["derived.total_size"],
+      "workgroup_size": [256, 1, 1]
+    }
+  },
+  "architectures": ["*"]
+}

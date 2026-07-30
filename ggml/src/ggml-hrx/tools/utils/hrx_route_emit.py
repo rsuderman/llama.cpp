@@ -10,6 +10,9 @@ ATTRIBUTE_INDICES = {
         "minimum": 0,
         "maximum": 1,
     },
+    "GGML_OP_GLU": {
+        "glu_op": 0,
+    },
     "GGML_OP_ROPE": {
         "n_dims": 1,
         "mode": 2,
@@ -46,6 +49,8 @@ CPP_DTYPE_NAMES = {
     "F16": "GGML_TYPE_F16",
     "F32": "GGML_TYPE_F32",
     "I32": "GGML_TYPE_I32",
+    "I64": "GGML_TYPE_I64",
+    "Q4_K": "GGML_TYPE_Q4_K",
 }
 
 ATTRIBUTE_GETTERS = {

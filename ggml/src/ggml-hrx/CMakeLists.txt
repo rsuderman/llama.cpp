@@ -245,6 +245,11 @@ if (GGML_HRX_LOOM)
         routes/generic/copy/f16_f32/contiguous_1d.json
         routes/generic/copy/f32_bf16/contiguous_1d.json
         routes/generic/copy/f32_f16/contiguous_1d.json
+        routes/generic/get_rows/f32/contiguous_rows_4d.json
+        routes/generic/get_rows/f32/outer_indexed_rows_4d.json
+        routes/generic/get_rows/q4_k_f32/contiguous_rows_4d.json
+        routes/generic/set_rows/f32_f16/cont.json
+        routes/generic/swiglu/f32/split_strided_4d.json
     )
     set(GGML_HRX_LOOM_ROUTE_OPS
         GGML_OP_ADD
@@ -252,9 +257,12 @@ if (GGML_HRX_LOOM)
         GGML_OP_CLAMP
         GGML_OP_CPY
         GGML_OP_DIV
+        GGML_OP_GET_ROWS
+        GGML_OP_GLU
         GGML_OP_MUL
         GGML_OP_RMS_NORM
         GGML_OP_ROPE
+        GGML_OP_SET_ROWS
         GGML_OP_SUB
         GGML_OP_SUM_ROWS
     )

@@ -1,9 +1,7 @@
 {
   "schema": "ggml-hrx-loom-catalog-v0",
   "version": 0,
-  "targets": [
-    "gfx1100"
-  ],
+  "targets": ["gfx1100"],
   "routes": [
     "routes/generic/add/f32/contiguous.json",
     "routes/generic/argsort/f32_i32/contiguous_wg256.json",
@@ -35,6 +33,11 @@
     "routes/generic/copy/f16_bf16/contiguous_1d.json",
     "routes/generic/copy/f16_f32/contiguous_1d.json",
     "routes/generic/copy/f32_bf16/contiguous_1d.json",
-    "routes/generic/copy/f32_f16/contiguous_1d.json"
+    "routes/generic/copy/f32_f16/contiguous_1d.json",
+    "routes/generic/get_rows/f32/contiguous_rows_4d.json",
+    "routes/generic/get_rows/f32/outer_indexed_rows_4d.json",
+    "routes/generic/get_rows/q4_k_f32/contiguous_rows_4d.json",
+    "routes/generic/set_rows/f32_f16/cont.json",
+    "routes/generic/swiglu/f32/split_strided_4d.json"
   ]
 }

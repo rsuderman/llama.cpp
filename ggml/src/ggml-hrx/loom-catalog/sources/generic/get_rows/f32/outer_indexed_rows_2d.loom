@@ -1,0 +1,82 @@
+config.decl @shape_get_rows_outer_source_row_count : %value: index where [range(%value, 1, 1048576)]
+config.decl @shape_get_rows_outer_index_count : %value: index where [range(%value, 1, 1024)]
+config.decl @shape_get_rows_outer_outer_count : %value: index where [range(%value, 1, 1048576)]
+config.decl @shape_get_rows_outer_src0_outer_stride : %value: index where [range(%value, 1, 1048576)]
+config.decl @shape_get_rows_outer_idx_outer_stride : %value: index where [range(%value, 1, 1024)]
+config.decl @shape_get_rows_outer_dst_outer_stride : %value: index where [range(%value, 1, 1024)]
+config.decl @tuning_get_rows_outer_workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+
+kernel.def export("get_rows_f32_outer_indexed_rows") @get_rows_f32_outer_indexed_rows() {
+  %unit = index.constant 1 : index
+  %minus_one = index.constant -1 : index
+  %index_count = config.get @shape_get_rows_outer_index_count : index
+  %outer_size = config.get @shape_get_rows_outer_outer_count : index
+  %workgroup_size = config.get @tuning_get_rows_outer_workgroup_size : index
+  %rounding = index.add %workgroup_size, %minus_one : index
+  %rounded = index.add %index_count, %rounding : index
+  %index_tiles = index.div %rounded, %workgroup_size : index
+  kernel.launch.config workgroups(%outer_size, %index_tiles, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
+} launch(%src0: buffer, %idx: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %zero_i32 = scalar.constant 0 : i32
+  %source_row_count = config.get @shape_get_rows_outer_source_row_count : index
+  %index_count = config.get @shape_get_rows_outer_index_count : index
+  %outer_size = config.get @shape_get_rows_outer_outer_count : index
+  %src0_outer_stride = config.get @shape_get_rows_outer_src0_outer_stride : index
+  %idx_outer_stride = config.get @shape_get_rows_outer_idx_outer_stride : index
+  %dst_outer_stride = config.get @shape_get_rows_outer_dst_outer_stride : index
+  %workgroup_size = config.get @tuning_get_rows_outer_workgroup_size : index
+  %source_row_count_bounded = index.assume %source_row_count [range(%source_row_count, 1, 1048576)] : index
+  %index_count_bounded = index.assume %index_count [range(%index_count, 1, 1024)] : index
+  %outer_size_bounded = index.assume %outer_size [range(%outer_size, 1, 1048576)] : index
+  %src0_outer_stride_bounded = index.assume %src0_outer_stride [range(%src0_outer_stride, 1, 1048576)] : index
+  %idx_outer_stride_bounded = index.assume %idx_outer_stride [range(%idx_outer_stride, 1, 1024)] : index
+  %dst_outer_stride_bounded = index.assume %dst_outer_stride [range(%dst_outer_stride, 1, 1024)] : index
+  %src0_count = index.mul %src0_outer_stride_bounded, %outer_size_bounded : index
+  %idx_count = index.mul %idx_outer_stride_bounded, %outer_size_bounded : index
+  %dst_count = index.mul %dst_outer_stride_bounded, %outer_size_bounded : index
+
+  %outer0 = kernel.workgroup.id<x> : index
+  %index_tile0 = kernel.workgroup.id<y> : index
+  %lane0 = kernel.workitem.id<x> : index
+  %outer = index.assume %outer0 [range(%outer0, 0, 1048575), lt(%outer0, %outer_size_bounded)] : index
+  %index_tile = index.assume %index_tile0 [range(%index_tile0, 0, 31)] : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
+  %index_base0 = index.mul %index_tile, %workgroup_size : index
+  %index_base = index.assume %index_base0 [range(%index_base0, 0, 1073741823)] : index
+  %index_slot0 = index.add %index_base, %lane : index
+  %index_slot = index.assume %index_slot0 [range(%index_slot0, 0, 1073741823)] : index
+  %in_bounds = index.cmp ult, %index_slot, %index_count_bounded : index
+
+  %src0_global = buffer.assume.memory_space<global> %src0 : buffer
+  %idx_global = buffer.assume.memory_space<global> %idx : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %src0_noalias, %idx_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %idx_global, %dst_global : buffer, buffer, buffer
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf32, #dense>
+  %idx_view = buffer.view %idx_noalias[%base] : buffer -> view<[%idx_count]xi32, #dense>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+
+  scf.if %in_bounds {
+    %idx_outer_base = index.mul %outer, %idx_outer_stride_bounded : index
+    %idx_pos0 = index.add %idx_outer_base, %index_slot : index
+    %idx_pos = index.assume %idx_pos0 [range(%idx_pos0, 0, 1073741823)] : index
+    %source_index_i32 = view.load %idx_view[%idx_pos] : view<[%idx_count]xi32, #dense> -> i32
+    %source_index_nonnegative = scalar.cmpi sge, %source_index_i32, %zero_i32 : i32
+    scf.if %source_index_nonnegative {
+      %source_index0 = index.cast %source_index_i32 : i32 to index
+      %source_index = index.assume %source_index0 [range(%source_index0, 0, 1073741823)] : index
+      %source_index_valid = index.cmp ult, %source_index, %source_row_count_bounded : index
+      scf.if %source_index_valid {
+        %src0_outer_base = index.mul %outer, %src0_outer_stride_bounded : index
+        %src0_pos0 = index.add %src0_outer_base, %source_index : index
+        %src0_pos = index.assume %src0_pos0 [range(%src0_pos0, 0, 1073741823)] : index
+        %value = view.load %src0_view[%src0_pos] : view<[%src0_count]xf32, #dense> -> f32
+        %dst_outer_base = index.mul %outer, %dst_outer_stride_bounded : index
+        %dst_pos0 = index.add %dst_outer_base, %index_slot : index
+        %dst_pos = index.assume %dst_pos0 [range(%dst_pos0, 0, 1073741823)] : index
+        view.store %value, %dst_view[%dst_pos] : f32, view<[%dst_count]xf32, #dense>
+      }
+    }
+  }
+  kernel.return
+}

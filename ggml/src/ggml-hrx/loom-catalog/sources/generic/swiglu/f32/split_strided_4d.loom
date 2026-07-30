@@ -1,0 +1,92 @@
+config.decl @shape_swiglu_ncols : %value: index where [range(%value, 1, 65536)]
+config.decl @shape_swiglu_nrows : %value: index where [range(%value, 1, 1048576)]
+config.decl @shape_swiglu_d1 : %value: index where [range(%value, 1, 1048576)]
+config.decl @shape_swiglu_d2 : %value: index where [range(%value, 1, 1048576)]
+config.decl @shape_swiglu_d3 : %value: index where [range(%value, 1, 1048576)]
+config.decl @shape_swiglu_src0_stride1 : %value: index where [range(%value, 1, 1073741824)]
+config.decl @shape_swiglu_src0_stride2 : %value: index where [range(%value, 1, 1073741824)]
+config.decl @shape_swiglu_src0_stride3 : %value: index where [range(%value, 1, 1073741824)]
+config.decl @shape_swiglu_src1_stride1 : %value: index where [range(%value, 1, 1073741824)]
+config.decl @shape_swiglu_src1_stride2 : %value: index where [range(%value, 1, 1073741824)]
+config.decl @shape_swiglu_src1_stride3 : %value: index where [range(%value, 1, 1073741824)]
+config.decl @tuning_swiglu_workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+
+kernel.def export("hrx2_swiglu_f32_split") @hrx2_swiglu_f32_split() {
+  %unit = index.constant 1 : index
+  %minus_one = index.constant -1 : index
+  %ncols = config.get @shape_swiglu_ncols : index
+  %nrows = config.get @shape_swiglu_nrows : index
+  %workgroup_size = config.get @tuning_swiglu_workgroup_size : index
+  %total = index.mul %ncols, %nrows : index
+  %rounding = index.add %workgroup_size, %minus_one : index
+  %rounded = index.add %total, %rounding : index
+  %workgroups = index.div %rounded, %workgroup_size : index
+  kernel.launch.config workgroups(%workgroups, %unit, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
+} launch(%src0: buffer, %src1: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %ncols = config.get @shape_swiglu_ncols : index
+  %nrows = config.get @shape_swiglu_nrows : index
+  %d1 = config.get @shape_swiglu_d1 : index
+  %d2 = config.get @shape_swiglu_d2 : index
+  %src0_stride1 = config.get @shape_swiglu_src0_stride1 : index
+  %src0_stride2 = config.get @shape_swiglu_src0_stride2 : index
+  %src0_stride3 = config.get @shape_swiglu_src0_stride3 : index
+  %src1_stride1 = config.get @shape_swiglu_src1_stride1 : index
+  %src1_stride2 = config.get @shape_swiglu_src1_stride2 : index
+  %src1_stride3 = config.get @shape_swiglu_src1_stride3 : index
+  %workgroup_size = config.get @tuning_swiglu_workgroup_size : index
+  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 65536)] : index
+  %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
+  %d1_bounded = index.assume %d1 [range(%d1, 1, 1048576)] : index
+  %d2_bounded = index.assume %d2 [range(%d2, 1, 1048576)] : index
+  %workgroup0 = kernel.workgroup.id<x> : index
+  %lane0 = kernel.workitem.id<x> : index
+  %workgroup = index.assume %workgroup0 [range(%workgroup0, 0, 4194303)] : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
+  %linear_mul0 = index.mul %workgroup, %workgroup_size : index
+  %linear_mul = index.assume %linear_mul0 [range(%linear_mul0, 0, 1073741823)] : index
+  %linear_add0 = index.add %linear_mul, %lane : index
+  %linear = index.assume %linear_add0 [range(%linear_add0, 0, 1073741823)] : index
+  %total0 = index.mul %ncols_bounded, %nrows_bounded : index
+  %total = index.assume %total0 [range(%total0, 1, 1073741824)] : index
+  %in_bounds = index.cmp ult, %linear, %total : index
+
+  %src0_global = buffer.assume.memory_space<global> %src0 : buffer
+  %src1_global = buffer.assume.memory_space<global> %src1 : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<1073741824xf32, #dense>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<1073741824xf32, #dense>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xf32, #dense>
+
+  scf.if %in_bounds {
+    %col = index.rem %linear, %ncols_bounded : index
+    %row = index.div %linear, %ncols_bounded : index
+    %i1 = index.rem %row, %d1_bounded : index
+    %row_div_d1 = index.div %row, %d1_bounded : index
+    %i2 = index.rem %row_div_d1, %d2_bounded : index
+    %i3 = index.div %row_div_d1, %d2_bounded : index
+    %src0_i1 = index.mul %i1, %src0_stride1 : index
+    %src0_i2 = index.mul %i2, %src0_stride2 : index
+    %src0_i3 = index.mul %i3, %src0_stride3 : index
+    %src0_base0 = index.add %src0_i1, %src0_i2 : index
+    %src0_base_raw = index.add %src0_base0, %src0_i3 : index
+    %src0_base = index.assume %src0_base_raw [range(%src0_base_raw, 0, 1073741823)] : index
+    %src1_i1 = index.mul %i1, %src1_stride1 : index
+    %src1_i2 = index.mul %i2, %src1_stride2 : index
+    %src1_i3 = index.mul %i3, %src1_stride3 : index
+    %src1_base0 = index.add %src1_i1, %src1_i2 : index
+    %src1_base_raw = index.add %src1_base0, %src1_i3 : index
+    %src1_base = index.assume %src1_base_raw [range(%src1_base_raw, 0, 1073741823)] : index
+    %x_idx_raw = index.add %src0_base, %col : index
+    %x_idx = index.assume %x_idx_raw [range(%x_idx_raw, 0, 1073741823)] : index
+    %g_idx_raw = index.add %src1_base, %col : index
+    %g_idx = index.assume %g_idx_raw [range(%g_idx_raw, 0, 1073741823)] : index
+    %x = view.load %src0_view[%x_idx] : view<1073741824xf32, #dense> -> f32
+    %gate = view.load %src1_view[%g_idx] : view<1073741824xf32, #dense> -> f32
+    %silu = scalar.siluf %x : f32
+    %result = scalar.mulf<nnan|ninf|nsz> %silu, %gate : f32
+    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32, #dense>
+  }
+  kernel.return
+}

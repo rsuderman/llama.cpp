@@ -13,7 +13,7 @@ INVOCATION_FIELDS = {"buffers", "scalars", "dispatch"}
 
 SCALAR_TYPES = {"i32", "i64", "f32", "f64"}
 INTEGER_TYPES = {"i32", "i64"}
-DTYPES = {"BF16", "F16", "F32", "I32"}
+DTYPES = {"BF16", "F16", "F32", "I32", "I64", "Q4_K"}
 SUPPORTED_BINDING_ACCESSES = {"read", "write", "read_write"}
 SUPPORTED_SCALAR_TYPES = {
     "f32": (4, 4),
@@ -52,6 +52,18 @@ OP_RULES = {
         "input_tensors": {"src0", "src1"},
         "attributes": {},
     },
+    "GGML_OP_GET_ROWS": {
+        "required_tensors": {"src0", "src1", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0", "src1"},
+        "attributes": {},
+    },
+    "GGML_OP_GLU": {
+        "required_tensors": {"src0", "src1", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0", "src1"},
+        "attributes": {"glu_op": "i32"},
+    },
     "GGML_OP_MUL": {
         "required_tensors": {"src0", "src1", "dst"},
         "optional_tensors": set(),
@@ -85,6 +97,12 @@ OP_RULES = {
         "optional_tensors": set(),
         "input_tensors": {"src0"},
         "attributes": {"scale": "f32", "bias": "f32"},
+    },
+    "GGML_OP_SET_ROWS": {
+        "required_tensors": {"src0", "src1", "dst"},
+        "optional_tensors": {"src2"},
+        "input_tensors": {"src0", "src1", "src2"},
+        "attributes": {},
     },
     "GGML_OP_SOFT_MAX": {
         "required_tensors": {"src0", "dst"},

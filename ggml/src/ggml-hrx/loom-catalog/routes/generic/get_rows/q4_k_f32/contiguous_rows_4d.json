@@ -1,0 +1,82 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "get_rows_q4_k_f32_contiguous_rows_4d",
+  "definition": "../../../../defs/generic/get_rows/q4_k_f32/contiguous_rows_4d.json",
+  "format": "loom",
+  "priority": 102,
+  "match": {
+    "op": "GGML_OP_GET_ROWS",
+    "tensors": {
+      "src0": {
+        "type": "Q4_K",
+        "shape": ["d0", "d1", "d2", "d3"]
+      },
+      "src1": {
+        "type": "I32",
+        "shape": ["d0", "d1", "d2", "d3"]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": ["d0", "d1", "d2", "d3"]
+      }
+    },
+    "attributes": {},
+    "predicates": [
+      {"field": "derived.total_size", "min": 1},
+      {"field": "derived.total_size", "max": 1073741824},
+      {"field": "shape.src0.d0", "min": 256},
+      {"field": "shape.src0.d0", "max": 65536},
+      {"field": "shape.src0.d0", "multiple_of": 256},
+      {"field": "shape.src0.d2", "equals": 1},
+      {"field": "shape.src0.d3", "equals": 1},
+      {"field": "shape.src1.d1", "equals": 1},
+      {"field": "shape.src1.d2", "equals": 1},
+      {"field": "shape.src1.d3", "equals": 1},
+      {"field": "shape.dst.d2", "equals": 1},
+      {"field": "shape.dst.d3", "equals": 1},
+      {"field": "shape.src0.d0", "equals": "shape.dst.d0"},
+      {"field": "shape.src1.d0", "equals": "shape.dst.d1"},
+      {"contiguous": "src0"},
+      {"contiguous": "src1"},
+      {"contiguous": "dst"}
+    ]
+  },
+  "derived": {
+    "col_tiles": {
+      "type": "i64",
+      "ceil_div": ["shape.dst.d0", 256]
+    },
+    "idx_total_size": {
+      "type": "i64",
+      "product": ["shape.src1.d0", "shape.src1.d1", "shape.src1.d2", "shape.src1.d3"]
+    },
+    "total_size": {
+      "type": "i64",
+      "product": ["shape.dst.d0", "shape.dst.d1", "shape.dst.d2", "shape.dst.d3"]
+    }
+  },
+  "config": {
+    "mode": "compile",
+    "bindings": [
+      {"name": "shape_get_rows_ncols", "type": "i64", "source": "shape.dst.d0"},
+      {"name": "shape_get_rows_nrows", "type": "i64", "source": "shape.dst.d1"},
+      {"name": "shape_get_rows_src0_nrows", "type": "i64", "source": "shape.src0.d1"},
+      {"name": "shape_get_rows_idx_row_stride", "type": "i64", "source": "tensor.src1.element_strides.0"},
+      {"name": "shape_get_rows_idx_total_size", "type": "i64", "source": "derived.idx_total_size"},
+      {"name": "tuning_get_rows_workgroup_size", "type": "i64", "value": 256}
+    ]
+  },
+  "invocation": {
+    "buffers": [
+      {"name": "src0", "tensor": "src0", "position": 0, "kind": "input"},
+      {"name": "idx", "tensor": "src1", "position": 1, "kind": "input"},
+      {"name": "dst", "tensor": "dst", "position": 2, "kind": "output"}
+    ],
+    "scalars": [],
+    "dispatch": {
+      "workgroups": ["shape.dst.d1", "derived.col_tiles", "shape.src1.d1"],
+      "workgroup_size": [256, 1, 1]
+    }
+  },
+  "architectures": ["*"]
+}
