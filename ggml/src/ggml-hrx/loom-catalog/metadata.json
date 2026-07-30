@@ -63,6 +63,10 @@
     "routes/gfx1100/mul_mat/f16_f16/contiguous_c1_gfx1100_4d.json",
     "routes/generic/mul_mat/f16_f16/contiguous_4d.json",
     "routes/generic/soft_max/f32/skinny_contiguous_4d.json",
-    "routes/generic/soft_max/f32/contiguous_4d.json"
+    "routes/generic/soft_max/f32/contiguous_4d.json",
+    "routes/generic/mul_mat_id/q4_k_f32/expert_planes_4d.json",
+    "routes/generic/mul_mat_id/q4_k_f32/expert_planes_src1_broadcast_4d.json",
+    "routes/generic/mul_mat_id/q6_k_f32/expert_planes_4d.json",
+    "routes/generic/mul_mat_id/q6_k_f32/expert_planes_src1_broadcast_4d.json"
   ]
 }

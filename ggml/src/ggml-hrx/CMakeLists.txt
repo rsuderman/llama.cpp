@@ -275,6 +275,10 @@ if (GGML_HRX_LOOM)
         routes/generic/mul_mat/f16_f16/contiguous_4d.json
         routes/generic/soft_max/f32/skinny_contiguous_4d.json
         routes/generic/soft_max/f32/contiguous_4d.json
+        routes/generic/mul_mat_id/q4_k_f32/expert_planes_4d.json
+        routes/generic/mul_mat_id/q4_k_f32/expert_planes_src1_broadcast_4d.json
+        routes/generic/mul_mat_id/q6_k_f32/expert_planes_4d.json
+        routes/generic/mul_mat_id/q6_k_f32/expert_planes_src1_broadcast_4d.json
     )
     set(GGML_HRX_LOOM_ROUTE_OPS
         GGML_OP_ADD
@@ -287,6 +291,7 @@ if (GGML_HRX_LOOM)
         GGML_OP_GLU
         GGML_OP_MUL
         GGML_OP_MUL_MAT
+        GGML_OP_MUL_MAT_ID
         GGML_OP_RMS_NORM
         GGML_OP_ROPE
         GGML_OP_SET_ROWS

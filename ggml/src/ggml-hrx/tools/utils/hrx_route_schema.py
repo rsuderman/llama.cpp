@@ -87,6 +87,12 @@ OP_RULES = {
         "input_tensors": {"src0", "src1"},
         "attributes": {},
     },
+    "GGML_OP_MUL_MAT_ID": {
+        "required_tensors": {"src0", "src1", "src2", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0", "src1", "src2"},
+        "attributes": {},
+    },
     "GGML_OP_ROPE": {
         "required_tensors": {"src0", "src1", "dst"},
         "optional_tensors": {"src2"},
