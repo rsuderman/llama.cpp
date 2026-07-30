@@ -201,13 +201,20 @@ if (GGML_HRX_LOOM)
     set(GGML_HRX_LOOM_GENERATED_H "${GGML_HRX_LOOM_GENERATED_DIR}/ggml-hrx-loom-catalog.h")
     set(GGML_HRX_LOOM_ROUTE_DISPATCH_CPP "${GGML_HRX_LOOM_GENERATED_DIR}/ggml-hrx-loom-route-dispatch.cpp")
     set(GGML_HRX_LOOM_ROUTE_FILES
-        routes/add_f32.json
+        routes/add/f32/contiguous.json
+        routes/argsort/f32_i32/contiguous_desc_wg256.json
     )
     set(GGML_HRX_LOOM_ROUTE_OPS
         GGML_OP_ADD
+        GGML_OP_ARGSORT
     )
     set(GGML_HRX_LOOM_ROUTE_DEFS
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/add_f32.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/add/f32/contiguous.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/argsort/f32_i32/contiguous_desc_wg256.json"
+    )
+    set(GGML_HRX_LOOM_SOURCE_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/add/f32/contiguous.loom"
+        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/argsort/f32_i32/contiguous_desc_wg256.loom"
     )
     set(GGML_HRX_LOOM_ROUTE_JSONS)
     set(GGML_HRX_LOOM_OP_ROUTER_CPPS)
@@ -266,9 +273,9 @@ if (GGML_HRX_LOOM)
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_loom_catalog.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_loom_routes.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/metadata.json"
-            "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/add_f32.json"
-            "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/routes/add_f32.json"
-            "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/add_f32.loom"
+            ${GGML_HRX_LOOM_ROUTE_DEFS}
+            ${GGML_HRX_LOOM_ROUTE_JSONS}
+            ${GGML_HRX_LOOM_SOURCE_FILES}
         VERBATIM
     )
 

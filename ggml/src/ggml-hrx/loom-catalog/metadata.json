@@ -5,6 +5,7 @@
     "gfx1100"
   ],
   "routes": [
-    "routes/add_f32.json"
+    "routes/add/f32/contiguous.json",
+    "routes/argsort/f32_i32/contiguous_desc_wg256.json"
   ]
 }

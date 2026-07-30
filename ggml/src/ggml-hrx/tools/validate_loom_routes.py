@@ -92,7 +92,7 @@ def load_definitions(source_root):
     definitions_dir = source_root / "defs"
     if not definitions_dir.is_dir():
         raise ValueError(f"{source_root}: missing defs directory")
-    for definition_path in sorted(definitions_dir.glob("*.json")):
+    for definition_path in sorted(definitions_dir.rglob("*.json")):
         definition = route_schema.read_json(definition_path)
         validate_definition(definition, definition_path, source_root)
         definition_id = route_schema.require_string(definition, "id", definition_path)

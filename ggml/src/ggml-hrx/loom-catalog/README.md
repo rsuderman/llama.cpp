@@ -13,9 +13,9 @@ This catalog is the initial Loom route catalog for HRX. It mirrors one current H
 ## Files
 
 - `metadata.json` lists the catalog version, target set, and route files.
-- `defs/add_f32.json` describes the Loom source identity and runtime ABI for `hrx_add_f32`.
-- `routes/add_f32.json` describes route matching, derived values, compile config, tensor and scalar invocation, and dispatch geometry.
-- `sources/add_f32.loom` is the hand-authored Loom source for F32 contiguous ADD.
+- `defs/add/f32/contiguous.json` describes the Loom source identity and runtime ABI for `hrx_add_f32`.
+- `routes/add/f32/contiguous.json` describes route matching, derived values, compile config, tensor and scalar invocation, and dispatch geometry.
+- `sources/add/f32/contiguous.loom` is the hand-authored Loom source for F32 contiguous ADD.
 
 ## Route Shape
 
