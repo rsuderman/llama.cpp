@@ -1,0 +1,15 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "copy_f16_f32_contiguous_1d",
+  "op": "GGML_OP_CPY",
+  "source": "sources/copy/f16_f32/contiguous_1d.loom",
+  "source_format": "loom-text",
+  "symbol": "copy_f16_f32_contiguous_1d",
+  "abi": {"binding_count": 2, "parameter_count": 2, "constant_byte_length": 0},
+  "workgroup_size": [256, 1, 1],
+  "parameters": [],
+  "bindings": [
+    {"name": "src0", "access": "read"},
+    {"name": "dst", "access": "write"}
+  ]
+}

@@ -192,6 +192,18 @@ add_custom_target(ggml-hrx-hsaco-route-impls
         "${GGML_HRX_HSACO_ROUTE_DISPATCH_CPP}"
 )
 
+set(GGML_HRX_GENERATED_ROUTER_COMPILE_OPTIONS)
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    list(APPEND GGML_HRX_GENERATED_ROUTER_COMPILE_OPTIONS -Wno-unused-variable)
+endif()
+if (GGML_HRX_GENERATED_ROUTER_COMPILE_OPTIONS)
+    set_source_files_properties(
+        ${GGML_HRX_HSACO_OP_ROUTER_CPPS}
+        "${GGML_HRX_HSACO_ROUTE_DISPATCH_CPP}"
+        PROPERTIES COMPILE_OPTIONS "${GGML_HRX_GENERATED_ROUTER_COMPILE_OPTIONS}"
+    )
+endif()
+
 set(GGML_HRX_LOOM_SOURCES)
 set(GGML_HRX_LOOM_INCLUDE_DIRS)
 if (GGML_HRX_LOOM)
@@ -208,30 +220,49 @@ if (GGML_HRX_LOOM)
         routes/rope/f32/neox.json
         routes/rms_norm/f32/contiguous_4d.json
         routes/clamp/f32/contiguous_4d.json
+        routes/add/f16/contiguous.json
+        routes/add/f16/non_contiguous_4d.json
+        routes/add/f32/non_contiguous_4d.json
+        routes/div/f16/contiguous.json
+        routes/div/f16/non_contiguous_4d.json
+        routes/div/f32/contiguous.json
+        routes/div/f32/non_contiguous_4d.json
+        routes/mul/f16/contiguous.json
+        routes/mul/f16/non_contiguous_4d.json
+        routes/mul/f32/contiguous.json
+        routes/mul/f32/non_contiguous_4d.json
+        routes/sub/f16/contiguous.json
+        routes/sub/f16/non_contiguous_4d.json
+        routes/sub/f32/contiguous.json
+        routes/sub/f32/non_contiguous_4d.json
+        routes/copy/bf16_bf16/contiguous_1d.json
+        routes/copy/f16_f16/contiguous_1d.json
+        routes/copy/f32_f32/contiguous_1d.json
+        routes/copy/i32_i32/contiguous_1d.json
+        routes/copy/bf16_f16/contiguous_1d.json
+        routes/copy/bf16_f32/contiguous_1d.json
+        routes/copy/f16_bf16/contiguous_1d.json
+        routes/copy/f16_f32/contiguous_1d.json
+        routes/copy/f32_bf16/contiguous_1d.json
+        routes/copy/f32_f16/contiguous_1d.json
     )
     set(GGML_HRX_LOOM_ROUTE_OPS
         GGML_OP_ADD
         GGML_OP_ARGSORT
         GGML_OP_CLAMP
+        GGML_OP_CPY
+        GGML_OP_DIV
+        GGML_OP_MUL
         GGML_OP_RMS_NORM
         GGML_OP_ROPE
+        GGML_OP_SUB
         GGML_OP_SUM_ROWS
     )
-    set(GGML_HRX_LOOM_ROUTE_DEFS
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/add/f32/contiguous.json"
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/argsort/f32_i32/contiguous_wg256.json"
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/clamp/f32/contiguous_4d.json"
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/rms_norm/f32/contiguous_4d.json"
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/rope/f32/neox.json"
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/sum_rows/f32/contiguous_4d.json"
+    file(GLOB_RECURSE GGML_HRX_LOOM_ROUTE_DEFS CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/*.json"
     )
-    set(GGML_HRX_LOOM_SOURCE_FILES
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/add/f32/contiguous.loom"
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/argsort/f32_i32/contiguous_wg256.loom"
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/clamp/f32/contiguous_4d.loom"
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/rms_norm/f32/contiguous_4d.loom"
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/rope/f32/neox.loom"
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/sum_rows/f32/contiguous_4d.loom"
+    file(GLOB_RECURSE GGML_HRX_LOOM_SOURCE_FILES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/*.loom"
     )
     set(GGML_HRX_LOOM_ROUTE_JSONS)
     set(GGML_HRX_LOOM_OP_ROUTER_CPPS)
@@ -328,6 +359,13 @@ if (GGML_HRX_LOOM)
             ${GGML_HRX_LOOM_OP_ROUTER_CPPS}
             "${GGML_HRX_LOOM_ROUTE_DISPATCH_CPP}"
     )
+    if (GGML_HRX_GENERATED_ROUTER_COMPILE_OPTIONS)
+        set_source_files_properties(
+            ${GGML_HRX_LOOM_OP_ROUTER_CPPS}
+            "${GGML_HRX_LOOM_ROUTE_DISPATCH_CPP}"
+            PROPERTIES COMPILE_OPTIONS "${GGML_HRX_GENERATED_ROUTER_COMPILE_OPTIONS}"
+        )
+    endif()
 
     list(APPEND GGML_HRX_LOOM_SOURCES
         loom-catalog/ggml-hrx-loom-catalog-runtime.cpp

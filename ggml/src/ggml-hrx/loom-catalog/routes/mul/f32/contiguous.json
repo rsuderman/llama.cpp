@@ -1,11 +1,11 @@
 {
   "schema": "ggml-hrx-loom-route-v1",
-  "id": "add_f32_contiguous",
-  "definition": "../../../defs/add/f32/contiguous.json",
+  "id": "mul_f32_contiguous",
+  "definition": "../../../defs/mul/f32/contiguous.json",
   "format": "loom",
-  "priority": 102,
+  "priority": 110,
   "match": {
-    "op": "GGML_OP_ADD",
+    "op": "GGML_OP_MUL",
     "tensors": {
       "src0": {
         "type": "F32",

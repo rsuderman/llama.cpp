@@ -42,6 +42,8 @@ CPP_SCALAR_TYPES = {
 }
 
 CPP_DTYPE_NAMES = {
+    "BF16": "GGML_TYPE_BF16",
+    "F16": "GGML_TYPE_F16",
     "F32": "GGML_TYPE_F32",
     "I32": "GGML_TYPE_I32",
 }
@@ -402,12 +404,18 @@ def emit_multiple_of_comparator(lhs, value, field_type, context, schema):
     return f"{lhs} % {int(value)} == 0"
 
 
+def emit_divisible_by_comparator(lhs, value, field_type, context, schema):
+    rhs = comparator_value_expr(value, field_type, context, schema)
+    return f"{rhs} != 0 && {lhs} % {rhs} == 0"
+
+
 COMPARATOR_EMITTERS = {
     "equals": emit_equals_comparator,
     "in": emit_in_comparator,
     "min": emit_min_comparator,
     "max": emit_max_comparator,
     "multiple_of": emit_multiple_of_comparator,
+    "divisible_by": emit_divisible_by_comparator,
 }
 
 

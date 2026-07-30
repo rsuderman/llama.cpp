@@ -4,7 +4,7 @@ import json
 MATCH_FIELDS = {"op", "tensors", "attributes", "predicates"}
 TENSOR_FIELDS = {"type", "optional", "shape"}
 ATTRIBUTE_FIELDS = {"type", "default"}
-PREDICATE_FIELDS = {"contiguous", "same_shape", "rank", "field", "equals", "in", "min", "max", "multiple_of", "src_absent", "src_present"}
+PREDICATE_FIELDS = {"contiguous", "same_shape", "rank", "field", "equals", "in", "min", "max", "multiple_of", "divisible_by", "src_absent", "src_present"}
 DERIVED_FIELDS = {"type", "field", "value", "product", "ceil_div", "next_power_of_2"}
 BUFFER_FIELDS = {"name", "tensor", "position", "kind"}
 SCALAR_FIELDS = {"name", "source", "value", "type", "position"}
@@ -13,7 +13,7 @@ INVOCATION_FIELDS = {"buffers", "scalars", "dispatch"}
 
 SCALAR_TYPES = {"i32", "i64", "f32", "f64"}
 INTEGER_TYPES = {"i32", "i64"}
-DTYPES = {"F32", "I32"}
+DTYPES = {"BF16", "F16", "F32", "I32"}
 SUPPORTED_BINDING_ACCESSES = {"read", "write", "read_write"}
 SUPPORTED_SCALAR_TYPES = {
     "f32": (4, 4),
@@ -39,6 +39,12 @@ OP_RULES = {
         "optional_tensors": set(),
         "input_tensors": {"src0"},
         "attributes": {"minimum": "f32", "maximum": "f32"},
+    },
+    "GGML_OP_CPY": {
+        "required_tensors": {"src0", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0"},
+        "attributes": {},
     },
     "GGML_OP_DIV": {
         "required_tensors": {"src0", "src1", "dst"},
@@ -90,6 +96,12 @@ OP_RULES = {
         "required_tensors": {"src0", "dst"},
         "optional_tensors": set(),
         "input_tensors": {"src0"},
+        "attributes": {},
+    },
+    "GGML_OP_SUB": {
+        "required_tensors": {"src0", "src1", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0", "src1"},
         "attributes": {},
     },
 }
@@ -562,7 +574,7 @@ def validate_same_shape_predicate(value, source, context):
 
 def validate_field_predicate(predicate, source, context):
     field_type = context.resolve_source(require_string(predicate, "field", source), f"{source}.field")
-    comparators = [key for key in ("equals", "in", "min", "max", "multiple_of") if key in predicate]
+    comparators = [key for key in ("equals", "in", "min", "max", "multiple_of", "divisible_by") if key in predicate]
     if len(comparators) != 1:
         raise ValueError(f"{source}: field predicate requires exactly one comparator")
     comparator = comparators[0]
@@ -583,6 +595,10 @@ def validate_field_predicate(predicate, source, context):
             raise ValueError(f"{source}.multiple_of: expected integer field")
         if type(value) is not int or value <= 0:
             raise ValueError(f"{source}.multiple_of: expected positive integer")
+    elif comparator == "divisible_by":
+        if field_type not in INTEGER_TYPES:
+            raise ValueError(f"{source}.divisible_by: expected integer field")
+        validate_comparator_value(value, field_type, context, f"{source}.divisible_by")
 
 
 def validate_comparator_value(value, field_type, context, source):
