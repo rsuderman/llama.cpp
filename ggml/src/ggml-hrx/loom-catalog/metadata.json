@@ -67,6 +67,8 @@
     "routes/generic/mul_mat_id/q4_k_f32/expert_planes_4d.json",
     "routes/generic/mul_mat_id/q4_k_f32/expert_planes_src1_broadcast_4d.json",
     "routes/generic/mul_mat_id/q6_k_f32/expert_planes_4d.json",
-    "routes/generic/mul_mat_id/q6_k_f32/expert_planes_src1_broadcast_4d.json"
+    "routes/generic/mul_mat_id/q6_k_f32/expert_planes_src1_broadcast_4d.json",
+    "routes/gfx1100/flash_attn_ext/f32_f16/perm0213_decode_d128_h32_hkv4_kv40960.json",
+    "routes/gfx1100/flash_attn_ext/f32_f16/perm0213_prefill_d128_h32_hkv4_kv40960_t512.json"
   ]
 }

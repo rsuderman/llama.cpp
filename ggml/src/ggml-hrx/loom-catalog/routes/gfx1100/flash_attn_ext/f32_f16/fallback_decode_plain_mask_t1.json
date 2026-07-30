@@ -3,7 +3,7 @@
   "id": "flash_attn_ext_f32_f16_fallback_decode_plain_mask_t1",
   "definition": "../../../../defs/gfx1100/flash_attn_ext/f32_f16/fallback_decode_plain_mask_t1.json",
   "format": "loom",
-  "priority": 104,
+  "priority": 106,
   "match": {
     "op": "GGML_OP_FLASH_ATTN_EXT",
     "tensors": {

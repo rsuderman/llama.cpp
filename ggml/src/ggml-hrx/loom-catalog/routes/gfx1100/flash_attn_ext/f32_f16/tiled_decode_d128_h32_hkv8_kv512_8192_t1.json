@@ -3,7 +3,7 @@
   "id": "flash_attn_ext_f32_f16_tiled_decode_d128_h32_hkv8_kv512_8192_t1",
   "definition": "../../../../defs/gfx1100/flash_attn_ext/f32_f16/tiled_decode_d128_h32_hkv8_kv512_8192_t1.json",
   "format": "loom",
-  "priority": 101,
+  "priority": 102,
   "match": {
     "op": "GGML_OP_FLASH_ATTN_EXT",
     "tensors": {

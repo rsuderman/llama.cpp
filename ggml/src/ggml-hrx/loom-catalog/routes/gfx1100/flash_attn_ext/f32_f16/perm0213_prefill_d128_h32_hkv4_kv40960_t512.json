@@ -1,9 +1,9 @@
 {
   "schema": "ggml-hrx-loom-route-v1",
-  "id": "flash_attn_ext_f32_f16_tiled_prefill_d128_h32_hkv8_cap_kv8192_t512",
-  "definition": "../../../../defs/gfx1100/flash_attn_ext/f32_f16/tiled_prefill_d128_h32_hkv8_cap_kv8192_t512.json",
+  "id": "flash_attn_ext_f32_f16_perm0213_prefill_d128_h32_hkv4_kv40960_t512",
+  "definition": "../../../../defs/gfx1100/flash_attn_ext/f32_f16/perm0213_prefill_d128_h32_hkv4_kv40960_t512.json",
   "format": "loom",
-  "priority": 105,
+  "priority": 104,
   "match": {
     "op": "GGML_OP_FLASH_ATTN_EXT",
     "tensors": {
@@ -44,9 +44,9 @@
       {"field": "shape.dst.d2", "min": 2},
       {"field": "shape.dst.d2", "max": 512},
       {"field": "shape.src1.d1", "min": 512},
-      {"field": "shape.src1.d1", "max": 8192},
+      {"field": "shape.src1.d1", "max": 40960},
       {"field": "shape.src1.d1", "multiple_of": 512},
-      {"field": "shape.src1.d2", "equals": 8},
+      {"field": "shape.src1.d2", "equals": 4},
       {"field": "shape.src0.d0", "equals": 128},
       {"field": "shape.src1.d0", "equals": 128},
       {"field": "shape.src2.d0", "equals": 128},
@@ -74,14 +74,48 @@
       {"field": "shape.src1.d1", "equals": "shape.src2.d1"},
       {"field": "shape.src1.d1", "equals": "shape.src3.d0"},
       {"field": "shape.src1.d2", "equals": "shape.src2.d2"},
-      {"contiguous": "src0"},
-      {"contiguous": "src1"},
-      {"contiguous": "src2"},
+      {"field": "tensor.src0.element_strides.0", "equals": 1},
+      {"field": "tensor.src0.element_strides.1", "equals": "derived.src0_permuted_contiguous_strides_d1"},
+      {"field": "tensor.src0.element_strides.2", "equals": "shape.src0.d0"},
+      {"field": "tensor.src0.element_strides.3", "equals": "derived.src0_permuted_contiguous_strides_d3"},
+      {"field": "tensor.src1.element_strides.0", "equals": 1},
+      {"field": "tensor.src1.element_strides.1", "equals": "derived.src1_permuted_contiguous_strides_d1"},
+      {"field": "tensor.src1.element_strides.2", "equals": "shape.src1.d0"},
+      {"field": "tensor.src1.element_strides.3", "equals": "derived.src1_permuted_contiguous_strides_d3"},
+      {"field": "tensor.src2.element_strides.0", "equals": 1},
+      {"field": "tensor.src2.element_strides.1", "equals": "derived.src2_permuted_contiguous_strides_d1"},
+      {"field": "tensor.src2.element_strides.2", "equals": "shape.src2.d0"},
+      {"field": "tensor.src2.element_strides.3", "equals": "derived.src2_permuted_contiguous_strides_d3"},
       {"contiguous": "src3"},
       {"contiguous": "dst"}
     ]
   },
-  "derived": {},
+  "derived": {
+    "src0_permuted_contiguous_strides_d1": {
+      "type": "i64",
+      "product": ["shape.src0.d0", "shape.src0.d2"]
+    },
+    "src0_permuted_contiguous_strides_d3": {
+      "type": "i64",
+      "product": ["shape.src0.d0", "shape.src0.d2", "shape.src0.d1"]
+    },
+    "src1_permuted_contiguous_strides_d1": {
+      "type": "i64",
+      "product": ["shape.src1.d0", "shape.src1.d2"]
+    },
+    "src1_permuted_contiguous_strides_d3": {
+      "type": "i64",
+      "product": ["shape.src1.d0", "shape.src1.d2", "shape.src1.d1"]
+    },
+    "src2_permuted_contiguous_strides_d1": {
+      "type": "i64",
+      "product": ["shape.src2.d0", "shape.src2.d2"]
+    },
+    "src2_permuted_contiguous_strides_d3": {
+      "type": "i64",
+      "product": ["shape.src2.d0", "shape.src2.d2", "shape.src2.d1"]
+    }
+  },
   "config": {
     "mode": "compile",
     "bindings": [
@@ -90,6 +124,15 @@
       {"name": "shape_flash_attn_ext_tokens", "type": "i64", "source": "shape.dst.d2"},
       {"name": "shape_flash_attn_ext_kv_len", "type": "i64", "source": "shape.src1.d1"},
       {"name": "shape_flash_attn_ext_kv_heads", "type": "i64", "source": "shape.src1.d2"},
+      {"name": "stride_flash_attn_ext_q_d0", "type": "i64", "source": "tensor.src0.element_strides.0"},
+      {"name": "stride_flash_attn_ext_q_d1", "type": "i64", "source": "tensor.src0.element_strides.1"},
+      {"name": "stride_flash_attn_ext_q_d2", "type": "i64", "source": "tensor.src0.element_strides.2"},
+      {"name": "stride_flash_attn_ext_k_d0", "type": "i64", "source": "tensor.src1.element_strides.0"},
+      {"name": "stride_flash_attn_ext_k_d1", "type": "i64", "source": "tensor.src1.element_strides.1"},
+      {"name": "stride_flash_attn_ext_k_d2", "type": "i64", "source": "tensor.src1.element_strides.2"},
+      {"name": "stride_flash_attn_ext_v_d0", "type": "i64", "source": "tensor.src2.element_strides.0"},
+      {"name": "stride_flash_attn_ext_v_d1", "type": "i64", "source": "tensor.src2.element_strides.1"},
+      {"name": "stride_flash_attn_ext_v_d2", "type": "i64", "source": "tensor.src2.element_strides.2"},
       {"name": "tuning_flash_attn_ext_workgroup_size", "type": "i64", "value": 256}
     ]
   },

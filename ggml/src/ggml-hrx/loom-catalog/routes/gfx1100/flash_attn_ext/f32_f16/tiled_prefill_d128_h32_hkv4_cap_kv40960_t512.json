@@ -3,7 +3,7 @@
   "id": "flash_attn_ext_f32_f16_tiled_prefill_d128_h32_hkv4_cap_kv40960_t512",
   "definition": "../../../../defs/gfx1100/flash_attn_ext/f32_f16/tiled_prefill_d128_h32_hkv4_cap_kv40960_t512.json",
   "format": "loom",
-  "priority": 102,
+  "priority": 103,
   "match": {
     "op": "GGML_OP_FLASH_ATTN_EXT",
     "tensors": {
