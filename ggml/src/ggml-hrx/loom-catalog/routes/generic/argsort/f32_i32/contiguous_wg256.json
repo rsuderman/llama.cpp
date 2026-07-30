@@ -1,0 +1,176 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "argsort_f32_i32_contiguous_wg256",
+  "definition": "../../../../defs/generic/argsort/f32_i32/contiguous_wg256.json",
+  "format": "loom",
+  "priority": 100,
+  "match": {
+    "op": "GGML_OP_ARGSORT",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      },
+      "dst": {
+        "type": "I32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      }
+    },
+    "attributes": {
+      "order": {
+        "type": "i32"
+      }
+    },
+    "predicates": [
+      {
+        "field": "derived.total_size",
+        "min": 1
+      },
+      {
+        "field": "derived.total_size",
+        "max": 1073741824
+      },
+      {
+        "field": "derived.flattened_trailing_dimensions",
+        "min": 1
+      },
+      {
+        "field": "derived.flattened_trailing_dimensions",
+        "max": 1048576
+      },
+      {
+        "field": "shape.dst.d0",
+        "min": 1
+      },
+      {
+        "field": "shape.dst.d0",
+        "max": 256
+      },
+      {
+        "field": "shape.dst.d1",
+        "min": 1
+      },
+      {
+        "field": "shape.dst.d1",
+        "max": 1048576
+      },
+      {
+        "field": "shape.dst.d2",
+        "min": 1
+      },
+      {
+        "field": "shape.dst.d2",
+        "max": 1048576
+      },
+      {
+        "field": "shape.dst.d3",
+        "min": 1
+      },
+      {
+        "field": "shape.dst.d3",
+        "max": 1048576
+      },
+      {
+        "same_shape": [
+          "src0",
+          "dst"
+        ]
+      },
+      {
+        "contiguous": "src0"
+      },
+      {
+        "contiguous": "dst"
+      }
+    ]
+  },
+  "derived": {
+    "flattened_trailing_dimensions": {
+      "type": "i64",
+      "product": [
+        "shape.dst.d1",
+        "shape.dst.d2",
+        "shape.dst.d3"
+      ]
+    },
+    "total_size": {
+      "type": "i64",
+      "product": [
+        "shape.dst.d0",
+        "shape.dst.d1",
+        "shape.dst.d2",
+        "shape.dst.d3"
+      ]
+    }
+  },
+  "config": {
+    "mode": "compile",
+    "bindings": [
+      {
+        "name": "shape_argsort_ncols",
+        "type": "i64",
+        "source": "shape.dst.d0"
+      },
+      {
+        "name": "shape_argsort_nrows",
+        "type": "i64",
+        "source": "derived.flattened_trailing_dimensions"
+      },
+      {
+        "name": "shape_argsort_total_size",
+        "type": "i64",
+        "source": "derived.total_size"
+      },
+      {
+        "name": "shape_argsort_order",
+        "type": "i32",
+        "source": "attribute.order"
+      },
+      {
+        "name": "tuning_argsort_workgroup_size",
+        "type": "i64",
+        "value": 256
+      }
+    ]
+  },
+  "invocation": {
+    "buffers": [
+      {
+        "name": "src0",
+        "tensor": "src0",
+        "position": 0,
+        "kind": "input"
+      },
+      {
+        "name": "dst",
+        "tensor": "dst",
+        "position": 1,
+        "kind": "output"
+      }
+    ],
+    "scalars": [],
+    "dispatch": {
+      "workgroup_size": [
+        256,
+        1,
+        1
+      ],
+      "workgroups": [
+        "derived.flattened_trailing_dimensions"
+      ]
+    }
+  },
+  "architectures": [
+    "*"
+  ]
+}

@@ -1,0 +1,353 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "rope_f32_neox",
+  "definition": "../../../../defs/generic/rope/f32/neox.json",
+  "format": "loom",
+  "priority": 101,
+  "match": {
+    "op": "GGML_OP_ROPE",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      },
+      "src1": {
+        "type": "I32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      }
+    },
+    "attributes": {
+      "attn_factor": {
+        "type": "f32"
+      },
+      "beta_fast": {
+        "type": "f32"
+      },
+      "beta_slow": {
+        "type": "f32"
+      },
+      "ext_factor": {
+        "type": "f32"
+      },
+      "freq_base": {
+        "type": "f32"
+      },
+      "freq_scale": {
+        "type": "f32"
+      },
+      "mode": {
+        "type": "i32"
+      },
+      "n_ctx_orig": {
+        "type": "i32"
+      },
+      "n_dims": {
+        "type": "i32"
+      }
+    },
+    "predicates": [
+      {
+        "field": "derived.total_size",
+        "min": 1
+      },
+      {
+        "field": "derived.total_size",
+        "max": 1073741824
+      },
+      {
+        "field": "shape.dst.d0",
+        "min": 2
+      },
+      {
+        "field": "shape.dst.d0",
+        "max": 4096
+      },
+      {
+        "field": "shape.dst.d0",
+        "multiple_of": 2
+      },
+      {
+        "field": "shape.dst.d1",
+        "min": 1
+      },
+      {
+        "field": "shape.dst.d1",
+        "max": 256
+      },
+      {
+        "field": "shape.dst.d2",
+        "min": 1
+      },
+      {
+        "field": "shape.dst.d2",
+        "max": 512
+      },
+      {
+        "field": "shape.dst.d3",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.d0",
+        "min": 1
+      },
+      {
+        "field": "shape.src1.d0",
+        "max": 512
+      },
+      {
+        "field": "shape.src1.d1",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.d2",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.d3",
+        "equals": 1
+      },
+      {
+        "field": "attribute.mode",
+        "equals": 2
+      },
+      {
+        "field": "attribute.ext_factor",
+        "min": 0.0
+      },
+      {
+        "field": "attribute.ext_factor",
+        "max": 1.0
+      },
+      {
+        "field": "attribute.freq_base",
+        "min": 2
+      },
+      {
+        "field": "attribute.freq_base",
+        "max": 1000000000.0
+      },
+      {
+        "field": "attribute.n_ctx_orig",
+        "min": 1
+      },
+      {
+        "field": "attribute.n_ctx_orig",
+        "max": 1048576
+      },
+      {
+        "field": "attribute.beta_fast",
+        "min": 1
+      },
+      {
+        "field": "attribute.beta_fast",
+        "max": 1000000.0
+      },
+      {
+        "field": "attribute.beta_slow",
+        "min": 1
+      },
+      {
+        "field": "attribute.beta_slow",
+        "max": 1000000.0
+      },
+      {
+        "src_absent": "src2"
+      },
+      {
+        "field": "attribute.n_dims",
+        "min": 2
+      },
+      {
+        "field": "attribute.n_dims",
+        "max": 4096
+      },
+      {
+        "field": "attribute.n_dims",
+        "multiple_of": 2
+      },
+      {
+        "same_shape": [
+          "src0",
+          "dst"
+        ]
+      },
+      {
+        "contiguous": "src1"
+      },
+      {
+        "contiguous": "dst"
+      }
+    ]
+  },
+  "derived": {
+    "total_size": {
+      "type": "i64",
+      "product": [
+        "shape.dst.d0",
+        "shape.dst.d1",
+        "shape.dst.d2",
+        "shape.dst.d3"
+      ]
+    },
+    "rope_half_cols": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.dst.d0",
+        2
+      ]
+    },
+    "rope_work_items": {
+      "type": "i64",
+      "product": [
+        "derived.rope_half_cols",
+        "shape.dst.d1",
+        "shape.dst.d2"
+      ]
+    }
+  },
+  "config": {
+    "mode": "compile",
+    "bindings": [
+      {
+        "name": "shape_rope_ncols",
+        "type": "i64",
+        "source": "shape.dst.d0"
+      },
+      {
+        "name": "shape_rope_n_dims",
+        "type": "i32",
+        "source": "attribute.n_dims"
+      },
+      {
+        "name": "shape_rope_nheads",
+        "type": "i64",
+        "source": "shape.dst.d1"
+      },
+      {
+        "name": "shape_rope_ntokens",
+        "type": "i64",
+        "source": "shape.dst.d2"
+      },
+      {
+        "name": "shape_rope_src0_head_stride",
+        "type": "i64",
+        "source": "tensor.src0.element_strides.1"
+      },
+      {
+        "name": "shape_rope_src0_token_stride",
+        "type": "i64",
+        "source": "tensor.src0.element_strides.2"
+      },
+      {
+        "name": "shape_rope_dst_head_stride",
+        "type": "i64",
+        "source": "tensor.dst.element_strides.1"
+      },
+      {
+        "name": "shape_rope_dst_token_stride",
+        "type": "i64",
+        "source": "tensor.dst.element_strides.2"
+      },
+      {
+        "name": "shape_rope_pos_token_stride",
+        "type": "i64",
+        "source": "tensor.src1.element_strides.0"
+      },
+      {
+        "name": "rope_attn_factor",
+        "type": "f32",
+        "source": "attribute.attn_factor"
+      },
+      {
+        "name": "rope_beta_fast",
+        "type": "f32",
+        "source": "attribute.beta_fast"
+      },
+      {
+        "name": "rope_beta_slow",
+        "type": "f32",
+        "source": "attribute.beta_slow"
+      },
+      {
+        "name": "rope_ext_factor",
+        "type": "f32",
+        "source": "attribute.ext_factor"
+      },
+      {
+        "name": "rope_freq_base",
+        "type": "f32",
+        "source": "attribute.freq_base"
+      },
+      {
+        "name": "rope_freq_scale",
+        "type": "f32",
+        "source": "attribute.freq_scale"
+      },
+      {
+        "name": "rope_n_ctx_orig",
+        "type": "i32",
+        "source": "attribute.n_ctx_orig"
+      },
+      {
+        "name": "tuning_rope_workgroup_size",
+        "type": "i64",
+        "value": 256
+      }
+    ]
+  },
+  "invocation": {
+    "buffers": [
+      {
+        "name": "src0",
+        "tensor": "src0",
+        "position": 0,
+        "kind": "input"
+      },
+      {
+        "name": "pos",
+        "tensor": "src1",
+        "position": 1,
+        "kind": "input"
+      },
+      {
+        "name": "dst",
+        "tensor": "dst",
+        "position": 2,
+        "kind": "output"
+      }
+    ],
+    "scalars": [],
+    "dispatch": {
+      "work_items": [
+        "derived.rope_work_items"
+      ],
+      "workgroup_size": [
+        256,
+        1,
+        1
+      ]
+    }
+  },
+  "architectures": [
+    "*"
+  ]
+}

@@ -1,6 +1,6 @@
 # HRX Loom Catalog
 
-This catalog is the initial Loom route catalog for HRX. It mirrors one current HSACO `GGML_OP_ADD` route and adds the required Loom compile `config` section.
+This catalog contains Loom routes for HRX. Routes, definitions, and sources are grouped by platform folder before operation, dtype, and route name. The current checked-in routes use `generic` because they are platform agnostic.
 
 ## Version
 
@@ -8,20 +8,18 @@ This catalog is the initial Loom route catalog for HRX. It mirrors one current H
 - Definition schema: `ggml-hrx-loom-def-v1`
 - Route schema: `ggml-hrx-loom-route-v1`
 - Initial target set: `gfx1100`
-- Initial route: `GGML_OP_ADD` F32 contiguous tensors with matching shapes
+- Platform folders: `generic`
 
 ## Files
 
 - `metadata.json` lists the catalog version, target set, and route files.
-- `defs/add/f32/contiguous.json` describes the Loom source identity and runtime ABI for `hrx_add_f32`.
-- `routes/add/f32/contiguous.json` describes route matching, derived values, compile config, tensor and scalar invocation, and dispatch geometry.
-- `sources/add/f32/contiguous.loom` is the hand-authored Loom source for F32 contiguous ADD.
+- `defs/generic/<op>/<dtype>/<name>.json` describes the Loom source identity and runtime ABI.
+- `routes/generic/<op>/<dtype>/<name>.json` describes route matching, derived values, compile config, tensor and scalar invocation, and dispatch geometry.
+- `sources/generic/<op>/<dtype>/<name>.loom` contains platform-agnostic Loom source.
 
 ## Route Shape
 
-The ADD route matches F32 `src0`, `src1`, and `dst` tensors. All three tensors must be contiguous, and `src0`, `src1`, and `dst` must have the same shape.
-
-The route derives `nelements` from the captured destination shape. That value is used as both the runtime scalar parameter and a compile config binding. The route also binds `workgroup_size_x` as a compile config value of 256.
+Each route captures the tensor dtypes, shapes, layout predicates, derived values, compile config bindings, invocation buffers and scalars, and dispatch geometry needed by one Loom kernel.
 
 This catalog uses only the final Loom route fields: `match`, `derived`, `config`, and `invocation`. It does not include HSACO compatibility fields.
 
@@ -81,4 +79,4 @@ It verifies that identical target, route, source, symbol, and config values prod
 
 ## Current Scope
 
-The current catalog intentionally covers only F32 contiguous same-shape ADD. It does not cover broadcast ADD, non-contiguous ADD, other dtypes, or other operations. Additional Loom routes should be added one route at a time with source, route validation, cache behavior, and execution coverage.
+The current generic Loom catalog covers selected ADD, ARGSORT, CLAMP, CPY, DIV, MUL, RMS_NORM, ROPE, SUB, and SUM_ROWS routes. Platform-specific variants should be added under their own platform folder instead of mixing with `generic`.
