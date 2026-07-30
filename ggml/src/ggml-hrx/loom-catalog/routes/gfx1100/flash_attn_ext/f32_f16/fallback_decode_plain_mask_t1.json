@@ -3,29 +3,29 @@
   "id": "flash_attn_ext_f32_f16_fallback_decode_plain_mask_t1",
   "definition": "../../../../defs/gfx1100/flash_attn_ext/f32_f16/fallback_decode_plain_mask_t1.json",
   "format": "loom",
-  "priority": 106,
+  "priority": 105,
   "match": {
     "op": "GGML_OP_FLASH_ATTN_EXT",
     "tensors": {
       "src0": {
         "type": "F32",
-        "shape": ["d0", "d1", "d2", "d3"]
+        "shape": ["src0_d0", "src0_d1", "src0_d2", "src0_d3"]
       },
       "src1": {
         "type": "F16",
-        "shape": ["d0", "d1", "d2", "d3"]
+        "shape": ["src1_d0", "src1_d1", "src1_d2", "src1_d3"]
       },
       "src2": {
         "type": "F16",
-        "shape": ["d0", "d1", "d2", "d3"]
+        "shape": ["src2_d0", "src2_d1", "src2_d2", "src2_d3"]
       },
       "src3": {
         "type": "F16",
-        "shape": ["d0", "d1", "d2", "d3"]
+        "shape": ["src3_d0", "src3_d1", "src3_d2", "src3_d3"]
       },
       "dst": {
         "type": "F32",
-        "shape": ["d0", "d1", "d2", "d3"]
+        "shape": ["dst_d0", "dst_d1", "dst_d2", "dst_d3"]
       }
     },
     "attributes": {
@@ -52,44 +52,44 @@
       {"field": "attribute.precision", "max": 10},
       {"field": "attribute.logit_softcap", "equals": 0.0},
       {"field": "attribute.max_bias", "equals": 0.0},
-      {"field": "shape.src0.d0", "min": 1},
-      {"field": "shape.src0.d0", "max": 1024},
-      {"field": "shape.dst.d0", "min": 1},
-      {"field": "shape.dst.d0", "max": 1024},
-      {"field": "shape.dst.d1", "equals": 1},
-      {"field": "shape.dst.d2", "min": 1},
-      {"field": "shape.dst.d2", "max": 64},
-      {"field": "shape.src1.d1", "min": 1},
-      {"field": "shape.src1.d1", "max": 8192},
-      {"field": "shape.src1.d2", "min": 1},
-      {"field": "shape.src1.d2", "max": 16},
-      {"field": "shape.dst.d3", "equals": 1},
-      {"field": "shape.src3.d2", "equals": 1},
-      {"field": "shape.src0.d0", "equals": "shape.src1.d0"},
-      {"field": "shape.dst.d0", "equals": "shape.src2.d0"},
-      {"field": "shape.dst.d1", "equals": "shape.src0.d1"},
-      {"field": "shape.dst.d1", "equals": "shape.src3.d1"},
-      {"field": "shape.dst.d2", "equals": "shape.src0.d2"},
-      {"field": "shape.dst.d3", "equals": "shape.src0.d3"},
-      {"field": "shape.dst.d3", "equals": "shape.src1.d3"},
-      {"field": "shape.dst.d3", "equals": "shape.src2.d3"},
-      {"field": "shape.dst.d3", "equals": "shape.src3.d3"},
-      {"field": "shape.src1.d1", "equals": "shape.src2.d1"},
-      {"field": "shape.src1.d1", "equals": "shape.src3.d0"},
-      {"field": "shape.src1.d2", "equals": "shape.src2.d2"}
+      {"field": "shape.src0.src0_d0", "min": 1},
+      {"field": "shape.src0.src0_d0", "max": 1024},
+      {"field": "shape.dst.dst_d0", "min": 1},
+      {"field": "shape.dst.dst_d0", "max": 1024},
+      {"field": "shape.dst.dst_d1", "equals": 1},
+      {"field": "shape.dst.dst_d2", "min": 1},
+      {"field": "shape.dst.dst_d2", "max": 64},
+      {"field": "shape.src1.src1_d1", "min": 1},
+      {"field": "shape.src1.src1_d1", "max": 8192},
+      {"field": "shape.src1.src1_d2", "min": 1},
+      {"field": "shape.src1.src1_d2", "max": 16},
+      {"field": "shape.dst.dst_d3", "equals": 1},
+      {"field": "shape.src3.src3_d2", "equals": 1},
+      {"field": "shape.src0.src0_d0", "equals": "shape.src1.src1_d0"},
+      {"field": "shape.dst.dst_d0", "equals": "shape.src2.src2_d0"},
+      {"field": "shape.dst.dst_d1", "equals": "shape.src0.src0_d1"},
+      {"field": "shape.dst.dst_d1", "equals": "shape.src3.src3_d1"},
+      {"field": "shape.dst.dst_d2", "equals": "shape.src0.src0_d2"},
+      {"field": "shape.dst.dst_d3", "equals": "shape.src0.src0_d3"},
+      {"field": "shape.dst.dst_d3", "equals": "shape.src1.src1_d3"},
+      {"field": "shape.dst.dst_d3", "equals": "shape.src2.src2_d3"},
+      {"field": "shape.dst.dst_d3", "equals": "shape.src3.src3_d3"},
+      {"field": "shape.src1.src1_d1", "equals": "shape.src2.src2_d1"},
+      {"field": "shape.src1.src1_d1", "equals": "shape.src3.src3_d0"},
+      {"field": "shape.src1.src1_d2", "equals": "shape.src2.src2_d2"}
     ]
   },
   "derived": {},
   "config": {
     "mode": "compile",
     "bindings": [
-      {"name": "shape_flash_attn_ext_qk_dim", "type": "i64", "source": "shape.src0.d0"},
-      {"name": "shape_flash_attn_ext_value_dim", "type": "i64", "source": "shape.dst.d0"},
-      {"name": "shape_flash_attn_ext_tokens", "type": "i64", "source": "shape.dst.d1"},
-      {"name": "shape_flash_attn_ext_heads", "type": "i64", "source": "shape.dst.d2"},
-      {"name": "shape_flash_attn_ext_kv_heads", "type": "i64", "source": "shape.src1.d2"},
-      {"name": "shape_flash_attn_ext_kv_len", "type": "i64", "source": "shape.src1.d1"},
-      {"name": "shape_flash_attn_ext_batch", "type": "i64", "source": "shape.dst.d3"},
+      {"name": "shape_flash_attn_ext_qk_dim", "type": "i64", "source": "shape.src0.src0_d0"},
+      {"name": "shape_flash_attn_ext_value_dim", "type": "i64", "source": "shape.dst.dst_d0"},
+      {"name": "shape_flash_attn_ext_tokens", "type": "i64", "source": "shape.dst.dst_d1"},
+      {"name": "shape_flash_attn_ext_heads", "type": "i64", "source": "shape.dst.dst_d2"},
+      {"name": "shape_flash_attn_ext_kv_heads", "type": "i64", "source": "shape.src1.src1_d2"},
+      {"name": "shape_flash_attn_ext_kv_len", "type": "i64", "source": "shape.src1.src1_d1"},
+      {"name": "shape_flash_attn_ext_batch", "type": "i64", "source": "shape.dst.dst_d3"},
       {"name": "layout_flash_attn_ext_q_stride_dim", "type": "i64", "source": "tensor.src0.element_strides.0"},
       {"name": "layout_flash_attn_ext_q_stride_token", "type": "i64", "source": "tensor.src0.element_strides.1"},
       {"name": "layout_flash_attn_ext_q_stride_head", "type": "i64", "source": "tensor.src0.element_strides.2"},
@@ -115,7 +115,7 @@
       {"name": "mode_flash_attn_ext_max_bias_enabled", "type": "i64", "value": 0},
       {"name": "mode_flash_attn_ext_logit_softcap_enabled", "type": "i64", "value": 0},
       {"name": "tuning_flash_attn_ext_workgroup_size", "type": "i64", "value": 256},
-      {"name": "tuning_flash_attn_ext_block_kv", "type": "i64", "source": "shape.src1.d1"},
+      {"name": "tuning_flash_attn_ext_block_kv", "type": "i64", "source": "shape.src1.src1_d1"},
       {"name": "tuning_flash_attn_ext_block_tokens", "type": "i64", "value": 1}
     ]
   },
@@ -131,7 +131,7 @@
       {"name": "scale", "type": "f32", "position": 0, "source": "attribute.scale"}
     ],
     "dispatch": {
-      "workgroups": ["shape.dst.d2", "shape.dst.d0", "shape.dst.d3"],
+      "workgroups": ["shape.dst.dst_d2", "shape.dst.dst_d0", "shape.dst.dst_d3"],
       "workgroup_size": [256, 1, 1]
     }
   },

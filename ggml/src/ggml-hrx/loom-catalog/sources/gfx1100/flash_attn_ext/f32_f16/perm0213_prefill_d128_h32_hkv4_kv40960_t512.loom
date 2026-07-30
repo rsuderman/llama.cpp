@@ -18,15 +18,15 @@ amdgpu.target<gfx1100> @hrx2_gfx1100_wave64 {subgroup_size = 64}
 
 kernel.def target(@hrx2_gfx1100_wave64) export("hrx2_flash_attn_ext_f32_f16_perm0213_prefill_d128_h32_hkv4_kv40960_t512") @hrx2_flash_attn_ext_f32_f16_perm0213_prefill_d128_h32_hkv4_kv40960_t512() {
   %one = index.constant 1 : index
-  %head_dim = config.get @shape_flash_attn_ext_head_dim : index
   %heads = config.get @shape_flash_attn_ext_heads : index
   %tokens = config.get @shape_flash_attn_ext_tokens : index
   %wg = config.get @tuning_flash_attn_ext_workgroup_size : index
-  kernel.launch.config workgroups(%heads, %head_dim, %tokens) workgroup_size(%wg, %one, %one) : index
+  %dim_tiles = index.constant 8 : index
+  kernel.launch.config workgroups(%heads, %dim_tiles, %tokens) workgroup_size(%wg, %one, %one) : index
 } launch(%scale: f32, %q: buffer, %kbuf: buffer, %vbuf: buffer, %mask: buffer, %dst: buffer) {
   %base = index.constant 0 : offset
   %zero = index.constant 0 : index
-  %one = index.constant 1 : index
+  %sixteen = index.constant 16 : index
   %head_dim0 = config.get @shape_flash_attn_ext_head_dim : index
   %heads0 = config.get @shape_flash_attn_ext_heads : index
   %tokens0 = config.get @shape_flash_attn_ext_tokens : index
@@ -59,16 +59,18 @@ kernel.def target(@hrx2_gfx1100_wave64) export("hrx2_flash_attn_ext_f32_f16_perm
   %wg = index.assume %wg0 [range(%wg0, 256, 256), mul(%wg0, 256)] : index
   %zero_f32 = scalar.constant 0.0 : f32
   %minus_inf = scalar.constant -3.4028234663852886e+38 : f32
+  %zero_vec16 = vector.constant 0.0 : vector<16xf32>
 
   %head0 = kernel.workgroup.id<x> : index
-  %dim0 = kernel.workgroup.id<y> : index
+  %dim_tile0 = kernel.workgroup.id<y> : index
   %token0 = kernel.workgroup.id<z> : index
   %lane0 = kernel.workitem.id<x> : index
   %head = index.assume %head0 [range(%head0, 0, 31)] : index
-  %dim = index.assume %dim0 [range(%dim0, 0, 127)] : index
+  %dim_tile = index.assume %dim_tile0 [range(%dim_tile0, 0, 7)] : index
   %token = index.assume %token0 [range(%token0, 0, 511)] : index
   %lane = index.assume %lane0 [range(%lane0, 0, 255)] : index
 
+  %dim_base = index.mul %dim_tile, %sixteen : index
   %heads_per_kv = index.div %heads, %kv_heads : index
   %kv_head = index.div %head, %heads_per_kv : index
   %q_token_offset = index.mul %token, %q_d1_stride : index
@@ -93,19 +95,18 @@ kernel.def target(@hrx2_gfx1100_wave64) export("hrx2_flash_attn_ext_f32_f16_perm
   %mask_view = buffer.view %mask_noalias[%base] : buffer -> view<20971520xf16, #dense>
   %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<2097152xf32, #dense>
 
-  %thread_max = scf.for %kv = [%lane to %kv_len step %wg](%acc = %minus_inf : f32) -> (f32) {
+  %thread_max, %thread_sum, %thread_acc = scf.for %kv = [%lane to %kv_len step %wg](%acc_m = %minus_inf, %acc_sum = %zero_f32, %acc_vec = %zero_vec16 : f32, f32, vector<16xf32>) -> (f32, f32, vector<16xf32>) {
     %k_kv_offset = index.mul %kv, %k_d1_stride : index
     %k_kv_base = index.add %k_head_base, %k_kv_offset : index
-    %dot = scf.for %d = [%zero to %head_dim step %one](%dot_acc = %zero_f32 : f32) -> (f32) {
+    %dot = scf.for %d = [%zero to %head_dim step %sixteen](%dot_acc = %zero_f32 : f32) -> (f32) {
       %q_d_offset = index.mul %d, %q_d0_stride : index
       %k_d_offset = index.mul %d, %k_d0_stride : index
-      %q_idx0 = index.add %q_token_base, %q_d_offset : index
+      %q_idx = index.add %q_token_base, %q_d_offset : index
       %k_idx = index.add %k_kv_base, %k_d_offset : index
-      %q_value = view.load %q_view[%q_idx0] : view<2097152xf32, #dense> -> f32
-      %k_half = view.load %k_view[%k_idx] : view<20971520xf16, #dense> -> f16
-      %k_value = scalar.extf %k_half : f16 to f32
-      %product = scalar.mulf<reassoc|nnan|ninf|nsz> %q_value, %k_value : f32
-      %next_dot = scalar.addf<reassoc|nnan|ninf|nsz> %dot_acc, %product : f32
+      %q_values = vector.load %q_view[%q_idx] : view<2097152xf32, #dense> -> vector<16xf32>
+      %k_half = vector.load %k_view[%k_idx] : view<20971520xf16, #dense> -> vector<16xf16>
+      %k_values = vector.extf %k_half : vector<16xf16> to vector<16xf32>
+      %next_dot = vector.dotf %q_values, %k_values, %dot_acc : vector<16xf32>, vector<16xf32>, f32
       scf.yield %next_dot : f32
     }
     %mask_idx = index.add %mask_token_base, %kv : index
@@ -113,55 +114,44 @@ kernel.def target(@hrx2_gfx1100_wave64) export("hrx2_flash_attn_ext_f32_f16_perm
     %mask_value = scalar.extf %mask_half : f16 to f32
     %scaled = scalar.mulf<nnan|ninf|nsz> %dot, %scale : f32
     %score = scalar.addf<nnan|ninf|nsz> %scaled, %mask_value : f32
-    %next = scalar.maxnumf %acc, %score : f32
-    scf.yield %next : f32
-  }
-  %row_max = kernel.workgroup.reduce<maxnumf> %thread_max : f32
-
-  %thread_sum, %thread_dot = scf.for %kv = [%lane to %kv_len step %wg](%acc_sum = %zero_f32 : f32, %acc_dot = %zero_f32 : f32) -> (f32, f32) {
-    %k_kv_offset = index.mul %kv, %k_d1_stride : index
-    %k_kv_base = index.add %k_head_base, %k_kv_offset : index
-    %dot = scf.for %d = [%zero to %head_dim step %one](%dot_acc = %zero_f32 : f32) -> (f32) {
-      %q_d_offset = index.mul %d, %q_d0_stride : index
-      %k_d_offset = index.mul %d, %k_d0_stride : index
-      %q_idx0 = index.add %q_token_base, %q_d_offset : index
-      %k_idx = index.add %k_kv_base, %k_d_offset : index
-      %q_value = view.load %q_view[%q_idx0] : view<2097152xf32, #dense> -> f32
-      %k_half = view.load %k_view[%k_idx] : view<20971520xf16, #dense> -> f16
-      %k_value = scalar.extf %k_half : f16 to f32
-      %product = scalar.mulf<reassoc|nnan|ninf|nsz> %q_value, %k_value : f32
-      %next_dot = scalar.addf<reassoc|nnan|ninf|nsz> %dot_acc, %product : f32
-      scf.yield %next_dot : f32
-    }
-    %mask_idx = index.add %mask_token_base, %kv : index
-    %mask_half = view.load %mask_view[%mask_idx] : view<20971520xf16, #dense> -> f16
-    %mask_value = scalar.extf %mask_half : f16 to f32
-    %scaled = scalar.mulf<nnan|ninf|nsz> %dot, %scale : f32
-    %score = scalar.addf<nnan|ninf|nsz> %scaled, %mask_value : f32
-    %shift = scalar.subf<nnan|ninf|nsz> %score, %row_max : f32
-    %weight = scalar.expf<afn> %shift : f32
+    %new_m = scalar.maxnumf %acc_m, %score : f32
+    %old_delta = scalar.subf %acc_m, %new_m : f32
+    %old_scale = scalar.expf<afn> %old_delta : f32
+    %score_delta = scalar.subf %score, %new_m : f32
+    %weight = scalar.expf<afn> %score_delta : f32
+    %old_scale_vec = vector.splat %old_scale : vector<16xf32>
+    %weight_vec = vector.splat %weight : vector<16xf32>
     %v_kv_offset = index.mul %kv, %v_d1_stride : index
-    %v_dim_offset = index.mul %dim, %v_d0_stride : index
+    %v_dim_offset = index.mul %dim_base, %v_d0_stride : index
     %v_kv_base = index.add %v_head_base, %v_kv_offset : index
     %v_idx = index.add %v_kv_base, %v_dim_offset : index
-    %v_half = view.load %v_view[%v_idx] : view<20971520xf16, #dense> -> f16
-    %v_value = scalar.extf %v_half : f16 to f32
-    %next_sum = scalar.addf<reassoc|nnan|ninf|nsz> %acc_sum, %weight : f32
-    %weighted_v = scalar.mulf<reassoc|nnan|ninf|nsz> %v_value, %weight : f32
-    %next_dot = scalar.addf<reassoc|nnan|ninf|nsz> %acc_dot, %weighted_v : f32
-    scf.yield %next_sum, %next_dot : f32, f32
+    %v_half = vector.load %v_view[%v_idx] : view<20971520xf16, #dense> -> vector<16xf16>
+    %v_values = vector.extf %v_half : vector<16xf16> to vector<16xf32>
+    %rescaled_acc = vector.mulf<reassoc|nnan|nsz|contract> %acc_vec, %old_scale_vec : vector<16xf32>
+    %weighted_v = vector.mulf<reassoc|nnan|nsz|contract> %v_values, %weight_vec : vector<16xf32>
+    %next_acc = vector.addf<reassoc|nnan|nsz|contract> %rescaled_acc, %weighted_v : vector<16xf32>
+    %rescaled_sum = scalar.mulf<reassoc|nnan|nsz|contract> %acc_sum, %old_scale : f32
+    %next_sum = scalar.addf<reassoc|nnan|nsz|contract> %rescaled_sum, %weight : f32
+    scf.yield %new_m, %next_sum, %next_acc : f32, f32, vector<16xf32>
   }
-  %row_sum = kernel.workgroup.reduce<addf> %thread_sum : f32
-  %row_dot = kernel.workgroup.reduce<addf> %thread_dot : f32
-  %result = scalar.divf<nnan|ninf|nsz|arcp> %row_dot, %row_sum : f32
+  %row_max = kernel.workgroup.reduce<maxnumf> %thread_max : f32
+  %merge_delta = scalar.subf %thread_max, %row_max : f32
+  %merge_scale = scalar.expf<afn> %merge_delta : f32
+  %scaled_thread_sum = scalar.mulf<reassoc|nnan|nsz|contract> %thread_sum, %merge_scale : f32
+  %merge_scale_vec = vector.splat %merge_scale : vector<16xf32>
+  %scaled_thread_acc = vector.mulf<reassoc|nnan|nsz|contract> %thread_acc, %merge_scale_vec : vector<16xf32>
+  %row_sum = kernel.workgroup.reduce<addf> %scaled_thread_sum : f32
+  %row_acc = kernel.workgroup.reduce<addf> %scaled_thread_acc : vector<16xf32>
+  %row_sum_vec = vector.splat %row_sum : vector<16xf32>
+  %result = vector.divf<nnan|ninf|nsz|arcp> %row_acc, %row_sum_vec : vector<16xf32>
 
   %lane_i32 = index.cast %lane : index to i32
   %zero_i32 = scalar.constant 0 : i32
   %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
   scf.if %is_lane0 {
-    %dst_head_dim = index.add %dst_head_base, %dim : index
+    %dst_head_dim = index.add %dst_head_base, %dim_base : index
     %dst_idx = index.add %dst_token_base, %dst_head_dim : index
-    view.store %result, %dst_view[%dst_idx] : f32, view<2097152xf32, #dense>
+    vector.store %result, %dst_view[%dst_idx] : vector<16xf32>, view<2097152xf32, #dense>
   }
   kernel.return
 }
