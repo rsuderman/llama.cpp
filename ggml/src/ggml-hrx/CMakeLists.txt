@@ -203,7 +203,7 @@ if (GGML_HRX_LOOM)
     set(GGML_HRX_LOOM_ROUTE_DISPATCH_CPP "${GGML_HRX_LOOM_GENERATED_DIR}/ggml-hrx-loom-route-dispatch.cpp")
     set(GGML_HRX_LOOM_ROUTE_FILES
         routes/add/f32/contiguous.json
-        routes/argsort/f32_i32/contiguous_desc_wg256.json
+        routes/argsort/f32_i32/contiguous_wg256.json
     )
     set(GGML_HRX_LOOM_ROUTE_OPS
         GGML_OP_ADD
@@ -211,11 +211,11 @@ if (GGML_HRX_LOOM)
     )
     set(GGML_HRX_LOOM_ROUTE_DEFS
         "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/add/f32/contiguous.json"
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/argsort/f32_i32/contiguous_desc_wg256.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/defs/argsort/f32_i32/contiguous_wg256.json"
     )
     set(GGML_HRX_LOOM_SOURCE_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/add/f32/contiguous.loom"
-        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/argsort/f32_i32/contiguous_desc_wg256.loom"
+        "${CMAKE_CURRENT_SOURCE_DIR}/loom-catalog/sources/argsort/f32_i32/contiguous_wg256.loom"
     )
     set(GGML_HRX_LOOM_ROUTE_JSONS)
     set(GGML_HRX_LOOM_OP_ROUTER_CPPS)

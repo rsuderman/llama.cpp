@@ -1,10 +1,10 @@
 {
   "schema": "ggml-hrx-loom-def-v1",
-  "id": "argsort_f32_i32_contiguous_desc_wg256",
+  "id": "argsort_f32_i32_contiguous_wg256",
   "op": "GGML_OP_ARGSORT",
-  "source": "sources/argsort/f32_i32/contiguous_desc_wg256.loom",
+  "source": "sources/argsort/f32_i32/contiguous_wg256.loom",
   "source_format": "loom-text",
-  "symbol": "hrx2_argsort_f32_i32_desc",
+  "symbol": "hrx2_argsort_f32_i32",
   "abi": {"binding_count": 2, "parameter_count": 2, "constant_byte_length": 0},
   "workgroup_size": [256, 1, 1],
   "parameters": [],

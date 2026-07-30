@@ -1,7 +1,7 @@
 {
   "schema": "ggml-hrx-loom-route-v1",
-  "id": "argsort_f32_i32_contiguous_desc_wg256",
-  "definition": "../../../defs/argsort/f32_i32/contiguous_desc_wg256.json",
+  "id": "argsort_f32_i32_contiguous_wg256",
+  "definition": "../../../defs/argsort/f32_i32/contiguous_wg256.json",
   "format": "loom",
   "priority": 100,
   "match": {
@@ -24,8 +24,6 @@
       {"field": "derived.total_size", "max": 1073741824},
       {"field": "derived.flattened_trailing_dimensions", "min": 1},
       {"field": "derived.flattened_trailing_dimensions", "max": 1048576},
-      {"rank": "src0", "equals": 4},
-      {"rank": "dst", "equals": 4},
       {"field": "shape.dst.d0", "min": 1},
       {"field": "shape.dst.d0", "max": 256},
       {"field": "shape.dst.d1", "min": 1},
@@ -34,7 +32,6 @@
       {"field": "shape.dst.d2", "max": 1048576},
       {"field": "shape.dst.d3", "min": 1},
       {"field": "shape.dst.d3", "max": 1048576},
-      {"field": "attribute.order", "equals": 1},
       {
         "same_shape": ["src0", "dst"]
       },
@@ -58,6 +55,7 @@
       {"name": "shape_argsort_ncols", "type": "i64", "source": "shape.dst.d0"},
       {"name": "shape_argsort_nrows", "type": "i64", "source": "derived.flattened_trailing_dimensions"},
       {"name": "shape_argsort_total_size", "type": "i64", "source": "derived.total_size"},
+      {"name": "shape_argsort_order", "type": "i32", "source": "attribute.order"},
       {"name": "tuning_argsort_workgroup_size", "type": "i64", "value": 256}
     ]
   },

@@ -1,9 +1,10 @@
 config.decl @shape_argsort_ncols : %value: index where [range(%value, 1, 256)]
 config.decl @shape_argsort_nrows : %value: index where [range(%value, 1, 1048576)]
 config.decl @shape_argsort_total_size : %value: index where [range(%value, 1, 1073741824)]
+config.decl @shape_argsort_order : %value: index where [range(%value, 0, 1)]
 config.decl @tuning_argsort_workgroup_size : %value: index where [range(%value, 32, 256), mul(%value, 32)]
 
-kernel.def export("hrx2_argsort_f32_i32_desc") @hrx2_argsort_f32_i32_desc() {
+kernel.def export("hrx2_argsort_f32_i32") @hrx2_argsort_f32_i32() {
   %unit = index.constant 1 : index
   %nrows = config.get @shape_argsort_nrows : index
   %workgroup_size = config.get @tuning_argsort_workgroup_size : index
@@ -17,9 +18,11 @@ kernel.def export("hrx2_argsort_f32_i32_desc") @hrx2_argsort_f32_i32_desc() {
   %ncols = config.get @shape_argsort_ncols : index
   %nrows = config.get @shape_argsort_nrows : index
   %total_size = config.get @shape_argsort_total_size : index
+  %order = config.get @shape_argsort_order : index
   %ncols_bounded = index.assume %ncols [range(%ncols, 1, 256)] : index
   %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
   %total_size_bounded = index.assume %total_size [range(%total_size, 1, 1073741824)] : index
+  %order_bounded = index.assume %order [range(%order, 0, 1)] : index
   %row0 = kernel.workgroup.id<x> : index
   %row = index.assume %row0 [lt(%row0, %nrows_bounded)] : index
   %lane0 = kernel.workitem.id<x> : index
@@ -43,11 +46,18 @@ kernel.def export("hrx2_argsort_f32_i32_desc") @hrx2_argsort_f32_i32_desc() {
       %other_offset = index.assume %other_offset_raw [range(%other_offset_raw, 0, 1073741823), lt(%other_offset_raw, %total_size_bounded)] : index
       %other_value = view.load %src0_view[%other_offset] : view<[%total_size_bounded]xf32, #dense> -> f32
       %other_i32 = index.cast %other : index to i32
-      %greater = scalar.cmpf ogt, %other_value, %self_value : f32
+      %ascending = index.cmp eq, %order_bounded, %zero : index
       %equal = scalar.cmpf oeq, %other_value, %self_value : f32
       %other_before = scalar.cmpi slt, %other_i32, %lane_i32 : i32
       %tie_before = scalar.andi %equal, %other_before : i1
-      %precedes = scalar.ori %greater, %tie_before : i1
+      %strict_precedes = scf.if %ascending -> (i1) {
+        %less = scalar.cmpf olt, %other_value, %self_value : f32
+        scf.yield %less : i1
+      } else {
+        %greater = scalar.cmpf ogt, %other_value, %self_value : f32
+        scf.yield %greater : i1
+      }
+      %precedes = scalar.ori %strict_precedes, %tie_before : i1
       %next = scf.if %precedes -> (i32) {
         %inc = scalar.addi %acc, %one_i32 : i32
         scf.yield %inc : i32
