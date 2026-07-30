@@ -7,6 +7,7 @@ from pathlib import Path
 from shutil import copytree
 
 import generate_loom_catalog as catalog
+import generate_loom_route_impl as route_impl
 import validate_loom_routes as loom
 
 
@@ -14,6 +15,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 CATALOG_ROOT = TOOLS_DIR.parent / "loom-catalog"
 METADATA_PATH = Path("metadata.json")
 ROUTE_PATH = Path("routes/generic/add/f32/contiguous.json")
+SUM_ROWS_ROUTE_PATH = Path("routes/generic/sum_rows/f32/contiguous_4d.json")
 FUSION_ROUTE_PATH = Path("routes/generic/rms_norm_mul/f32/contiguous_4d.json")
 TEST_TARGET_A = "__test_target_a"
 TEST_TARGET_B = "__test_target_b"
@@ -23,6 +25,13 @@ TEST_TARGET_MISSING = "__test_missing_target"
 def read_json(path):
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def read_route_and_definition(source_root, route_path):
+    route_full_path = source_root / route_path
+    route = read_json(route_full_path)
+    definition = read_json((route_full_path.parent / route["definition"]).resolve())
+    return route, definition
 
 
 def write_json(path, data):
@@ -160,6 +169,16 @@ def expect_generation_invalid(name, mutator, targets, expected):
 
 def main():
     expect_valid(CATALOG_ROOT)
+    sum_rows_route, sum_rows_definition = read_route_and_definition(CATALOG_ROOT, SUM_ROWS_ROUTE_PATH)
+    sum_rows_impl = route_impl.generate_route_impl(str(SUM_ROWS_ROUTE_PATH), sum_rows_route, sum_rows_definition)
+    if "shape_dst_d0 != shape_src0_d0" in sum_rows_impl:
+        raise AssertionError("v1 shape captures must not imply cross-tensor equality")
+
+    fusion_route, fusion_definition = read_route_and_definition(CATALOG_ROOT, FUSION_ROUTE_PATH)
+    fusion_impl = route_impl.generate_route_impl(str(FUSION_ROUTE_PATH), fusion_route, fusion_definition)
+    if "shape_rms_out_d0 != shape_x_d0" not in fusion_impl:
+        raise AssertionError("v2 structural shape declarations must enforce cross-tensor equality")
+
     expect_valid_mutation(
         "workgroups-dispatch",
         lambda route: route["invocation"].update({

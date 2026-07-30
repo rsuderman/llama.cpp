@@ -137,7 +137,6 @@ struct ggml_backend_hrx_loom_compile_state {
     loomc_source_t *             source             = nullptr;
     loomc_module_t *             module             = nullptr;
     loomc_target_profile_t *     target_profile     = nullptr;
-    loomc_target_selection_t *   target_selection   = nullptr;
     loomc_compiler_t *           compiler           = nullptr;
     loomc_pass_program_t *       pass_program       = nullptr;
     loomc_result_t *             result             = nullptr;
@@ -146,7 +145,6 @@ struct ggml_backend_hrx_loom_compile_state {
         loomc_result_release(result);
         loomc_pass_program_release(pass_program);
         loomc_compiler_release(compiler);
-        loomc_target_selection_release(target_selection);
         loomc_target_profile_release(target_profile);
         loomc_module_release(module);
         loomc_source_release(source);
@@ -432,29 +430,16 @@ bool ggml_backend_hrx_loom_compile(const ggml_backend_hrx_loom_compile_input * i
         GGML_HRX_LOOMC_CHECK(status);
         return false;
     }
-    status = loomc_target_selection_create_from_profile(state.target_profile, loomc_allocator_system(),
-                                                        &state.target_selection);
-    if (!loomc_status_is_ok(status)) {
-        GGML_HRX_LOOMC_CHECK(status);
-        return false;
-    }
-
     status = loomc_compiler_create(state.context, nullptr, loomc_allocator_system(), &state.compiler);
     if (!loomc_status_is_ok(status)) {
         GGML_HRX_LOOMC_CHECK(status);
         return false;
     }
 
-    loomc_target_selection_options_t target_options = {
-        /* .type             = */ LOOMC_STRUCTURE_TYPE_TARGET_SELECTION_OPTIONS,
-        /* .structure_size   = */ sizeof(loomc_target_selection_options_t),
-        /* .next             = */ nullptr,
-        /* .target_selection = */ state.target_selection,
-    };
     loomc_target_pipeline_options_t pipeline_options = {
         /* .type                     = */ LOOMC_STRUCTURE_TYPE_TARGET_PIPELINE_OPTIONS,
         /* .structure_size           = */ sizeof(loomc_target_pipeline_options_t),
-        /* .next                     = */ &target_options,
+        /* .next                     = */ nullptr,
         /* .identifier               = */ loomc_make_cstring_view("hrx-loom-prepared-low"),
         /* .kind                     = */ LOOMC_TARGET_PIPELINE_KIND_PREPARED_LOW,
         /* .control_flow_lowering    = */ LOOMC_TARGET_CONTROL_FLOW_LOWERING_CFG,
@@ -482,6 +467,17 @@ bool ggml_backend_hrx_loom_compile(const ggml_backend_hrx_loom_compile_input * i
     }
     state.reset_result();
 
+    const loomc_target_specialization_t target_specialization = {
+        /* .function_symbol = */ loomc_make_cstring_view(input->symbol),
+        /* .target_profile  = */ state.target_profile,
+    };
+    loomc_target_specialization_options_t target_options = {
+        /* .type                 = */ LOOMC_STRUCTURE_TYPE_TARGET_SPECIALIZATION_OPTIONS,
+        /* .structure_size       = */ sizeof(loomc_target_specialization_options_t),
+        /* .next                 = */ nullptr,
+        /* .specializations      = */ &target_specialization,
+        /* .specialization_count = */ 1,
+    };
     loomc_compile_options_t compile_options = {
         /* .type           = */ LOOMC_STRUCTURE_TYPE_COMPILE_OPTIONS,
         /* .structure_size = */ sizeof(loomc_compile_options_t),

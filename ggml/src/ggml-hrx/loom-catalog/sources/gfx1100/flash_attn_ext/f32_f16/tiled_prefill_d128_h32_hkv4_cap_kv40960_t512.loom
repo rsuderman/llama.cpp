@@ -1,5 +1,5 @@
 config.decl @shape_flash_attn_ext_head_dim : %value: index where [range(%value, 128, 128)]
-config.decl @shape_flash_attn_ext_heads : %value: index where [range(%value, 32, 32)]
+config.decl @shape_flash_attn_ext_heads : %value: index where [range(%value, 4, 128), mul(%value, 4)]
 config.decl @shape_flash_attn_ext_tokens : %value: index where [range(%value, 2, 512)]
 config.decl @shape_flash_attn_ext_kv_len : %value: index where [range(%value, 512, 40960), mul(%value, 512)]
 config.decl @shape_flash_attn_ext_kv_heads : %value: index where [range(%value, 4, 4)]
@@ -25,7 +25,7 @@ kernel.def target(@hrx2_gfx1100_wave64) export("hrx2_flash_attn_ext_f32_f16_tile
   %kv_heads0 = config.get @shape_flash_attn_ext_kv_heads : index
   %wg0 = config.get @tuning_flash_attn_ext_workgroup_size : index
   %head_dim = index.assume %head_dim0 [range(%head_dim0, 128, 128)] : index
-  %heads = index.assume %heads0 [range(%heads0, 32, 32)] : index
+  %heads = index.assume %heads0 [range(%heads0, 4, 128), mul(%heads0, 4)] : index
   %tokens = index.assume %tokens0 [range(%tokens0, 2, 512)] : index
   %kv_len = index.assume %kv_len0 [range(%kv_len0, 512, 40960), mul(%kv_len0, 512)] : index
   %kv_heads = index.assume %kv_heads0 [range(%kv_heads0, 4, 4)] : index
@@ -38,7 +38,7 @@ kernel.def target(@hrx2_gfx1100_wave64) export("hrx2_flash_attn_ext_f32_f16_tile
   %dim_tile0 = kernel.workgroup.id<y> : index
   %token0 = kernel.workgroup.id<z> : index
   %lane0 = kernel.workitem.id<x> : index
-  %head = index.assume %head0 [range(%head0, 0, 31)] : index
+  %head = index.assume %head0 [range(%head0, 0, 127)] : index
   %dim_tile = index.assume %dim_tile0 [range(%dim_tile0, 0, 7)] : index
   %token = index.assume %token0 [range(%token0, 0, 511)] : index
   %lane = index.assume %lane0 [range(%lane0, 0, 255)] : index
@@ -63,11 +63,11 @@ kernel.def target(@hrx2_gfx1100_wave64) export("hrx2_flash_attn_ext_f32_f16_tile
   %mask_global = buffer.assume.memory_space<global> %mask : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %q_noalias, %k_noalias, %v_noalias, %mask_noalias, %dst_noalias = buffer.assume.noalias %q_global, %k_global, %v_global, %mask_global, %dst_global : buffer, buffer, buffer, buffer, buffer
-  %q_view = buffer.view %q_noalias[%base] : buffer -> view<2097152xf32, #dense>
+  %q_view = buffer.view %q_noalias[%base] : buffer -> view<8388608xf32, #dense>
   %k_view = buffer.view %k_noalias[%base] : buffer -> view<20971520xf16, #dense>
   %v_view = buffer.view %v_noalias[%base] : buffer -> view<20971520xf16, #dense>
   %mask_view = buffer.view %mask_noalias[%base] : buffer -> view<20971520xf16, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<2097152xf32, #dense>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<8388608xf32, #dense>
 
   %thread_max, %thread_sum, %thread_acc = scf.for %kv = [%lane to %kv_len step %wg](%acc_m = %minus_inf, %acc_sum = %zero_f32, %acc_vec = %zero_vec16 : f32, f32, vector<16xf32>) -> (f32, f32, vector<16xf32>) {
     %kv_base0 = index.mul %kv, %head_dim : index
@@ -75,7 +75,7 @@ kernel.def target(@hrx2_gfx1100_wave64) export("hrx2_flash_attn_ext_f32_f16_tile
     %dot = scf.for %d = [%zero to %head_dim step %sixteen](%dot_acc = %zero_f32 : f32) -> (f32) {
       %q_idx = index.add %q_token_base, %d : index
       %k_idx = index.add %kv_base, %d : index
-      %q_values = vector.load %q_view[%q_idx] : view<2097152xf32, #dense> -> vector<16xf32>
+      %q_values = vector.load %q_view[%q_idx] : view<8388608xf32, #dense> -> vector<16xf32>
       %k_half = vector.load %k_view[%k_idx] : view<20971520xf16, #dense> -> vector<16xf16>
       %k_values = vector.extf %k_half : vector<16xf16> to vector<16xf32>
       %next_dot = vector.dotf %q_values, %k_values, %dot_acc : vector<16xf32>, vector<16xf32>, f32
@@ -120,7 +120,7 @@ kernel.def target(@hrx2_gfx1100_wave64) export("hrx2_flash_attn_ext_f32_f16_tile
   scf.if %is_lane0 {
     %dst_head_dim = index.add %dst_head_base, %dim_base : index
     %dst_idx = index.add %dst_token_base, %dst_head_dim : index
-    vector.store %result, %dst_view[%dst_idx] : vector<16xf32>, view<2097152xf32, #dense>
+    vector.store %result, %dst_view[%dst_idx] : vector<16xf32>, view<8388608xf32, #dense>
   }
   kernel.return
 }

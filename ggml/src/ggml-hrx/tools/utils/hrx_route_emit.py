@@ -336,19 +336,21 @@ def emit_shape_captures(lines, route, schema):
 
 def emit_tensor_declaration_checks(lines, route, schema, route_response, unsupported_shape_reason, unsupported_layout_reason):
     tensors = schema.route_tensors(route, "route")
+    enforce_shape_symbols = not schema.route_is_v1(route, "route")
     shape_symbols = {}
     for role, tensor in tensors.items():
         for i, dim in enumerate(tensor.get("shape", [])):
             if isinstance(dim, str):
-                value = shape_var(role, dim)
-                if dim in shape_symbols:
-                    lines.extend([
-                        f"    if ({value} != {shape_symbols[dim]}) {{",
-                        f"        {route_response(unsupported_shape_reason)}",
-                        "    }",
-                    ])
-                else:
-                    shape_symbols[dim] = value
+                if enforce_shape_symbols:
+                    value = shape_var(role, dim)
+                    if dim in shape_symbols:
+                        lines.extend([
+                            f"    if ({value} != {shape_symbols[dim]}) {{",
+                            f"        {route_response(unsupported_shape_reason)}",
+                            "    }",
+                        ])
+                    else:
+                        shape_symbols[dim] = value
             else:
                 lines.extend([
                     f"    if ({role_var(role)}->ne[{i}] != {int(dim)}) {{",
