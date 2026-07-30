@@ -10,6 +10,17 @@ ATTRIBUTE_INDICES = {
         "minimum": 0,
         "maximum": 1,
     },
+    "GGML_OP_ROPE": {
+        "n_dims": 1,
+        "mode": 2,
+        "n_ctx_orig": 4,
+        "freq_base": 5,
+        "freq_scale": 6,
+        "ext_factor": 7,
+        "attn_factor": 8,
+        "beta_fast": 9,
+        "beta_slow": 10,
+    },
     "GGML_OP_SCALE": {
         "scale": 0,
         "bias": 1,
@@ -122,12 +133,22 @@ def emit_tensor_strides_source(tensor, parts):
     return emit_tensor_vector_source(tensor, parts, "strides")
 
 
+def emit_tensor_element_strides_source(tensor, parts):
+    if len(parts) == 3:
+        return [
+            f"({tensor}->nb[{i}] / ggml_type_size({tensor}->type))"
+            for i in range(4)
+        ]
+    return f"({tensor}->nb[{int(parts[3])}] / ggml_type_size({tensor}->type))"
+
+
 TENSOR_FIELD_EMITTERS = {
     "type": emit_tensor_type_source,
     "rank": emit_tensor_rank_source,
     "element_count": emit_tensor_element_count_source,
     "dimensions": emit_tensor_dimensions_source,
     "strides": emit_tensor_strides_source,
+    "element_strides": emit_tensor_element_strides_source,
 }
 
 

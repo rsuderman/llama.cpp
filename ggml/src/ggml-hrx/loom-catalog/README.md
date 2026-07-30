@@ -25,7 +25,7 @@ The route derives `nelements` from the captured destination shape. That value is
 
 This catalog uses only the final Loom route fields: `match`, `derived`, `config`, and `invocation`. It does not include HSACO compatibility fields.
 
-The `config` section is required. Its `mode` must be `compile`, and `bindings` is an ordered array of compile-time values. Each binding has a C identifier `name`, a scalar `type`, and exactly one of `source` or `value`. The current generated runtime stores at most 16 config bindings, with names limited to 63 bytes and formatted values limited to 127 bytes.
+The `config` section is required. Its `mode` must be `compile`, and `bindings` is an ordered array of compile-time values. Each binding has a C identifier `name`, a scalar `type`, and exactly one of `source` or `value`. The current generated runtime stores at most 32 config bindings, with names limited to 63 bytes and formatted values limited to 127 bytes.
 
 ## Validation
 

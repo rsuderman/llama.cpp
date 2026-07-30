@@ -52,6 +52,22 @@ OP_RULES = {
         "input_tensors": {"src0", "src1"},
         "attributes": {},
     },
+    "GGML_OP_ROPE": {
+        "required_tensors": {"src0", "src1", "dst"},
+        "optional_tensors": {"src2"},
+        "input_tensors": {"src0", "src1", "src2"},
+        "attributes": {
+            "attn_factor": "f32",
+            "beta_fast": "f32",
+            "beta_slow": "f32",
+            "ext_factor": "f32",
+            "freq_base": "f32",
+            "freq_scale": "f32",
+            "mode": "i32",
+            "n_ctx_orig": "i32",
+            "n_dims": "i32",
+        },
+    },
     "GGML_OP_SCALE": {
         "required_tensors": {"src0", "dst"},
         "optional_tensors": set(),
@@ -313,7 +329,7 @@ class RouteContext:
             return "i64"
         if field == "element_count" and len(parts) == 3:
             return "i64"
-        if field in {"dimensions", "strides"}:
+        if field in {"dimensions", "strides", "element_strides"}:
             if len(parts) == 3:
                 return "vector_i64"
             index = parts[3]
