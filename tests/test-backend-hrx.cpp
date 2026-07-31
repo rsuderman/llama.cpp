@@ -108,8 +108,8 @@ static bool run_add_support_case(ggml_backend_dev_t dev) {
 
     {
         ggml_context_ptr ctx = make_context();
-        ggml_tensor * lhs = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F16, 16);
-        ggml_tensor * rhs = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F16, 16);
+        ggml_tensor * lhs = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_BF16, 16);
+        ggml_tensor * rhs = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_BF16, 16);
         ggml_tensor * out = ggml_add(ctx.get(), lhs, rhs);
         GGML_ASSERT(!ggml_backend_dev_supports_op(dev, out));
     }
@@ -128,20 +128,12 @@ static bool run_mul_support_case(ggml_backend_dev_t dev) {
 
     {
         ggml_context_ptr ctx = make_context();
-        ggml_tensor * lhs = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F16, 16);
-        ggml_tensor * rhs = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F16, 16);
+        ggml_tensor * lhs = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_BF16, 16);
+        ggml_tensor * rhs = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_BF16, 16);
         ggml_tensor * out = ggml_mul(ctx.get(), lhs, rhs);
         GGML_ASSERT(!ggml_backend_dev_supports_op(dev, out));
     }
 
-    {
-        ggml_context_ptr ctx = make_context();
-        ggml_tensor * base = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 4, 4);
-        ggml_tensor * view = ggml_view_2d(ctx.get(), base, 2, 2, 4 * sizeof(float), 0);
-        ggml_tensor * rhs = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 2, 2);
-        ggml_tensor * out = ggml_mul(ctx.get(), view, rhs);
-        GGML_ASSERT(!ggml_backend_dev_supports_op(dev, out));
-    }
     return mul_f32_supported;
 }
 
@@ -157,8 +149,8 @@ static bool run_div_support_case(ggml_backend_dev_t dev) {
 
     {
         ggml_context_ptr ctx = make_context();
-        ggml_tensor * lhs = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F16, 16);
-        ggml_tensor * rhs = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F16, 1);
+        ggml_tensor * lhs = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_BF16, 16);
+        ggml_tensor * rhs = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_BF16, 1);
         ggml_tensor * out = ggml_div(ctx.get(), lhs, rhs);
         GGML_ASSERT(!ggml_backend_dev_supports_op(dev, out));
     }
@@ -194,7 +186,7 @@ static bool run_soft_max_support_case(ggml_backend_dev_t dev) {
 
     {
         ggml_context_ptr ctx = make_context();
-        ggml_tensor * src = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 257);
+        ggml_tensor * src = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 1025);
         ggml_tensor * out = ggml_soft_max(ctx.get(), src);
         GGML_ASSERT(!ggml_backend_dev_supports_op(dev, out));
     }

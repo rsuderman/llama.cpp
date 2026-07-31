@@ -1,24 +1,109 @@
 message(STATUS "Using HRX backend")
 
-find_package(hrx CONFIG REQUIRED)
-find_package(loomc CONFIG REQUIRED)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
-get_target_property(GGML_HRX_IMPORTED_INCLUDES hrx::hrx INTERFACE_INCLUDE_DIRECTORIES)
-if (GGML_HRX_IMPORTED_INCLUDES)
-    set(GGML_HRX_FILTERED_IMPORTED_INCLUDES)
-    foreach(GGML_HRX_IMPORTED_INCLUDE IN LISTS GGML_HRX_IMPORTED_INCLUDES)
-        set(GGML_HRX_IMPORTED_INCLUDE_PATH "${GGML_HRX_IMPORTED_INCLUDE}")
-        if (GGML_HRX_IMPORTED_INCLUDE_PATH MATCHES "^\\$<BUILD_INTERFACE:(.*)>$")
-            set(GGML_HRX_IMPORTED_INCLUDE_PATH "${CMAKE_MATCH_1}")
-        endif()
-        if (EXISTS "${GGML_HRX_IMPORTED_INCLUDE_PATH}")
-            list(APPEND GGML_HRX_FILTERED_IMPORTED_INCLUDES "${GGML_HRX_IMPORTED_INCLUDE}")
-        endif()
-    endforeach()
-    set_target_properties(hrx::hrx PROPERTIES
-        INTERFACE_INCLUDE_DIRECTORIES "${GGML_HRX_FILTERED_IMPORTED_INCLUDES}")
+set(GGML_HRX_SOURCE_DIR "" CACHE PATH "HRX source tree containing libhrx and loom")
+if (NOT GGML_HRX_SOURCE_DIR)
+    message(FATAL_ERROR "GGML_HRX requires GGML_HRX_SOURCE_DIR; installed hrx/loomc packages are not used")
 endif()
+
+get_filename_component(GGML_HRX_SOURCE_DIR "${GGML_HRX_SOURCE_DIR}" ABSOLUTE)
+if (NOT EXISTS "${GGML_HRX_SOURCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "GGML_HRX_SOURCE_DIR does not contain CMakeLists.txt: ${GGML_HRX_SOURCE_DIR}")
+endif()
+if (NOT EXISTS "${GGML_HRX_SOURCE_DIR}/libhrx/CMakeLists.txt")
+    message(FATAL_ERROR "GGML_HRX_SOURCE_DIR does not contain libhrx: ${GGML_HRX_SOURCE_DIR}")
+endif()
+if (NOT IS_DIRECTORY "${GGML_HRX_SOURCE_DIR}/loom")
+    message(FATAL_ERROR "GGML_HRX_SOURCE_DIR does not contain loom: ${GGML_HRX_SOURCE_DIR}")
+endif()
+if (NOT EXISTS "${GGML_HRX_SOURCE_DIR}/loom/binding/c/include/loomc/loomc.h")
+    message(FATAL_ERROR "GGML_HRX_SOURCE_DIR does not contain loomc headers: ${GGML_HRX_SOURCE_DIR}")
+endif()
+
+include(ExternalProject)
+set(GGML_HRX_SOURCE_BINARY_DIR "${CMAKE_BINARY_DIR}/ggml-hrx-deps")
+set(GGML_HRX_SOURCE_HRX_LIBRARY "${GGML_HRX_SOURCE_BINARY_DIR}/libhrx/src/libhrx/${CMAKE_SHARED_LIBRARY_PREFIX}hrx${CMAKE_SHARED_LIBRARY_SUFFIX}")
+set(GGML_HRX_SOURCE_LOOMC_LIBRARY "${GGML_HRX_SOURCE_BINARY_DIR}/loom/binding/c/${CMAKE_SHARED_LIBRARY_PREFIX}loomc${CMAKE_SHARED_LIBRARY_SUFFIX}")
+set(GGML_HRX_SOURCE_CMAKE_ARGS
+    "-DIREE_BUILD_TESTS=OFF"
+    "-DIREE_BUILD_BENCHMARKS=OFF"
+    "-DIREE_BUILD_DOCS=OFF"
+    "-DIREE_BUILD_SAMPLES=OFF"
+    "-DIREE_BUILD_PYTHON_BINDINGS=OFF"
+    "-DIREE_HAL_DRIVER_DEFAULTS=OFF"
+    "-DIREE_HAL_DRIVER_AMDGPU=ON"
+    "-DIREE_HAL_DRIVER_LOCAL_SYNC=ON"
+    "-DIREE_HAL_DRIVER_LOCAL_TASK=ON"
+    "-DIREE_HAL_DRIVER_NULL=ON"
+    "-DIREE_HAL_DRIVER_VULKAN=OFF"
+    "-DIREE_HAL_DRIVER_HIP=OFF"
+    "-DIREE_HAL_DRIVER_HIP_RCCL=OFF"
+    "-DLOOM_BUILD=ON"
+    "-DLOOM_TARGET_AMDGPU=ON"
+    "-DLOOM_EXECUTE_DEFAULTS=ON"
+    "-DLIBHRX_BUILD=ON"
+    "-DBUILD_SHARED_LIBS=OFF"
+)
+if (CMAKE_BUILD_TYPE)
+    list(APPEND GGML_HRX_SOURCE_CMAKE_ARGS "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
+endif()
+if (CMAKE_C_COMPILER)
+    list(APPEND GGML_HRX_SOURCE_CMAKE_ARGS "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}")
+endif()
+if (CMAKE_CXX_COMPILER)
+    list(APPEND GGML_HRX_SOURCE_CMAKE_ARGS "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}")
+endif()
+
+message(STATUS "Building HRX and Loom from source: ${GGML_HRX_SOURCE_DIR}")
+ExternalProject_Add(ggml-hrx-source-deps
+    SOURCE_DIR "${GGML_HRX_SOURCE_DIR}"
+    BINARY_DIR "${GGML_HRX_SOURCE_BINARY_DIR}"
+    CMAKE_ARGS ${GGML_HRX_SOURCE_CMAKE_ARGS}
+    BUILD_COMMAND "${CMAKE_COMMAND}" --build "<BINARY_DIR>" --target hrx loomc_shared
+    INSTALL_COMMAND ""
+    BUILD_ALWAYS TRUE
+    BUILD_BYPRODUCTS
+        "${GGML_HRX_SOURCE_HRX_LIBRARY}"
+        "${GGML_HRX_SOURCE_LOOMC_LIBRARY}"
+)
+
+add_library(hrx::hrx SHARED IMPORTED GLOBAL)
+set_target_properties(hrx::hrx PROPERTIES
+    IMPORTED_LOCATION "${GGML_HRX_SOURCE_HRX_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${GGML_HRX_SOURCE_DIR}/libhrx/include")
+add_dependencies(hrx::hrx ggml-hrx-source-deps)
+
+add_library(loomc::loomc SHARED IMPORTED GLOBAL)
+set_target_properties(loomc::loomc PROPERTIES
+    IMPORTED_LOCATION "${GGML_HRX_SOURCE_LOOMC_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${GGML_HRX_SOURCE_DIR}/loom/binding/c/include")
+add_dependencies(loomc::loomc ggml-hrx-source-deps)
+
+get_target_property(GGML_HRX_IMPORTED_TARGET hrx::hrx IMPORTED)
+if (GGML_HRX_IMPORTED_TARGET)
+    get_target_property(GGML_HRX_IMPORTED_INCLUDES hrx::hrx INTERFACE_INCLUDE_DIRECTORIES)
+    if (GGML_HRX_IMPORTED_INCLUDES)
+        set(GGML_HRX_FILTERED_IMPORTED_INCLUDES)
+        foreach(GGML_HRX_IMPORTED_INCLUDE IN LISTS GGML_HRX_IMPORTED_INCLUDES)
+            set(GGML_HRX_IMPORTED_INCLUDE_PATH "${GGML_HRX_IMPORTED_INCLUDE}")
+            if (GGML_HRX_IMPORTED_INCLUDE_PATH MATCHES "^\\$<BUILD_INTERFACE:(.*)>$")
+                set(GGML_HRX_IMPORTED_INCLUDE_PATH "${CMAKE_MATCH_1}")
+            endif()
+            if (EXISTS "${GGML_HRX_IMPORTED_INCLUDE_PATH}")
+                list(APPEND GGML_HRX_FILTERED_IMPORTED_INCLUDES "${GGML_HRX_IMPORTED_INCLUDE}")
+            endif()
+        endforeach()
+        set_target_properties(hrx::hrx PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${GGML_HRX_FILTERED_IMPORTED_INCLUDES}")
+    endif()
+endif()
+
+foreach(GGML_HRX_REQUIRED_TARGET hrx::hrx loomc::loomc)
+    if (NOT TARGET "${GGML_HRX_REQUIRED_TARGET}")
+        message(FATAL_ERROR "Missing required HRX dependency target: ${GGML_HRX_REQUIRED_TARGET}")
+    endif()
+endforeach()
 
 option(GGML_HRX_EMBED_ROCM_LIBS "Bundle HRX/ROCm runtime libraries next to the HRX backend" OFF)
 set(GGML_HRX_EMBED_LIBRARY_DIRS "" CACHE STRING "Library directories to scan when GGML_HRX_EMBED_ROCM_LIBS=ON")
