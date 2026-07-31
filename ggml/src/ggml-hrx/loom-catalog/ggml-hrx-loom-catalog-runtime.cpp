@@ -513,7 +513,7 @@ bool ggml_backend_hrx_loom_compile(const ggml_backend_hrx_loom_compile_input * i
     loomc_amdgpu_emit_options_t amdgpu_options = {
         /* .type            = */ LOOMC_STRUCTURE_TYPE_AMDGPU_EMIT_OPTIONS,
         /* .structure_size  = */ sizeof(loomc_amdgpu_emit_options_t),
-        /* .next            = */ &target_options,
+        /* .next            = */ nullptr,
         /* .runtime_globals = */ LOOMC_AMDGPU_RUNTIME_GLOBAL_NONE,
     };
     loomc_compile_report_options_t report_options = {
