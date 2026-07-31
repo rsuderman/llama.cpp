@@ -1,0 +1,199 @@
+config.decl @hrx2_shape_rope_multi_ne00 : %value: index where [range(%value, 2, 65536), mul(%value, 2)]
+config.decl @hrx2_shape_rope_multi_ne01 : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2_shape_rope_multi_ne02 : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2_shape_rope_multi_ne03 : %value: index where [range(%value, 1, 1024)]
+config.decl @hrx2_shape_rope_multi_s01 : %value: index where [range(%value, 0, 268435456)]
+config.decl @hrx2_shape_rope_multi_s02 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_shape_rope_multi_s03 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_shape_rope_multi_d1 : %value: index where [range(%value, 0, 268435456)]
+config.decl @hrx2_shape_rope_multi_d2 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_shape_rope_multi_d3 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_shape_rope_multi_n_dims : %value: index where [range(%value, 2, 65536), mul(%value, 2)]
+config.decl @hrx2_shape_rope_multi_section0 : %value: index where [range(%value, 0, 65536)]
+config.decl @hrx2_shape_rope_multi_section1 : %value: index where [range(%value, 0, 65536)]
+config.decl @hrx2_shape_rope_multi_section2 : %value: index where [range(%value, 0, 65536)]
+config.decl @hrx2_shape_rope_multi_section3 : %value: index where [range(%value, 0, 65536)]
+config.decl @hrx2_shape_rope_multi_mode : %value: index where [range(%value, 8, 40)]
+config.decl @hrx2_tuning_rope_multi_workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+
+kernel.def export("hrx2_rope_multi_f32") @hrx2_rope_multi_f32() {
+  %unit = index.constant 1 : index
+  %two = index.constant 2 : index
+  %minus_one = index.constant -1 : index
+  %ne00 = config.get @hrx2_shape_rope_multi_ne00 : index
+  %ne01 = config.get @hrx2_shape_rope_multi_ne01 : index
+  %ne02 = config.get @hrx2_shape_rope_multi_ne02 : index
+  %ne03 = config.get @hrx2_shape_rope_multi_ne03 : index
+  %workgroup_size = config.get @hrx2_tuning_rope_multi_workgroup_size : index
+  %half = index.div %ne00, %two : index
+  %r0 = index.mul %ne01, %ne02 : index
+  %rows = index.mul %r0, %ne03 : index
+  %total = index.mul %rows, %half : index
+  %rounding = index.add %workgroup_size, %minus_one : index
+  %rounded = index.add %total, %rounding : index
+  %workgroups = index.div %rounded, %workgroup_size : index
+  kernel.launch.config workgroups(%workgroups, %unit, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
+} launch(%freq_base: f32, %freq_scale: f32, %attn_factor: f32, %src0: buffer, %pos: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %zero = index.constant 0 : index
+  %one = index.constant 1 : index
+  %two = index.constant 2 : index
+  %three = index.constant 3 : index
+  %forty = index.constant 40 : index
+  %minus_two_f32 = scalar.constant -2.0 : f32
+
+  %ne00 = config.get @hrx2_shape_rope_multi_ne00 : index
+  %ne01 = config.get @hrx2_shape_rope_multi_ne01 : index
+  %ne02 = config.get @hrx2_shape_rope_multi_ne02 : index
+  %ne03 = config.get @hrx2_shape_rope_multi_ne03 : index
+  %s01 = config.get @hrx2_shape_rope_multi_s01 : index
+  %s02 = config.get @hrx2_shape_rope_multi_s02 : index
+  %s03 = config.get @hrx2_shape_rope_multi_s03 : index
+  %d1 = config.get @hrx2_shape_rope_multi_d1 : index
+  %d2 = config.get @hrx2_shape_rope_multi_d2 : index
+  %d3 = config.get @hrx2_shape_rope_multi_d3 : index
+  %n_dims = config.get @hrx2_shape_rope_multi_n_dims : index
+  %section0 = config.get @hrx2_shape_rope_multi_section0 : index
+  %section1 = config.get @hrx2_shape_rope_multi_section1 : index
+  %section2 = config.get @hrx2_shape_rope_multi_section2 : index
+  %section3 = config.get @hrx2_shape_rope_multi_section3 : index
+  %mode = config.get @hrx2_shape_rope_multi_mode : index
+  %workgroup_size = config.get @hrx2_tuning_rope_multi_workgroup_size : index
+
+  %ne00_b = index.assume %ne00 [range(%ne00, 2, 65536)] : index
+  %ne01_b = index.assume %ne01 [range(%ne01, 1, 1048576)] : index
+  %ne02_b = index.assume %ne02 [range(%ne02, 1, 1048576)] : index
+  %ne03_b = index.assume %ne03 [range(%ne03, 1, 1024)] : index
+  %n_dims_b = index.assume %n_dims [range(%n_dims, 2, 65536)] : index
+
+  %workgroup0 = kernel.workgroup.id<x> : index
+  %lane0 = kernel.workitem.id<x> : index
+  %workgroup = index.assume %workgroup0 [range(%workgroup0, 0, 4194303)] : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
+  %lin0 = index.mul %workgroup, %workgroup_size : index
+  %lin1 = index.add %lin0, %lane : index
+  %linear = index.assume %lin1 [range(%lin1, 0, 1073741823)] : index
+
+  %half = index.div %ne00_b, %two : index
+  %rows0 = index.mul %ne01_b, %ne02_b : index
+  %rows1 = index.mul %rows0, %ne03_b : index
+  %rows = index.assume %rows1 [range(%rows1, 1, 1073741823)] : index
+  %total0 = index.mul %rows, %half : index
+  %total = index.assume %total0 [range(%total0, 1, 1073741824)] : index
+  %in_bounds = index.cmp ult, %linear, %total : index
+
+  %src_global = buffer.assume.memory_space<global> %src0 : buffer
+  %pos_global = buffer.assume.memory_space<global> %pos : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %src_view = buffer.view %src_global[%base] : buffer -> view<1073741824xf32, #dense>
+  %pos_view = buffer.view %pos_global[%base] : buffer -> view<1073741824xi32, #dense>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32, #dense>
+
+  scf.if %in_bounds {
+    %ih = index.rem %linear, %half : index
+    %row = index.div %linear, %half : index
+    %i3 = index.div %row, %rows0 : index
+    %rem3 = index.rem %row, %rows0 : index
+    %i2 = index.div %rem3, %ne01_b : index
+    %i1 = index.rem %rem3, %ne01_b : index
+
+    %sb1 = index.mul %i1, %s01 : index
+    %sb2 = index.mul %i2, %s02 : index
+    %sb3 = index.mul %i3, %s03 : index
+    %sb01 = index.add %sb1, %sb2 : index
+    %src_row = index.add %sb01, %sb3 : index
+    %db1 = index.mul %i1, %d1 : index
+    %db2 = index.mul %i2, %d2 : index
+    %db3 = index.mul %i3, %d3 : index
+    %db01 = index.add %db1, %db2 : index
+    %dst_row = index.add %db01, %db3 : index
+
+    %i0 = index.mul %ih, %two : index
+    %half_dims = index.div %n_dims_b, %two : index
+    %rotate = index.cmp ult, %i0, %n_dims_b : index
+
+    %sd01 = index.add %section0, %section1 : index
+    %sd012 = index.add %sd01, %section2 : index
+    %sect_dims = index.add %sd012, %section3 : index
+    %sector = index.rem %ih, %sect_dims : index
+
+    %m3 = index.rem %sector, %three : index
+    %s0lim = index.mul %section0, %three : index
+    %s1lim = index.mul %section1, %three : index
+    %s2lim = index.mul %section2, %three : index
+    %is0 = index.cmp eq, %m3, %zero : index
+    %is1 = index.cmp eq, %m3, %one : index
+    %is2 = index.cmp eq, %m3, %two : index
+    %ok0 = index.cmp ult, %sector, %s0lim : index
+    %ok1 = index.cmp ult, %sector, %s1lim : index
+    %ok2 = index.cmp ult, %sector, %s2lim : index
+    %im_p0 = scf.select %ok0, %zero, %three : index
+    %im_a = scf.select %is0, %im_p0, %three : index
+    %im_p2 = scf.select %ok2, %two, %three : index
+    %im_b = scf.select %is2, %im_p2, %im_a : index
+    %im_p1 = scf.select %ok1, %one, %three : index
+    %plane_im = scf.select %is1, %im_p1, %im_b : index
+
+    %sec_w = index.add %section0, %section1 : index
+    %sec_w2 = index.add %sec_w, %section2 : index
+    %lt0 = index.cmp ult, %sector, %section0 : index
+    %ltw = index.cmp ult, %sector, %sec_w : index
+    %ltw2 = index.cmp ult, %sector, %sec_w2 : index
+    %mr_a = scf.select %ltw2, %two, %three : index
+    %mr_b = scf.select %ltw, %one, %mr_a : index
+    %plane_mr = scf.select %lt0, %zero, %mr_b : index
+
+    %is_im = index.cmp eq, %mode, %forty : index
+    %plane = scf.select %is_im, %plane_im, %plane_mr : index
+
+    %plane_off = index.mul %plane, %ne02_b : index
+    %pos_i0 = index.add %i2, %plane_off : index
+    %pos_i = index.assume %pos_i0 [range(%pos_i0, 0, 1073741823)] : index
+    %pos_i32 = view.load %pos_view[%pos_i] : view<1073741824xi32, #dense> -> i32
+    %pos_f = scalar.sitofp %pos_i32 : i32 to f32
+
+    %n_dims_i32 = index.cast %n_dims_b : index to i32
+    %n_dims_f32 = scalar.sitofp %n_dims_i32 : i32 to f32
+    %theta_exponent = scalar.divf<nnan|ninf|nsz> %minus_two_f32, %n_dims_f32 : f32
+    %theta_scale = scalar.powf<afn> %freq_base, %theta_exponent : f32
+    %ih_i32 = index.cast %ih : index to i32
+    %ih_f = scalar.sitofp %ih_i32 : i32 to f32
+    %freq = scalar.powf<afn> %theta_scale, %ih_f : f32
+    %theta_base = scalar.mulf<nnan|ninf|nsz> %pos_f, %freq : f32
+    %theta = scalar.mulf<nnan|ninf|nsz> %theta_base, %freq_scale : f32
+    %c0 = scalar.cosf<afn> %theta : f32
+    %s0v = scalar.sinf<afn> %theta : f32
+    %cos_theta = scalar.mulf<nnan|ninf|nsz> %c0, %attn_factor : f32
+    %sin_theta = scalar.mulf<nnan|ninf|nsz> %s0v, %attn_factor : f32
+
+    %off_a = scf.select %rotate, %ih, %i0 : index
+    %rot_b = index.add %ih, %half_dims : index
+    %pass_b = index.add %i0, %one : index
+    %off_b = scf.select %rotate, %rot_b, %pass_b : index
+
+    %sa0 = index.add %src_row, %off_a : index
+    %sa = index.assume %sa0 [range(%sa0, 0, 1073741823)] : index
+    %sb0 = index.add %src_row, %off_b : index
+    %sbv = index.assume %sb0 [range(%sb0, 0, 1073741823)] : index
+    %da0 = index.add %dst_row, %off_a : index
+    %da = index.assume %da0 [range(%da0, 0, 1073741823)] : index
+    %db0 = index.add %dst_row, %off_b : index
+    %dbv = index.assume %db0 [range(%db0, 0, 1073741823)] : index
+
+    %x0 = view.load %src_view[%sa] : view<1073741824xf32, #dense> -> f32
+    %x1 = view.load %src_view[%sbv] : view<1073741824xf32, #dense> -> f32
+
+    %t0 = scalar.mulf<nnan|ninf|nsz> %x0, %cos_theta : f32
+    %t1 = scalar.mulf<nnan|ninf|nsz> %x1, %sin_theta : f32
+    %rot0 = scalar.subf<nnan|ninf|nsz> %t0, %t1 : f32
+    %t2 = scalar.mulf<nnan|ninf|nsz> %x0, %sin_theta : f32
+    %t3 = scalar.mulf<nnan|ninf|nsz> %x1, %cos_theta : f32
+    %rot1 = scalar.addf<nnan|ninf|nsz> %t2, %t3 : f32
+
+    %out0 = scf.select %rotate, %rot0, %x0 : f32
+    %out1 = scf.select %rotate, %rot1, %x1 : f32
+    view.store %out0, %dst_view[%da] : f32, view<1073741824xf32, #dense>
+    view.store %out1, %dst_view[%dbv] : f32, view<1073741824xf32, #dense>
+  }
+  kernel.return
+}

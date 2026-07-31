@@ -1,0 +1,37 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "quant_act_q8",
+  "op": "GGML_OP_MUL_MAT_ID",
+  "source": "sources/gfx1151/prepass/quant_act_q8.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_quant_act_q8",
+  "abi": {
+    "binding_count": 4,
+    "parameter_count": 4,
+    "constant_byte_length": 0
+  },
+  "workgroup_size": [
+    256,
+    1,
+    1
+  ],
+  "parameters": [],
+  "bindings": [
+    {
+      "name": "src",
+      "access": "read"
+    },
+    {
+      "name": "qs",
+      "access": "write"
+    },
+    {
+      "name": "ds",
+      "access": "write"
+    },
+    {
+      "name": "sums",
+      "access": "write"
+    }
+  ]
+}

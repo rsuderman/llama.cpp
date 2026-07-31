@@ -1,0 +1,188 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "mul_mat_f32_f32_tiled_ncol",
+  "format": "loom",
+  "priority": 100,
+  "match": {
+    "op": "GGML_OP_MUL_MAT",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": [
+          "k",
+          "rows",
+          "batch2",
+          "batch3"
+        ]
+      },
+      "src1": {
+        "type": "F32",
+        "shape": [
+          "k",
+          "cols",
+          "batch2",
+          "batch3"
+        ]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": [
+          "rows",
+          "cols",
+          "batch2",
+          "batch3"
+        ]
+      }
+    },
+    "attributes": {},
+    "predicates": [
+      {
+        "field": "shape.src0.k",
+        "min": 64
+      },
+      {
+        "field": "shape.src0.k",
+        "max": 32768
+      },
+      {
+        "field": "shape.src0.k",
+        "multiple_of": 64
+      },
+      {
+        "field": "shape.src0.rows",
+        "equals": 32
+      },
+      {
+        "field": "shape.src1.cols",
+        "min": 32
+      },
+      {
+        "field": "shape.src1.cols",
+        "max": 32768
+      },
+      {
+        "field": "shape.src0.batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.src0.batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.dst.batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.dst.batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.src0.k",
+        "equals": "shape.src1.k"
+      },
+      {
+        "field": "shape.dst.rows",
+        "equals": "shape.src0.rows"
+      },
+      {
+        "field": "shape.dst.cols",
+        "equals": "shape.src1.cols"
+      },
+      {
+        "contiguous": "src0"
+      },
+      {
+        "contiguous": "src1"
+      },
+      {
+        "contiguous": "dst"
+      }
+    ]
+  },
+  "derived": {
+    "col_tiles": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.src1.cols",
+        16
+      ]
+    },
+    "row_tiles": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.src0.rows",
+        32
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/mul_mat/f32_f32/mul_mat_f32_f32_tiled_ncol.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_k",
+            "type": "i64",
+            "source": "shape.src0.k"
+          },
+          {
+            "name": "hrx2_shape_rows",
+            "type": "i64",
+            "source": "shape.src0.rows"
+          },
+          {
+            "name": "hrx2_shape_cols",
+            "type": "i64",
+            "source": "shape.src1.cols"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "src1",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.col_tiles",
+          "derived.row_tiles",
+          1
+        ],
+        "workgroup_size": [
+          1024,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

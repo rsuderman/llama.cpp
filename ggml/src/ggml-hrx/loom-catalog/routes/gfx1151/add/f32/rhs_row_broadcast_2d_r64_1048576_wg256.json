@@ -1,0 +1,204 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "add_f32_rhs_row_broadcast_2d_r64_1048576_wg256",
+  "format": "loom",
+  "priority": 200,
+  "match": {
+    "op": "GGML_OP_ADD",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      },
+      "src1": {
+        "type": "F32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      }
+    },
+    "attributes": {},
+    "predicates": [
+      {
+        "same_shape": [
+          "src0",
+          "dst"
+        ]
+      },
+      {
+        "field": "shape.src1.d0",
+        "equals": "shape.dst.d0"
+      },
+      {
+        "field": "derived.src1_rows",
+        "equals": 1
+      },
+      {
+        "field": "tensor.src0.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.src0.element_strides.1",
+        "equals": "shape.dst.d0"
+      },
+      {
+        "field": "tensor.src0.element_strides.2",
+        "equals": "derived.src0_stride2"
+      },
+      {
+        "field": "tensor.src0.element_strides.3",
+        "equals": "derived.src0_stride3"
+      },
+      {
+        "contiguous": "src1"
+      },
+      {
+        "contiguous": "dst"
+      },
+      {
+        "field": "shape.dst.d0",
+        "min": 1
+      },
+      {
+        "field": "shape.dst.d0",
+        "max": 65536
+      },
+      {
+        "field": "derived.nrows",
+        "min": 64
+      },
+      {
+        "field": "derived.nrows",
+        "max": 1048576
+      },
+      {
+        "field": "derived.total_size",
+        "max": 1073741824
+      }
+    ]
+  },
+  "derived": {
+    "src1_rows": {
+      "type": "i64",
+      "product": [
+        "shape.src1.d1",
+        "shape.src1.d2",
+        "shape.src1.d3"
+      ]
+    },
+    "src0_stride2": {
+      "type": "i64",
+      "product": [
+        "shape.src0.d1",
+        "tensor.src0.element_strides.1"
+      ]
+    },
+    "src0_stride3": {
+      "type": "i64",
+      "product": [
+        "shape.src0.d2",
+        "tensor.src0.element_strides.2"
+      ]
+    },
+    "nrows": {
+      "type": "i64",
+      "product": [
+        "shape.dst.d1",
+        "shape.dst.d2",
+        "shape.dst.d3"
+      ]
+    },
+    "total_size": {
+      "type": "i64",
+      "product": [
+        "shape.dst.d0",
+        "derived.nrows"
+      ]
+    },
+    "col_tiles": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.dst.d0",
+        256
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/add/f32/rhs_row_broadcast_2d_r64_1048576_wg256.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_pointwise_ncols",
+            "type": "i64",
+            "source": "shape.dst.d0"
+          },
+          {
+            "name": "hrx2_shape_pointwise_nrows",
+            "type": "i64",
+            "source": "derived.nrows"
+          },
+          {
+            "name": "hrx2_tuning_pointwise_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "src1",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.col_tiles",
+          "derived.nrows"
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

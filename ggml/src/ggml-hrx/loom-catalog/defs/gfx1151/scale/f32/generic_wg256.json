@@ -1,0 +1,34 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "scale_f32_generic_wg256",
+  "op": "GGML_OP_SCALE",
+  "source": "sources/gfx1151/pointwise/f32/production_pp512.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_scale_f32",
+  "abi": {
+    "binding_count": 2,
+    "parameter_count": 4,
+    "constant_byte_length": 8
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [
+    {
+      "name": "scale",
+      "type": "f32"
+    },
+    {
+      "name": "bias",
+      "type": "f32"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "src0",
+      "access": "read"
+    },
+    {
+      "name": "dst",
+      "access": "write"
+    }
+  ]
+}

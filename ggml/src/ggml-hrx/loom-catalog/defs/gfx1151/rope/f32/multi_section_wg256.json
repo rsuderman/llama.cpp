@@ -1,0 +1,42 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "rope_multi_f32_wg256",
+  "op": "GGML_OP_ROPE",
+  "source": "sources/gfx1151/rope/f32/multi_section_wg256.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_rope_multi_f32",
+  "abi": {
+    "binding_count": 3,
+    "parameter_count": 6,
+    "constant_byte_length": 12
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [
+    {
+      "name": "freq_base",
+      "type": "f32"
+    },
+    {
+      "name": "freq_scale",
+      "type": "f32"
+    },
+    {
+      "name": "attn_factor",
+      "type": "f32"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "src0",
+      "access": "read"
+    },
+    {
+      "name": "pos",
+      "access": "read"
+    },
+    {
+      "name": "dst",
+      "access": "write"
+    }
+  ]
+}

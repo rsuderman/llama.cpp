@@ -1,0 +1,30 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "soft_max_f32_nomask_wide_wg256",
+  "op": "GGML_OP_SOFT_MAX",
+  "source": "sources/gfx1151/soft_max/f32/nomask_wide_wg256.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_soft_max_f32_nomask",
+  "abi": {
+    "binding_count": 2,
+    "parameter_count": 3,
+    "constant_byte_length": 4
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [
+    {
+      "name": "scale",
+      "type": "f32"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "src0",
+      "access": "read"
+    },
+    {
+      "name": "dst",
+      "access": "write"
+    }
+  ]
+}

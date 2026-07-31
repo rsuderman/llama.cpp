@@ -5,7 +5,7 @@ MATCH_FIELDS = {"op", "tensors", "attributes", "predicates"}
 SINGLE_MATCH_V2_FIELDS = {"op", "attributes", "predicates"}
 FUSION_MATCH_FIELDS = {"anchors", "ops", "predicates", "reorder"}
 FUSION_OP_FIELDS = {"op", "tensors", "attributes"}
-TENSOR_FIELDS = {"type", "optional", "shape", "layout"}
+TENSOR_FIELDS = {"type", "optional", "shape", "layout", "storage"}
 ATTRIBUTE_FIELDS = {"type", "source", "default"}
 PREDICATE_FIELDS = {"contiguous", "same_shape", "same_layout", "same_storage_span", "rank", "field", "equals", "in", "min", "max", "multiple_of", "divisible_by", "src_absent", "src_present", "elided", "no_overlap"}
 DERIVED_FIELDS = {"type", "field", "value", "sum", "difference", "product", "ceil_div", "maximum", "next_power_of_2"}
@@ -47,6 +47,18 @@ OP_RULES = {
         "input_tensors": {"src0"},
         "attributes": {"minimum": "f32", "maximum": "f32"},
     },
+    "GGML_OP_CONCAT": {
+        "required_tensors": {"src0", "src1", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0", "src1"},
+        "attributes": {"dim": "i32"},
+    },
+    "GGML_OP_CONT": {
+        "required_tensors": {"src0", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0"},
+        "attributes": {},
+    },
     "GGML_OP_CPY": {
         "required_tensors": {"src0", "dst"},
         "optional_tensors": set(),
@@ -76,11 +88,23 @@ OP_RULES = {
         "input_tensors": {"src0", "src1"},
         "attributes": {},
     },
+    "GGML_OP_GATED_DELTA_NET": {
+        "required_tensors": {"src0", "src1", "src2", "src3", "src4", "src5", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0", "src1", "src2", "src3", "src4", "src5"},
+        "attributes": {"K": "i32"},
+    },
     "GGML_OP_GLU": {
         "required_tensors": {"src0", "src1", "dst"},
         "optional_tensors": set(),
         "input_tensors": {"src0", "src1"},
         "attributes": {"glu_op": "i32"},
+    },
+    "GGML_OP_L2_NORM": {
+        "required_tensors": {"src0", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0"},
+        "attributes": {"eps": "f32"},
     },
     "GGML_OP_MUL": {
         "required_tensors": {"src0", "src1", "dst"},
@@ -114,6 +138,10 @@ OP_RULES = {
             "mode": "i32",
             "n_ctx_orig": "i32",
             "n_dims": "i32",
+            "section0": "i32",
+            "section1": "i32",
+            "section2": "i32",
+            "section3": "i32",
         },
     },
     "GGML_OP_RMS_NORM": {
@@ -146,6 +174,12 @@ OP_RULES = {
         "input_tensors": {"src0"},
         "attributes": {},
     },
+    "GGML_OP_SSM_CONV": {
+        "required_tensors": {"src0", "src1", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0", "src1"},
+        "attributes": {},
+    },
     "GGML_OP_VIEW": {
         "required_tensors": {"src0", "dst"},
         "optional_tensors": set(),
@@ -163,6 +197,12 @@ OP_RULES = {
         "optional_tensors": set(),
         "input_tensors": {"src0", "src1"},
         "attributes": {},
+    },
+    "GGML_OP_UNARY": {
+        "required_tensors": {"src0", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0"},
+        "attributes": {"unary_op": "i32"},
     },
 }
 
@@ -618,6 +658,8 @@ def validate_tensor_table(tensors, route_path, known_tensors=None, optional_tens
         tensor_type = require_string(tensor, "type", tensor_source)
         if tensor_type not in DTYPES:
             raise ValueError(f"{tensor_source}: unsupported tensor type {tensor_type}")
+        if "storage" in tensor:
+            require_string(tensor, "storage", tensor_source)
         if "optional" in tensor:
             require_bool(tensor, "optional", tensor_source)
             if known_tensors is not None and name not in optional_tensors:

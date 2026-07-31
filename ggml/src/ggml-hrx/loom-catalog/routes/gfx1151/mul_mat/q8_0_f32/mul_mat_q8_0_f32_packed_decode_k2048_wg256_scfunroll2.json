@@ -1,0 +1,183 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "mul_mat_q8_0_f32_packed_decode_k2048_wg256_scfunroll2",
+  "format": "loom",
+  "priority": 141,
+  "match": {
+    "op": "GGML_OP_MUL_MAT",
+    "tensors": {
+      "src0": {
+        "type": "Q8_0",
+        "shape": [
+          "k",
+          "rows",
+          "batch2",
+          "batch3"
+        ]
+      },
+      "src1": {
+        "type": "F32",
+        "shape": [
+          "k",
+          "cols",
+          "batch2",
+          "batch3"
+        ]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": [
+          "rows",
+          "cols",
+          "batch2",
+          "batch3"
+        ]
+      }
+    },
+    "attributes": {},
+    "predicates": [
+      {
+        "field": "shape.src0.k",
+        "equals": 2048
+      },
+      {
+        "field": "shape.src0.k",
+        "multiple_of": 2048
+      },
+      {
+        "field": "shape.src0.rows",
+        "min": 1
+      },
+      {
+        "field": "shape.src0.rows",
+        "max": 262144
+      },
+      {
+        "field": "shape.src1.cols",
+        "min": 1
+      },
+      {
+        "field": "shape.src1.cols",
+        "max": 16
+      },
+      {
+        "field": "shape.src0.batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.src0.batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.dst.batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.dst.batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.src0.k",
+        "equals": "shape.src1.k"
+      },
+      {
+        "field": "shape.dst.rows",
+        "equals": "shape.src0.rows"
+      },
+      {
+        "field": "shape.dst.cols",
+        "equals": "shape.src1.cols"
+      },
+      {
+        "contiguous": "src0"
+      },
+      {
+        "contiguous": "src1"
+      },
+      {
+        "contiguous": "dst"
+      }
+    ]
+  },
+  "derived": {},
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/mul_mat/q8_0_f32/mul_mat_q8_0_f32_packed_decode_k2048_wg256_scfunroll2.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_k",
+            "type": "i64",
+            "source": "shape.src0.k"
+          },
+          {
+            "name": "hrx2_shape_rows",
+            "type": "i64",
+            "source": "shape.src0.rows"
+          },
+          {
+            "name": "hrx2_shape_cols",
+            "type": "i64",
+            "source": "shape.src1.cols"
+          },
+          {
+            "name": "hrx2_tuning_workgroup_size",
+            "type": "i64",
+            "value": 256
+          },
+          {
+            "name": "hrx2_tuning_q8_0_f32_unroll_factor",
+            "type": "i64",
+            "value": 2
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "src1",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "shape.src0.rows",
+          "shape.src1.cols",
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

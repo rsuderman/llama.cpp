@@ -201,6 +201,11 @@ bool ggml_backend_hrx_loom_bind_tensor(const ggml_backend_hrx_loom_op_request * 
                                        const ggml_tensor *                      tensor,
                                        hrx_buffer_ref_t *                       out_ref);
 
+bool ggml_backend_hrx_loom_storage_layout_matches(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_tensor *                      tensor,
+    const char *                             expected);
+
 ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_match_request(ggml_backend_hrx_loom_catalog *          catalog,
                                                                       const ggml_backend_hrx_loom_op_request * request);
 

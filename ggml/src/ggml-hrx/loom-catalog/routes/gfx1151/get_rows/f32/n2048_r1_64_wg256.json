@@ -1,0 +1,177 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "get_rows_f32_n2048_r1_64_wg256",
+  "format": "loom",
+  "priority": 210,
+  "match": {
+    "op": "GGML_OP_GET_ROWS",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      },
+      "src1": {
+        "type": "I32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      }
+    },
+    "attributes": {},
+    "predicates": [
+      {
+        "field": "shape.dst.d0",
+        "equals": 2048
+      },
+      {
+        "field": "shape.dst.d1",
+        "min": 1
+      },
+      {
+        "field": "shape.dst.d1",
+        "max": 64
+      },
+      {
+        "field": "shape.dst.d2",
+        "equals": 1
+      },
+      {
+        "field": "shape.dst.d3",
+        "equals": 1
+      },
+      {
+        "field": "shape.src0.d0",
+        "equals": "shape.dst.d0"
+      },
+      {
+        "field": "shape.src0.d2",
+        "equals": 1
+      },
+      {
+        "field": "shape.src0.d3",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.d0",
+        "equals": "shape.dst.d1"
+      },
+      {
+        "field": "shape.src1.d1",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.d2",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.d3",
+        "equals": 1
+      },
+      {
+        "contiguous": "src0"
+      },
+      {
+        "contiguous": "src1"
+      },
+      {
+        "contiguous": "dst"
+      }
+    ]
+  },
+  "derived": {
+    "total_size": {
+      "type": "i64",
+      "product": [
+        "shape.dst.d0",
+        "shape.dst.d1"
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/get_rows/f32/n2048_r1_64_wg256.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_get_rows_ncols",
+            "type": "i64",
+            "source": "shape.dst.d0"
+          },
+          {
+            "name": "hrx2_shape_get_rows_nrows",
+            "type": "i64",
+            "source": "shape.dst.d1"
+          },
+          {
+            "name": "hrx2_shape_get_rows_src0_nrows",
+            "type": "i64",
+            "source": "shape.src0.d1"
+          },
+          {
+            "name": "hrx2_shape_get_rows_idx_row_stride",
+            "type": "i64",
+            "value": 1
+          },
+          {
+            "name": "hrx2_tuning_get_rows_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "idx",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "work_items": [
+          "derived.total_size"
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,435 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "rope_multi_f32_wg256",
+  "format": "loom",
+  "priority": 200,
+  "match": {
+    "op": "GGML_OP_ROPE",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": [
+          "ne00",
+          "ne01",
+          "ne02",
+          "ne03"
+        ]
+      },
+      "src1": {
+        "type": "I32",
+        "shape": [
+          "npos",
+          "p1",
+          "p2",
+          "p3"
+        ]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": [
+          "ne00",
+          "ne01",
+          "ne02",
+          "ne03"
+        ]
+      }
+    },
+    "attributes": {
+      "attn_factor": {
+        "type": "f32"
+      },
+      "ext_factor": {
+        "type": "f32"
+      },
+      "freq_base": {
+        "type": "f32"
+      },
+      "freq_scale": {
+        "type": "f32"
+      },
+      "mode": {
+        "type": "i32"
+      },
+      "n_dims": {
+        "type": "i32"
+      },
+      "section0": {
+        "type": "i32"
+      },
+      "section1": {
+        "type": "i32"
+      },
+      "section2": {
+        "type": "i32"
+      },
+      "section3": {
+        "type": "i32"
+      }
+    },
+    "predicates": [
+      {
+        "src_absent": "src2"
+      },
+      {
+        "field": "attribute.mode",
+        "in": [
+          8,
+          40
+        ]
+      },
+      {
+        "field": "attribute.ext_factor",
+        "equals": 0.0
+      },
+      {
+        "field": "attribute.freq_base",
+        "min": 2.0
+      },
+      {
+        "field": "attribute.freq_base",
+        "max": 1000000000.0
+      },
+      {
+        "field": "attribute.n_dims",
+        "min": 2
+      },
+      {
+        "field": "derived.n_dims_i64",
+        "max": "shape.src0.ne00"
+      },
+      {
+        "field": "attribute.n_dims",
+        "multiple_of": 2
+      },
+      {
+        "field": "attribute.section0",
+        "min": 1
+      },
+      {
+        "field": "attribute.section0",
+        "max": 65536
+      },
+      {
+        "field": "attribute.section1",
+        "min": 0
+      },
+      {
+        "field": "attribute.section1",
+        "max": 65536
+      },
+      {
+        "field": "attribute.section2",
+        "min": 0
+      },
+      {
+        "field": "attribute.section2",
+        "max": 65536
+      },
+      {
+        "field": "attribute.section3",
+        "min": 0
+      },
+      {
+        "field": "attribute.section3",
+        "max": 65536
+      },
+      {
+        "field": "shape.src0.ne00",
+        "min": 2
+      },
+      {
+        "field": "shape.src0.ne00",
+        "max": 65536
+      },
+      {
+        "field": "shape.src0.ne00",
+        "multiple_of": 2
+      },
+      {
+        "field": "shape.src0.ne03",
+        "max": 1024
+      },
+      {
+        "field": "derived.nrows",
+        "min": 1
+      },
+      {
+        "field": "derived.nrows",
+        "max": 1073741823
+      },
+      {
+        "field": "derived.work_items",
+        "max": 1073741824
+      },
+      {
+        "field": "shape.src1.npos",
+        "equals": "derived.required_pos"
+      },
+      {
+        "field": "shape.src1.p1",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.p2",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.p3",
+        "equals": 1
+      },
+      {
+        "same_shape": [
+          "src0",
+          "dst"
+        ]
+      },
+      {
+        "field": "tensor.src0.strides.0",
+        "equals": 4
+      },
+      {
+        "field": "tensor.src0.strides.1",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.src0.strides.2",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.src0.strides.3",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.dst.strides.0",
+        "equals": 4
+      },
+      {
+        "field": "tensor.dst.strides.1",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.dst.strides.2",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.dst.strides.3",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.src0.element_strides.1",
+        "max": 268435456
+      },
+      {
+        "field": "tensor.src0.element_strides.2",
+        "max": 1073741823
+      },
+      {
+        "field": "tensor.src0.element_strides.3",
+        "max": 1073741823
+      },
+      {
+        "field": "tensor.dst.element_strides.1",
+        "max": 268435456
+      },
+      {
+        "field": "tensor.dst.element_strides.2",
+        "max": 1073741823
+      },
+      {
+        "field": "tensor.dst.element_strides.3",
+        "max": 1073741823
+      },
+      {
+        "contiguous": "src1"
+      }
+    ]
+  },
+  "derived": {
+    "n_dims_i64": {
+      "type": "i64",
+      "field": "attribute.n_dims"
+    },
+    "nrows": {
+      "type": "i64",
+      "product": [
+        "shape.src0.ne01",
+        "shape.src0.ne02",
+        "shape.src0.ne03"
+      ]
+    },
+    "half_cols": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.src0.ne00",
+        2
+      ]
+    },
+    "work_items": {
+      "type": "i64",
+      "product": [
+        "derived.nrows",
+        "derived.half_cols"
+      ]
+    },
+    "pos_plane_count": {
+      "type": "i64",
+      "value": 4
+    },
+    "required_pos": {
+      "type": "i64",
+      "product": [
+        "shape.src0.ne02",
+        "derived.pos_plane_count"
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/rope/f32/multi_section_wg256.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_rope_multi_ne00",
+            "type": "i64",
+            "source": "shape.src0.ne00"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_ne01",
+            "type": "i64",
+            "source": "shape.src0.ne01"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_ne02",
+            "type": "i64",
+            "source": "shape.src0.ne02"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_ne03",
+            "type": "i64",
+            "source": "shape.src0.ne03"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_s01",
+            "type": "i64",
+            "source": "tensor.src0.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_s02",
+            "type": "i64",
+            "source": "tensor.src0.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_s03",
+            "type": "i64",
+            "source": "tensor.src0.element_strides.3"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_d1",
+            "type": "i64",
+            "source": "tensor.dst.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_d2",
+            "type": "i64",
+            "source": "tensor.dst.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_d3",
+            "type": "i64",
+            "source": "tensor.dst.element_strides.3"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_n_dims",
+            "type": "i32",
+            "source": "attribute.n_dims"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_section0",
+            "type": "i32",
+            "source": "attribute.section0"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_section1",
+            "type": "i32",
+            "source": "attribute.section1"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_section2",
+            "type": "i32",
+            "source": "attribute.section2"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_section3",
+            "type": "i32",
+            "source": "attribute.section3"
+          },
+          {
+            "name": "hrx2_shape_rope_multi_mode",
+            "type": "i32",
+            "source": "attribute.mode"
+          },
+          {
+            "name": "hrx2_tuning_rope_multi_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "pos",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "freq_base",
+          "type": "f32",
+          "position": 0,
+          "source": "attribute.freq_base"
+        },
+        {
+          "name": "freq_scale",
+          "type": "f32",
+          "position": 1,
+          "source": "attribute.freq_scale"
+        },
+        {
+          "name": "attn_factor",
+          "type": "f32",
+          "position": 2,
+          "source": "attribute.attn_factor"
+        }
+      ],
+      "dispatch": {
+        "work_items": [
+          "derived.work_items"
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

@@ -405,7 +405,6 @@ static ggml_backend_hrx_loaded_loom_route * ggml_backend_hrx_loom_get_loaded_rou
         GGML_LOG_ERROR("%s: route %s has too many config bindings: %zu\n", __func__, entry->id, config_binding_count);
         return nullptr;
     }
-
     const std::string cache_key =
         ggml_backend_hrx_loom_entry_cache_key(catalog->target.c_str(), entry, config_bindings, config_binding_count);
 
@@ -603,6 +602,18 @@ bool ggml_backend_hrx_loom_bind_tensor(const ggml_backend_hrx_loom_op_request * 
                                        const ggml_tensor *                      tensor,
                                        hrx_buffer_ref_t *                       out_ref) {
     return request && request->bind_tensor && request->bind_tensor(request->bind_tensor_user_data, tensor, out_ref);
+}
+
+bool ggml_backend_hrx_loom_storage_layout_matches(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_tensor *                      tensor,
+    const char *                             expected) {
+    if (!request || !tensor || !expected || !request->storage_layout) {
+        return false;
+    }
+    const char * actual =
+        request->storage_layout(request->storage_layout_user_data, tensor);
+    return actual && std::strcmp(actual, expected) == 0;
 }
 
 ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_match_request(
@@ -879,8 +890,11 @@ void ggml_backend_hrx_loom_catalog_free(ggml_backend_hrx_loom_catalog * catalog)
     delete catalog;
 }
 
-ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_supports_op(ggml_backend_hrx_loom_catalog * catalog,
-                                                                    const ggml_tensor *             op) {
+ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_supports_op(
+    ggml_backend_hrx_loom_catalog *         catalog,
+    const ggml_tensor *                     op,
+    ggml_backend_hrx_loom_storage_layout_fn storage_layout,
+    void *                                  storage_layout_user_data) {
     if (!catalog || !op) {
         return ggml_backend_hrx_loom_unsupported(GGML_BACKEND_HRX_LOOM_UNSUPPORTED_NO_ROUTE);
     }
@@ -892,6 +906,8 @@ ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_supports_op(ggml_backend
         /* .stream                = */ nullptr,
         /* .bind_tensor           = */ nullptr,
         /* .bind_tensor_user_data = */ nullptr,
+        /* .storage_layout        = */ storage_layout,
+        /* .storage_layout_user_data = */ storage_layout_user_data,
     };
     return ggml_backend_hrx_loom_match_request(catalog, &request);
 }

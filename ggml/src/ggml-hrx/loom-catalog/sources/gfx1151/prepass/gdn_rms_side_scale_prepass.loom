@@ -1,0 +1,88 @@
+// Shipping scale-only prepass for the admitted PP512 GDN RMS-side fusion.
+//
+// This is the exact accepted vw8/WG256 reduction and operation order.  The
+// graph matcher admits only the traced binary32 epsilon 1e-6, so the epsilon
+// is a literal here: catalog prepasses bind buffers, while the terminal route
+// carries no scalar constants.
+
+config.decl @hrx2_shape_gdn_rms_side_ncols : %value: index where [range(%value, 128, 128)]
+config.decl @hrx2_shape_gdn_rms_side_nrows : %value: index where [range(%value, 16384, 16384)]
+
+kernel.def export("hrx2_gdn_rms_side_scales_f32") @hrx2_gdn_rms_side_scales_f32() {
+  %unit = index.constant 1 : index
+  %wg = index.constant 256 : index
+  %nrows = config.get @hrx2_shape_gdn_rms_side_nrows : index
+  kernel.launch.config workgroups(%nrows, %unit, %unit)
+      workgroup_size(%wg, %unit, %unit) : index
+} launch(%src: buffer, %scales: buffer) {
+  %base = index.constant 0 : offset
+  %zero = index.constant 0 : index
+  %eight = index.constant 8 : index
+  %wg = index.constant 256 : index
+  %ncols0 = config.get @hrx2_shape_gdn_rms_side_ncols : index
+  %nrows0 = config.get @hrx2_shape_gdn_rms_side_nrows : index
+  %ncols = index.assume %ncols0 [range(%ncols0, 128, 128)] : index
+  %nrows = index.assume %nrows0 [range(%nrows0, 16384, 16384)] : index
+  %logical_cols = index.div %ncols, %eight : index
+  %tail_start = index.mul %logical_cols, %eight : index
+  %element_count = index.mul %ncols, %nrows : index
+  %row0 = kernel.workgroup.id<x> : index
+  %row = index.assume %row0 [range(%row0, 0, 16383)] : index
+  %lane0 = kernel.workitem.id<x> : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 255)] : index
+  %lane_zero = index.cmp eq, %lane, %zero : index
+  %zero_f32 = scalar.constant 0.0 : f32
+  %eps = scalar.constant 0.000001 : f32
+
+  %src_global = buffer.assume.memory_space<global> %src : buffer
+  %scales_global = buffer.assume.memory_space<global> %scales : buffer
+  %src_noalias, %scales_noalias = buffer.assume.noalias
+      %src_global, %scales_global : buffer, buffer
+  %src_view = buffer.view %src_noalias[%base] :
+      buffer -> view<[%element_count]xf32, #dense>
+  %scales_view = buffer.view %scales_noalias[%base] :
+      buffer -> view<[%nrows]xf32, #dense>
+  %row_base = index.mul %row, %ncols : index
+
+  %sum_vec = scf.for %vcol = [%lane to %logical_cols step %wg](
+      %acc = %zero_f32 : f32) -> (f32) {
+    %col0 = index.mul %vcol, %eight : index
+    %linear0 = index.add %row_base, %col0 : index
+    %linear = index.assume %linear0 [range(%linear0, 0, 2097151)] : index
+    %values = vector.load %src_view[%linear] :
+        view<[%element_count]xf32, #dense> -> vector<8xf32>
+    %squares = vector.mulf<reassoc|nnan|ninf|nsz>
+        %values, %values : vector<8xf32>
+    %next = vector.reduce<addf, reassoc|nnan|ninf|nsz>
+        %squares, %acc : vector<8xf32>, f32
+    scf.yield %next : f32
+  }
+
+  %tail_lane0 = index.add %tail_start, %lane : index
+  %sum = scf.for %col = [%tail_lane0 to %ncols step %wg](
+      %acc = %sum_vec : f32) -> (f32) {
+    %linear0 = index.add %row_base, %col : index
+    %linear = index.assume %linear0 [range(%linear0, 0, 2097151)] : index
+    %value = view.load %src_view[%linear] :
+        view<[%element_count]xf32, #dense> -> f32
+    %square = scalar.mulf<reassoc|nnan|ninf|nsz>
+        %value, %value : f32
+    %next = scalar.addf<reassoc|nnan|ninf|nsz>
+        %acc, %square : f32
+    scf.yield %next : f32
+  }
+
+  %row_sum = kernel.workgroup.reduce<addf> %sum : f32
+  %ncols_i32 = index.cast %ncols : index to i32
+  %ncols_f32 = scalar.sitofp %ncols_i32 : i32 to f32
+  %mean = scalar.divf<nnan|ninf|nsz|arcp>
+      %row_sum, %ncols_f32 : f32
+  %mean_eps = scalar.addf<nnan|ninf|nsz> %mean, %eps : f32
+  %scale = scalar.rsqrtf<nnan|ninf|nsz|afn> %mean_eps : f32
+
+  scf.if %lane_zero {
+    view.store %scale, %scales_view[%row] :
+        f32, view<[%nrows]xf32, #dense>
+  }
+  kernel.return
+}

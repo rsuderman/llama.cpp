@@ -1,0 +1,25 @@
+{
+  "schema": "ggml-hrx-loom-storage-transform-v1",
+  "id": "q5_k_expert_down_group4",
+  "architectures": ["gfx1151"],
+  "match": {
+    "type": "Q5_K",
+    "shape": [512, 2048, 256, 1],
+    "contiguous": true,
+    "name": {
+      "prefix": "blk.",
+      "middle": "decimal",
+      "suffix": ".ffn_down_exps.weight"
+    }
+  },
+  "transform": {
+    "kind": "row_group_field_interleave",
+    "outer_count": 256,
+    "row_count": 2048,
+    "block_count": 2,
+    "field_count": 11,
+    "unit_bytes": 16,
+    "row_group": 4,
+    "field_order": [0, 1, 3, 5, 7, 9, 2, 4, 6, 8, 10]
+  }
+}

@@ -1,0 +1,175 @@
+// Concatenation along dim 0, staged through LDS so both sides coalesce.
+//
+//   dst[i0,i1,i2] = i0 < s0_ne0 ? src0[i0,i1,i2] : src1[i0 - s0_ne0, i1, i2]
+//
+// Used once per Gated-DeltaNet layer to prepend the cached conv state to the qkv
+// projection. dst is contiguous in i0, but src1 is a transpose view there
+// (nb0 = row bytes, nb1 = 1 element), so i1 is the contiguous axis on the way in
+// and i0 is the contiguous axis on the way out -- a 512 x 8192 transpose.
+//
+// The shipped kernel copies one element per lane, which makes one of the two
+// sides stride and leaves a single load in flight per wave: exactly 1 GB of
+// traffic per pass, the minimum, but only 47 GB/s of the ~215 GB/s this part
+// sustains. Here a workgroup moves a 64 x 64 tile through LDS, reading along i1
+// and writing along i0, so both directions run in 256-byte bursts.
+//
+// s0_ne0 is 3 (the conv window state), so the src0 region is 3 of 515 columns
+// and its strided read costs nothing worth splitting a path for.
+//
+// LDS row stride 65 is coprime with the 32 banks, so the transposed read is
+// conflict-free.
+
+config.decl @hrx2_shape_concat_ne0 : %value: index where [range(%value, 1, 16777216)]
+config.decl @hrx2_shape_concat_ne1 : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2_shape_concat_ne2 : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2_shape_concat_src0_ne0 : %value: index where [range(%value, 0, 16777216)]
+config.decl @hrx2_shape_concat_src0_nb0 : %value: index where [range(%value, 0, 16777216)]
+config.decl @hrx2_shape_concat_src0_nb1 : %value: index where [range(%value, 0, 268435456)]
+config.decl @hrx2_shape_concat_src0_nb2 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_shape_concat_src1_nb0 : %value: index where [range(%value, 0, 16777216)]
+config.decl @hrx2_shape_concat_src1_nb1 : %value: index where [range(%value, 0, 268435456)]
+config.decl @hrx2_shape_concat_src1_nb2 : %value: index where [range(%value, 0, 1073741823)]
+
+kernel.def export("hrx2_concat_f32_dim0_tiled") @hrx2_concat_f32_dim0_tiled() {
+  %unit = index.constant 1 : index
+  %k_tile = index.constant 64 : index
+  %k_tile1 = index.constant 63 : index
+  %k_wg = index.constant 256 : index
+  %ne0 = config.get @hrx2_shape_concat_ne0 : index
+  %ne1 = config.get @hrx2_shape_concat_ne1 : index
+  %ne2 = config.get @hrx2_shape_concat_ne2 : index
+  %rows = index.mul %ne1, %ne2 : index
+  %c0 = index.add %ne0, %k_tile1 : index
+  %tiles0 = index.div %c0, %k_tile : index
+  %r0 = index.add %rows, %k_tile1 : index
+  %tiles1 = index.div %r0, %k_tile : index
+  %workgroups = index.mul %tiles0, %tiles1 : index
+  kernel.launch.config workgroups(%workgroups, %unit, %unit) workgroup_size(%k_wg, %unit, %unit) : index
+} launch(%src0: buffer, %src1: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %zero = index.constant 0 : index
+  %one = index.constant 1 : index
+  %k_tile = index.constant 64 : index
+  %k_tile1 = index.constant 63 : index
+  %k_stride = index.constant 65 : index
+  %k_rows_per_it = index.constant 4 : index
+  %k_iters = index.constant 16 : index
+
+  %ne0 = config.get @hrx2_shape_concat_ne0 : index
+  %ne1 = config.get @hrx2_shape_concat_ne1 : index
+  %ne2 = config.get @hrx2_shape_concat_ne2 : index
+  %s0_ne0 = config.get @hrx2_shape_concat_src0_ne0 : index
+  %s0_nb0 = config.get @hrx2_shape_concat_src0_nb0 : index
+  %s0_nb1 = config.get @hrx2_shape_concat_src0_nb1 : index
+  %s0_nb2 = config.get @hrx2_shape_concat_src0_nb2 : index
+  %s1_nb0 = config.get @hrx2_shape_concat_src1_nb0 : index
+  %s1_nb1 = config.get @hrx2_shape_concat_src1_nb1 : index
+  %s1_nb2 = config.get @hrx2_shape_concat_src1_nb2 : index
+
+  %ne0_b = index.assume %ne0 [range(%ne0, 1, 16777216)] : index
+  %ne1_b = index.assume %ne1 [range(%ne1, 1, 1048576)] : index
+  %ne2_b = index.assume %ne2 [range(%ne2, 1, 1048576)] : index
+
+  %lane0 = kernel.workitem.id<x> : index
+  %wg0 = kernel.workgroup.id<x> : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 255)] : index
+  %wg = index.assume %wg0 [range(%wg0, 0, 16777215)] : index
+
+  %rows0 = index.mul %ne1_b, %ne2_b : index
+  %rows = index.assume %rows0 [range(%rows0, 1, 1073741823)] : index
+  %r0 = index.add %rows, %k_tile1 : index
+  %tiles1a = index.div %r0, %k_tile : index
+  %tiles1 = index.assume %tiles1a [range(%tiles1a, 1, 16777215)] : index
+
+  %t0 = index.div %wg, %tiles1 : index
+  %t1 = index.rem %wg, %tiles1 : index
+  %i0_base = index.mul %t0, %k_tile : index
+  %row_base = index.mul %t1, %k_tile : index
+
+  %src0_global = buffer.assume.memory_space<global> %src0 : buffer
+  %src1_global = buffer.assume.memory_space<global> %src1 : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %src0_na, %src1_na, %dst_na = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
+  %src0_view = buffer.view %src0_na[%base] : buffer -> view<1073741824xf32, #dense>
+  %src1_view = buffer.view %src1_na[%base] : buffer -> view<1073741824xf32, #dense>
+  %dst_view = buffer.view %dst_na[%base] : buffer -> view<1073741824xf32, #dense>
+
+  // 64 x 65 floats.
+  %lds_bytes = index.constant 16640 : offset
+  %scratch = buffer.alloca %lds_bytes {base_alignment = 16, memory_space = workgroup} : buffer
+  %lds = buffer.view %scratch[%base] : buffer -> view<4160xf32, #dense>
+
+  // Read phase: lane walks i1 so the source read is contiguous.
+  %rb = index.rem %lane, %k_tile : index
+  %ra_seed = index.div %lane, %k_tile : index
+  %row_in = index.add %row_base, %rb : index
+  %row_ok = index.cmp ult, %row_in, %rows : index
+  %i1 = index.rem %row_in, %ne1_b : index
+  %i2 = index.div %row_in, %ne1_b : index
+
+  %a1 = index.mul %i1, %s0_nb1 : index
+  %a2 = index.mul %i2, %s0_nb2 : index
+  %a12 = index.add %a1, %a2 : index
+  %b1 = index.mul %i1, %s1_nb1 : index
+  %b2 = index.mul %i2, %s1_nb2 : index
+  %b12 = index.add %b1, %b2 : index
+
+  // row_ok is loop invariant; a lane outside the row range writes no LDS column,
+  // and the write phase skips those same rows, so nothing reads it.
+  scf.if %row_ok {
+    scf.for %it = [%zero to %k_iters step %one] {
+      %ait = index.mul %it, %k_rows_per_it : index
+      %ra = index.add %ra_seed, %ait : index
+      %i0 = index.add %i0_base, %ra : index
+      %i0_ok = index.cmp ult, %i0, %ne0_b : index
+      scf.if %i0_ok {
+        %from0 = index.cmp ult, %i0, %s0_ne0 : index
+        %val = scf.if %from0 -> (f32) {
+          %o0 = index.mul %i0, %s0_nb0 : index
+          %oa = index.add %o0, %a12 : index
+          %ai = index.assume %oa [range(%oa, 0, 1073741823)] : index
+          %x = view.load %src0_view[%ai] : view<1073741824xf32, #dense> -> f32
+          scf.yield %x : f32
+        } else {
+          %j0 = index.sub %i0, %s0_ne0 : index
+          %p0 = index.mul %j0, %s1_nb0 : index
+          %pb = index.add %p0, %b12 : index
+          %bi = index.assume %pb [range(%pb, 0, 1073741823)] : index
+          %y = view.load %src1_view[%bi] : view<1073741824xf32, #dense> -> f32
+          scf.yield %y : f32
+        }
+        %lrow = index.mul %ra, %k_stride : index
+        %la0 = index.add %lrow, %rb : index
+        %li = index.assume %la0 [range(%la0, 0, 4159)] : index
+        view.store %val, %lds[%li] : f32, view<4160xf32, #dense>
+      }
+    }
+  }
+  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+
+  // Write phase: lane walks i0 so the contiguous dst store coalesces.
+  %wa = index.rem %lane, %k_tile : index
+  %wb_seed = index.div %lane, %k_tile : index
+  %i0_out = index.add %i0_base, %wa : index
+  %i0_out_ok = index.cmp ult, %i0_out, %ne0_b : index
+  %lds_col = index.mul %wa, %k_stride : index
+
+  scf.if %i0_out_ok {
+    scf.for %it2 = [%zero to %k_iters step %one] {
+      %bit = index.mul %it2, %k_rows_per_it : index
+      %wb = index.add %wb_seed, %bit : index
+      %row_out = index.add %row_base, %wb : index
+      %row_out_ok = index.cmp ult, %row_out, %rows : index
+      scf.if %row_out_ok {
+        %lo0 = index.add %lds_col, %wb : index
+        %lo = index.assume %lo0 [range(%lo0, 0, 4159)] : index
+        %v = view.load %lds[%lo] : view<4160xf32, #dense> -> f32
+        %drow = index.mul %row_out, %ne0_b : index
+        %do0 = index.add %drow, %i0_out : index
+        %di = index.assume %do0 [range(%do0, 0, 1073741823)] : index
+        view.store %v, %dst_view[%di] : f32, view<1073741824xf32, #dense>
+      }
+    }
+  }
+  kernel.return
+}

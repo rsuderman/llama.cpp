@@ -1,0 +1,104 @@
+// Depthwise causal 1D convolution over the Gated-DeltaNet conv window.
+//
+//   dst[i1, i2, i3] = sum_{i0 < d_conv} src0[i2 + i0, i1, i3] * src1[i0, i1]
+//
+//   src0  {d_conv - 1 + n_t, d_inner, n_s}   the state-prefixed input window
+//   src1  {d_conv, d_inner}                  per-channel kernel
+//   dst   {d_inner, n_t, n_s}
+//
+// One output element per lane over a flat grid-strided index. The d_conv taps
+// are contiguous in src0 and in src1, and d_conv is a compile-time config
+// value (4 for this model), so the tap loop fully unrolls into 4 loads and 4
+// FMAs with no loop overhead.
+
+config.decl @hrx2_shape_ssm_conv_d_conv : %value: index where [range(%value, 1, 64)]
+config.decl @hrx2_shape_ssm_conv_d_inner : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2_shape_ssm_conv_n_t : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2_shape_ssm_conv_n_s : %value: index where [range(%value, 1, 1024)]
+config.decl @hrx2_shape_ssm_conv_src0_row_stride : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2_tuning_ssm_conv_workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+
+kernel.def export("hrx2_ssm_conv_f32") @hrx2_ssm_conv_f32() {
+  %unit = index.constant 1 : index
+  %minus_one = index.constant -1 : index
+  %d_inner = config.get @hrx2_shape_ssm_conv_d_inner : index
+  %n_t = config.get @hrx2_shape_ssm_conv_n_t : index
+  %n_s = config.get @hrx2_shape_ssm_conv_n_s : index
+  %workgroup_size = config.get @hrx2_tuning_ssm_conv_workgroup_size : index
+  %rows = index.mul %d_inner, %n_t : index
+  %total = index.mul %rows, %n_s : index
+  %rounding = index.add %workgroup_size, %minus_one : index
+  %rounded = index.add %total, %rounding : index
+  %workgroups = index.div %rounded, %workgroup_size : index
+  kernel.launch.config workgroups(%workgroups, %unit, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
+} launch(%src0: buffer, %src1: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %zero = index.constant 0 : index
+  %one_c = index.constant 1 : index
+  %d_conv = config.get @hrx2_shape_ssm_conv_d_conv : index
+  %d_inner = config.get @hrx2_shape_ssm_conv_d_inner : index
+  %n_t = config.get @hrx2_shape_ssm_conv_n_t : index
+  %n_s = config.get @hrx2_shape_ssm_conv_n_s : index
+  %ncs = config.get @hrx2_shape_ssm_conv_src0_row_stride : index
+  %workgroup_size = config.get @hrx2_tuning_ssm_conv_workgroup_size : index
+
+  %d_conv_b = index.assume %d_conv [range(%d_conv, 1, 64)] : index
+  %d_inner_b = index.assume %d_inner [range(%d_inner, 1, 1048576)] : index
+  %n_t_b = index.assume %n_t [range(%n_t, 1, 1048576)] : index
+  %n_s_b = index.assume %n_s [range(%n_s, 1, 1024)] : index
+  %ncs_b = index.assume %ncs [range(%ncs, 1, 1048576)] : index
+
+  %workgroup0 = kernel.workgroup.id<x> : index
+  %lane0 = kernel.workitem.id<x> : index
+  %workgroup = index.assume %workgroup0 [range(%workgroup0, 0, 4194303)] : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
+  %lin0 = index.mul %workgroup, %workgroup_size : index
+  %lin1 = index.add %lin0, %lane : index
+  %linear = index.assume %lin1 [range(%lin1, 0, 1073741823)] : index
+
+  %rows0 = index.mul %d_inner_b, %n_t_b : index
+  %rows = index.assume %rows0 [range(%rows0, 1, 1073741823)] : index
+  %total0 = index.mul %rows, %n_s_b : index
+  %total = index.assume %total0 [range(%total0, 1, 1073741824)] : index
+  %in_bounds = index.cmp ult, %linear, %total : index
+
+  %src0_global = buffer.assume.memory_space<global> %src0 : buffer
+  %src1_global = buffer.assume.memory_space<global> %src1 : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %src0_na, %src1_na, %dst_na = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
+  %src0_view = buffer.view %src0_na[%base] : buffer -> view<1073741824xf32, #dense>
+  %src1_view = buffer.view %src1_na[%base] : buffer -> view<1073741824xf32, #dense>
+  %dst_view = buffer.view %dst_na[%base] : buffer -> view<1073741824xf32, #dense>
+
+  scf.if %in_bounds {
+    // linear -> (i1 = channel, i2 = token, i3 = sequence)
+    %i3 = index.div %linear, %rows : index
+    %within = index.rem %linear, %rows : index
+    %i2 = index.div %within, %d_inner_b : index
+    %i1 = index.rem %within, %d_inner_b : index
+
+    // src0 base: i3*(ncs*d_inner) + i1*ncs + i2
+    %s0_plane0 = index.mul %ncs_b, %d_inner_b : index
+    %s0_plane = index.mul %i3, %s0_plane0 : index
+    %s0_row = index.mul %i1, %ncs_b : index
+    %s0_a = index.add %s0_plane, %s0_row : index
+    %s0_base = index.add %s0_a, %i2 : index
+
+    // src1 base: i1*d_conv
+    %s1_base = index.mul %i1, %d_conv_b : index
+
+    %zero_f32 = scalar.constant 0.0 : f32
+    %sum = scf.for %i0 = [%zero to %d_conv_b step %one_c](%acc = %zero_f32 : f32) -> (f32) {
+      %si0 = index.add %s0_base, %i0 : index
+      %si = index.assume %si0 [range(%si0, 0, 1073741823)] : index
+      %wi0 = index.add %s1_base, %i0 : index
+      %wi = index.assume %wi0 [range(%wi0, 0, 1073741823)] : index
+      %x = view.load %src0_view[%si] : view<1073741824xf32, #dense> -> f32
+      %w = view.load %src1_view[%wi] : view<1073741824xf32, #dense> -> f32
+      %next = scalar.fmaf<nnan|ninf|nsz> %x, %w, %acc : f32
+      scf.yield %next : f32
+    }
+    view.store %sum, %dst_view[%linear] : f32, view<1073741824xf32, #dense>
+  }
+  kernel.return
+}

@@ -1,0 +1,206 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "ssm_conv_f32_chan_wg256",
+  "format": "loom",
+  "priority": 100,
+  "match": {
+    "op": "GGML_OP_SSM_CONV",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": [
+          "channels",
+          "window",
+          "sequences",
+          "outer"
+        ]
+      },
+      "src1": {
+        "type": "F32",
+        "shape": [
+          "taps",
+          "channels",
+          "plane",
+          "outer"
+        ]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": [
+          "channels",
+          "tokens",
+          "sequences",
+          "outer"
+        ]
+      }
+    },
+    "attributes": {},
+    "predicates": [
+      {
+        "field": "shape.src0.channels",
+        "equals": "shape.src1.channels"
+      },
+      {
+        "field": "shape.dst.channels",
+        "equals": "shape.src1.channels"
+      },
+      {
+        "field": "shape.src0.sequences",
+        "equals": "shape.dst.sequences"
+      },
+      {
+        "field": "shape.src0.outer",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.plane",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.outer",
+        "equals": 1
+      },
+      {
+        "field": "shape.dst.outer",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.taps",
+        "equals": 4
+      },
+      {
+        "field": "shape.src0.window",
+        "min": 4
+      },
+      {
+        "field": "shape.src0.window",
+        "max": 1048576
+      },
+      {
+        "field": "shape.dst.channels",
+        "min": 1
+      },
+      {
+        "field": "shape.dst.channels",
+        "max": 1048576
+      },
+      {
+        "field": "shape.dst.tokens",
+        "min": 1
+      },
+      {
+        "field": "shape.dst.tokens",
+        "max": 1048576
+      },
+      {
+        "field": "shape.dst.sequences",
+        "min": 1
+      },
+      {
+        "field": "shape.dst.sequences",
+        "max": 1024
+      },
+      {
+        "field": "derived.total",
+        "max": 1073741823
+      },
+      {
+        "field": "tensor.src0.element_strides.1",
+        "min": 1
+      },
+      {
+        "field": "tensor.src0.element_strides.1",
+        "max": 16777216
+      },
+      {
+        "contiguous": "src0"
+      },
+      {
+        "contiguous": "src1"
+      },
+      {
+        "contiguous": "dst"
+      }
+    ]
+  },
+  "derived": {
+    "total": {
+      "type": "i64",
+      "product": [
+        "shape.dst.channels",
+        "shape.dst.tokens",
+        "shape.dst.sequences"
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/ssm_conv/f32/channels_first_wg256.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_ssm_conv_d_inner",
+            "type": "i64",
+            "source": "shape.dst.channels"
+          },
+          {
+            "name": "hrx2_shape_ssm_conv_n_t",
+            "type": "i64",
+            "source": "shape.dst.tokens"
+          },
+          {
+            "name": "hrx2_shape_ssm_conv_n_s",
+            "type": "i64",
+            "source": "shape.dst.sequences"
+          },
+          {
+            "name": "hrx2_shape_ssm_conv_src0_row_stride",
+            "type": "i64",
+            "source": "tensor.src0.element_strides.1"
+          },
+          {
+            "name": "hrx2_tuning_ssm_conv_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "src1",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "work_items": [
+          "derived.total"
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

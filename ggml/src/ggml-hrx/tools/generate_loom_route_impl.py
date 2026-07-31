@@ -852,6 +852,13 @@ def generate_fusion_route_impl(route_path, route, definition):
         route_response,
         "GGML_BACKEND_HRX_LOOM_UNSUPPORTED_DTYPE",
     )
+    route_emit.emit_storage_checks(
+        lines,
+        route,
+        route_schema,
+        route_response,
+        "GGML_BACKEND_HRX_LOOM_UNSUPPORTED_LAYOUT",
+    )
     emit_fusion_attributes(lines, route)
     route_emit.emit_shape_captures(lines, route, route_schema)
     route_emit.emit_tensor_declaration_checks(
@@ -937,6 +944,13 @@ def generate_route_impl(route_path, route, definition):
         route_schema,
         route_response,
         "GGML_BACKEND_HRX_LOOM_UNSUPPORTED_DTYPE",
+    )
+    route_emit.emit_storage_checks(
+        lines,
+        route,
+        route_schema,
+        route_response,
+        "GGML_BACKEND_HRX_LOOM_UNSUPPORTED_LAYOUT",
     )
     route_emit.emit_attributes(lines, route, route_schema, ATTRIBUTE_INDICES)
     route_emit.emit_shape_captures(lines, route, route_schema)

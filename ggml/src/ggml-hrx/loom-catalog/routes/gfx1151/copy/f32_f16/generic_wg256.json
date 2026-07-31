@@ -1,0 +1,119 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "copy_f32_f16_generic_wg256",
+  "format": "loom",
+  "priority": 140,
+  "match": {
+    "op": "GGML_OP_CPY",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": [
+          "src_d0",
+          "src_d1",
+          "src_d2",
+          "src_d3"
+        ]
+      },
+      "dst": {
+        "type": "F16",
+        "shape": [
+          "dst_d0",
+          "dst_d1",
+          "dst_d2",
+          "dst_d3"
+        ]
+      }
+    },
+    "attributes": {},
+    "predicates": [
+      {
+        "field": "derived.src_elements",
+        "equals": "derived.dst_elements"
+      },
+      {
+        "field": "derived.dst_elements",
+        "min": 1
+      },
+      {
+        "field": "derived.dst_elements",
+        "max": 1073741824
+      },
+      {
+        "contiguous": "src0"
+      },
+      {
+        "contiguous": "dst"
+      }
+    ]
+  },
+  "derived": {
+    "src_elements": {
+      "type": "i64",
+      "product": [
+        "shape.src0.src_d0",
+        "shape.src0.src_d1",
+        "shape.src0.src_d2",
+        "shape.src0.src_d3"
+      ]
+    },
+    "dst_elements": {
+      "type": "i64",
+      "product": [
+        "shape.dst.dst_d0",
+        "shape.dst.dst_d1",
+        "shape.dst.dst_d2",
+        "shape.dst.dst_d3"
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/generic/copy/f32_f16/contiguous_1d.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "shape_copy_n",
+            "type": "i64",
+            "source": "derived.dst_elements"
+          },
+          {
+            "name": "tuning_copy_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 1,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "work_items": [
+          "derived.dst_elements"
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}
