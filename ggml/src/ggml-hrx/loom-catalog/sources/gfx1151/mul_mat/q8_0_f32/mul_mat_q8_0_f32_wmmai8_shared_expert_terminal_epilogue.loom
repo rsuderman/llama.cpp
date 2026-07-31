@@ -91,6 +91,7 @@ kernel.def export("hrx2_mul_mat_q8_0_f32_wmmai8_shared_expert_terminal_epilogue"
   %lds_bytes = index.constant 11264 : offset
   %scratch = buffer.alloca %lds_bytes {base_alignment = 16, memory_space = workgroup} : buffer
   %lhs_layout = encoding.layout.strided [80, 1] : encoding<layout>
+  %i8_schema = encoding.define #matrix_operand<element_format=i8, payload_elements=16, payload_registers=4> : encoding<schema>
   %al_view = buffer.view %scratch[%base] : buffer -> view<64x64xi8, %lhs_layout>
   %al_flat = buffer.view %scratch[%base] : buffer -> view<5120xi8, #dense>
   %w_off = index.constant 5120 : offset
@@ -254,47 +255,71 @@ kernel.def export("hrx2_mul_mat_q8_0_f32_wmmai8_shared_expert_terminal_epilogue"
       %wsi1 = index.assume %wsi1_2 [range(%wsi1_2, 0, 127)] : index
       %wsc1 = view.load %wsl_view[%wsi1] : view<128xf32, #dense> -> f32
       %wsv1 = vector.splat %wsc1 : vector<8xf32>
-      %lf0_0 = vector.fragment.load<lhs> %al_view[%lm0, %blk_k] shape [%sixteen, %sixteen] : view<64x64xi8, %lhs_layout> -> vector<16xi8>
-      %lf0_1 = vector.fragment.load<lhs> %al_view[%lm0, %blk_k16] shape [%sixteen, %sixteen] : view<64x64xi8, %lhs_layout> -> vector<16xi8>
+      %lf0_0_raw = vector.fragment.load<lhs> %al_view[%lm0, %blk_k] shape [%sixteen, %sixteen] : view<64x64xi8, %lhs_layout> -> vector<16xi8>
+      %lf0_0_words = vector.bitcast %lf0_0_raw : vector<16xi8> to vector<4xi32>
+      %lf0_0 = vector.fragment<lhs> %lf0_0_words shape [%sixteen, %sixteen] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %lf0_1_raw = vector.fragment.load<lhs> %al_view[%lm0, %blk_k16] shape [%sixteen, %sixteen] : view<64x64xi8, %lhs_layout> -> vector<16xi8>
+      %lf0_1_words = vector.bitcast %lf0_1_raw : vector<16xi8> to vector<4xi32>
+      %lf0_1 = vector.fragment<lhs> %lf0_1_words shape [%sixteen, %sixteen] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %asi0_0 = index.add %asb0, %blk : index
       %asi0_1 = index.mul %asi0_0, %two : index
       %asi0_2 = index.add %asi0_1, %lane_hi : index
       %asi0_3 = index.mul %asi0_2, %eight : index
       %asi0 = index.assume %asi0_3 [range(%asi0_3, 0, 120)] : index
       %asv0 = vector.load %asl_view[%asi0] : view<128xf32, #dense> -> vector<8xf32>
-      %rfs0_0_0 = vector.fragment.load<rhs> %wl_view[%blk_k, %ln0] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
-      %rfs0_0_1 = vector.fragment.load<rhs> %wl_view[%blk_k16, %ln0] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
-      %i0_0_0 = vector.mma %lf0_0, %rfs0_0_0, %iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %i1_0_0 = vector.mma %lf0_1, %rfs0_0_1, %i0_0_0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %rfs0_0_0_raw = vector.fragment.load<rhs> %wl_view[%blk_k, %ln0] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
+      %rfs0_0_0_words = vector.bitcast %rfs0_0_0_raw : vector<16xi8> to vector<4xi32>
+      %rfs0_0_0 = vector.fragment<rhs> %rfs0_0_0_words shape [%sixteen, %sixteen] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %rfs0_0_1_raw = vector.fragment.load<rhs> %wl_view[%blk_k16, %ln0] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
+      %rfs0_0_1_words = vector.bitcast %rfs0_0_1_raw : vector<16xi8> to vector<4xi32>
+      %rfs0_0_1 = vector.fragment<rhs> %rfs0_0_1_words shape [%sixteen, %sixteen] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %i0_0_0 = vector.mma %lf0_0, %rfs0_0_0, %iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %i1_0_0 = vector.mma %lf0_1, %rfs0_0_1, %i0_0_0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %ff0_0 = vector.sitofp %i1_0_0 : vector<8xi32> to vector<8xf32>
       %sv0_0 = vector.mulf %asv0, %wsv0 : vector<8xf32>
       %fn0_0 = vector.fmaf %ff0_0, %sv0_0, %fb0_0 : vector<8xf32>
-      %rfs0_1_0 = vector.fragment.load<rhs> %wl_view[%blk_k, %ln1] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
-      %rfs0_1_1 = vector.fragment.load<rhs> %wl_view[%blk_k16, %ln1] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
-      %i0_0_1 = vector.mma %lf0_0, %rfs0_1_0, %iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %i1_0_1 = vector.mma %lf0_1, %rfs0_1_1, %i0_0_1 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %rfs0_1_0_raw = vector.fragment.load<rhs> %wl_view[%blk_k, %ln1] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
+      %rfs0_1_0_words = vector.bitcast %rfs0_1_0_raw : vector<16xi8> to vector<4xi32>
+      %rfs0_1_0 = vector.fragment<rhs> %rfs0_1_0_words shape [%sixteen, %sixteen] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %rfs0_1_1_raw = vector.fragment.load<rhs> %wl_view[%blk_k16, %ln1] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
+      %rfs0_1_1_words = vector.bitcast %rfs0_1_1_raw : vector<16xi8> to vector<4xi32>
+      %rfs0_1_1 = vector.fragment<rhs> %rfs0_1_1_words shape [%sixteen, %sixteen] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %i0_0_1 = vector.mma %lf0_0, %rfs0_1_0, %iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %i1_0_1 = vector.mma %lf0_1, %rfs0_1_1, %i0_0_1 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %ff0_1 = vector.sitofp %i1_0_1 : vector<8xi32> to vector<8xf32>
       %sv0_1 = vector.mulf %asv0, %wsv1 : vector<8xf32>
       %fn0_1 = vector.fmaf %ff0_1, %sv0_1, %fb0_1 : vector<8xf32>
-      %lf1_0 = vector.fragment.load<lhs> %al_view[%lm1, %blk_k] shape [%sixteen, %sixteen] : view<64x64xi8, %lhs_layout> -> vector<16xi8>
-      %lf1_1 = vector.fragment.load<lhs> %al_view[%lm1, %blk_k16] shape [%sixteen, %sixteen] : view<64x64xi8, %lhs_layout> -> vector<16xi8>
+      %lf1_0_raw = vector.fragment.load<lhs> %al_view[%lm1, %blk_k] shape [%sixteen, %sixteen] : view<64x64xi8, %lhs_layout> -> vector<16xi8>
+      %lf1_0_words = vector.bitcast %lf1_0_raw : vector<16xi8> to vector<4xi32>
+      %lf1_0 = vector.fragment<lhs> %lf1_0_words shape [%sixteen, %sixteen] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %lf1_1_raw = vector.fragment.load<lhs> %al_view[%lm1, %blk_k16] shape [%sixteen, %sixteen] : view<64x64xi8, %lhs_layout> -> vector<16xi8>
+      %lf1_1_words = vector.bitcast %lf1_1_raw : vector<16xi8> to vector<4xi32>
+      %lf1_1 = vector.fragment<lhs> %lf1_1_words shape [%sixteen, %sixteen] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %asi1_0 = index.add %asb1, %blk : index
       %asi1_1 = index.mul %asi1_0, %two : index
       %asi1_2 = index.add %asi1_1, %lane_hi : index
       %asi1_3 = index.mul %asi1_2, %eight : index
       %asi1 = index.assume %asi1_3 [range(%asi1_3, 0, 120)] : index
       %asv1 = vector.load %asl_view[%asi1] : view<128xf32, #dense> -> vector<8xf32>
-      %rfs1_0_0 = vector.fragment.load<rhs> %wl_view[%blk_k, %ln0] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
-      %rfs1_0_1 = vector.fragment.load<rhs> %wl_view[%blk_k16, %ln0] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
-      %i0_1_0 = vector.mma %lf1_0, %rfs1_0_0, %iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %i1_1_0 = vector.mma %lf1_1, %rfs1_0_1, %i0_1_0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %rfs1_0_0_raw = vector.fragment.load<rhs> %wl_view[%blk_k, %ln0] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
+      %rfs1_0_0_words = vector.bitcast %rfs1_0_0_raw : vector<16xi8> to vector<4xi32>
+      %rfs1_0_0 = vector.fragment<rhs> %rfs1_0_0_words shape [%sixteen, %sixteen] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %rfs1_0_1_raw = vector.fragment.load<rhs> %wl_view[%blk_k16, %ln0] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
+      %rfs1_0_1_words = vector.bitcast %rfs1_0_1_raw : vector<16xi8> to vector<4xi32>
+      %rfs1_0_1 = vector.fragment<rhs> %rfs1_0_1_words shape [%sixteen, %sixteen] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %i0_1_0 = vector.mma %lf1_0, %rfs1_0_0, %iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %i1_1_0 = vector.mma %lf1_1, %rfs1_0_1, %i0_1_0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %ff1_0 = vector.sitofp %i1_1_0 : vector<8xi32> to vector<8xf32>
       %sv1_0 = vector.mulf %asv1, %wsv0 : vector<8xf32>
       %fn1_0 = vector.fmaf %ff1_0, %sv1_0, %fb1_0 : vector<8xf32>
-      %rfs1_1_0 = vector.fragment.load<rhs> %wl_view[%blk_k, %ln1] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
-      %rfs1_1_1 = vector.fragment.load<rhs> %wl_view[%blk_k16, %ln1] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
-      %i0_1_1 = vector.mma %lf1_0, %rfs1_1_0, %iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %i1_1_1 = vector.mma %lf1_1, %rfs1_1_1, %i0_1_1 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %rfs1_1_0_raw = vector.fragment.load<rhs> %wl_view[%blk_k, %ln1] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
+      %rfs1_1_0_words = vector.bitcast %rfs1_1_0_raw : vector<16xi8> to vector<4xi32>
+      %rfs1_1_0 = vector.fragment<rhs> %rfs1_1_0_words shape [%sixteen, %sixteen] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %rfs1_1_1_raw = vector.fragment.load<rhs> %wl_view[%blk_k16, %ln1] shape [%sixteen, %sixteen] : view<64x64xi8, %rhs_layout> -> vector<16xi8>
+      %rfs1_1_1_words = vector.bitcast %rfs1_1_1_raw : vector<16xi8> to vector<4xi32>
+      %rfs1_1_1 = vector.fragment<rhs> %rfs1_1_1_words shape [%sixteen, %sixteen] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %i0_1_1 = vector.mma %lf1_0, %rfs1_1_0, %iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %i1_1_1 = vector.mma %lf1_1, %rfs1_1_1, %i0_1_1 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %ff1_1 = vector.sitofp %i1_1_1 : vector<8xi32> to vector<8xf32>
       %sv1_1 = vector.mulf %asv1, %wsv1 : vector<8xf32>
       %fn1_1 = vector.fmaf %ff1_1, %sv1_1, %fb1_1 : vector<8xf32>

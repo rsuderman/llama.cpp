@@ -35,7 +35,7 @@ kernel.def export("hrx2_topk_moe_softmax_norm_stage_f32") @hrx2_topk_moe_softmax
   %ntokens = index.assume %ntokens0 [range(%ntokens0, 512, 512), mul(%ntokens0, 8)] : index
   %workgroups = index.div %ntokens, %eight : index
   kernel.launch.config workgroups(%workgroups, %unit, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
-} launch(%logits: buffer, %ids: buffer, %cache_marker_unused: buffer) {
+} launch(%logits: buffer, %ids: buffer) {
   %base = index.constant 0 : offset
   %zero = index.constant 0 : index
   %one = index.constant 1 : index

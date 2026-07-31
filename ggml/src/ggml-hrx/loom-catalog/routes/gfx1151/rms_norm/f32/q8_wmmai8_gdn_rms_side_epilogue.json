@@ -1,0 +1,644 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "mul_mat_q8_0_f32_wmmai8_gdn_rms_side_epilogue",
+  "format": "loom",
+  "priority": 400,
+  "tensors": {
+    "raw_side": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "d1",
+        "d2",
+        "d3"
+      ]
+    },
+    "rms_dst": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "d1",
+        "d2",
+        "d3"
+      ]
+    },
+    "norm_weight": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "nw1",
+        "nw2",
+        "nw3"
+      ]
+    },
+    "side_dst": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "d1",
+        "d2",
+        "d3"
+      ]
+    },
+    "weight": {
+      "type": "Q8_0",
+      "shape": [
+        "k",
+        "rows",
+        "w2",
+        "w3"
+      ]
+    },
+    "input": {
+      "type": "F32",
+      "shape": [
+        "k",
+        "cols",
+        "i2",
+        "i3"
+      ]
+    },
+    "q8_dst": {
+      "type": "F32"
+    },
+    "reshape_dst": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "d1",
+        "d2",
+        "d3"
+      ]
+    },
+    "silu_dst": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "d1",
+        "d2",
+        "d3"
+      ]
+    },
+    "dst": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "d1",
+        "d2",
+        "d3"
+      ]
+    }
+  },
+  "match": {
+    "anchors": [
+      "rms"
+    ],
+    "ops": {
+      "rms": {
+        "op": "GGML_OP_RMS_NORM",
+        "tensors": {
+          "src0": "raw_side",
+          "dst": "rms_dst"
+        },
+        "attributes": {
+          "eps": {
+            "type": "f32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "side_mul": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "rms_dst",
+          "src1": "norm_weight",
+          "dst": "side_dst"
+        },
+        "attributes": {}
+      },
+      "q8": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {
+          "src0": "weight",
+          "src1": "input",
+          "dst": "q8_dst"
+        },
+        "attributes": {}
+      },
+      "reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "q8_dst",
+          "dst": "reshape_dst"
+        },
+        "attributes": {}
+      },
+      "silu": {
+        "op": "GGML_OP_UNARY",
+        "tensors": {
+          "src0": "reshape_dst",
+          "dst": "silu_dst"
+        },
+        "attributes": {
+          "unary_op": {
+            "type": "i32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "terminal": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "side_dst",
+          "src1": "silu_dst",
+          "dst": "dst"
+        },
+        "attributes": {}
+      }
+    },
+    "predicates": [
+      {
+        "field": "attribute.rms.eps",
+        "equals": 1e-06
+      },
+      {
+        "field": "attribute.silu.unary_op",
+        "equals": 10
+      },
+      {
+        "field": "shape.raw_side.ncols",
+        "equals": 128
+      },
+      {
+        "field": "derived.rms_rows",
+        "equals": 16384
+      },
+      {
+        "same_shape": [
+          "raw_side",
+          "rms_dst",
+          "side_dst",
+          "silu_dst",
+          "dst"
+        ]
+      },
+      {
+        "field": "shape.norm_weight.ncols",
+        "equals": "shape.raw_side.ncols"
+      },
+      {
+        "field": "shape.norm_weight.nw1",
+        "equals": 1
+      },
+      {
+        "field": "shape.norm_weight.nw2",
+        "equals": 1
+      },
+      {
+        "field": "shape.norm_weight.nw3",
+        "equals": 1
+      },
+      {
+        "field": "shape.weight.k",
+        "equals": 2048
+      },
+      {
+        "field": "shape.weight.rows",
+        "equals": 4096
+      },
+      {
+        "field": "shape.weight.w2",
+        "equals": 1
+      },
+      {
+        "field": "shape.weight.w3",
+        "equals": 1
+      },
+      {
+        "field": "shape.input.k",
+        "equals": "shape.weight.k"
+      },
+      {
+        "field": "shape.input.cols",
+        "equals": 512
+      },
+      {
+        "field": "shape.input.i2",
+        "equals": 1
+      },
+      {
+        "field": "shape.input.i3",
+        "equals": 1
+      },
+      {
+        "field": "tensor.reshape_dst.element_count",
+        "equals": "tensor.silu_dst.element_count"
+      },
+      {
+        "contiguous": "raw_side"
+      },
+      {
+        "contiguous": "rms_dst"
+      },
+      {
+        "contiguous": "norm_weight"
+      },
+      {
+        "contiguous": "side_dst"
+      },
+      {
+        "contiguous": "weight"
+      },
+      {
+        "contiguous": "input"
+      },
+      {
+        "contiguous": "reshape_dst"
+      },
+      {
+        "contiguous": "silu_dst"
+      },
+      {
+        "contiguous": "dst"
+      },
+      {
+        "elided": [
+          "rms_dst",
+          "side_dst",
+          "q8_dst",
+          "reshape_dst",
+          "silu_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "weight",
+          "input"
+        ]
+      },
+      {
+        "no_overlap": [
+          "weight",
+          "raw_side"
+        ]
+      },
+      {
+        "no_overlap": [
+          "weight",
+          "norm_weight"
+        ]
+      },
+      {
+        "no_overlap": [
+          "weight",
+          "dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "input",
+          "raw_side"
+        ]
+      },
+      {
+        "no_overlap": [
+          "input",
+          "norm_weight"
+        ]
+      },
+      {
+        "no_overlap": [
+          "input",
+          "dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "raw_side",
+          "norm_weight"
+        ]
+      },
+      {
+        "no_overlap": [
+          "raw_side",
+          "dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "norm_weight",
+          "dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "weight",
+          "reshape_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "input",
+          "reshape_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "reshape_dst",
+          "silu_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "reshape_dst",
+          "side_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "silu_dst",
+          "side_dst"
+        ]
+      }
+    ]
+  },
+  "derived": {
+    "f32_bytes": {
+      "type": "i64",
+      "value": 4
+    },
+    "rms_rows": {
+      "type": "i64",
+      "product": [
+        "shape.raw_side.d1",
+        "shape.raw_side.d2",
+        "shape.raw_side.d3"
+      ]
+    },
+    "qact_elements": {
+      "type": "i64",
+      "product": [
+        "shape.input.k",
+        "shape.input.cols"
+      ]
+    },
+    "qact_scale_bytes": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.qact_elements",
+        8
+      ]
+    },
+    "qact_sum_bytes": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.qact_elements",
+        4
+      ]
+    },
+    "rms_scale_bytes": {
+      "type": "i64",
+      "product": [
+        "derived.rms_rows",
+        "derived.f32_bytes"
+      ]
+    },
+    "col_workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.input.cols",
+        64
+      ]
+    },
+    "row_workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.weight.rows",
+        64
+      ]
+    },
+    "qact_workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.qact_elements",
+        8192
+      ]
+    }
+  },
+  "transient_buffers": {
+    "qact_qs": {
+      "size": "derived.qact_elements"
+    },
+    "qact_ds": {
+      "size": "derived.qact_scale_bytes"
+    },
+    "qact_sums": {
+      "size": "derived.qact_sum_bytes"
+    },
+    "rms_side_scale_values": {
+      "size": "derived.rms_scale_bytes"
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "quant_act_q8",
+      "definition": "../../../../defs/gfx1151/prepass/quant_act_q8.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_qact_k",
+            "type": "i64",
+            "source": "shape.input.k"
+          },
+          {
+            "name": "hrx2_shape_qact_cols",
+            "type": "i64",
+            "source": "shape.input.cols"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src",
+          "tensor": "input",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "qs",
+          "transient": "qact_qs",
+          "position": 1,
+          "kind": "output"
+        },
+        {
+          "name": "ds",
+          "transient": "qact_ds",
+          "position": 2,
+          "kind": "output"
+        },
+        {
+          "name": "sums",
+          "transient": "qact_sums",
+          "position": 3,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.qact_workgroups",
+          1,
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "gdn_rms_side_scale_prepass",
+      "definition": "../../../../defs/gfx1151/mul_mat/q8_0_f32/gdn_rms_side_scale_prepass.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_gdn_rms_side_ncols",
+            "type": "i64",
+            "source": "shape.raw_side.ncols"
+          },
+          {
+            "name": "hrx2_shape_gdn_rms_side_nrows",
+            "type": "i64",
+            "source": "derived.rms_rows"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src",
+          "tensor": "raw_side",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "scales",
+          "transient": "rms_side_scale_values",
+          "position": 1,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.rms_rows",
+          1,
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/rms_norm/f32/q8_wmmai8_gdn_rms_side_epilogue.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_k",
+            "type": "i64",
+            "source": "shape.weight.k"
+          },
+          {
+            "name": "hrx2_shape_rows",
+            "type": "i64",
+            "source": "shape.weight.rows"
+          },
+          {
+            "name": "hrx2_shape_cols",
+            "type": "i64",
+            "source": "shape.input.cols"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "weight",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "src1",
+          "tensor": "input",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "raw_side",
+          "tensor": "raw_side",
+          "position": 2,
+          "kind": "input"
+        },
+        {
+          "name": "norm_weight",
+          "tensor": "norm_weight",
+          "position": 3,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 4,
+          "kind": "output"
+        },
+        {
+          "name": "rms_scale",
+          "transient": "rms_side_scale_values",
+          "position": 5,
+          "kind": "input"
+        },
+        {
+          "name": "aq",
+          "transient": "qact_qs",
+          "position": 6,
+          "kind": "input"
+        },
+        {
+          "name": "as",
+          "transient": "qact_ds",
+          "position": 7,
+          "kind": "input"
+        },
+        {
+          "name": "asum",
+          "transient": "qact_sums",
+          "position": 8,
+          "kind": "input"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.col_workgroups",
+          "derived.row_workgroups",
+          1
+        ],
+        "workgroup_size": [
+          128,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

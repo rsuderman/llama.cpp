@@ -1,0 +1,763 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "sum_slices_f32",
+  "format": "loom",
+  "priority": 510,
+  "tensors": {
+    "selected": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "nslices",
+        "ntokens",
+        "selected_batch"
+      ]
+    },
+    "weights_dst": {
+      "type": "F32",
+      "shape": [
+        "weights_one",
+        "weights_selected",
+        "weights_tokens",
+        "weights_batch"
+      ]
+    },
+    "weighted": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "nslices",
+        "ntokens",
+        "selected_batch"
+      ]
+    },
+    "slice0_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "slice0_batch2",
+        "slice0_batch3"
+      ]
+    },
+    "slice1_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "slice1_batch2",
+        "slice1_batch3"
+      ]
+    },
+    "slice2_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "slice2_batch2",
+        "slice2_batch3"
+      ]
+    },
+    "slice3_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "slice3_batch2",
+        "slice3_batch3"
+      ]
+    },
+    "slice4_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "slice4_batch2",
+        "slice4_batch3"
+      ]
+    },
+    "slice5_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "slice5_batch2",
+        "slice5_batch3"
+      ]
+    },
+    "slice6_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "slice6_batch2",
+        "slice6_batch3"
+      ]
+    },
+    "slice7_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "slice7_batch2",
+        "slice7_batch3"
+      ]
+    },
+    "add1_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "add1_batch2",
+        "add1_batch3"
+      ]
+    },
+    "add2_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "add2_batch2",
+        "add2_batch3"
+      ]
+    },
+    "add3_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "add3_batch2",
+        "add3_batch3"
+      ]
+    },
+    "add4_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "add4_batch2",
+        "add4_batch3"
+      ]
+    },
+    "add5_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "add5_batch2",
+        "add5_batch3"
+      ]
+    },
+    "add6_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "add6_batch2",
+        "add6_batch3"
+      ]
+    },
+    "terminal_dst": {
+      "type": "F32",
+      "shape": [
+        "n",
+        "ntokens",
+        "terminal_batch2",
+        "terminal_batch3"
+      ]
+    }
+  },
+  "match": {
+    "anchors": [
+      "mul"
+    ],
+    "ops": {
+      "mul": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "selected",
+          "src1": "weights_dst",
+          "dst": "weighted"
+        },
+        "attributes": {}
+      },
+      "slice0": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice0_dst"
+        },
+        "attributes": {}
+      },
+      "slice1": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice1_dst"
+        },
+        "attributes": {}
+      },
+      "slice2": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice2_dst"
+        },
+        "attributes": {}
+      },
+      "slice3": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice3_dst"
+        },
+        "attributes": {}
+      },
+      "slice4": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice4_dst"
+        },
+        "attributes": {}
+      },
+      "slice5": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice5_dst"
+        },
+        "attributes": {}
+      },
+      "slice6": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice6_dst"
+        },
+        "attributes": {}
+      },
+      "slice7": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice7_dst"
+        },
+        "attributes": {}
+      },
+      "add1": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "slice0_dst",
+          "src1": "slice1_dst",
+          "dst": "add1_dst"
+        },
+        "attributes": {}
+      },
+      "add2": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "add1_dst",
+          "src1": "slice2_dst",
+          "dst": "add2_dst"
+        },
+        "attributes": {}
+      },
+      "add3": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "add2_dst",
+          "src1": "slice3_dst",
+          "dst": "add3_dst"
+        },
+        "attributes": {}
+      },
+      "add4": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "add3_dst",
+          "src1": "slice4_dst",
+          "dst": "add4_dst"
+        },
+        "attributes": {}
+      },
+      "add5": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "add4_dst",
+          "src1": "slice5_dst",
+          "dst": "add5_dst"
+        },
+        "attributes": {}
+      },
+      "add6": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "add5_dst",
+          "src1": "slice6_dst",
+          "dst": "add6_dst"
+        },
+        "attributes": {}
+      },
+      "add7": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "add6_dst",
+          "src1": "slice7_dst",
+          "dst": "terminal_dst"
+        },
+        "attributes": {}
+      }
+    },
+    "predicates": [
+      {
+        "field": "shape.selected.n",
+        "equals": 2048
+      },
+      {
+        "field": "shape.selected.nslices",
+        "equals": 8
+      },
+      {
+        "field": "shape.selected.ntokens",
+        "in": [
+          1,
+          512
+        ]
+      },
+      {
+        "field": "shape.selected.selected_batch",
+        "equals": 1
+      },
+      {
+        "same_shape": [
+          "selected",
+          "weighted"
+        ]
+      },
+      {
+        "field": "shape.weights_dst.weights_one",
+        "equals": 1
+      },
+      {
+        "field": "shape.weights_dst.weights_selected",
+        "equals": 8
+      },
+      {
+        "field": "shape.weights_dst.weights_tokens",
+        "in": [
+          1,
+          512
+        ]
+      },
+      {
+        "field": "shape.weights_dst.weights_tokens",
+        "equals": "shape.selected.ntokens"
+      },
+      {
+        "field": "shape.weights_dst.weights_batch",
+        "equals": 1
+      },
+      {
+        "field": "shape.terminal_dst.n",
+        "equals": 2048
+      },
+      {
+        "field": "shape.terminal_dst.ntokens",
+        "in": [
+          1,
+          512
+        ]
+      },
+      {
+        "field": "shape.terminal_dst.terminal_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.terminal_dst.terminal_batch3",
+        "equals": 1
+      },
+      {
+        "same_shape": [
+          "slice0_dst",
+          "slice1_dst",
+          "slice2_dst",
+          "slice3_dst",
+          "slice4_dst",
+          "slice5_dst",
+          "slice6_dst",
+          "slice7_dst",
+          "add1_dst",
+          "add2_dst",
+          "add3_dst",
+          "add4_dst",
+          "add5_dst",
+          "add6_dst",
+          "terminal_dst"
+        ]
+      },
+      {
+        "contiguous": "selected"
+      },
+      {
+        "contiguous": "weights_dst"
+      },
+      {
+        "contiguous": "weighted"
+      },
+      {
+        "contiguous": "add1_dst"
+      },
+      {
+        "contiguous": "add2_dst"
+      },
+      {
+        "contiguous": "add3_dst"
+      },
+      {
+        "contiguous": "add4_dst"
+      },
+      {
+        "contiguous": "add5_dst"
+      },
+      {
+        "contiguous": "add6_dst"
+      },
+      {
+        "contiguous": "terminal_dst"
+      },
+      {
+        "field": "tensor.selected.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.selected.element_strides.1",
+        "equals": 2048
+      },
+      {
+        "field": "tensor.selected.element_strides.2",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.weights_dst.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.weights_dst.element_strides.1",
+        "equals": 1
+      },
+      {
+        "field": "tensor.weights_dst.element_strides.2",
+        "equals": 8
+      },
+      {
+        "field": "tensor.terminal_dst.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.terminal_dst.element_strides.1",
+        "equals": 2048
+      },
+      {
+        "field": "tensor.slice0_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice1_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice2_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice3_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice4_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice5_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice6_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice7_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice0_dst.view_offset_bytes",
+        "equals": 0
+      },
+      {
+        "field": "tensor.slice1_dst.view_offset_bytes",
+        "equals": 8192
+      },
+      {
+        "field": "tensor.slice2_dst.view_offset_bytes",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice3_dst.view_offset_bytes",
+        "equals": 24576
+      },
+      {
+        "field": "tensor.slice4_dst.view_offset_bytes",
+        "equals": 32768
+      },
+      {
+        "field": "tensor.slice5_dst.view_offset_bytes",
+        "equals": 40960
+      },
+      {
+        "field": "tensor.slice6_dst.view_offset_bytes",
+        "equals": 49152
+      },
+      {
+        "field": "tensor.slice7_dst.view_offset_bytes",
+        "equals": 57344
+      },
+      {
+        "elided": [
+          "weighted",
+          "slice0_dst",
+          "slice1_dst",
+          "slice2_dst",
+          "slice3_dst",
+          "slice4_dst",
+          "slice5_dst",
+          "slice6_dst",
+          "slice7_dst",
+          "add1_dst",
+          "add2_dst",
+          "add3_dst",
+          "add4_dst",
+          "add5_dst",
+          "add6_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "selected",
+          "terminal_dst"
+        ]
+      }
+    ]
+  },
+  "derived": {
+    "snapshot_elements": {
+      "type": "i64",
+      "product": [
+        "shape.weights_dst.weights_selected",
+        "shape.weights_dst.weights_tokens"
+      ]
+    },
+    "snapshot_bytes_per_element": {
+      "type": "i64",
+      "value": 4
+    },
+    "snapshot_bytes": {
+      "type": "i64",
+      "product": [
+        "derived.snapshot_elements",
+        "derived.snapshot_bytes_per_element"
+      ]
+    },
+    "snapshot_workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.weights_dst.weights_tokens",
+        256
+      ]
+    }
+  },
+  "transient_buffers": {
+    "moe_router_weight_snapshot_weights": {
+      "size": "derived.snapshot_bytes"
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "moe_router_weight_snapshot",
+      "definition": "../../../../defs/gfx1151/prepass/moe_router_snapshot_pp512.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_sumslices_n",
+            "type": "i64",
+            "source": "shape.selected.n"
+          },
+          {
+            "name": "hrx2_shape_sumslices_ntokens",
+            "type": "i64",
+            "source": "shape.weights_dst.weights_tokens"
+          },
+          {
+            "name": "hrx2_shape_sumslices_nslices",
+            "type": "i64",
+            "source": "shape.selected.nslices"
+          },
+          {
+            "name": "hrx2_shape_sumslices_src_slice_stride",
+            "type": "i64",
+            "source": "tensor.selected.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_sumslices_src_token_stride",
+            "type": "i64",
+            "source": "tensor.selected.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_sumslices_dst_token_stride",
+            "type": "i64",
+            "source": "tensor.terminal_dst.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_sumslices_router_source_stride",
+            "type": "i64",
+            "source": "tensor.weights_dst.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_sumslices_router_source_offset",
+            "type": "i64",
+            "value": 0
+          },
+          {
+            "name": "hrx2_tuning_sumslices_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "router_source",
+          "tensor": "weights_dst",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "snapshot",
+          "transient": "moe_router_weight_snapshot_weights",
+          "position": 1,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.snapshot_workgroups",
+          1,
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/mul/f32/sum_slices_pp512.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_sumslices_n",
+            "type": "i64",
+            "source": "shape.selected.n"
+          },
+          {
+            "name": "hrx2_shape_sumslices_ntokens",
+            "type": "i64",
+            "source": "shape.selected.ntokens"
+          },
+          {
+            "name": "hrx2_shape_sumslices_nslices",
+            "type": "i64",
+            "source": "shape.selected.nslices"
+          },
+          {
+            "name": "hrx2_shape_sumslices_src_slice_stride",
+            "type": "i64",
+            "source": "tensor.selected.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_sumslices_src_token_stride",
+            "type": "i64",
+            "source": "tensor.selected.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_sumslices_dst_token_stride",
+            "type": "i64",
+            "source": "tensor.terminal_dst.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_sumslices_router_source_stride",
+            "type": "i64",
+            "source": "tensor.weights_dst.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_sumslices_router_source_offset",
+            "type": "i64",
+            "value": 0
+          },
+          {
+            "name": "hrx2_tuning_sumslices_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "selected",
+          "tensor": "selected",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "terminal_dst",
+          "position": 1,
+          "kind": "output"
+        },
+        {
+          "name": "router_source_unused",
+          "tensor": "weights_dst",
+          "position": 2,
+          "kind": "input"
+        },
+        {
+          "name": "snapshot",
+          "transient": "moe_router_weight_snapshot_weights",
+          "position": 3,
+          "kind": "input"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "shape.selected.ntokens",
+          1,
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

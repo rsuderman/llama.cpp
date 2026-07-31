@@ -1,0 +1,773 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "flash_attn_ext_f32_f16_wmma_gate_epilogue",
+  "format": "loom",
+  "priority": 300,
+  "tensors": {
+    "q": {
+      "type": "F32",
+      "shape": [
+        "d",
+        "ntokens",
+        "nheads",
+        "batch"
+      ]
+    },
+    "k": {
+      "type": "F16",
+      "shape": [
+        "d",
+        "nkv",
+        "nkvheads",
+        "batch"
+      ]
+    },
+    "v": {
+      "type": "F16",
+      "shape": [
+        "d",
+        "nkv",
+        "nkvheads",
+        "batch"
+      ]
+    },
+    "mask": {
+      "type": "F16",
+      "shape": [
+        "nkv",
+        "ntokens",
+        "d2",
+        "d3"
+      ]
+    },
+    "bias": {
+      "type": "F32",
+      "optional": true
+    },
+    "fa_dst": {
+      "type": "F32",
+      "shape": [
+        "d",
+        "nheads",
+        "ntokens",
+        "batch"
+      ]
+    },
+    "raw_gate": {
+      "type": "F32",
+      "shape": [
+        "d",
+        "nheads",
+        "ntokens",
+        "batch"
+      ]
+    },
+    "cont_dst": {
+      "type": "F32"
+    },
+    "sigmoid_dst": {
+      "type": "F32"
+    },
+    "terminal_dst": {
+      "type": "F32",
+      "shape": [
+        "attention_width",
+        "ntokens",
+        "plane",
+        "batch"
+      ]
+    },
+    "fa_reshape_dst": {
+      "type": "F32",
+      "shape": [
+        "attention_width",
+        "ntokens",
+        "plane",
+        "batch"
+      ]
+    },
+    "raw_gate_source": {
+      "type": "F32"
+    }
+  },
+  "match": {
+    "anchors": [
+      "fa"
+    ],
+    "ops": {
+      "fa": {
+        "op": "GGML_OP_FLASH_ATTN_EXT",
+        "tensors": {
+          "src0": "q",
+          "src1": "k",
+          "src2": "v",
+          "src3": "mask",
+          "src4": "bias",
+          "dst": "fa_dst"
+        },
+        "attributes": {
+          "scale": {
+            "type": "f32",
+            "source": "op_param.0"
+          },
+          "max_bias": {
+            "type": "f32",
+            "source": "op_param.1"
+          },
+          "logit_softcap": {
+            "type": "f32",
+            "source": "op_param.2"
+          }
+        }
+      },
+      "fa_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "fa_dst",
+          "dst": "fa_reshape_dst"
+        },
+        "attributes": {}
+      },
+      "gate_view": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "raw_gate_source",
+          "dst": "raw_gate"
+        },
+        "attributes": {}
+      },
+      "cont": {
+        "op": "GGML_OP_CONT",
+        "tensors": {
+          "src0": "raw_gate",
+          "dst": "cont_dst"
+        },
+        "attributes": {}
+      },
+      "sigmoid": {
+        "op": "GGML_OP_UNARY",
+        "tensors": {
+          "src0": "cont_dst",
+          "dst": "sigmoid_dst"
+        },
+        "attributes": {
+          "unary_op": {
+            "type": "i32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "mul": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "fa_reshape_dst",
+          "src1": "sigmoid_dst",
+          "dst": "terminal_dst"
+        },
+        "attributes": {}
+      }
+    },
+    "predicates": [
+      {
+        "src_absent": "bias"
+      },
+      {
+        "field": "attribute.fa.max_bias",
+        "equals": 0.0
+      },
+      {
+        "field": "attribute.fa.logit_softcap",
+        "equals": 0.0
+      },
+      {
+        "field": "attribute.sigmoid.unary_op",
+        "equals": 7
+      },
+      {
+        "field": "shape.q.d",
+        "equals": 256
+      },
+      {
+        "field": "shape.q.ntokens",
+        "equals": 512
+      },
+      {
+        "field": "shape.q.nheads",
+        "equals": 16
+      },
+      {
+        "field": "shape.q.batch",
+        "equals": 1
+      },
+      {
+        "field": "shape.q.d",
+        "multiple_of": 32
+      },
+      {
+        "field": "shape.q.d",
+        "max": 1024
+      },
+      {
+        "field": "shape.q.ntokens",
+        "multiple_of": 32
+      },
+      {
+        "field": "shape.k.d",
+        "equals": "shape.q.d"
+      },
+      {
+        "field": "shape.k.nkv",
+        "equals": 512
+      },
+      {
+        "field": "shape.k.nkv",
+        "multiple_of": 16
+      },
+      {
+        "field": "shape.k.nkvheads",
+        "equals": 2
+      },
+      {
+        "field": "shape.k.batch",
+        "equals": 1
+      },
+      {
+        "field": "shape.q.nheads",
+        "divisible_by": "shape.k.nkvheads"
+      },
+      {
+        "field": "shape.v.d",
+        "equals": "shape.q.d"
+      },
+      {
+        "field": "shape.v.nkv",
+        "equals": "shape.k.nkv"
+      },
+      {
+        "field": "shape.v.nkvheads",
+        "equals": "shape.k.nkvheads"
+      },
+      {
+        "field": "shape.v.batch",
+        "equals": 1
+      },
+      {
+        "field": "shape.mask.nkv",
+        "min": "shape.k.nkv"
+      },
+      {
+        "field": "shape.fa_dst.d",
+        "equals": "shape.q.d"
+      },
+      {
+        "field": "shape.fa_dst.nheads",
+        "equals": "shape.q.nheads"
+      },
+      {
+        "field": "shape.fa_dst.ntokens",
+        "equals": "shape.q.ntokens"
+      },
+      {
+        "field": "shape.fa_dst.batch",
+        "equals": "shape.q.batch"
+      },
+      {
+        "field": "shape.terminal_dst.attention_width",
+        "equals": "derived.attention_width"
+      },
+      {
+        "field": "shape.terminal_dst.plane",
+        "equals": 1
+      },
+      {
+        "same_shape": [
+          "raw_gate",
+          "fa_dst"
+        ]
+      },
+      {
+        "same_shape": [
+          "cont_dst",
+          "sigmoid_dst",
+          "terminal_dst"
+        ]
+      },
+      {
+        "field": "tensor.fa_dst.element_count",
+        "equals": "tensor.terminal_dst.element_count"
+      },
+      {
+        "field": "tensor.raw_gate.element_count",
+        "equals": "tensor.terminal_dst.element_count"
+      },
+      {
+        "field": "tensor.q.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.q.strides.0",
+        "equals": 4
+      },
+      {
+        "field": "tensor.q.element_strides.1",
+        "equals": 4096
+      },
+      {
+        "field": "tensor.q.element_strides.2",
+        "equals": 256
+      },
+      {
+        "field": "tensor.q.strides.1",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.q.strides.2",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.k.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.k.strides.0",
+        "equals": 2
+      },
+      {
+        "field": "tensor.k.element_strides.1",
+        "equals": 512
+      },
+      {
+        "field": "tensor.k.element_strides.2",
+        "equals": 256
+      },
+      {
+        "field": "tensor.v.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.v.strides.0",
+        "equals": 2
+      },
+      {
+        "field": "tensor.v.element_strides.1",
+        "equals": 512
+      },
+      {
+        "field": "tensor.v.element_strides.2",
+        "equals": 256
+      },
+      {
+        "field": "tensor.mask.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.mask.strides.0",
+        "equals": 2
+      },
+      {
+        "field": "tensor.mask.element_strides.1",
+        "equals": 512
+      },
+      {
+        "field": "tensor.fa_dst.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.fa_dst.strides.0",
+        "equals": 4
+      },
+      {
+        "field": "tensor.fa_dst.element_strides.1",
+        "equals": 256
+      },
+      {
+        "field": "tensor.fa_dst.element_strides.2",
+        "equals": 4096
+      },
+      {
+        "field": "tensor.fa_dst.strides.1",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.fa_dst.strides.2",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.q.element_strides.0",
+        "equals": "tensor.fa_dst.element_strides.0"
+      },
+      {
+        "field": "tensor.q.element_strides.1",
+        "equals": "tensor.fa_dst.element_strides.2"
+      },
+      {
+        "field": "tensor.q.element_strides.2",
+        "equals": "tensor.fa_dst.element_strides.1"
+      },
+      {
+        "field": "tensor.raw_gate.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.raw_gate.strides.0",
+        "equals": 4
+      },
+      {
+        "field": "tensor.raw_gate.element_strides.1",
+        "equals": 512
+      },
+      {
+        "field": "tensor.raw_gate.element_strides.2",
+        "equals": 8192
+      },
+      {
+        "field": "tensor.k.strides.1",
+        "divisible_by": 2
+      },
+      {
+        "field": "tensor.k.strides.2",
+        "divisible_by": 2
+      },
+      {
+        "field": "tensor.v.strides.1",
+        "divisible_by": 2
+      },
+      {
+        "field": "tensor.v.strides.2",
+        "divisible_by": 2
+      },
+      {
+        "field": "tensor.mask.strides.1",
+        "divisible_by": 2
+      },
+      {
+        "field": "tensor.raw_gate.strides.1",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.raw_gate.strides.2",
+        "divisible_by": 4
+      },
+      {
+        "contiguous": "fa_dst"
+      },
+      {
+        "contiguous": "cont_dst"
+      },
+      {
+        "contiguous": "sigmoid_dst"
+      },
+      {
+        "contiguous": "terminal_dst"
+      },
+      {
+        "elided": [
+          "fa_dst",
+          "cont_dst",
+          "sigmoid_dst",
+          "fa_reshape_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "q",
+          "terminal_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "q",
+          "k"
+        ]
+      },
+      {
+        "no_overlap": [
+          "q",
+          "v"
+        ]
+      },
+      {
+        "no_overlap": [
+          "q",
+          "mask"
+        ]
+      },
+      {
+        "no_overlap": [
+          "q",
+          "raw_gate"
+        ]
+      },
+      {
+        "no_overlap": [
+          "k",
+          "v"
+        ]
+      },
+      {
+        "no_overlap": [
+          "k",
+          "mask"
+        ]
+      },
+      {
+        "no_overlap": [
+          "k",
+          "raw_gate"
+        ]
+      },
+      {
+        "no_overlap": [
+          "v",
+          "mask"
+        ]
+      },
+      {
+        "no_overlap": [
+          "v",
+          "raw_gate"
+        ]
+      },
+      {
+        "no_overlap": [
+          "mask",
+          "raw_gate"
+        ]
+      },
+      {
+        "no_overlap": [
+          "terminal_dst",
+          "k"
+        ]
+      },
+      {
+        "no_overlap": [
+          "terminal_dst",
+          "v"
+        ]
+      },
+      {
+        "no_overlap": [
+          "terminal_dst",
+          "mask"
+        ]
+      },
+      {
+        "no_overlap": [
+          "terminal_dst",
+          "raw_gate"
+        ]
+      },
+      {
+        "no_overlap": [
+          "fa_dst",
+          "q"
+        ]
+      },
+      {
+        "no_overlap": [
+          "fa_dst",
+          "k"
+        ]
+      },
+      {
+        "no_overlap": [
+          "fa_dst",
+          "v"
+        ]
+      },
+      {
+        "no_overlap": [
+          "fa_dst",
+          "mask"
+        ]
+      },
+      {
+        "no_overlap": [
+          "fa_dst",
+          "raw_gate"
+        ]
+      },
+      {
+        "no_overlap": [
+          "fa_dst",
+          "terminal_dst"
+        ]
+      }
+    ]
+  },
+  "derived": {
+    "attention_width": {
+      "type": "i64",
+      "product": [
+        "shape.q.d",
+        "shape.q.nheads"
+      ]
+    },
+    "gqa": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.q.nheads",
+        "shape.k.nkvheads"
+      ]
+    },
+    "ntiles": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.q.ntokens",
+        32
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/flash_attn_ext/f32_f16/wmma_gate_epilogue.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_fa_d",
+            "type": "i64",
+            "source": "shape.q.d"
+          },
+          {
+            "name": "hrx2_shape_fa_ntokens",
+            "type": "i64",
+            "source": "shape.q.ntokens"
+          },
+          {
+            "name": "hrx2_shape_fa_nheads",
+            "type": "i64",
+            "source": "shape.q.nheads"
+          },
+          {
+            "name": "hrx2_shape_fa_nkv",
+            "type": "i64",
+            "source": "shape.k.nkv"
+          },
+          {
+            "name": "hrx2_shape_fa_gqa",
+            "type": "i64",
+            "source": "derived.gqa"
+          },
+          {
+            "name": "hrx2_shape_fa_q_stride_token",
+            "type": "i64",
+            "source": "tensor.q.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_fa_q_stride_head",
+            "type": "i64",
+            "source": "tensor.q.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_fa_k_stride_pos",
+            "type": "i64",
+            "source": "tensor.k.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_fa_k_stride_head",
+            "type": "i64",
+            "source": "tensor.k.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_fa_v_stride_pos",
+            "type": "i64",
+            "source": "tensor.v.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_fa_v_stride_head",
+            "type": "i64",
+            "source": "tensor.v.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_fa_mask_stride_token",
+            "type": "i64",
+            "source": "tensor.mask.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_fa_dst_stride_head",
+            "type": "i64",
+            "source": "tensor.fa_dst.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_fa_dst_stride_token",
+            "type": "i64",
+            "source": "tensor.fa_dst.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_fa_gate_stride_head",
+            "type": "i64",
+            "source": "tensor.raw_gate.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_fa_gate_stride_token",
+            "type": "i64",
+            "source": "tensor.raw_gate.element_strides.2"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "q",
+          "tensor": "q",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "k",
+          "tensor": "k",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "v",
+          "tensor": "v",
+          "position": 2,
+          "kind": "input"
+        },
+        {
+          "name": "mask",
+          "tensor": "mask",
+          "position": 3,
+          "kind": "input"
+        },
+        {
+          "name": "gate",
+          "tensor": "raw_gate",
+          "position": 4,
+          "kind": "input"
+        },
+        {
+          "name": "out",
+          "tensor": "terminal_dst",
+          "position": 5,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "scale",
+          "type": "f32",
+          "position": 0,
+          "source": "attribute.fa.scale"
+        }
+      ],
+      "dispatch": {
+        "workgroups": [
+          "derived.ntiles",
+          "shape.q.nheads"
+        ],
+        "workgroup_size": [
+          128,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

@@ -446,6 +446,11 @@
         "mode": "compile",
         "bindings": [
           {
+            "name": "hrx2_shape_fa_d",
+            "type": "i64",
+            "source": "shape.src0.d"
+          },
+          {
             "name": "hrx2_shape_fa_ntokens",
             "type": "i64",
             "source": "shape.src0.ntokens"

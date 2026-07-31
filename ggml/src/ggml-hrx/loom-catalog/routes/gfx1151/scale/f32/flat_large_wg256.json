@@ -109,6 +109,21 @@
             "source": "derived.balanced_rows"
           },
           {
+            "name": "hrx2_shape_pointwise_src0_row_stride",
+            "type": "i64",
+            "value": 65536
+          },
+          {
+            "name": "hrx2_shape_pointwise_src1_row_stride",
+            "type": "i64",
+            "value": 0
+          },
+          {
+            "name": "hrx2_shape_pointwise_src1_ncols",
+            "type": "i64",
+            "value": 1
+          },
+          {
             "name": "hrx2_tuning_pointwise_workgroup_size",
             "type": "i64",
             "value": 256

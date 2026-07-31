@@ -1,0 +1,30 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "gated_delta_net_f32_sv128_qk_l2_full_head_rms_scale_fused_wg256",
+  "op": "GGML_OP_L2_NORM",
+  "source": "sources/gfx1151/graph/gated_delta_net_f32_sv128_qk_l2_full_head_rms_scale_fused.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_gated_delta_net_f32_sv128_qk_l2_full_head_rms_scale_fused",
+  "abi": {
+    "binding_count": 8,
+    "parameter_count": 9,
+    "constant_byte_length": 4
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [
+    {
+      "name": "scale",
+      "type": "f32"
+    }
+  ],
+  "bindings": [
+    {"name": "q", "access": "read"},
+    {"name": "k", "access": "read"},
+    {"name": "v", "access": "read"},
+    {"name": "g", "access": "read"},
+    {"name": "beta", "access": "read"},
+    {"name": "state_in", "access": "read"},
+    {"name": "dst", "access": "write"},
+    {"name": "rms_scales", "access": "write"}
+  ]
+}

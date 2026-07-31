@@ -144,6 +144,11 @@
         "mode": "compile",
         "bindings": [
           {
+            "name": "hrx2_shape_ssm_conv_d_conv",
+            "type": "i64",
+            "source": "shape.src1.taps"
+          },
+          {
             "name": "hrx2_shape_ssm_conv_d_inner",
             "type": "i64",
             "source": "shape.dst.channels"

@@ -125,6 +125,21 @@
             "source": "derived.nrows"
           },
           {
+            "name": "hrx2_shape_swiglu_src_stride",
+            "type": "i64",
+            "value": 1
+          },
+          {
+            "name": "hrx2_shape_swiglu_x_offset",
+            "type": "i64",
+            "value": 0
+          },
+          {
+            "name": "hrx2_shape_swiglu_g_offset",
+            "type": "i64",
+            "value": 0
+          },
+          {
             "name": "hrx2_tuning_swiglu_workgroup_size",
             "type": "i64",
             "value": 256

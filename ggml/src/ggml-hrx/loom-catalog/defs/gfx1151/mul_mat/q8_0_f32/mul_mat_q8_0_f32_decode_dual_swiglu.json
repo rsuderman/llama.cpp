@@ -1,0 +1,21 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "mul_mat_q8_0_f32_decode_dual_swiglu",
+  "op": "GGML_OP_MUL_MAT",
+  "source": "sources/gfx1151/mul_mat/q8_0_f32/mul_mat_q8_0_f32_decode_dual_swiglu.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_mul_mat_q8_0_f32_decode_dual_swiglu",
+  "abi": {
+    "binding_count": 4,
+    "parameter_count": 4,
+    "constant_byte_length": 0
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [],
+  "bindings": [
+    {"name": "gate_weights", "access": "read"},
+    {"name": "up_weights", "access": "read"},
+    {"name": "src1", "access": "read"},
+    {"name": "dst", "access": "write"}
+  ]
+}

@@ -11,24 +11,24 @@
 // Admission is restricted to the exact PP512 shape and proves that state, x,
 // destination, and cache do not overlap.
 
-config.decl @hrx2.shape.concat_tail.d_conv : %value: index where [range(%value, 4, 4)]
-config.decl @hrx2.shape.concat_tail.d_inner : %value: index where [range(%value, 8192, 8192)]
-config.decl @hrx2.shape.concat_tail.n_t : %value: index where [range(%value, 512, 512)]
-config.decl @hrx2.shape.concat_tail.n_s : %value: index where [range(%value, 1, 1)]
-config.decl @hrx2.shape.concat_tail.state_row_stride : %value: index where [range(%value, 8192, 8192)]
-config.decl @hrx2.shape.concat_tail.x_row_stride : %value: index where [range(%value, 1, 16777216)]
-config.decl @hrx2.shape.concat_tail.dst_row_stride : %value: index where [range(%value, 1, 16777216)]
-config.decl @hrx2.shape.concat_tail.cache_row_stride : %value: index where [range(%value, 1, 16777216)]
-config.decl @hrx2.tuning.concat_tail.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+config.decl @hrx2_shape_concat_tail_d_conv : %value: index where [range(%value, 4, 4)]
+config.decl @hrx2_shape_concat_tail_d_inner : %value: index where [range(%value, 8192, 8192)]
+config.decl @hrx2_shape_concat_tail_n_t : %value: index where [range(%value, 512, 512)]
+config.decl @hrx2_shape_concat_tail_n_s : %value: index where [range(%value, 1, 1)]
+config.decl @hrx2_shape_concat_tail_state_row_stride : %value: index where [range(%value, 8192, 8192)]
+config.decl @hrx2_shape_concat_tail_x_row_stride : %value: index where [range(%value, 1, 16777216)]
+config.decl @hrx2_shape_concat_tail_dst_row_stride : %value: index where [range(%value, 1, 16777216)]
+config.decl @hrx2_shape_concat_tail_cache_row_stride : %value: index where [range(%value, 1, 16777216)]
+config.decl @hrx2_tuning_concat_tail_workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
 
 kernel.def export("hrx2_concat_window_tail") @hrx2_concat_window_tail() {
   %unit = index.constant 1 : index
   %minus_one = index.constant -1 : index
   %x_snapshot_rows = index.constant 61 : index
-  %d_conv = config.get @hrx2.shape.concat_tail.d_conv : index
-  %d_inner = config.get @hrx2.shape.concat_tail.d_inner : index
-  %n_s = config.get @hrx2.shape.concat_tail.n_s : index
-  %wg = config.get @hrx2.tuning.concat_tail.workgroup_size : index
+  %d_conv = config.get @hrx2_shape_concat_tail_d_conv : index
+  %d_inner = config.get @hrx2_shape_concat_tail_d_inner : index
+  %n_s = config.get @hrx2_shape_concat_tail_n_s : index
+  %wg = config.get @hrx2_tuning_concat_tail_workgroup_size : index
   %carry = index.add %d_conv, %minus_one : index
   %snapshot_rows = index.add %carry, %x_snapshot_rows : index
   %rows = index.mul %snapshot_rows, %n_s : index
@@ -42,15 +42,15 @@ kernel.def export("hrx2_concat_window_tail") @hrx2_concat_window_tail() {
   %minus_one = index.constant -1 : index
   %x_snapshot_rows = index.constant 61 : index
 
-  %d_conv = config.get @hrx2.shape.concat_tail.d_conv : index
-  %d_inner = config.get @hrx2.shape.concat_tail.d_inner : index
-  %n_t = config.get @hrx2.shape.concat_tail.n_t : index
-  %n_s = config.get @hrx2.shape.concat_tail.n_s : index
-  %srs = config.get @hrx2.shape.concat_tail.state_row_stride : index
-  %xrs = config.get @hrx2.shape.concat_tail.x_row_stride : index
-  %drs = config.get @hrx2.shape.concat_tail.dst_row_stride : index
-  %crs = config.get @hrx2.shape.concat_tail.cache_row_stride : index
-  %wg = config.get @hrx2.tuning.concat_tail.workgroup_size : index
+  %d_conv = config.get @hrx2_shape_concat_tail_d_conv : index
+  %d_inner = config.get @hrx2_shape_concat_tail_d_inner : index
+  %n_t = config.get @hrx2_shape_concat_tail_n_t : index
+  %n_s = config.get @hrx2_shape_concat_tail_n_s : index
+  %srs = config.get @hrx2_shape_concat_tail_state_row_stride : index
+  %xrs = config.get @hrx2_shape_concat_tail_x_row_stride : index
+  %drs = config.get @hrx2_shape_concat_tail_dst_row_stride : index
+  %crs = config.get @hrx2_shape_concat_tail_cache_row_stride : index
+  %wg = config.get @hrx2_tuning_concat_tail_workgroup_size : index
 
   %di = index.assume %d_inner [range(%d_inner, 8192, 8192)] : index
   %nt = index.assume %n_t [range(%n_t, 512, 512)] : index

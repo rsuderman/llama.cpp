@@ -183,6 +183,7 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
   %fzero8 = vector.constant 0.0 : vector<8xf32>
   %izero8 = vector.constant 0 : vector<8xi32>
   %k_wmma = index.constant 16 : index
+  %i8_schema = encoding.define #matrix_operand<element_format=i8, payload_elements=16, payload_registers=4> : encoding<schema>
   %k_gpc = index.constant 5 : index
   %k_meta = index.constant 4 : index
   %k_wrow = index.constant 36 : index
@@ -687,10 +688,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p0_0_0_t0_wk = index.constant 0 : index
       %q6p0_0_0_t0_ak = index.constant 0 : index
       %q6p0_0_0_t0_tb = index.constant 0 : index
-      %q6p0_0_0_t0_la = vector.fragment.load<lhs> %al_view[%q6p0_0_0_t0_tb, %q6p0_0_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p0_0_0_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p0_0_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_0_0_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p0_0_0_t0_tb, %q6p0_0_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p0_0_0_t0_la_words = vector.bitcast %q6p0_0_0_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_0_0_t0_la = vector.fragment<lhs> %q6p0_0_0_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p0_0_0_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p0_0_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_0_0_t0_ra_words = vector.bitcast %q6p0_0_0_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_0_0_t0_ra = vector.fragment<rhs> %q6p0_0_0_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p0_0_0_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p0_0_0_t0_ii = vector.mma %q6p0_0_0_t0_la, %q6p0_0_0_t0_ra, %q6p0_0_0_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p0_0_0_t0_ii = vector.mma %q6p0_0_0_t0_la, %q6p0_0_0_t0_ra, %q6p0_0_0_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p0_0_0_t0_mk = index.constant 0 : index
       %q6p0_0_0_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p0_0_0_t0_wi1 = index.add %q6p0_0_0_t0_wi0, %q6p0_0_0_t0_mk : index
@@ -820,10 +825,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p0_0_1_t0_wk = index.constant 16 : index
       %q6p0_0_1_t0_ak = index.constant 16 : index
       %q6p0_0_1_t0_tb = index.constant 0 : index
-      %q6p0_0_1_t0_la = vector.fragment.load<lhs> %al_view[%q6p0_0_1_t0_tb, %q6p0_0_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p0_0_1_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p0_0_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_0_1_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p0_0_1_t0_tb, %q6p0_0_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p0_0_1_t0_la_words = vector.bitcast %q6p0_0_1_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_0_1_t0_la = vector.fragment<lhs> %q6p0_0_1_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p0_0_1_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p0_0_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_0_1_t0_ra_words = vector.bitcast %q6p0_0_1_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_0_1_t0_ra = vector.fragment<rhs> %q6p0_0_1_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p0_0_1_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p0_0_1_t0_ii = vector.mma %q6p0_0_1_t0_la, %q6p0_0_1_t0_ra, %q6p0_0_1_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p0_0_1_t0_ii = vector.mma %q6p0_0_1_t0_la, %q6p0_0_1_t0_ra, %q6p0_0_1_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p0_0_1_t0_mk = index.constant 1 : index
       %q6p0_0_1_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p0_0_1_t0_wi1 = index.add %q6p0_0_1_t0_wi0, %q6p0_0_1_t0_mk : index
@@ -953,10 +962,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p0_1_0_t0_wk = index.constant 32 : index
       %q6p0_1_0_t0_ak = index.constant 64 : index
       %q6p0_1_0_t0_tb = index.constant 0 : index
-      %q6p0_1_0_t0_la = vector.fragment.load<lhs> %al_view[%q6p0_1_0_t0_tb, %q6p0_1_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p0_1_0_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p0_1_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_1_0_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p0_1_0_t0_tb, %q6p0_1_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p0_1_0_t0_la_words = vector.bitcast %q6p0_1_0_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_1_0_t0_la = vector.fragment<lhs> %q6p0_1_0_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p0_1_0_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p0_1_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_1_0_t0_ra_words = vector.bitcast %q6p0_1_0_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_1_0_t0_ra = vector.fragment<rhs> %q6p0_1_0_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p0_1_0_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p0_1_0_t0_ii = vector.mma %q6p0_1_0_t0_la, %q6p0_1_0_t0_ra, %q6p0_1_0_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p0_1_0_t0_ii = vector.mma %q6p0_1_0_t0_la, %q6p0_1_0_t0_ra, %q6p0_1_0_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p0_1_0_t0_mk = index.constant 2 : index
       %q6p0_1_0_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p0_1_0_t0_wi1 = index.add %q6p0_1_0_t0_wi0, %q6p0_1_0_t0_mk : index
@@ -1086,10 +1099,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p0_1_1_t0_wk = index.constant 48 : index
       %q6p0_1_1_t0_ak = index.constant 80 : index
       %q6p0_1_1_t0_tb = index.constant 0 : index
-      %q6p0_1_1_t0_la = vector.fragment.load<lhs> %al_view[%q6p0_1_1_t0_tb, %q6p0_1_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p0_1_1_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p0_1_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_1_1_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p0_1_1_t0_tb, %q6p0_1_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p0_1_1_t0_la_words = vector.bitcast %q6p0_1_1_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_1_1_t0_la = vector.fragment<lhs> %q6p0_1_1_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p0_1_1_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p0_1_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_1_1_t0_ra_words = vector.bitcast %q6p0_1_1_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_1_1_t0_ra = vector.fragment<rhs> %q6p0_1_1_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p0_1_1_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p0_1_1_t0_ii = vector.mma %q6p0_1_1_t0_la, %q6p0_1_1_t0_ra, %q6p0_1_1_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p0_1_1_t0_ii = vector.mma %q6p0_1_1_t0_la, %q6p0_1_1_t0_ra, %q6p0_1_1_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p0_1_1_t0_mk = index.constant 3 : index
       %q6p0_1_1_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p0_1_1_t0_wi1 = index.add %q6p0_1_1_t0_wi0, %q6p0_1_1_t0_mk : index
@@ -1220,10 +1237,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p0_0_0_t1_wk = index.constant 0 : index
       %q6p0_0_0_t1_ak = index.constant 0 : index
       %q6p0_0_0_t1_tb = index.constant 16 : index
-      %q6p0_0_0_t1_la = vector.fragment.load<lhs> %al_view[%q6p0_0_0_t1_tb, %q6p0_0_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p0_0_0_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p0_0_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_0_0_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p0_0_0_t1_tb, %q6p0_0_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p0_0_0_t1_la_words = vector.bitcast %q6p0_0_0_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_0_0_t1_la = vector.fragment<lhs> %q6p0_0_0_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p0_0_0_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p0_0_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_0_0_t1_ra_words = vector.bitcast %q6p0_0_0_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_0_0_t1_ra = vector.fragment<rhs> %q6p0_0_0_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p0_0_0_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p0_0_0_t1_ii = vector.mma %q6p0_0_0_t1_la, %q6p0_0_0_t1_ra, %q6p0_0_0_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p0_0_0_t1_ii = vector.mma %q6p0_0_0_t1_la, %q6p0_0_0_t1_ra, %q6p0_0_0_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p0_0_0_t1_mk = index.constant 0 : index
       %q6p0_0_0_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p0_0_0_t1_wi1 = index.add %q6p0_0_0_t1_wi0, %q6p0_0_0_t1_mk : index
@@ -1353,10 +1374,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p0_0_1_t1_wk = index.constant 16 : index
       %q6p0_0_1_t1_ak = index.constant 16 : index
       %q6p0_0_1_t1_tb = index.constant 16 : index
-      %q6p0_0_1_t1_la = vector.fragment.load<lhs> %al_view[%q6p0_0_1_t1_tb, %q6p0_0_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p0_0_1_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p0_0_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_0_1_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p0_0_1_t1_tb, %q6p0_0_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p0_0_1_t1_la_words = vector.bitcast %q6p0_0_1_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_0_1_t1_la = vector.fragment<lhs> %q6p0_0_1_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p0_0_1_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p0_0_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_0_1_t1_ra_words = vector.bitcast %q6p0_0_1_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_0_1_t1_ra = vector.fragment<rhs> %q6p0_0_1_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p0_0_1_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p0_0_1_t1_ii = vector.mma %q6p0_0_1_t1_la, %q6p0_0_1_t1_ra, %q6p0_0_1_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p0_0_1_t1_ii = vector.mma %q6p0_0_1_t1_la, %q6p0_0_1_t1_ra, %q6p0_0_1_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p0_0_1_t1_mk = index.constant 1 : index
       %q6p0_0_1_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p0_0_1_t1_wi1 = index.add %q6p0_0_1_t1_wi0, %q6p0_0_1_t1_mk : index
@@ -1486,10 +1511,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p0_1_0_t1_wk = index.constant 32 : index
       %q6p0_1_0_t1_ak = index.constant 64 : index
       %q6p0_1_0_t1_tb = index.constant 16 : index
-      %q6p0_1_0_t1_la = vector.fragment.load<lhs> %al_view[%q6p0_1_0_t1_tb, %q6p0_1_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p0_1_0_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p0_1_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_1_0_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p0_1_0_t1_tb, %q6p0_1_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p0_1_0_t1_la_words = vector.bitcast %q6p0_1_0_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_1_0_t1_la = vector.fragment<lhs> %q6p0_1_0_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p0_1_0_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p0_1_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_1_0_t1_ra_words = vector.bitcast %q6p0_1_0_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_1_0_t1_ra = vector.fragment<rhs> %q6p0_1_0_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p0_1_0_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p0_1_0_t1_ii = vector.mma %q6p0_1_0_t1_la, %q6p0_1_0_t1_ra, %q6p0_1_0_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p0_1_0_t1_ii = vector.mma %q6p0_1_0_t1_la, %q6p0_1_0_t1_ra, %q6p0_1_0_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p0_1_0_t1_mk = index.constant 2 : index
       %q6p0_1_0_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p0_1_0_t1_wi1 = index.add %q6p0_1_0_t1_wi0, %q6p0_1_0_t1_mk : index
@@ -1619,10 +1648,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p0_1_1_t1_wk = index.constant 48 : index
       %q6p0_1_1_t1_ak = index.constant 80 : index
       %q6p0_1_1_t1_tb = index.constant 16 : index
-      %q6p0_1_1_t1_la = vector.fragment.load<lhs> %al_view[%q6p0_1_1_t1_tb, %q6p0_1_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p0_1_1_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p0_1_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_1_1_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p0_1_1_t1_tb, %q6p0_1_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p0_1_1_t1_la_words = vector.bitcast %q6p0_1_1_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_1_1_t1_la = vector.fragment<lhs> %q6p0_1_1_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p0_1_1_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p0_1_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p0_1_1_t1_ra_words = vector.bitcast %q6p0_1_1_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p0_1_1_t1_ra = vector.fragment<rhs> %q6p0_1_1_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p0_1_1_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p0_1_1_t1_ii = vector.mma %q6p0_1_1_t1_la, %q6p0_1_1_t1_ra, %q6p0_1_1_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p0_1_1_t1_ii = vector.mma %q6p0_1_1_t1_la, %q6p0_1_1_t1_ra, %q6p0_1_1_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p0_1_1_t1_mk = index.constant 3 : index
       %q6p0_1_1_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p0_1_1_t1_wi1 = index.add %q6p0_1_1_t1_wi0, %q6p0_1_1_t1_mk : index
@@ -1837,10 +1870,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p1_0_0_t0_wk = index.constant 0 : index
       %q6p1_0_0_t0_ak = index.constant 32 : index
       %q6p1_0_0_t0_tb = index.constant 0 : index
-      %q6p1_0_0_t0_la = vector.fragment.load<lhs> %al_view[%q6p1_0_0_t0_tb, %q6p1_0_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p1_0_0_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p1_0_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_0_0_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p1_0_0_t0_tb, %q6p1_0_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p1_0_0_t0_la_words = vector.bitcast %q6p1_0_0_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_0_0_t0_la = vector.fragment<lhs> %q6p1_0_0_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p1_0_0_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p1_0_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_0_0_t0_ra_words = vector.bitcast %q6p1_0_0_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_0_0_t0_ra = vector.fragment<rhs> %q6p1_0_0_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p1_0_0_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p1_0_0_t0_ii = vector.mma %q6p1_0_0_t0_la, %q6p1_0_0_t0_ra, %q6p1_0_0_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p1_0_0_t0_ii = vector.mma %q6p1_0_0_t0_la, %q6p1_0_0_t0_ra, %q6p1_0_0_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p1_0_0_t0_mk = index.constant 0 : index
       %q6p1_0_0_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p1_0_0_t0_wi1 = index.add %q6p1_0_0_t0_wi0, %q6p1_0_0_t0_mk : index
@@ -1970,10 +2007,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p1_0_1_t0_wk = index.constant 16 : index
       %q6p1_0_1_t0_ak = index.constant 48 : index
       %q6p1_0_1_t0_tb = index.constant 0 : index
-      %q6p1_0_1_t0_la = vector.fragment.load<lhs> %al_view[%q6p1_0_1_t0_tb, %q6p1_0_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p1_0_1_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p1_0_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_0_1_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p1_0_1_t0_tb, %q6p1_0_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p1_0_1_t0_la_words = vector.bitcast %q6p1_0_1_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_0_1_t0_la = vector.fragment<lhs> %q6p1_0_1_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p1_0_1_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p1_0_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_0_1_t0_ra_words = vector.bitcast %q6p1_0_1_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_0_1_t0_ra = vector.fragment<rhs> %q6p1_0_1_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p1_0_1_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p1_0_1_t0_ii = vector.mma %q6p1_0_1_t0_la, %q6p1_0_1_t0_ra, %q6p1_0_1_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p1_0_1_t0_ii = vector.mma %q6p1_0_1_t0_la, %q6p1_0_1_t0_ra, %q6p1_0_1_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p1_0_1_t0_mk = index.constant 1 : index
       %q6p1_0_1_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p1_0_1_t0_wi1 = index.add %q6p1_0_1_t0_wi0, %q6p1_0_1_t0_mk : index
@@ -2103,10 +2144,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p1_1_0_t0_wk = index.constant 32 : index
       %q6p1_1_0_t0_ak = index.constant 96 : index
       %q6p1_1_0_t0_tb = index.constant 0 : index
-      %q6p1_1_0_t0_la = vector.fragment.load<lhs> %al_view[%q6p1_1_0_t0_tb, %q6p1_1_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p1_1_0_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p1_1_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_1_0_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p1_1_0_t0_tb, %q6p1_1_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p1_1_0_t0_la_words = vector.bitcast %q6p1_1_0_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_1_0_t0_la = vector.fragment<lhs> %q6p1_1_0_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p1_1_0_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p1_1_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_1_0_t0_ra_words = vector.bitcast %q6p1_1_0_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_1_0_t0_ra = vector.fragment<rhs> %q6p1_1_0_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p1_1_0_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p1_1_0_t0_ii = vector.mma %q6p1_1_0_t0_la, %q6p1_1_0_t0_ra, %q6p1_1_0_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p1_1_0_t0_ii = vector.mma %q6p1_1_0_t0_la, %q6p1_1_0_t0_ra, %q6p1_1_0_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p1_1_0_t0_mk = index.constant 2 : index
       %q6p1_1_0_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p1_1_0_t0_wi1 = index.add %q6p1_1_0_t0_wi0, %q6p1_1_0_t0_mk : index
@@ -2236,10 +2281,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p1_1_1_t0_wk = index.constant 48 : index
       %q6p1_1_1_t0_ak = index.constant 112 : index
       %q6p1_1_1_t0_tb = index.constant 0 : index
-      %q6p1_1_1_t0_la = vector.fragment.load<lhs> %al_view[%q6p1_1_1_t0_tb, %q6p1_1_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p1_1_1_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p1_1_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_1_1_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p1_1_1_t0_tb, %q6p1_1_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p1_1_1_t0_la_words = vector.bitcast %q6p1_1_1_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_1_1_t0_la = vector.fragment<lhs> %q6p1_1_1_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p1_1_1_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p1_1_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_1_1_t0_ra_words = vector.bitcast %q6p1_1_1_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_1_1_t0_ra = vector.fragment<rhs> %q6p1_1_1_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p1_1_1_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p1_1_1_t0_ii = vector.mma %q6p1_1_1_t0_la, %q6p1_1_1_t0_ra, %q6p1_1_1_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p1_1_1_t0_ii = vector.mma %q6p1_1_1_t0_la, %q6p1_1_1_t0_ra, %q6p1_1_1_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p1_1_1_t0_mk = index.constant 3 : index
       %q6p1_1_1_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p1_1_1_t0_wi1 = index.add %q6p1_1_1_t0_wi0, %q6p1_1_1_t0_mk : index
@@ -2370,10 +2419,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p1_0_0_t1_wk = index.constant 0 : index
       %q6p1_0_0_t1_ak = index.constant 32 : index
       %q6p1_0_0_t1_tb = index.constant 16 : index
-      %q6p1_0_0_t1_la = vector.fragment.load<lhs> %al_view[%q6p1_0_0_t1_tb, %q6p1_0_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p1_0_0_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p1_0_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_0_0_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p1_0_0_t1_tb, %q6p1_0_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p1_0_0_t1_la_words = vector.bitcast %q6p1_0_0_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_0_0_t1_la = vector.fragment<lhs> %q6p1_0_0_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p1_0_0_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p1_0_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_0_0_t1_ra_words = vector.bitcast %q6p1_0_0_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_0_0_t1_ra = vector.fragment<rhs> %q6p1_0_0_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p1_0_0_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p1_0_0_t1_ii = vector.mma %q6p1_0_0_t1_la, %q6p1_0_0_t1_ra, %q6p1_0_0_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p1_0_0_t1_ii = vector.mma %q6p1_0_0_t1_la, %q6p1_0_0_t1_ra, %q6p1_0_0_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p1_0_0_t1_mk = index.constant 0 : index
       %q6p1_0_0_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p1_0_0_t1_wi1 = index.add %q6p1_0_0_t1_wi0, %q6p1_0_0_t1_mk : index
@@ -2503,10 +2556,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p1_0_1_t1_wk = index.constant 16 : index
       %q6p1_0_1_t1_ak = index.constant 48 : index
       %q6p1_0_1_t1_tb = index.constant 16 : index
-      %q6p1_0_1_t1_la = vector.fragment.load<lhs> %al_view[%q6p1_0_1_t1_tb, %q6p1_0_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p1_0_1_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p1_0_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_0_1_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p1_0_1_t1_tb, %q6p1_0_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p1_0_1_t1_la_words = vector.bitcast %q6p1_0_1_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_0_1_t1_la = vector.fragment<lhs> %q6p1_0_1_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p1_0_1_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p1_0_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_0_1_t1_ra_words = vector.bitcast %q6p1_0_1_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_0_1_t1_ra = vector.fragment<rhs> %q6p1_0_1_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p1_0_1_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p1_0_1_t1_ii = vector.mma %q6p1_0_1_t1_la, %q6p1_0_1_t1_ra, %q6p1_0_1_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p1_0_1_t1_ii = vector.mma %q6p1_0_1_t1_la, %q6p1_0_1_t1_ra, %q6p1_0_1_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p1_0_1_t1_mk = index.constant 1 : index
       %q6p1_0_1_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p1_0_1_t1_wi1 = index.add %q6p1_0_1_t1_wi0, %q6p1_0_1_t1_mk : index
@@ -2636,10 +2693,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p1_1_0_t1_wk = index.constant 32 : index
       %q6p1_1_0_t1_ak = index.constant 96 : index
       %q6p1_1_0_t1_tb = index.constant 16 : index
-      %q6p1_1_0_t1_la = vector.fragment.load<lhs> %al_view[%q6p1_1_0_t1_tb, %q6p1_1_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p1_1_0_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p1_1_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_1_0_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p1_1_0_t1_tb, %q6p1_1_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p1_1_0_t1_la_words = vector.bitcast %q6p1_1_0_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_1_0_t1_la = vector.fragment<lhs> %q6p1_1_0_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p1_1_0_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p1_1_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_1_0_t1_ra_words = vector.bitcast %q6p1_1_0_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_1_0_t1_ra = vector.fragment<rhs> %q6p1_1_0_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p1_1_0_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p1_1_0_t1_ii = vector.mma %q6p1_1_0_t1_la, %q6p1_1_0_t1_ra, %q6p1_1_0_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p1_1_0_t1_ii = vector.mma %q6p1_1_0_t1_la, %q6p1_1_0_t1_ra, %q6p1_1_0_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p1_1_0_t1_mk = index.constant 2 : index
       %q6p1_1_0_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p1_1_0_t1_wi1 = index.add %q6p1_1_0_t1_wi0, %q6p1_1_0_t1_mk : index
@@ -2769,10 +2830,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p1_1_1_t1_wk = index.constant 48 : index
       %q6p1_1_1_t1_ak = index.constant 112 : index
       %q6p1_1_1_t1_tb = index.constant 16 : index
-      %q6p1_1_1_t1_la = vector.fragment.load<lhs> %al_view[%q6p1_1_1_t1_tb, %q6p1_1_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p1_1_1_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p1_1_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_1_1_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p1_1_1_t1_tb, %q6p1_1_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p1_1_1_t1_la_words = vector.bitcast %q6p1_1_1_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_1_1_t1_la = vector.fragment<lhs> %q6p1_1_1_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p1_1_1_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p1_1_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p1_1_1_t1_ra_words = vector.bitcast %q6p1_1_1_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p1_1_1_t1_ra = vector.fragment<rhs> %q6p1_1_1_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p1_1_1_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p1_1_1_t1_ii = vector.mma %q6p1_1_1_t1_la, %q6p1_1_1_t1_ra, %q6p1_1_1_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p1_1_1_t1_ii = vector.mma %q6p1_1_1_t1_la, %q6p1_1_1_t1_ra, %q6p1_1_1_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p1_1_1_t1_mk = index.constant 3 : index
       %q6p1_1_1_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p1_1_1_t1_wi1 = index.add %q6p1_1_1_t1_wi0, %q6p1_1_1_t1_mk : index
@@ -2987,10 +3052,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p2_0_0_t0_wk = index.constant 0 : index
       %q6p2_0_0_t0_ak = index.constant 128 : index
       %q6p2_0_0_t0_tb = index.constant 0 : index
-      %q6p2_0_0_t0_la = vector.fragment.load<lhs> %al_view[%q6p2_0_0_t0_tb, %q6p2_0_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p2_0_0_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p2_0_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_0_0_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p2_0_0_t0_tb, %q6p2_0_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p2_0_0_t0_la_words = vector.bitcast %q6p2_0_0_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_0_0_t0_la = vector.fragment<lhs> %q6p2_0_0_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p2_0_0_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p2_0_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_0_0_t0_ra_words = vector.bitcast %q6p2_0_0_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_0_0_t0_ra = vector.fragment<rhs> %q6p2_0_0_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p2_0_0_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p2_0_0_t0_ii = vector.mma %q6p2_0_0_t0_la, %q6p2_0_0_t0_ra, %q6p2_0_0_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p2_0_0_t0_ii = vector.mma %q6p2_0_0_t0_la, %q6p2_0_0_t0_ra, %q6p2_0_0_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p2_0_0_t0_mk = index.constant 0 : index
       %q6p2_0_0_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p2_0_0_t0_wi1 = index.add %q6p2_0_0_t0_wi0, %q6p2_0_0_t0_mk : index
@@ -3120,10 +3189,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p2_0_1_t0_wk = index.constant 16 : index
       %q6p2_0_1_t0_ak = index.constant 144 : index
       %q6p2_0_1_t0_tb = index.constant 0 : index
-      %q6p2_0_1_t0_la = vector.fragment.load<lhs> %al_view[%q6p2_0_1_t0_tb, %q6p2_0_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p2_0_1_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p2_0_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_0_1_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p2_0_1_t0_tb, %q6p2_0_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p2_0_1_t0_la_words = vector.bitcast %q6p2_0_1_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_0_1_t0_la = vector.fragment<lhs> %q6p2_0_1_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p2_0_1_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p2_0_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_0_1_t0_ra_words = vector.bitcast %q6p2_0_1_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_0_1_t0_ra = vector.fragment<rhs> %q6p2_0_1_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p2_0_1_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p2_0_1_t0_ii = vector.mma %q6p2_0_1_t0_la, %q6p2_0_1_t0_ra, %q6p2_0_1_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p2_0_1_t0_ii = vector.mma %q6p2_0_1_t0_la, %q6p2_0_1_t0_ra, %q6p2_0_1_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p2_0_1_t0_mk = index.constant 1 : index
       %q6p2_0_1_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p2_0_1_t0_wi1 = index.add %q6p2_0_1_t0_wi0, %q6p2_0_1_t0_mk : index
@@ -3253,10 +3326,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p2_1_0_t0_wk = index.constant 32 : index
       %q6p2_1_0_t0_ak = index.constant 192 : index
       %q6p2_1_0_t0_tb = index.constant 0 : index
-      %q6p2_1_0_t0_la = vector.fragment.load<lhs> %al_view[%q6p2_1_0_t0_tb, %q6p2_1_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p2_1_0_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p2_1_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_1_0_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p2_1_0_t0_tb, %q6p2_1_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p2_1_0_t0_la_words = vector.bitcast %q6p2_1_0_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_1_0_t0_la = vector.fragment<lhs> %q6p2_1_0_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p2_1_0_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p2_1_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_1_0_t0_ra_words = vector.bitcast %q6p2_1_0_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_1_0_t0_ra = vector.fragment<rhs> %q6p2_1_0_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p2_1_0_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p2_1_0_t0_ii = vector.mma %q6p2_1_0_t0_la, %q6p2_1_0_t0_ra, %q6p2_1_0_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p2_1_0_t0_ii = vector.mma %q6p2_1_0_t0_la, %q6p2_1_0_t0_ra, %q6p2_1_0_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p2_1_0_t0_mk = index.constant 2 : index
       %q6p2_1_0_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p2_1_0_t0_wi1 = index.add %q6p2_1_0_t0_wi0, %q6p2_1_0_t0_mk : index
@@ -3386,10 +3463,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p2_1_1_t0_wk = index.constant 48 : index
       %q6p2_1_1_t0_ak = index.constant 208 : index
       %q6p2_1_1_t0_tb = index.constant 0 : index
-      %q6p2_1_1_t0_la = vector.fragment.load<lhs> %al_view[%q6p2_1_1_t0_tb, %q6p2_1_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p2_1_1_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p2_1_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_1_1_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p2_1_1_t0_tb, %q6p2_1_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p2_1_1_t0_la_words = vector.bitcast %q6p2_1_1_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_1_1_t0_la = vector.fragment<lhs> %q6p2_1_1_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p2_1_1_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p2_1_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_1_1_t0_ra_words = vector.bitcast %q6p2_1_1_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_1_1_t0_ra = vector.fragment<rhs> %q6p2_1_1_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p2_1_1_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p2_1_1_t0_ii = vector.mma %q6p2_1_1_t0_la, %q6p2_1_1_t0_ra, %q6p2_1_1_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p2_1_1_t0_ii = vector.mma %q6p2_1_1_t0_la, %q6p2_1_1_t0_ra, %q6p2_1_1_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p2_1_1_t0_mk = index.constant 3 : index
       %q6p2_1_1_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p2_1_1_t0_wi1 = index.add %q6p2_1_1_t0_wi0, %q6p2_1_1_t0_mk : index
@@ -3520,10 +3601,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p2_0_0_t1_wk = index.constant 0 : index
       %q6p2_0_0_t1_ak = index.constant 128 : index
       %q6p2_0_0_t1_tb = index.constant 16 : index
-      %q6p2_0_0_t1_la = vector.fragment.load<lhs> %al_view[%q6p2_0_0_t1_tb, %q6p2_0_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p2_0_0_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p2_0_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_0_0_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p2_0_0_t1_tb, %q6p2_0_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p2_0_0_t1_la_words = vector.bitcast %q6p2_0_0_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_0_0_t1_la = vector.fragment<lhs> %q6p2_0_0_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p2_0_0_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p2_0_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_0_0_t1_ra_words = vector.bitcast %q6p2_0_0_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_0_0_t1_ra = vector.fragment<rhs> %q6p2_0_0_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p2_0_0_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p2_0_0_t1_ii = vector.mma %q6p2_0_0_t1_la, %q6p2_0_0_t1_ra, %q6p2_0_0_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p2_0_0_t1_ii = vector.mma %q6p2_0_0_t1_la, %q6p2_0_0_t1_ra, %q6p2_0_0_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p2_0_0_t1_mk = index.constant 0 : index
       %q6p2_0_0_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p2_0_0_t1_wi1 = index.add %q6p2_0_0_t1_wi0, %q6p2_0_0_t1_mk : index
@@ -3653,10 +3738,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p2_0_1_t1_wk = index.constant 16 : index
       %q6p2_0_1_t1_ak = index.constant 144 : index
       %q6p2_0_1_t1_tb = index.constant 16 : index
-      %q6p2_0_1_t1_la = vector.fragment.load<lhs> %al_view[%q6p2_0_1_t1_tb, %q6p2_0_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p2_0_1_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p2_0_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_0_1_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p2_0_1_t1_tb, %q6p2_0_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p2_0_1_t1_la_words = vector.bitcast %q6p2_0_1_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_0_1_t1_la = vector.fragment<lhs> %q6p2_0_1_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p2_0_1_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p2_0_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_0_1_t1_ra_words = vector.bitcast %q6p2_0_1_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_0_1_t1_ra = vector.fragment<rhs> %q6p2_0_1_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p2_0_1_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p2_0_1_t1_ii = vector.mma %q6p2_0_1_t1_la, %q6p2_0_1_t1_ra, %q6p2_0_1_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p2_0_1_t1_ii = vector.mma %q6p2_0_1_t1_la, %q6p2_0_1_t1_ra, %q6p2_0_1_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p2_0_1_t1_mk = index.constant 1 : index
       %q6p2_0_1_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p2_0_1_t1_wi1 = index.add %q6p2_0_1_t1_wi0, %q6p2_0_1_t1_mk : index
@@ -3786,10 +3875,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p2_1_0_t1_wk = index.constant 32 : index
       %q6p2_1_0_t1_ak = index.constant 192 : index
       %q6p2_1_0_t1_tb = index.constant 16 : index
-      %q6p2_1_0_t1_la = vector.fragment.load<lhs> %al_view[%q6p2_1_0_t1_tb, %q6p2_1_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p2_1_0_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p2_1_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_1_0_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p2_1_0_t1_tb, %q6p2_1_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p2_1_0_t1_la_words = vector.bitcast %q6p2_1_0_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_1_0_t1_la = vector.fragment<lhs> %q6p2_1_0_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p2_1_0_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p2_1_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_1_0_t1_ra_words = vector.bitcast %q6p2_1_0_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_1_0_t1_ra = vector.fragment<rhs> %q6p2_1_0_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p2_1_0_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p2_1_0_t1_ii = vector.mma %q6p2_1_0_t1_la, %q6p2_1_0_t1_ra, %q6p2_1_0_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p2_1_0_t1_ii = vector.mma %q6p2_1_0_t1_la, %q6p2_1_0_t1_ra, %q6p2_1_0_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p2_1_0_t1_mk = index.constant 2 : index
       %q6p2_1_0_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p2_1_0_t1_wi1 = index.add %q6p2_1_0_t1_wi0, %q6p2_1_0_t1_mk : index
@@ -3919,10 +4012,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p2_1_1_t1_wk = index.constant 48 : index
       %q6p2_1_1_t1_ak = index.constant 208 : index
       %q6p2_1_1_t1_tb = index.constant 16 : index
-      %q6p2_1_1_t1_la = vector.fragment.load<lhs> %al_view[%q6p2_1_1_t1_tb, %q6p2_1_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p2_1_1_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p2_1_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_1_1_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p2_1_1_t1_tb, %q6p2_1_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p2_1_1_t1_la_words = vector.bitcast %q6p2_1_1_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_1_1_t1_la = vector.fragment<lhs> %q6p2_1_1_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p2_1_1_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p2_1_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p2_1_1_t1_ra_words = vector.bitcast %q6p2_1_1_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p2_1_1_t1_ra = vector.fragment<rhs> %q6p2_1_1_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p2_1_1_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p2_1_1_t1_ii = vector.mma %q6p2_1_1_t1_la, %q6p2_1_1_t1_ra, %q6p2_1_1_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p2_1_1_t1_ii = vector.mma %q6p2_1_1_t1_la, %q6p2_1_1_t1_ra, %q6p2_1_1_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p2_1_1_t1_mk = index.constant 3 : index
       %q6p2_1_1_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p2_1_1_t1_wi1 = index.add %q6p2_1_1_t1_wi0, %q6p2_1_1_t1_mk : index
@@ -4137,10 +4234,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p3_0_0_t0_wk = index.constant 0 : index
       %q6p3_0_0_t0_ak = index.constant 160 : index
       %q6p3_0_0_t0_tb = index.constant 0 : index
-      %q6p3_0_0_t0_la = vector.fragment.load<lhs> %al_view[%q6p3_0_0_t0_tb, %q6p3_0_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p3_0_0_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p3_0_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_0_0_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p3_0_0_t0_tb, %q6p3_0_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p3_0_0_t0_la_words = vector.bitcast %q6p3_0_0_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_0_0_t0_la = vector.fragment<lhs> %q6p3_0_0_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p3_0_0_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p3_0_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_0_0_t0_ra_words = vector.bitcast %q6p3_0_0_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_0_0_t0_ra = vector.fragment<rhs> %q6p3_0_0_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p3_0_0_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p3_0_0_t0_ii = vector.mma %q6p3_0_0_t0_la, %q6p3_0_0_t0_ra, %q6p3_0_0_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p3_0_0_t0_ii = vector.mma %q6p3_0_0_t0_la, %q6p3_0_0_t0_ra, %q6p3_0_0_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p3_0_0_t0_mk = index.constant 0 : index
       %q6p3_0_0_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p3_0_0_t0_wi1 = index.add %q6p3_0_0_t0_wi0, %q6p3_0_0_t0_mk : index
@@ -4270,10 +4371,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p3_0_1_t0_wk = index.constant 16 : index
       %q6p3_0_1_t0_ak = index.constant 176 : index
       %q6p3_0_1_t0_tb = index.constant 0 : index
-      %q6p3_0_1_t0_la = vector.fragment.load<lhs> %al_view[%q6p3_0_1_t0_tb, %q6p3_0_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p3_0_1_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p3_0_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_0_1_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p3_0_1_t0_tb, %q6p3_0_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p3_0_1_t0_la_words = vector.bitcast %q6p3_0_1_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_0_1_t0_la = vector.fragment<lhs> %q6p3_0_1_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p3_0_1_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p3_0_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_0_1_t0_ra_words = vector.bitcast %q6p3_0_1_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_0_1_t0_ra = vector.fragment<rhs> %q6p3_0_1_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p3_0_1_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p3_0_1_t0_ii = vector.mma %q6p3_0_1_t0_la, %q6p3_0_1_t0_ra, %q6p3_0_1_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p3_0_1_t0_ii = vector.mma %q6p3_0_1_t0_la, %q6p3_0_1_t0_ra, %q6p3_0_1_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p3_0_1_t0_mk = index.constant 1 : index
       %q6p3_0_1_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p3_0_1_t0_wi1 = index.add %q6p3_0_1_t0_wi0, %q6p3_0_1_t0_mk : index
@@ -4403,10 +4508,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p3_1_0_t0_wk = index.constant 32 : index
       %q6p3_1_0_t0_ak = index.constant 224 : index
       %q6p3_1_0_t0_tb = index.constant 0 : index
-      %q6p3_1_0_t0_la = vector.fragment.load<lhs> %al_view[%q6p3_1_0_t0_tb, %q6p3_1_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p3_1_0_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p3_1_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_1_0_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p3_1_0_t0_tb, %q6p3_1_0_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p3_1_0_t0_la_words = vector.bitcast %q6p3_1_0_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_1_0_t0_la = vector.fragment<lhs> %q6p3_1_0_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p3_1_0_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p3_1_0_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_1_0_t0_ra_words = vector.bitcast %q6p3_1_0_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_1_0_t0_ra = vector.fragment<rhs> %q6p3_1_0_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p3_1_0_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p3_1_0_t0_ii = vector.mma %q6p3_1_0_t0_la, %q6p3_1_0_t0_ra, %q6p3_1_0_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p3_1_0_t0_ii = vector.mma %q6p3_1_0_t0_la, %q6p3_1_0_t0_ra, %q6p3_1_0_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p3_1_0_t0_mk = index.constant 2 : index
       %q6p3_1_0_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p3_1_0_t0_wi1 = index.add %q6p3_1_0_t0_wi0, %q6p3_1_0_t0_mk : index
@@ -4536,10 +4645,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p3_1_1_t0_wk = index.constant 48 : index
       %q6p3_1_1_t0_ak = index.constant 240 : index
       %q6p3_1_1_t0_tb = index.constant 0 : index
-      %q6p3_1_1_t0_la = vector.fragment.load<lhs> %al_view[%q6p3_1_1_t0_tb, %q6p3_1_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p3_1_1_t0_ra = vector.fragment.load<rhs> %wl_view[%q6p3_1_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_1_1_t0_la_raw = vector.fragment.load<lhs> %al_view[%q6p3_1_1_t0_tb, %q6p3_1_1_t0_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p3_1_1_t0_la_words = vector.bitcast %q6p3_1_1_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_1_1_t0_la = vector.fragment<lhs> %q6p3_1_1_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p3_1_1_t0_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p3_1_1_t0_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_1_1_t0_ra_words = vector.bitcast %q6p3_1_1_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_1_1_t0_ra = vector.fragment<rhs> %q6p3_1_1_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p3_1_1_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p3_1_1_t0_ii = vector.mma %q6p3_1_1_t0_la, %q6p3_1_1_t0_ra, %q6p3_1_1_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p3_1_1_t0_ii = vector.mma %q6p3_1_1_t0_la, %q6p3_1_1_t0_ra, %q6p3_1_1_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p3_1_1_t0_mk = index.constant 3 : index
       %q6p3_1_1_t0_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p3_1_1_t0_wi1 = index.add %q6p3_1_1_t0_wi0, %q6p3_1_1_t0_mk : index
@@ -4670,10 +4783,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p3_0_0_t1_wk = index.constant 0 : index
       %q6p3_0_0_t1_ak = index.constant 160 : index
       %q6p3_0_0_t1_tb = index.constant 16 : index
-      %q6p3_0_0_t1_la = vector.fragment.load<lhs> %al_view[%q6p3_0_0_t1_tb, %q6p3_0_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p3_0_0_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p3_0_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_0_0_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p3_0_0_t1_tb, %q6p3_0_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p3_0_0_t1_la_words = vector.bitcast %q6p3_0_0_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_0_0_t1_la = vector.fragment<lhs> %q6p3_0_0_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p3_0_0_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p3_0_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_0_0_t1_ra_words = vector.bitcast %q6p3_0_0_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_0_0_t1_ra = vector.fragment<rhs> %q6p3_0_0_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p3_0_0_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p3_0_0_t1_ii = vector.mma %q6p3_0_0_t1_la, %q6p3_0_0_t1_ra, %q6p3_0_0_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p3_0_0_t1_ii = vector.mma %q6p3_0_0_t1_la, %q6p3_0_0_t1_ra, %q6p3_0_0_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p3_0_0_t1_mk = index.constant 0 : index
       %q6p3_0_0_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p3_0_0_t1_wi1 = index.add %q6p3_0_0_t1_wi0, %q6p3_0_0_t1_mk : index
@@ -4803,10 +4920,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p3_0_1_t1_wk = index.constant 16 : index
       %q6p3_0_1_t1_ak = index.constant 176 : index
       %q6p3_0_1_t1_tb = index.constant 16 : index
-      %q6p3_0_1_t1_la = vector.fragment.load<lhs> %al_view[%q6p3_0_1_t1_tb, %q6p3_0_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p3_0_1_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p3_0_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_0_1_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p3_0_1_t1_tb, %q6p3_0_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p3_0_1_t1_la_words = vector.bitcast %q6p3_0_1_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_0_1_t1_la = vector.fragment<lhs> %q6p3_0_1_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p3_0_1_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p3_0_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_0_1_t1_ra_words = vector.bitcast %q6p3_0_1_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_0_1_t1_ra = vector.fragment<rhs> %q6p3_0_1_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p3_0_1_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p3_0_1_t1_ii = vector.mma %q6p3_0_1_t1_la, %q6p3_0_1_t1_ra, %q6p3_0_1_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p3_0_1_t1_ii = vector.mma %q6p3_0_1_t1_la, %q6p3_0_1_t1_ra, %q6p3_0_1_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p3_0_1_t1_mk = index.constant 1 : index
       %q6p3_0_1_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p3_0_1_t1_wi1 = index.add %q6p3_0_1_t1_wi0, %q6p3_0_1_t1_mk : index
@@ -4936,10 +5057,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p3_1_0_t1_wk = index.constant 32 : index
       %q6p3_1_0_t1_ak = index.constant 224 : index
       %q6p3_1_0_t1_tb = index.constant 16 : index
-      %q6p3_1_0_t1_la = vector.fragment.load<lhs> %al_view[%q6p3_1_0_t1_tb, %q6p3_1_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p3_1_0_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p3_1_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_1_0_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p3_1_0_t1_tb, %q6p3_1_0_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p3_1_0_t1_la_words = vector.bitcast %q6p3_1_0_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_1_0_t1_la = vector.fragment<lhs> %q6p3_1_0_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p3_1_0_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p3_1_0_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_1_0_t1_ra_words = vector.bitcast %q6p3_1_0_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_1_0_t1_ra = vector.fragment<rhs> %q6p3_1_0_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p3_1_0_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p3_1_0_t1_ii = vector.mma %q6p3_1_0_t1_la, %q6p3_1_0_t1_ra, %q6p3_1_0_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p3_1_0_t1_ii = vector.mma %q6p3_1_0_t1_la, %q6p3_1_0_t1_ra, %q6p3_1_0_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p3_1_0_t1_mk = index.constant 2 : index
       %q6p3_1_0_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p3_1_0_t1_wi1 = index.add %q6p3_1_0_t1_wi0, %q6p3_1_0_t1_mk : index
@@ -5069,10 +5194,14 @@ kernel.def export("hrx2_mul_mat_id_q6_k_f32_mmqt_static") @hrx2_mul_mat_id_q6_k_
       %q6p3_1_1_t1_wk = index.constant 48 : index
       %q6p3_1_1_t1_ak = index.constant 240 : index
       %q6p3_1_1_t1_tb = index.constant 16 : index
-      %q6p3_1_1_t1_la = vector.fragment.load<lhs> %al_view[%q6p3_1_1_t1_tb, %q6p3_1_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %q6p3_1_1_t1_ra = vector.fragment.load<rhs> %wl_view[%q6p3_1_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_1_1_t1_la_raw = vector.fragment.load<lhs> %al_view[%q6p3_1_1_t1_tb, %q6p3_1_1_t1_ak] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %q6p3_1_1_t1_la_words = vector.bitcast %q6p3_1_1_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_1_1_t1_la = vector.fragment<lhs> %q6p3_1_1_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
+      %q6p3_1_1_t1_ra_raw = vector.fragment.load<rhs> %wl_view[%q6p3_1_1_t1_wk, %n_base] shape [%k_wmma, %k_wmma] : view<64x128xi8, %rhs_layout> -> vector<16xi8>
+      %q6p3_1_1_t1_ra_words = vector.bitcast %q6p3_1_1_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %q6p3_1_1_t1_ra = vector.fragment<rhs> %q6p3_1_1_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %i8_schema : encoding<schema>} : vector<4xi32>
       %q6p3_1_1_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %q6p3_1_1_t1_ii = vector.mma %q6p3_1_1_t1_la, %q6p3_1_1_t1_ra, %q6p3_1_1_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %q6p3_1_1_t1_ii = vector.mma %q6p3_1_1_t1_la, %q6p3_1_1_t1_ra, %q6p3_1_1_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %q6p3_1_1_t1_mk = index.constant 3 : index
       %q6p3_1_1_t1_wi0 = index.mul %n_scale0, %k_meta : index
       %q6p3_1_1_t1_wi1 = index.add %q6p3_1_1_t1_wi0, %q6p3_1_1_t1_mk : index

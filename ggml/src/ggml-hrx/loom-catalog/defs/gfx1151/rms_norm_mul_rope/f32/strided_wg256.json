@@ -1,0 +1,50 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "rms_norm_strided_mul_rope_f32",
+  "op": "GGML_OP_RMS_NORM",
+  "source": "sources/gfx1151/graph/rms_norm_strided_mul_rope_f32.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_rms_norm_strided_mul_rope_f32",
+  "abi": {
+    "binding_count": 4,
+    "parameter_count": 8,
+    "constant_byte_length": 16
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [
+    {
+      "name": "eps",
+      "type": "f32"
+    },
+    {
+      "name": "freq_base",
+      "type": "f32"
+    },
+    {
+      "name": "freq_scale",
+      "type": "f32"
+    },
+    {
+      "name": "attn_factor",
+      "type": "f32"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "src0",
+      "access": "read"
+    },
+    {
+      "name": "weight",
+      "access": "read"
+    },
+    {
+      "name": "pos",
+      "access": "read"
+    },
+    {
+      "name": "dst",
+      "access": "write"
+    }
+  ]
+}

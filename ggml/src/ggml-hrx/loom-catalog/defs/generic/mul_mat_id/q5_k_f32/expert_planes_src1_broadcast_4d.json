@@ -1,0 +1,17 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "mul_mat_id_q5_k_f32_expert_planes_src1_broadcast_4d",
+  "op": "GGML_OP_MUL_MAT_ID",
+  "source": "sources/generic/mul_mat_id/q5_k_f32/expert_planes.loom",
+  "source_format": "loom-text",
+  "symbol": "mul_mat_id_q5_k_f32_static",
+  "abi": {"binding_count": 4, "parameter_count": 4, "constant_byte_length": 0},
+  "workgroup_size": [256, 1, 1],
+  "parameters": [],
+  "bindings": [
+    {"name": "src0", "access": "read"},
+    {"name": "src1", "access": "read"},
+    {"name": "idx", "access": "read"},
+    {"name": "dst", "access": "write"}
+  ]
+}

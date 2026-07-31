@@ -658,14 +658,16 @@ def emit_field_predicate(predicate, context, schema):
 
 
 def emit_src_absent_predicate(predicate, context, schema):
-    del context
-    del schema
+    fusion_context_type = getattr(schema, "FusionRouteContext", ())
+    if isinstance(context, fusion_context_type):
+        return f"{role_var(predicate['src_absent'])} == nullptr"
     return f"{role_expr(predicate['src_absent'])} == nullptr"
 
 
 def emit_src_present_predicate(predicate, context, schema):
-    del context
-    del schema
+    fusion_context_type = getattr(schema, "FusionRouteContext", ())
+    if isinstance(context, fusion_context_type):
+        return f"{role_var(predicate['src_present'])} != nullptr"
     return f"{role_expr(predicate['src_present'])} != nullptr"
 
 

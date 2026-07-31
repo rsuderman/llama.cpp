@@ -1,0 +1,20 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "flash_attn_gate_pointwise_f32",
+  "op": "GGML_OP_CONT",
+  "source": "sources/gfx1151/graph/flash_attn_gate_pointwise_f32.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_flash_attn_gate_pointwise_f32",
+  "abi": {
+    "binding_count": 3,
+    "parameter_count": 3,
+    "constant_byte_length": 0
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [],
+  "bindings": [
+    {"name": "fa", "access": "read"},
+    {"name": "gate", "access": "read"},
+    {"name": "out", "access": "write"}
+  ]
+}

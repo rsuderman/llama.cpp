@@ -61,8 +61,8 @@ OP_RULES = {
     },
     "GGML_OP_CPY": {
         "required_tensors": {"src0", "dst"},
-        "optional_tensors": set(),
-        "input_tensors": {"src0"},
+        "optional_tensors": {"src1"},
+        "input_tensors": {"src0", "src1"},
         "attributes": {},
     },
     "GGML_OP_DIV": {
@@ -143,6 +143,12 @@ OP_RULES = {
             "section2": "i32",
             "section3": "i32",
         },
+    },
+    "GGML_OP_RESHAPE": {
+        "required_tensors": {"src0", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0"},
+        "attributes": {},
     },
     "GGML_OP_RMS_NORM": {
         "required_tensors": {"src0", "dst"},

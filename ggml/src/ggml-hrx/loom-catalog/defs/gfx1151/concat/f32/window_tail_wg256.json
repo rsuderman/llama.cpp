@@ -1,0 +1,21 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "concat_window_tail_wg256",
+  "op": "GGML_OP_CONCAT",
+  "source": "sources/gfx1151/graph/concat_window_tail.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_concat_window_tail",
+  "abi": {
+    "binding_count": 4,
+    "parameter_count": 4,
+    "constant_byte_length": 0
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [],
+  "bindings": [
+    {"name": "state", "access": "read"},
+    {"name": "x", "access": "read"},
+    {"name": "dst", "access": "write"},
+    {"name": "cache", "access": "write"}
+  ]
+}

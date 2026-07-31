@@ -1,0 +1,42 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "wide_add_rms_norm_mul_f32",
+  "op": "GGML_OP_ADD",
+  "source": "sources/gfx1151/graph/add_rms_norm_mul_f32.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_add_rms_norm_mul_f32_static_vector_tail",
+  "abi": {
+    "binding_count": 5,
+    "parameter_count": 6,
+    "constant_byte_length": 4
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [
+    {
+      "name": "eps",
+      "type": "f32"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "src0",
+      "access": "read"
+    },
+    {
+      "name": "src1",
+      "access": "read"
+    },
+    {
+      "name": "add_dst",
+      "access": "write"
+    },
+    {
+      "name": "weight",
+      "access": "read"
+    },
+    {
+      "name": "dst",
+      "access": "write"
+    }
+  ]
+}

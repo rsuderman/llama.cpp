@@ -165,6 +165,30 @@ set(GGML_HRX_LOOM_ROUTE_FILES
         routes/gfx1151/mul_mat_id/q5_k_f32/mul_mat_id_q5_k_f32_mmq_gfx1151_wg256_tbl_down_group4.json
         routes/gfx1151/mul_mat_id/q6_k_f32/mul_mat_id_q6_k_f32_mmq_gfx1151_wg256_tbl.json
         routes/gfx1151/mul_mat_id/q6_k_f32/mul_mat_id_q6_k_f32_mmq_gfx1151_wg256_tbl_selected.json
+        routes/gfx1151/add_rms_norm_mul/f32/wide_wg256.json
+        routes/gfx1151/concat/f32/window_tail_ssm_silu_pp512.json
+        routes/gfx1151/cont/f32/flash_attn_gate_pointwise.json
+        routes/gfx1151/flash_attn_ext/f32_f16/wmma_gate_epilogue.json
+        routes/gfx1151/mul/f32/sum_slices_pp512.json
+        routes/gfx1151/mul_mat/f32_f32/mul_mat_f32_f32_decode_gdn_dual_projection_epilogue.json
+        routes/gfx1151/mul_mat/f32_f32/decode_vec8_k2048_r256_c1_wg256.json
+        routes/gfx1151/mul_mat/q8_0_f32/mul_mat_q8_0_f32_decode_dual_swiglu.json
+        routes/gfx1151/mul_mat/q8_0_f32/mul_mat_q8_0_f32_decode_shared_terminal_epilogue.json
+        routes/gfx1151/mul_mat/q8_0_f32/mul_mat_q8_0_f32_packed_decode_gdn_silu_mul_epilogue.json
+        routes/gfx1151/mul_mat/q8_0_f32/wmmai8_shared_expert_terminal_epilogue.json
+        routes/gfx1151/mul_mat_id/q4_k_f32/mul_mat_id_q4_k_f32_mmq_gfx1151_wg256_pre_tbl_decode_table.json
+        routes/gfx1151/mul_mat_id/q4_k_f32/mul_mat_id_q4_k_f32_mmq_gfx1151_wg256_pre_tbl_decode_topk_qact_table.json
+        routes/gfx1151/mul_mat_id/q4_k_f32/mul_mat_id_q4_k_f32_swiglu.json
+        routes/gfx1151/mul_mat_id/q4_k_f32/mul_mat_id_q4_k_swiglu_q5_down_qact.json
+        routes/gfx1151/mul_mat_id/q5_k_f32/mul_mat_id_q5_k_f32_mmq_gfx1151_wg256_pre_tbl_decode_table.json
+        routes/gfx1151/mul_mat_id/q5_k_f32/mul_mat_id_q5_k_f32_mmq_gfx1151_wg256_tbl_decode_table_down_group4.json
+        routes/gfx1151/mul_mat_id/q5_k_f32/mul_mat_id_q5_k_f32_swiglu.json
+        routes/gfx1151/mul_mat_id/q6_k_f32/mul_mat_id_q6_k_f32_mmq_gfx1151_wg256_tbl_decode_table.json
+        routes/gfx1151/rms_norm/f32/q8_wmmai8_gdn_rms_side_epilogue.json
+        routes/gfx1151/rms_norm_mul/f32/wide_wg256.json
+        routes/gfx1151/rms_norm_mul_rope/f32/strided_wg256.json
+        routes/gfx1151/soft_max/f32/topk_moe_softmax_norm_decode.json
+        routes/gfx1151/soft_max/f32/topk_moe_softmax_norm_pp512.json
         routes/generic/add/f32/contiguous.json
         routes/generic/add/f32/transient_demo.json
         routes/generic/argsort/f32_i32/contiguous_wg256.json
@@ -251,6 +275,8 @@ set(GGML_HRX_LOOM_ROUTE_FILES
         routes/generic/soft_max/f32/contiguous_4d.json
         routes/generic/mul_mat_id/q4_k_f32/expert_planes_4d.json
         routes/generic/mul_mat_id/q4_k_f32/expert_planes_src1_broadcast_4d.json
+        routes/generic/mul_mat_id/q5_k_f32/expert_planes_4d.json
+        routes/generic/mul_mat_id/q5_k_f32/expert_planes_src1_broadcast_4d.json
         routes/generic/mul_mat_id/q6_k_f32/expert_planes_4d.json
         routes/generic/mul_mat_id/q6_k_f32/expert_planes_src1_broadcast_4d.json
         routes/gfx1100/flash_attn_ext/f32_f16/perm0213_decode_d128_h32_hkv4_kv40960.json

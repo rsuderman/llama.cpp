@@ -439,6 +439,11 @@
             "name": "hrx2_shape_gdn_rq3",
             "type": "i64",
             "source": "derived.rq3"
+          },
+          {
+            "name": "hrx2_tuning_gdn_workgroup_size",
+            "type": "i64",
+            "value": 64
           }
         ]
       },

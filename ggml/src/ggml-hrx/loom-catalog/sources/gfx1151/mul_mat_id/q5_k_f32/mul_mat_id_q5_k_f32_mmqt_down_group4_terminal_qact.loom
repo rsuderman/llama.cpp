@@ -558,18 +558,24 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p0_0_t0_aa = index.constant 0 : index
       %p0_0_t0_ab = index.constant 16 : index
       %p0_0_t0_tb = index.constant 0 : index
-      %p0_0_t0_la = vector.fragment.load<lhs> %al_view[%p0_0_t0_tb, %p0_0_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p0_0_t0_lb = vector.fragment.load<lhs> %al_view[%p0_0_t0_tb, %p0_0_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_0_t0_la_raw = vector.fragment.load<lhs> %al_view[%p0_0_t0_tb, %p0_0_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_0_t0_la_words = vector.bitcast %p0_0_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %p0_0_t0_la = vector.fragment<lhs> %p0_0_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_0_t0_lb_raw = vector.fragment.load<lhs> %al_view[%p0_0_t0_tb, %p0_0_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_0_t0_lb_words = vector.bitcast %p0_0_t0_lb_raw : vector<16xi8> to vector<4xi32>
+      %p0_0_t0_lb = vector.fragment<lhs> %p0_0_t0_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_0_t0_peer_i32v, %p0_0_t0_peer_valid = kernel.subgroup.shuffle<xor> %rd_p0_g0_own_i32, %rd_xor16_i32, %rd_wave32_i32 : vector<4xi32>, i32, i32
       %p0_0_t0_ra_i32 = scf.select %rd_p0_low_lane, %rd_p0_g0_own_i32, %p0_0_t0_peer_i32v : vector<4xi32>
       %p0_0_t0_rb_i32 = scf.select %rd_p0_low_lane, %p0_0_t0_peer_i32v, %rd_p0_g0_own_i32 : vector<4xi32>
       %p0_0_t0_ra_raw = vector.bitcast %p0_0_t0_ra_i32 : vector<4xi32> to vector<16xi8>
       %p0_0_t0_rb_raw = vector.bitcast %p0_0_t0_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p0_0_t0_ra = vector.fragment<rhs> %p0_0_t0_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p0_0_t0_rb = vector.fragment<rhs> %p0_0_t0_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p0_0_t0_ra_words = vector.bitcast %p0_0_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %p0_0_t0_ra = vector.fragment<rhs> %p0_0_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_0_t0_rb_words = vector.bitcast %p0_0_t0_rb_raw : vector<16xi8> to vector<4xi32>
+      %p0_0_t0_rb = vector.fragment<rhs> %p0_0_t0_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_0_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p0_0_t0_i0 = vector.mma %p0_0_t0_la, %p0_0_t0_ra, %p0_0_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p0_0_t0_i1 = vector.mma %p0_0_t0_lb, %p0_0_t0_rb, %p0_0_t0_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p0_0_t0_i0 = vector.mma %p0_0_t0_la, %p0_0_t0_ra, %p0_0_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p0_0_t0_i1 = vector.mma %p0_0_t0_lb, %p0_0_t0_rb, %p0_0_t0_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p0_0_t0_wk = index.constant 0 : index
       %p0_0_t0_wi0 = index.mul %n_scale0, %k_gpc : index
       %p0_0_t0_wi1 = index.add %p0_0_t0_wi0, %p0_0_t0_wk : index
@@ -595,8 +601,12 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p0_1_t0_aa = index.constant 32 : index
       %p0_1_t0_ab = index.constant 48 : index
       %p0_1_t0_tb = index.constant 0 : index
-      %p0_1_t0_la = vector.fragment.load<lhs> %al_view[%p0_1_t0_tb, %p0_1_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p0_1_t0_lb = vector.fragment.load<lhs> %al_view[%p0_1_t0_tb, %p0_1_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_1_t0_la_raw = vector.fragment.load<lhs> %al_view[%p0_1_t0_tb, %p0_1_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_1_t0_la_words = vector.bitcast %p0_1_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %p0_1_t0_la = vector.fragment<lhs> %p0_1_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_1_t0_lb_raw = vector.fragment.load<lhs> %al_view[%p0_1_t0_tb, %p0_1_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_1_t0_lb_words = vector.bitcast %p0_1_t0_lb_raw : vector<16xi8> to vector<4xi32>
+      %p0_1_t0_lb = vector.fragment<lhs> %p0_1_t0_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_1_t0_own_shift = vector.shrui %rd_p0_pack0, %four_i32v4 : vector<4xi32>
       %p0_1_t0_own_nib = vector.andi %p0_1_t0_own_shift, %nibble_mask_v4 : vector<4xi32>
       %p0_1_t0_qh_masked = vector.andi %rd_qh, %rd_qh_mask1 : vector<4xi32>
@@ -607,11 +617,13 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p0_1_t0_rb_i32 = scf.select %rd_p0_low_lane, %p0_1_t0_peer_i32v, %p0_1_t0_own_i32 : vector<4xi32>
       %p0_1_t0_ra_raw = vector.bitcast %p0_1_t0_ra_i32 : vector<4xi32> to vector<16xi8>
       %p0_1_t0_rb_raw = vector.bitcast %p0_1_t0_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p0_1_t0_ra = vector.fragment<rhs> %p0_1_t0_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p0_1_t0_rb = vector.fragment<rhs> %p0_1_t0_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p0_1_t0_ra_words = vector.bitcast %p0_1_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %p0_1_t0_ra = vector.fragment<rhs> %p0_1_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_1_t0_rb_words = vector.bitcast %p0_1_t0_rb_raw : vector<16xi8> to vector<4xi32>
+      %p0_1_t0_rb = vector.fragment<rhs> %p0_1_t0_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_1_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p0_1_t0_i0 = vector.mma %p0_1_t0_la, %p0_1_t0_ra, %p0_1_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p0_1_t0_i1 = vector.mma %p0_1_t0_lb, %p0_1_t0_rb, %p0_1_t0_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p0_1_t0_i0 = vector.mma %p0_1_t0_la, %p0_1_t0_ra, %p0_1_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p0_1_t0_i1 = vector.mma %p0_1_t0_lb, %p0_1_t0_rb, %p0_1_t0_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p0_1_t0_wk = index.constant 1 : index
       %p0_1_t0_wi0 = index.mul %n_scale0, %k_gpc : index
       %p0_1_t0_wi1 = index.add %p0_1_t0_wi0, %p0_1_t0_wk : index
@@ -637,8 +649,12 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p0_2_t0_aa = index.constant 64 : index
       %p0_2_t0_ab = index.constant 80 : index
       %p0_2_t0_tb = index.constant 0 : index
-      %p0_2_t0_la = vector.fragment.load<lhs> %al_view[%p0_2_t0_tb, %p0_2_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p0_2_t0_lb = vector.fragment.load<lhs> %al_view[%p0_2_t0_tb, %p0_2_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_2_t0_la_raw = vector.fragment.load<lhs> %al_view[%p0_2_t0_tb, %p0_2_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_2_t0_la_words = vector.bitcast %p0_2_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %p0_2_t0_la = vector.fragment<lhs> %p0_2_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_2_t0_lb_raw = vector.fragment.load<lhs> %al_view[%p0_2_t0_tb, %p0_2_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_2_t0_lb_words = vector.bitcast %p0_2_t0_lb_raw : vector<16xi8> to vector<4xi32>
+      %p0_2_t0_lb = vector.fragment<lhs> %p0_2_t0_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_2_t0_own_nib = vector.andi %rd_p0_pack1, %nibble_mask_v4 : vector<4xi32>
       %p0_2_t0_qh_masked = vector.andi %rd_qh, %rd_qh_mask2 : vector<4xi32>
       %p0_2_t0_qh_hi = vector.shli %p0_2_t0_qh_masked, %rd_qh_shift2 : vector<4xi32>
@@ -648,11 +664,13 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p0_2_t0_rb_i32 = scf.select %rd_p0_low_lane, %p0_2_t0_peer_i32v, %p0_2_t0_own_i32 : vector<4xi32>
       %p0_2_t0_ra_raw = vector.bitcast %p0_2_t0_ra_i32 : vector<4xi32> to vector<16xi8>
       %p0_2_t0_rb_raw = vector.bitcast %p0_2_t0_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p0_2_t0_ra = vector.fragment<rhs> %p0_2_t0_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p0_2_t0_rb = vector.fragment<rhs> %p0_2_t0_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p0_2_t0_ra_words = vector.bitcast %p0_2_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %p0_2_t0_ra = vector.fragment<rhs> %p0_2_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_2_t0_rb_words = vector.bitcast %p0_2_t0_rb_raw : vector<16xi8> to vector<4xi32>
+      %p0_2_t0_rb = vector.fragment<rhs> %p0_2_t0_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_2_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p0_2_t0_i0 = vector.mma %p0_2_t0_la, %p0_2_t0_ra, %p0_2_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p0_2_t0_i1 = vector.mma %p0_2_t0_lb, %p0_2_t0_rb, %p0_2_t0_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p0_2_t0_i0 = vector.mma %p0_2_t0_la, %p0_2_t0_ra, %p0_2_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p0_2_t0_i1 = vector.mma %p0_2_t0_lb, %p0_2_t0_rb, %p0_2_t0_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p0_2_t0_wk = index.constant 2 : index
       %p0_2_t0_wi0 = index.mul %n_scale0, %k_gpc : index
       %p0_2_t0_wi1 = index.add %p0_2_t0_wi0, %p0_2_t0_wk : index
@@ -678,8 +696,12 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p0_3_t0_aa = index.constant 96 : index
       %p0_3_t0_ab = index.constant 112 : index
       %p0_3_t0_tb = index.constant 0 : index
-      %p0_3_t0_la = vector.fragment.load<lhs> %al_view[%p0_3_t0_tb, %p0_3_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p0_3_t0_lb = vector.fragment.load<lhs> %al_view[%p0_3_t0_tb, %p0_3_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_3_t0_la_raw = vector.fragment.load<lhs> %al_view[%p0_3_t0_tb, %p0_3_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_3_t0_la_words = vector.bitcast %p0_3_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %p0_3_t0_la = vector.fragment<lhs> %p0_3_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_3_t0_lb_raw = vector.fragment.load<lhs> %al_view[%p0_3_t0_tb, %p0_3_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_3_t0_lb_words = vector.bitcast %p0_3_t0_lb_raw : vector<16xi8> to vector<4xi32>
+      %p0_3_t0_lb = vector.fragment<lhs> %p0_3_t0_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_3_t0_own_shift = vector.shrui %rd_p0_pack1, %four_i32v4 : vector<4xi32>
       %p0_3_t0_own_nib = vector.andi %p0_3_t0_own_shift, %nibble_mask_v4 : vector<4xi32>
       %p0_3_t0_qh_masked = vector.andi %rd_qh, %rd_qh_mask3 : vector<4xi32>
@@ -690,11 +712,13 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p0_3_t0_rb_i32 = scf.select %rd_p0_low_lane, %p0_3_t0_peer_i32v, %p0_3_t0_own_i32 : vector<4xi32>
       %p0_3_t0_ra_raw = vector.bitcast %p0_3_t0_ra_i32 : vector<4xi32> to vector<16xi8>
       %p0_3_t0_rb_raw = vector.bitcast %p0_3_t0_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p0_3_t0_ra = vector.fragment<rhs> %p0_3_t0_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p0_3_t0_rb = vector.fragment<rhs> %p0_3_t0_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p0_3_t0_ra_words = vector.bitcast %p0_3_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %p0_3_t0_ra = vector.fragment<rhs> %p0_3_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_3_t0_rb_words = vector.bitcast %p0_3_t0_rb_raw : vector<16xi8> to vector<4xi32>
+      %p0_3_t0_rb = vector.fragment<rhs> %p0_3_t0_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_3_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p0_3_t0_i0 = vector.mma %p0_3_t0_la, %p0_3_t0_ra, %p0_3_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p0_3_t0_i1 = vector.mma %p0_3_t0_lb, %p0_3_t0_rb, %p0_3_t0_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p0_3_t0_i0 = vector.mma %p0_3_t0_la, %p0_3_t0_ra, %p0_3_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p0_3_t0_i1 = vector.mma %p0_3_t0_lb, %p0_3_t0_rb, %p0_3_t0_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p0_3_t0_wk = index.constant 3 : index
       %p0_3_t0_wi0 = index.mul %n_scale0, %k_gpc : index
       %p0_3_t0_wi1 = index.add %p0_3_t0_wi0, %p0_3_t0_wk : index
@@ -721,18 +745,24 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p0_0_t1_aa = index.constant 0 : index
       %p0_0_t1_ab = index.constant 16 : index
       %p0_0_t1_tb = index.constant 16 : index
-      %p0_0_t1_la = vector.fragment.load<lhs> %al_view[%p0_0_t1_tb, %p0_0_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p0_0_t1_lb = vector.fragment.load<lhs> %al_view[%p0_0_t1_tb, %p0_0_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_0_t1_la_raw = vector.fragment.load<lhs> %al_view[%p0_0_t1_tb, %p0_0_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_0_t1_la_words = vector.bitcast %p0_0_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %p0_0_t1_la = vector.fragment<lhs> %p0_0_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_0_t1_lb_raw = vector.fragment.load<lhs> %al_view[%p0_0_t1_tb, %p0_0_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_0_t1_lb_words = vector.bitcast %p0_0_t1_lb_raw : vector<16xi8> to vector<4xi32>
+      %p0_0_t1_lb = vector.fragment<lhs> %p0_0_t1_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_0_t1_peer_i32v, %p0_0_t1_peer_valid = kernel.subgroup.shuffle<xor> %rd_p0_g0_own_i32, %rd_xor16_i32, %rd_wave32_i32 : vector<4xi32>, i32, i32
       %p0_0_t1_ra_i32 = scf.select %rd_p0_low_lane, %rd_p0_g0_own_i32, %p0_0_t1_peer_i32v : vector<4xi32>
       %p0_0_t1_rb_i32 = scf.select %rd_p0_low_lane, %p0_0_t1_peer_i32v, %rd_p0_g0_own_i32 : vector<4xi32>
       %p0_0_t1_ra_raw = vector.bitcast %p0_0_t1_ra_i32 : vector<4xi32> to vector<16xi8>
       %p0_0_t1_rb_raw = vector.bitcast %p0_0_t1_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p0_0_t1_ra = vector.fragment<rhs> %p0_0_t1_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p0_0_t1_rb = vector.fragment<rhs> %p0_0_t1_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p0_0_t1_ra_words = vector.bitcast %p0_0_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %p0_0_t1_ra = vector.fragment<rhs> %p0_0_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_0_t1_rb_words = vector.bitcast %p0_0_t1_rb_raw : vector<16xi8> to vector<4xi32>
+      %p0_0_t1_rb = vector.fragment<rhs> %p0_0_t1_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_0_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p0_0_t1_i0 = vector.mma %p0_0_t1_la, %p0_0_t1_ra, %p0_0_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p0_0_t1_i1 = vector.mma %p0_0_t1_lb, %p0_0_t1_rb, %p0_0_t1_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p0_0_t1_i0 = vector.mma %p0_0_t1_la, %p0_0_t1_ra, %p0_0_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p0_0_t1_i1 = vector.mma %p0_0_t1_lb, %p0_0_t1_rb, %p0_0_t1_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p0_0_t1_wk = index.constant 0 : index
       %p0_0_t1_wi0 = index.mul %n_scale0, %k_gpc : index
       %p0_0_t1_wi1 = index.add %p0_0_t1_wi0, %p0_0_t1_wk : index
@@ -758,8 +788,12 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p0_1_t1_aa = index.constant 32 : index
       %p0_1_t1_ab = index.constant 48 : index
       %p0_1_t1_tb = index.constant 16 : index
-      %p0_1_t1_la = vector.fragment.load<lhs> %al_view[%p0_1_t1_tb, %p0_1_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p0_1_t1_lb = vector.fragment.load<lhs> %al_view[%p0_1_t1_tb, %p0_1_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_1_t1_la_raw = vector.fragment.load<lhs> %al_view[%p0_1_t1_tb, %p0_1_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_1_t1_la_words = vector.bitcast %p0_1_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %p0_1_t1_la = vector.fragment<lhs> %p0_1_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_1_t1_lb_raw = vector.fragment.load<lhs> %al_view[%p0_1_t1_tb, %p0_1_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_1_t1_lb_words = vector.bitcast %p0_1_t1_lb_raw : vector<16xi8> to vector<4xi32>
+      %p0_1_t1_lb = vector.fragment<lhs> %p0_1_t1_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_1_t1_own_shift = vector.shrui %rd_p0_pack0, %four_i32v4 : vector<4xi32>
       %p0_1_t1_own_nib = vector.andi %p0_1_t1_own_shift, %nibble_mask_v4 : vector<4xi32>
       %p0_1_t1_qh_masked = vector.andi %rd_qh, %rd_qh_mask1 : vector<4xi32>
@@ -770,11 +804,13 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p0_1_t1_rb_i32 = scf.select %rd_p0_low_lane, %p0_1_t1_peer_i32v, %p0_1_t1_own_i32 : vector<4xi32>
       %p0_1_t1_ra_raw = vector.bitcast %p0_1_t1_ra_i32 : vector<4xi32> to vector<16xi8>
       %p0_1_t1_rb_raw = vector.bitcast %p0_1_t1_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p0_1_t1_ra = vector.fragment<rhs> %p0_1_t1_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p0_1_t1_rb = vector.fragment<rhs> %p0_1_t1_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p0_1_t1_ra_words = vector.bitcast %p0_1_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %p0_1_t1_ra = vector.fragment<rhs> %p0_1_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_1_t1_rb_words = vector.bitcast %p0_1_t1_rb_raw : vector<16xi8> to vector<4xi32>
+      %p0_1_t1_rb = vector.fragment<rhs> %p0_1_t1_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_1_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p0_1_t1_i0 = vector.mma %p0_1_t1_la, %p0_1_t1_ra, %p0_1_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p0_1_t1_i1 = vector.mma %p0_1_t1_lb, %p0_1_t1_rb, %p0_1_t1_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p0_1_t1_i0 = vector.mma %p0_1_t1_la, %p0_1_t1_ra, %p0_1_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p0_1_t1_i1 = vector.mma %p0_1_t1_lb, %p0_1_t1_rb, %p0_1_t1_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p0_1_t1_wk = index.constant 1 : index
       %p0_1_t1_wi0 = index.mul %n_scale0, %k_gpc : index
       %p0_1_t1_wi1 = index.add %p0_1_t1_wi0, %p0_1_t1_wk : index
@@ -800,8 +836,12 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p0_2_t1_aa = index.constant 64 : index
       %p0_2_t1_ab = index.constant 80 : index
       %p0_2_t1_tb = index.constant 16 : index
-      %p0_2_t1_la = vector.fragment.load<lhs> %al_view[%p0_2_t1_tb, %p0_2_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p0_2_t1_lb = vector.fragment.load<lhs> %al_view[%p0_2_t1_tb, %p0_2_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_2_t1_la_raw = vector.fragment.load<lhs> %al_view[%p0_2_t1_tb, %p0_2_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_2_t1_la_words = vector.bitcast %p0_2_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %p0_2_t1_la = vector.fragment<lhs> %p0_2_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_2_t1_lb_raw = vector.fragment.load<lhs> %al_view[%p0_2_t1_tb, %p0_2_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_2_t1_lb_words = vector.bitcast %p0_2_t1_lb_raw : vector<16xi8> to vector<4xi32>
+      %p0_2_t1_lb = vector.fragment<lhs> %p0_2_t1_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_2_t1_own_nib = vector.andi %rd_p0_pack1, %nibble_mask_v4 : vector<4xi32>
       %p0_2_t1_qh_masked = vector.andi %rd_qh, %rd_qh_mask2 : vector<4xi32>
       %p0_2_t1_qh_hi = vector.shli %p0_2_t1_qh_masked, %rd_qh_shift2 : vector<4xi32>
@@ -811,11 +851,13 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p0_2_t1_rb_i32 = scf.select %rd_p0_low_lane, %p0_2_t1_peer_i32v, %p0_2_t1_own_i32 : vector<4xi32>
       %p0_2_t1_ra_raw = vector.bitcast %p0_2_t1_ra_i32 : vector<4xi32> to vector<16xi8>
       %p0_2_t1_rb_raw = vector.bitcast %p0_2_t1_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p0_2_t1_ra = vector.fragment<rhs> %p0_2_t1_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p0_2_t1_rb = vector.fragment<rhs> %p0_2_t1_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p0_2_t1_ra_words = vector.bitcast %p0_2_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %p0_2_t1_ra = vector.fragment<rhs> %p0_2_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_2_t1_rb_words = vector.bitcast %p0_2_t1_rb_raw : vector<16xi8> to vector<4xi32>
+      %p0_2_t1_rb = vector.fragment<rhs> %p0_2_t1_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_2_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p0_2_t1_i0 = vector.mma %p0_2_t1_la, %p0_2_t1_ra, %p0_2_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p0_2_t1_i1 = vector.mma %p0_2_t1_lb, %p0_2_t1_rb, %p0_2_t1_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p0_2_t1_i0 = vector.mma %p0_2_t1_la, %p0_2_t1_ra, %p0_2_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p0_2_t1_i1 = vector.mma %p0_2_t1_lb, %p0_2_t1_rb, %p0_2_t1_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p0_2_t1_wk = index.constant 2 : index
       %p0_2_t1_wi0 = index.mul %n_scale0, %k_gpc : index
       %p0_2_t1_wi1 = index.add %p0_2_t1_wi0, %p0_2_t1_wk : index
@@ -841,8 +883,12 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p0_3_t1_aa = index.constant 96 : index
       %p0_3_t1_ab = index.constant 112 : index
       %p0_3_t1_tb = index.constant 16 : index
-      %p0_3_t1_la = vector.fragment.load<lhs> %al_view[%p0_3_t1_tb, %p0_3_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p0_3_t1_lb = vector.fragment.load<lhs> %al_view[%p0_3_t1_tb, %p0_3_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_3_t1_la_raw = vector.fragment.load<lhs> %al_view[%p0_3_t1_tb, %p0_3_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_3_t1_la_words = vector.bitcast %p0_3_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %p0_3_t1_la = vector.fragment<lhs> %p0_3_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_3_t1_lb_raw = vector.fragment.load<lhs> %al_view[%p0_3_t1_tb, %p0_3_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p0_3_t1_lb_words = vector.bitcast %p0_3_t1_lb_raw : vector<16xi8> to vector<4xi32>
+      %p0_3_t1_lb = vector.fragment<lhs> %p0_3_t1_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_3_t1_own_shift = vector.shrui %rd_p0_pack1, %four_i32v4 : vector<4xi32>
       %p0_3_t1_own_nib = vector.andi %p0_3_t1_own_shift, %nibble_mask_v4 : vector<4xi32>
       %p0_3_t1_qh_masked = vector.andi %rd_qh, %rd_qh_mask3 : vector<4xi32>
@@ -853,11 +899,13 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p0_3_t1_rb_i32 = scf.select %rd_p0_low_lane, %p0_3_t1_peer_i32v, %p0_3_t1_own_i32 : vector<4xi32>
       %p0_3_t1_ra_raw = vector.bitcast %p0_3_t1_ra_i32 : vector<4xi32> to vector<16xi8>
       %p0_3_t1_rb_raw = vector.bitcast %p0_3_t1_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p0_3_t1_ra = vector.fragment<rhs> %p0_3_t1_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p0_3_t1_rb = vector.fragment<rhs> %p0_3_t1_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p0_3_t1_ra_words = vector.bitcast %p0_3_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %p0_3_t1_ra = vector.fragment<rhs> %p0_3_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p0_3_t1_rb_words = vector.bitcast %p0_3_t1_rb_raw : vector<16xi8> to vector<4xi32>
+      %p0_3_t1_rb = vector.fragment<rhs> %p0_3_t1_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p0_3_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p0_3_t1_i0 = vector.mma %p0_3_t1_la, %p0_3_t1_ra, %p0_3_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p0_3_t1_i1 = vector.mma %p0_3_t1_lb, %p0_3_t1_rb, %p0_3_t1_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p0_3_t1_i0 = vector.mma %p0_3_t1_la, %p0_3_t1_ra, %p0_3_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p0_3_t1_i1 = vector.mma %p0_3_t1_lb, %p0_3_t1_rb, %p0_3_t1_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p0_3_t1_wk = index.constant 3 : index
       %p0_3_t1_wi0 = index.mul %n_scale0, %k_gpc : index
       %p0_3_t1_wi1 = index.add %p0_3_t1_wi0, %p0_3_t1_wk : index
@@ -1026,18 +1074,24 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p1_0_t0_aa = index.constant 128 : index
       %p1_0_t0_ab = index.constant 144 : index
       %p1_0_t0_tb = index.constant 0 : index
-      %p1_0_t0_la = vector.fragment.load<lhs> %al_view[%p1_0_t0_tb, %p1_0_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p1_0_t0_lb = vector.fragment.load<lhs> %al_view[%p1_0_t0_tb, %p1_0_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_0_t0_la_raw = vector.fragment.load<lhs> %al_view[%p1_0_t0_tb, %p1_0_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_0_t0_la_words = vector.bitcast %p1_0_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %p1_0_t0_la = vector.fragment<lhs> %p1_0_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_0_t0_lb_raw = vector.fragment.load<lhs> %al_view[%p1_0_t0_tb, %p1_0_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_0_t0_lb_words = vector.bitcast %p1_0_t0_lb_raw : vector<16xi8> to vector<4xi32>
+      %p1_0_t0_lb = vector.fragment<lhs> %p1_0_t0_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_0_t0_peer_i32v, %p1_0_t0_peer_valid = kernel.subgroup.shuffle<xor> %rd_p1_g0_own_i32, %rd_xor16_i32, %rd_wave32_i32 : vector<4xi32>, i32, i32
       %p1_0_t0_ra_i32 = scf.select %rd_p1_low_lane, %rd_p1_g0_own_i32, %p1_0_t0_peer_i32v : vector<4xi32>
       %p1_0_t0_rb_i32 = scf.select %rd_p1_low_lane, %p1_0_t0_peer_i32v, %rd_p1_g0_own_i32 : vector<4xi32>
       %p1_0_t0_ra_raw = vector.bitcast %p1_0_t0_ra_i32 : vector<4xi32> to vector<16xi8>
       %p1_0_t0_rb_raw = vector.bitcast %p1_0_t0_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p1_0_t0_ra = vector.fragment<rhs> %p1_0_t0_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p1_0_t0_rb = vector.fragment<rhs> %p1_0_t0_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p1_0_t0_ra_words = vector.bitcast %p1_0_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %p1_0_t0_ra = vector.fragment<rhs> %p1_0_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_0_t0_rb_words = vector.bitcast %p1_0_t0_rb_raw : vector<16xi8> to vector<4xi32>
+      %p1_0_t0_rb = vector.fragment<rhs> %p1_0_t0_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_0_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p1_0_t0_i0 = vector.mma %p1_0_t0_la, %p1_0_t0_ra, %p1_0_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p1_0_t0_i1 = vector.mma %p1_0_t0_lb, %p1_0_t0_rb, %p1_0_t0_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p1_0_t0_i0 = vector.mma %p1_0_t0_la, %p1_0_t0_ra, %p1_0_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p1_0_t0_i1 = vector.mma %p1_0_t0_lb, %p1_0_t0_rb, %p1_0_t0_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p1_0_t0_wk = index.constant 0 : index
       %p1_0_t0_wi0 = index.mul %n_scale0, %k_gpc : index
       %p1_0_t0_wi1 = index.add %p1_0_t0_wi0, %p1_0_t0_wk : index
@@ -1063,18 +1117,24 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p1_1_t0_aa = index.constant 160 : index
       %p1_1_t0_ab = index.constant 176 : index
       %p1_1_t0_tb = index.constant 0 : index
-      %p1_1_t0_la = vector.fragment.load<lhs> %al_view[%p1_1_t0_tb, %p1_1_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p1_1_t0_lb = vector.fragment.load<lhs> %al_view[%p1_1_t0_tb, %p1_1_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_1_t0_la_raw = vector.fragment.load<lhs> %al_view[%p1_1_t0_tb, %p1_1_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_1_t0_la_words = vector.bitcast %p1_1_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %p1_1_t0_la = vector.fragment<lhs> %p1_1_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_1_t0_lb_raw = vector.fragment.load<lhs> %al_view[%p1_1_t0_tb, %p1_1_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_1_t0_lb_words = vector.bitcast %p1_1_t0_lb_raw : vector<16xi8> to vector<4xi32>
+      %p1_1_t0_lb = vector.fragment<lhs> %p1_1_t0_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_1_t0_peer_i32v, %p1_1_t0_peer_valid = kernel.subgroup.shuffle<xor> %rd_p1_g1_own_i32, %rd_xor16_i32, %rd_wave32_i32 : vector<4xi32>, i32, i32
       %p1_1_t0_ra_i32 = scf.select %rd_p1_low_lane, %rd_p1_g1_own_i32, %p1_1_t0_peer_i32v : vector<4xi32>
       %p1_1_t0_rb_i32 = scf.select %rd_p1_low_lane, %p1_1_t0_peer_i32v, %rd_p1_g1_own_i32 : vector<4xi32>
       %p1_1_t0_ra_raw = vector.bitcast %p1_1_t0_ra_i32 : vector<4xi32> to vector<16xi8>
       %p1_1_t0_rb_raw = vector.bitcast %p1_1_t0_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p1_1_t0_ra = vector.fragment<rhs> %p1_1_t0_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p1_1_t0_rb = vector.fragment<rhs> %p1_1_t0_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p1_1_t0_ra_words = vector.bitcast %p1_1_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %p1_1_t0_ra = vector.fragment<rhs> %p1_1_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_1_t0_rb_words = vector.bitcast %p1_1_t0_rb_raw : vector<16xi8> to vector<4xi32>
+      %p1_1_t0_rb = vector.fragment<rhs> %p1_1_t0_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_1_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p1_1_t0_i0 = vector.mma %p1_1_t0_la, %p1_1_t0_ra, %p1_1_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p1_1_t0_i1 = vector.mma %p1_1_t0_lb, %p1_1_t0_rb, %p1_1_t0_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p1_1_t0_i0 = vector.mma %p1_1_t0_la, %p1_1_t0_ra, %p1_1_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p1_1_t0_i1 = vector.mma %p1_1_t0_lb, %p1_1_t0_rb, %p1_1_t0_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p1_1_t0_wk = index.constant 1 : index
       %p1_1_t0_wi0 = index.mul %n_scale0, %k_gpc : index
       %p1_1_t0_wi1 = index.add %p1_1_t0_wi0, %p1_1_t0_wk : index
@@ -1100,18 +1160,24 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p1_2_t0_aa = index.constant 192 : index
       %p1_2_t0_ab = index.constant 208 : index
       %p1_2_t0_tb = index.constant 0 : index
-      %p1_2_t0_la = vector.fragment.load<lhs> %al_view[%p1_2_t0_tb, %p1_2_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p1_2_t0_lb = vector.fragment.load<lhs> %al_view[%p1_2_t0_tb, %p1_2_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_2_t0_la_raw = vector.fragment.load<lhs> %al_view[%p1_2_t0_tb, %p1_2_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_2_t0_la_words = vector.bitcast %p1_2_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %p1_2_t0_la = vector.fragment<lhs> %p1_2_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_2_t0_lb_raw = vector.fragment.load<lhs> %al_view[%p1_2_t0_tb, %p1_2_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_2_t0_lb_words = vector.bitcast %p1_2_t0_lb_raw : vector<16xi8> to vector<4xi32>
+      %p1_2_t0_lb = vector.fragment<lhs> %p1_2_t0_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_2_t0_peer_i32v, %p1_2_t0_peer_valid = kernel.subgroup.shuffle<xor> %rd_p1_g2_own_i32, %rd_xor16_i32, %rd_wave32_i32 : vector<4xi32>, i32, i32
       %p1_2_t0_ra_i32 = scf.select %rd_p1_low_lane, %rd_p1_g2_own_i32, %p1_2_t0_peer_i32v : vector<4xi32>
       %p1_2_t0_rb_i32 = scf.select %rd_p1_low_lane, %p1_2_t0_peer_i32v, %rd_p1_g2_own_i32 : vector<4xi32>
       %p1_2_t0_ra_raw = vector.bitcast %p1_2_t0_ra_i32 : vector<4xi32> to vector<16xi8>
       %p1_2_t0_rb_raw = vector.bitcast %p1_2_t0_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p1_2_t0_ra = vector.fragment<rhs> %p1_2_t0_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p1_2_t0_rb = vector.fragment<rhs> %p1_2_t0_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p1_2_t0_ra_words = vector.bitcast %p1_2_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %p1_2_t0_ra = vector.fragment<rhs> %p1_2_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_2_t0_rb_words = vector.bitcast %p1_2_t0_rb_raw : vector<16xi8> to vector<4xi32>
+      %p1_2_t0_rb = vector.fragment<rhs> %p1_2_t0_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_2_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p1_2_t0_i0 = vector.mma %p1_2_t0_la, %p1_2_t0_ra, %p1_2_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p1_2_t0_i1 = vector.mma %p1_2_t0_lb, %p1_2_t0_rb, %p1_2_t0_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p1_2_t0_i0 = vector.mma %p1_2_t0_la, %p1_2_t0_ra, %p1_2_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p1_2_t0_i1 = vector.mma %p1_2_t0_lb, %p1_2_t0_rb, %p1_2_t0_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p1_2_t0_wk = index.constant 2 : index
       %p1_2_t0_wi0 = index.mul %n_scale0, %k_gpc : index
       %p1_2_t0_wi1 = index.add %p1_2_t0_wi0, %p1_2_t0_wk : index
@@ -1137,18 +1203,24 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p1_3_t0_aa = index.constant 224 : index
       %p1_3_t0_ab = index.constant 240 : index
       %p1_3_t0_tb = index.constant 0 : index
-      %p1_3_t0_la = vector.fragment.load<lhs> %al_view[%p1_3_t0_tb, %p1_3_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p1_3_t0_lb = vector.fragment.load<lhs> %al_view[%p1_3_t0_tb, %p1_3_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_3_t0_la_raw = vector.fragment.load<lhs> %al_view[%p1_3_t0_tb, %p1_3_t0_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_3_t0_la_words = vector.bitcast %p1_3_t0_la_raw : vector<16xi8> to vector<4xi32>
+      %p1_3_t0_la = vector.fragment<lhs> %p1_3_t0_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_3_t0_lb_raw = vector.fragment.load<lhs> %al_view[%p1_3_t0_tb, %p1_3_t0_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_3_t0_lb_words = vector.bitcast %p1_3_t0_lb_raw : vector<16xi8> to vector<4xi32>
+      %p1_3_t0_lb = vector.fragment<lhs> %p1_3_t0_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_3_t0_peer_i32v, %p1_3_t0_peer_valid = kernel.subgroup.shuffle<xor> %rd_p1_g3_own_i32, %rd_xor16_i32, %rd_wave32_i32 : vector<4xi32>, i32, i32
       %p1_3_t0_ra_i32 = scf.select %rd_p1_low_lane, %rd_p1_g3_own_i32, %p1_3_t0_peer_i32v : vector<4xi32>
       %p1_3_t0_rb_i32 = scf.select %rd_p1_low_lane, %p1_3_t0_peer_i32v, %rd_p1_g3_own_i32 : vector<4xi32>
       %p1_3_t0_ra_raw = vector.bitcast %p1_3_t0_ra_i32 : vector<4xi32> to vector<16xi8>
       %p1_3_t0_rb_raw = vector.bitcast %p1_3_t0_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p1_3_t0_ra = vector.fragment<rhs> %p1_3_t0_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p1_3_t0_rb = vector.fragment<rhs> %p1_3_t0_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p1_3_t0_ra_words = vector.bitcast %p1_3_t0_ra_raw : vector<16xi8> to vector<4xi32>
+      %p1_3_t0_ra = vector.fragment<rhs> %p1_3_t0_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_3_t0_rb_words = vector.bitcast %p1_3_t0_rb_raw : vector<16xi8> to vector<4xi32>
+      %p1_3_t0_rb = vector.fragment<rhs> %p1_3_t0_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_3_t0_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p1_3_t0_i0 = vector.mma %p1_3_t0_la, %p1_3_t0_ra, %p1_3_t0_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p1_3_t0_i1 = vector.mma %p1_3_t0_lb, %p1_3_t0_rb, %p1_3_t0_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p1_3_t0_i0 = vector.mma %p1_3_t0_la, %p1_3_t0_ra, %p1_3_t0_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p1_3_t0_i1 = vector.mma %p1_3_t0_lb, %p1_3_t0_rb, %p1_3_t0_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p1_3_t0_wk = index.constant 3 : index
       %p1_3_t0_wi0 = index.mul %n_scale0, %k_gpc : index
       %p1_3_t0_wi1 = index.add %p1_3_t0_wi0, %p1_3_t0_wk : index
@@ -1175,18 +1247,24 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p1_0_t1_aa = index.constant 128 : index
       %p1_0_t1_ab = index.constant 144 : index
       %p1_0_t1_tb = index.constant 16 : index
-      %p1_0_t1_la = vector.fragment.load<lhs> %al_view[%p1_0_t1_tb, %p1_0_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p1_0_t1_lb = vector.fragment.load<lhs> %al_view[%p1_0_t1_tb, %p1_0_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_0_t1_la_raw = vector.fragment.load<lhs> %al_view[%p1_0_t1_tb, %p1_0_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_0_t1_la_words = vector.bitcast %p1_0_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %p1_0_t1_la = vector.fragment<lhs> %p1_0_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_0_t1_lb_raw = vector.fragment.load<lhs> %al_view[%p1_0_t1_tb, %p1_0_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_0_t1_lb_words = vector.bitcast %p1_0_t1_lb_raw : vector<16xi8> to vector<4xi32>
+      %p1_0_t1_lb = vector.fragment<lhs> %p1_0_t1_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_0_t1_peer_i32v, %p1_0_t1_peer_valid = kernel.subgroup.shuffle<xor> %rd_p1_g0_own_i32, %rd_xor16_i32, %rd_wave32_i32 : vector<4xi32>, i32, i32
       %p1_0_t1_ra_i32 = scf.select %rd_p1_low_lane, %rd_p1_g0_own_i32, %p1_0_t1_peer_i32v : vector<4xi32>
       %p1_0_t1_rb_i32 = scf.select %rd_p1_low_lane, %p1_0_t1_peer_i32v, %rd_p1_g0_own_i32 : vector<4xi32>
       %p1_0_t1_ra_raw = vector.bitcast %p1_0_t1_ra_i32 : vector<4xi32> to vector<16xi8>
       %p1_0_t1_rb_raw = vector.bitcast %p1_0_t1_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p1_0_t1_ra = vector.fragment<rhs> %p1_0_t1_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p1_0_t1_rb = vector.fragment<rhs> %p1_0_t1_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p1_0_t1_ra_words = vector.bitcast %p1_0_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %p1_0_t1_ra = vector.fragment<rhs> %p1_0_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_0_t1_rb_words = vector.bitcast %p1_0_t1_rb_raw : vector<16xi8> to vector<4xi32>
+      %p1_0_t1_rb = vector.fragment<rhs> %p1_0_t1_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_0_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p1_0_t1_i0 = vector.mma %p1_0_t1_la, %p1_0_t1_ra, %p1_0_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p1_0_t1_i1 = vector.mma %p1_0_t1_lb, %p1_0_t1_rb, %p1_0_t1_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p1_0_t1_i0 = vector.mma %p1_0_t1_la, %p1_0_t1_ra, %p1_0_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p1_0_t1_i1 = vector.mma %p1_0_t1_lb, %p1_0_t1_rb, %p1_0_t1_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p1_0_t1_wk = index.constant 0 : index
       %p1_0_t1_wi0 = index.mul %n_scale0, %k_gpc : index
       %p1_0_t1_wi1 = index.add %p1_0_t1_wi0, %p1_0_t1_wk : index
@@ -1212,18 +1290,24 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p1_1_t1_aa = index.constant 160 : index
       %p1_1_t1_ab = index.constant 176 : index
       %p1_1_t1_tb = index.constant 16 : index
-      %p1_1_t1_la = vector.fragment.load<lhs> %al_view[%p1_1_t1_tb, %p1_1_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p1_1_t1_lb = vector.fragment.load<lhs> %al_view[%p1_1_t1_tb, %p1_1_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_1_t1_la_raw = vector.fragment.load<lhs> %al_view[%p1_1_t1_tb, %p1_1_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_1_t1_la_words = vector.bitcast %p1_1_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %p1_1_t1_la = vector.fragment<lhs> %p1_1_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_1_t1_lb_raw = vector.fragment.load<lhs> %al_view[%p1_1_t1_tb, %p1_1_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_1_t1_lb_words = vector.bitcast %p1_1_t1_lb_raw : vector<16xi8> to vector<4xi32>
+      %p1_1_t1_lb = vector.fragment<lhs> %p1_1_t1_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_1_t1_peer_i32v, %p1_1_t1_peer_valid = kernel.subgroup.shuffle<xor> %rd_p1_g1_own_i32, %rd_xor16_i32, %rd_wave32_i32 : vector<4xi32>, i32, i32
       %p1_1_t1_ra_i32 = scf.select %rd_p1_low_lane, %rd_p1_g1_own_i32, %p1_1_t1_peer_i32v : vector<4xi32>
       %p1_1_t1_rb_i32 = scf.select %rd_p1_low_lane, %p1_1_t1_peer_i32v, %rd_p1_g1_own_i32 : vector<4xi32>
       %p1_1_t1_ra_raw = vector.bitcast %p1_1_t1_ra_i32 : vector<4xi32> to vector<16xi8>
       %p1_1_t1_rb_raw = vector.bitcast %p1_1_t1_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p1_1_t1_ra = vector.fragment<rhs> %p1_1_t1_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p1_1_t1_rb = vector.fragment<rhs> %p1_1_t1_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p1_1_t1_ra_words = vector.bitcast %p1_1_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %p1_1_t1_ra = vector.fragment<rhs> %p1_1_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_1_t1_rb_words = vector.bitcast %p1_1_t1_rb_raw : vector<16xi8> to vector<4xi32>
+      %p1_1_t1_rb = vector.fragment<rhs> %p1_1_t1_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_1_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p1_1_t1_i0 = vector.mma %p1_1_t1_la, %p1_1_t1_ra, %p1_1_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p1_1_t1_i1 = vector.mma %p1_1_t1_lb, %p1_1_t1_rb, %p1_1_t1_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p1_1_t1_i0 = vector.mma %p1_1_t1_la, %p1_1_t1_ra, %p1_1_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p1_1_t1_i1 = vector.mma %p1_1_t1_lb, %p1_1_t1_rb, %p1_1_t1_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p1_1_t1_wk = index.constant 1 : index
       %p1_1_t1_wi0 = index.mul %n_scale0, %k_gpc : index
       %p1_1_t1_wi1 = index.add %p1_1_t1_wi0, %p1_1_t1_wk : index
@@ -1249,18 +1333,24 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p1_2_t1_aa = index.constant 192 : index
       %p1_2_t1_ab = index.constant 208 : index
       %p1_2_t1_tb = index.constant 16 : index
-      %p1_2_t1_la = vector.fragment.load<lhs> %al_view[%p1_2_t1_tb, %p1_2_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p1_2_t1_lb = vector.fragment.load<lhs> %al_view[%p1_2_t1_tb, %p1_2_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_2_t1_la_raw = vector.fragment.load<lhs> %al_view[%p1_2_t1_tb, %p1_2_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_2_t1_la_words = vector.bitcast %p1_2_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %p1_2_t1_la = vector.fragment<lhs> %p1_2_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_2_t1_lb_raw = vector.fragment.load<lhs> %al_view[%p1_2_t1_tb, %p1_2_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_2_t1_lb_words = vector.bitcast %p1_2_t1_lb_raw : vector<16xi8> to vector<4xi32>
+      %p1_2_t1_lb = vector.fragment<lhs> %p1_2_t1_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_2_t1_peer_i32v, %p1_2_t1_peer_valid = kernel.subgroup.shuffle<xor> %rd_p1_g2_own_i32, %rd_xor16_i32, %rd_wave32_i32 : vector<4xi32>, i32, i32
       %p1_2_t1_ra_i32 = scf.select %rd_p1_low_lane, %rd_p1_g2_own_i32, %p1_2_t1_peer_i32v : vector<4xi32>
       %p1_2_t1_rb_i32 = scf.select %rd_p1_low_lane, %p1_2_t1_peer_i32v, %rd_p1_g2_own_i32 : vector<4xi32>
       %p1_2_t1_ra_raw = vector.bitcast %p1_2_t1_ra_i32 : vector<4xi32> to vector<16xi8>
       %p1_2_t1_rb_raw = vector.bitcast %p1_2_t1_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p1_2_t1_ra = vector.fragment<rhs> %p1_2_t1_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p1_2_t1_rb = vector.fragment<rhs> %p1_2_t1_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p1_2_t1_ra_words = vector.bitcast %p1_2_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %p1_2_t1_ra = vector.fragment<rhs> %p1_2_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_2_t1_rb_words = vector.bitcast %p1_2_t1_rb_raw : vector<16xi8> to vector<4xi32>
+      %p1_2_t1_rb = vector.fragment<rhs> %p1_2_t1_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_2_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p1_2_t1_i0 = vector.mma %p1_2_t1_la, %p1_2_t1_ra, %p1_2_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p1_2_t1_i1 = vector.mma %p1_2_t1_lb, %p1_2_t1_rb, %p1_2_t1_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p1_2_t1_i0 = vector.mma %p1_2_t1_la, %p1_2_t1_ra, %p1_2_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p1_2_t1_i1 = vector.mma %p1_2_t1_lb, %p1_2_t1_rb, %p1_2_t1_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p1_2_t1_wk = index.constant 2 : index
       %p1_2_t1_wi0 = index.mul %n_scale0, %k_gpc : index
       %p1_2_t1_wi1 = index.add %p1_2_t1_wi0, %p1_2_t1_wk : index
@@ -1286,18 +1376,24 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
       %p1_3_t1_aa = index.constant 224 : index
       %p1_3_t1_ab = index.constant 240 : index
       %p1_3_t1_tb = index.constant 16 : index
-      %p1_3_t1_la = vector.fragment.load<lhs> %al_view[%p1_3_t1_tb, %p1_3_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
-      %p1_3_t1_lb = vector.fragment.load<lhs> %al_view[%p1_3_t1_tb, %p1_3_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_3_t1_la_raw = vector.fragment.load<lhs> %al_view[%p1_3_t1_tb, %p1_3_t1_aa] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_3_t1_la_words = vector.bitcast %p1_3_t1_la_raw : vector<16xi8> to vector<4xi32>
+      %p1_3_t1_la = vector.fragment<lhs> %p1_3_t1_la_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_3_t1_lb_raw = vector.fragment.load<lhs> %al_view[%p1_3_t1_tb, %p1_3_t1_ab] shape [%k_wmma, %k_wmma] : view<32x256xi8, %lhs_layout> -> vector<16xi8>
+      %p1_3_t1_lb_words = vector.bitcast %p1_3_t1_lb_raw : vector<16xi8> to vector<4xi32>
+      %p1_3_t1_lb = vector.fragment<lhs> %p1_3_t1_lb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_3_t1_peer_i32v, %p1_3_t1_peer_valid = kernel.subgroup.shuffle<xor> %rd_p1_g3_own_i32, %rd_xor16_i32, %rd_wave32_i32 : vector<4xi32>, i32, i32
       %p1_3_t1_ra_i32 = scf.select %rd_p1_low_lane, %rd_p1_g3_own_i32, %p1_3_t1_peer_i32v : vector<4xi32>
       %p1_3_t1_rb_i32 = scf.select %rd_p1_low_lane, %p1_3_t1_peer_i32v, %rd_p1_g3_own_i32 : vector<4xi32>
       %p1_3_t1_ra_raw = vector.bitcast %p1_3_t1_ra_i32 : vector<4xi32> to vector<16xi8>
       %p1_3_t1_rb_raw = vector.bitcast %p1_3_t1_rb_i32 : vector<4xi32> to vector<16xi8>
-      %p1_3_t1_ra = vector.fragment<rhs> %p1_3_t1_ra_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
-      %p1_3_t1_rb = vector.fragment<rhs> %p1_3_t1_rb_raw shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<16xi8>
+      %p1_3_t1_ra_words = vector.bitcast %p1_3_t1_ra_raw : vector<16xi8> to vector<4xi32>
+      %p1_3_t1_ra = vector.fragment<rhs> %p1_3_t1_ra_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
+      %p1_3_t1_rb_words = vector.bitcast %p1_3_t1_rb_raw : vector<16xi8> to vector<4xi32>
+      %p1_3_t1_rb = vector.fragment<rhs> %p1_3_t1_rb_words shape [%k_wmma, %k_wmma] using {schema = %rd_i8_schema : encoding<schema>} : vector<4xi32>
       %p1_3_t1_iz = vector.fragment<init> %izero8 shape [%k_wmma, %k_wmma] : vector<8xi32>
-      %p1_3_t1_i0 = vector.mma %p1_3_t1_la, %p1_3_t1_ra, %p1_3_t1_iz : vector<16xi8>, vector<16xi8>, vector<8xi32>
-      %p1_3_t1_i1 = vector.mma %p1_3_t1_lb, %p1_3_t1_rb, %p1_3_t1_i0 : vector<16xi8>, vector<16xi8>, vector<8xi32>
+      %p1_3_t1_i0 = vector.mma %p1_3_t1_la, %p1_3_t1_ra, %p1_3_t1_iz : vector<4xi32>, vector<4xi32>, vector<8xi32>
+      %p1_3_t1_i1 = vector.mma %p1_3_t1_lb, %p1_3_t1_rb, %p1_3_t1_i0 : vector<4xi32>, vector<4xi32>, vector<8xi32>
       %p1_3_t1_wk = index.constant 3 : index
       %p1_3_t1_wi0 = index.mul %n_scale0, %k_gpc : index
       %p1_3_t1_wi1 = index.add %p1_3_t1_wi0, %p1_3_t1_wk : index

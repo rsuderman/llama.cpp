@@ -6,15 +6,14 @@
   "source_format": "loom-text",
   "symbol": "hrx2_topk_moe_softmax_norm_stage_f32",
   "abi": {
-    "binding_count": 3,
-    "parameter_count": 3,
+    "binding_count": 2,
+    "parameter_count": 2,
     "constant_byte_length": 0
   },
   "workgroup_size": [256, 1, 1],
   "parameters": [],
   "bindings": [
     {"name": "logits", "access": "read"},
-    {"name": "ids", "access": "write"},
-    {"name": "cache_marker", "access": "write"}
+    {"name": "ids", "access": "write"}
   ]
 }
