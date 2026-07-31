@@ -41,22 +41,20 @@ python ggml/src/ggml-hrx/tools/test_validate_loom_routes.py
 
 ## Build And Runtime
 
-Loom catalog generation and runtime code are compiled only when HRX is configured with:
+The Loom catalog is part of the HRX backend build. Configure HRX with both the HRX runtime package and the Loom C API package:
 
 ```sh
-cmake -S . -B build-hrx -DGGML_HRX=ON -DGGML_HRX_LOOM=ON \
+cmake -S . -B build-hrx -DGGML_HRX=ON \
   -Dhrx_DIR=/path/to/hrx/libhrx/cmake/hrx \
   -Dloomc_DIR=/path/to/hrx/loom/binding/c/cmake/loomc
 ```
 
-`GGML_HRX_LOOM=ON` requires both the HRX runtime package and the Loom C API package. The first supported source format is `loom-text`, which is compiled in-process through `loomc` and emitted as AMDGPU HSACO before loading through HRX.
-
-In a Loom-enabled build, Loom routing is enabled at runtime by default. Set `GGML_HRX_DISABLE_LOOM=1` to disable Loom routing. HRX tries HSACO first by default. Set `GGML_HRX_LOOM_FIRST=1` to try Loom routes before HSACO routes during development.
+The first supported source format is `loom-text`, which is compiled in-process through `loomc` and emitted as AMDGPU HSACO before loading through HRX. Loom routing is always enabled for HRX; there is no build or runtime switch to disable the catalog.
 
 The focused ADD execution command is:
 
 ```sh
-GGML_HRX_LOOM_FIRST=1 GGML_HRX_TEST_ONLY=add build-hrx/bin/test-backend-hrx
+GGML_HRX_TEST_ONLY=add build-hrx/bin/test-backend-hrx
 ```
 
 That command exercises route matching, config materialization, embedded Loom source compilation, HSACO emission, HRX executable loading, dispatch, and numeric validation for ADD sizes 1, 257, and 2048. HRX device access may require unsandboxed execution.
@@ -69,7 +67,7 @@ The route validator checks the catalog schema and route/definition consistency:
 python ggml/src/ggml-hrx/tools/test_validate_loom_routes.py
 ```
 
-When configured with `GGML_HRX_LOOM=ON`, the hardware-free provider cache test is available through CTest:
+The hardware-free provider cache test is available through CTest:
 
 ```sh
 ctest --test-dir build-hrx -R test-hrx-loom-cache --output-on-failure

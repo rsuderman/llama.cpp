@@ -188,12 +188,8 @@ def route_id_constant(route_id):
     return f"GGML_HRX_LOOM_ROUTE_ID_{c_identifier(route_id).upper()}"
 
 
-def loom_reason(reason):
-    return reason.replace("_HSACO_", "_LOOM_")
-
-
 def route_response(reason):
-    return f"return ggml_backend_hrx_loom_unsupported({loom_reason(reason)});"
+    return f"return ggml_backend_hrx_loom_unsupported({reason});"
 
 
 def failed_response(route_constant):
