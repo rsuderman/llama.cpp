@@ -418,11 +418,10 @@
         "elided": [
           "softmax_dst",
           "probs_reshape_dst",
-          "get_rows_dst",
-          "weights_reshape_dst",
-          "sum_rows_dst",
-          "clamp_dst",
-          "argsort_dst"
+        "get_rows_dst",
+        "weights_reshape_dst",
+        "sum_rows_dst",
+        "clamp_dst"
         ]
       },
       {
@@ -506,7 +505,7 @@
         },
         {
           "name": "ids",
-          "tensor": "ids_view_dst",
+          "tensor": "argsort_dst",
           "position": 1,
           "kind": "output"
         }
@@ -566,7 +565,7 @@
       "buffers": [
         {
           "name": "ids",
-          "tensor": "ids_view_dst",
+          "tensor": "argsort_dst",
           "position": 0,
           "kind": "input"
         },

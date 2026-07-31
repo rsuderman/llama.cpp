@@ -9,7 +9,7 @@ struct ggml_cgraph;
 
 struct ggml_backend_hrx_loom_catalog;
 
-static constexpr int GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES = 24;
+static constexpr int GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES = 40;
 
 enum ggml_backend_hrx_loom_result {
     GGML_BACKEND_HRX_LOOM_UNSUPPORTED,

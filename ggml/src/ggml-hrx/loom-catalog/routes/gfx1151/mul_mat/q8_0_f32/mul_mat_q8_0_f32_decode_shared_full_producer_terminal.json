@@ -1,0 +1,307 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "mul_mat_q8_0_f32_decode_shared_full_producer_terminal",
+  "format": "loom",
+  "priority": 430,
+  "tensors": {
+    "gate_weight": {
+      "type": "Q8_0",
+      "shape": ["producer_k", "producer_rows", "gate_batch2", "gate_batch3"]
+    },
+    "up_weight": {
+      "type": "Q8_0",
+      "shape": ["producer_k", "producer_rows", "up_batch2", "up_batch3"]
+    },
+    "producer_input": {
+      "type": "F32",
+      "shape": ["producer_k", "cols", "input_batch2", "input_batch3"]
+    },
+    "gate_dst": {
+      "type": "F32",
+      "shape": ["producer_rows", "cols", "producer_batch2", "producer_batch3"]
+    },
+    "up_dst": {
+      "type": "F32",
+      "shape": ["producer_rows", "cols", "producer_batch2", "producer_batch3"]
+    },
+    "shared_dst": {
+      "type": "F32",
+      "shape": ["producer_rows", "cols", "producer_batch2", "producer_batch3"]
+    },
+    "scalar_gate_weight": {
+      "type": "F32",
+      "shape": ["scalar_k", "scalar_rows", "scalar_weight_batch2", "scalar_weight_batch3"]
+    },
+    "raw_gate_dst": {
+      "type": "F32",
+      "shape": ["scalar_rows", "cols", "scalar_batch2", "scalar_batch3"]
+    },
+    "down_weight": {
+      "type": "Q8_0",
+      "shape": ["down_k", "down_rows", "down_weight_batch2", "down_weight_batch3"]
+    },
+    "down_dst": {
+      "type": "F32",
+      "shape": ["down_rows", "cols", "down_batch2", "down_batch3"]
+    },
+    "sigmoid_dst": {
+      "type": "F32",
+      "shape": ["scalar_rows", "cols", "scalar_batch2", "scalar_batch3"]
+    },
+    "gated_dst": {
+      "type": "F32",
+      "shape": ["down_rows", "cols", "down_batch2", "down_batch3"]
+    },
+    "addend": {
+      "type": "F32",
+      "shape": ["down_rows", "cols", "down_batch2", "down_batch3"]
+    },
+    "dst": {
+      "type": "F32",
+      "shape": ["down_rows", "cols", "down_batch2", "down_batch3"]
+    }
+  },
+  "match": {
+    "anchors": ["gate"],
+    "ops": {
+      "gate": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {
+          "src0": "gate_weight",
+          "src1": "producer_input",
+          "dst": "gate_dst"
+        },
+        "attributes": {}
+      },
+      "up": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {
+          "src0": "up_weight",
+          "src1": "producer_input",
+          "dst": "up_dst"
+        },
+        "attributes": {}
+      },
+      "swiglu": {
+        "op": "GGML_OP_GLU",
+        "tensors": {
+          "src0": "gate_dst",
+          "src1": "up_dst",
+          "dst": "shared_dst"
+        },
+        "attributes": {
+          "glu_op": {"type": "i32", "source": "op_param.0"}
+        }
+      },
+      "down": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {
+          "src0": "down_weight",
+          "src1": "shared_dst",
+          "dst": "down_dst"
+        },
+        "attributes": {}
+      },
+      "scalar_gate": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {
+          "src0": "scalar_gate_weight",
+          "src1": "producer_input",
+          "dst": "raw_gate_dst"
+        },
+        "attributes": {}
+      },
+      "sigmoid": {
+        "op": "GGML_OP_UNARY",
+        "tensors": {
+          "src0": "raw_gate_dst",
+          "dst": "sigmoid_dst"
+        },
+        "attributes": {
+          "unary_op": {"type": "i32", "source": "op_param.0"}
+        }
+      },
+      "gate_mul": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "down_dst",
+          "src1": "sigmoid_dst",
+          "dst": "gated_dst"
+        },
+        "attributes": {}
+      },
+      "terminal": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "addend",
+          "src1": "gated_dst",
+          "dst": "dst"
+        },
+        "attributes": {}
+      }
+    },
+    "predicates": [
+      {"field": "attribute.swiglu.glu_op", "equals": 2},
+      {"field": "attribute.sigmoid.unary_op", "equals": 7},
+
+      {"field": "shape.gate_weight.producer_k", "equals": 2048},
+      {"field": "shape.gate_weight.producer_rows", "equals": 512},
+      {"field": "shape.gate_weight.gate_batch2", "equals": 1},
+      {"field": "shape.gate_weight.gate_batch3", "equals": 1},
+      {"same_shape": ["gate_weight", "up_weight"]},
+
+      {"field": "shape.producer_input.producer_k", "equals": "shape.gate_weight.producer_k"},
+      {"field": "shape.producer_input.cols", "equals": 1},
+      {"field": "shape.producer_input.input_batch2", "equals": 1},
+      {"field": "shape.producer_input.input_batch3", "equals": 1},
+      {"field": "shape.gate_dst.producer_rows", "equals": "shape.gate_weight.producer_rows"},
+      {"field": "shape.gate_dst.cols", "equals": "shape.producer_input.cols"},
+      {"field": "shape.gate_dst.producer_batch2", "equals": 1},
+      {"field": "shape.gate_dst.producer_batch3", "equals": 1},
+      {"same_shape": ["gate_dst", "up_dst", "shared_dst"]},
+
+      {"field": "shape.scalar_gate_weight.scalar_k", "equals": "shape.producer_input.producer_k"},
+      {"field": "shape.scalar_gate_weight.scalar_rows", "equals": 1},
+      {"field": "shape.scalar_gate_weight.scalar_weight_batch2", "equals": 1},
+      {"field": "shape.scalar_gate_weight.scalar_weight_batch3", "equals": 1},
+      {"field": "shape.raw_gate_dst.scalar_rows", "equals": 1},
+      {"field": "shape.raw_gate_dst.cols", "equals": "shape.producer_input.cols"},
+      {"field": "shape.raw_gate_dst.scalar_batch2", "equals": 1},
+      {"field": "shape.raw_gate_dst.scalar_batch3", "equals": 1},
+      {"same_shape": ["raw_gate_dst", "sigmoid_dst"]},
+
+      {"field": "shape.down_weight.down_k", "equals": "shape.gate_weight.producer_rows"},
+      {"field": "shape.down_weight.down_rows", "equals": 2048},
+      {"field": "shape.down_weight.down_weight_batch2", "equals": 1},
+      {"field": "shape.down_weight.down_weight_batch3", "equals": 1},
+      {"field": "shape.down_dst.down_rows", "equals": "shape.down_weight.down_rows"},
+      {"field": "shape.down_dst.cols", "equals": "shape.producer_input.cols"},
+      {"field": "shape.down_dst.down_batch2", "equals": 1},
+      {"field": "shape.down_dst.down_batch3", "equals": 1},
+      {"same_shape": ["down_dst", "gated_dst", "addend", "dst"]},
+
+      {"contiguous": "gate_weight"},
+      {"contiguous": "up_weight"},
+      {"contiguous": "producer_input"},
+      {"contiguous": "gate_dst"},
+      {"contiguous": "up_dst"},
+      {"contiguous": "shared_dst"},
+      {"contiguous": "scalar_gate_weight"},
+      {"contiguous": "raw_gate_dst"},
+      {"contiguous": "down_weight"},
+      {"contiguous": "down_dst"},
+      {"contiguous": "sigmoid_dst"},
+      {"contiguous": "gated_dst"},
+      {"contiguous": "addend"},
+      {"contiguous": "dst"},
+      {
+        "elided": [
+          "gate_dst",
+          "up_dst",
+          "down_dst",
+          "sigmoid_dst",
+          "gated_dst"
+        ]
+      },
+
+      {"no_overlap": ["gate_weight", "up_weight"]},
+      {"no_overlap": ["gate_weight", "scalar_gate_weight"]},
+      {"no_overlap": ["gate_weight", "producer_input"]},
+      {"no_overlap": ["up_weight", "scalar_gate_weight"]},
+      {"no_overlap": ["up_weight", "producer_input"]},
+      {"no_overlap": ["scalar_gate_weight", "producer_input"]},
+      {"no_overlap": ["down_weight", "dst"]}
+    ]
+  },
+  "derived": {
+    "producer_workgroups": {
+      "type": "i64",
+      "sum": ["shape.gate_weight.producer_rows", 1]
+    }
+  },
+  "architectures": ["gfx1151"],
+  "dispatches": [
+    {
+      "name": "producer",
+      "definition": "../../../../defs/gfx1151/mul_mat/q8_0_f32/mul_mat_q8_0_f32_decode_dual_swiglu_shared_gate_producer.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {"name": "hrx2_shape_k", "type": "i64", "source": "shape.gate_weight.producer_k"},
+          {"name": "hrx2_shape_rows", "type": "i64", "source": "shape.gate_weight.producer_rows"},
+          {"name": "hrx2_shape_cols", "type": "i64", "source": "shape.producer_input.cols"},
+          {"name": "hrx2_tuning_workgroup_size", "type": "i64", "value": 256},
+          {"name": "hrx2_tuning_q8_0_f32_unroll_factor", "type": "i64", "value": 2}
+        ]
+      },
+      "buffers": [
+        {"name": "gate_weights", "tensor": "gate_weight", "position": 0, "kind": "input"},
+        {"name": "up_weights", "tensor": "up_weight", "position": 1, "kind": "input"},
+        {"name": "shared_gate_weight", "tensor": "scalar_gate_weight", "position": 2, "kind": "input"},
+        {"name": "src1", "tensor": "producer_input", "position": 3, "kind": "input"},
+        {
+          "name": "dst",
+          "tensor": "shared_dst",
+          "position": 4,
+          "kind": "output",
+          "storage": "graph_transient"
+        },
+        {
+          "name": "raw_gate",
+          "tensor": "raw_gate_dst",
+          "position": 5,
+          "kind": "output",
+          "storage": "graph_transient"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": ["derived.producer_workgroups", 1, 1],
+        "workgroup_size": [256, 1, 1]
+      }
+    },
+    {
+      "name": "terminal",
+      "definition": "../../../../defs/gfx1151/mul_mat/q8_0_f32/mul_mat_q8_0_f32_decode_shared_terminal_epilogue.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {"name": "hrx2_shape_k", "type": "i64", "source": "shape.down_weight.down_k"},
+          {"name": "hrx2_shape_rows", "type": "i64", "source": "shape.down_weight.down_rows"},
+          {"name": "hrx2_shape_cols", "type": "i64", "source": "shape.producer_input.cols"},
+          {"name": "hrx2_tuning_workgroup_size", "type": "i64", "value": 128}
+        ]
+      },
+      "buffers": [
+        {"name": "src0", "tensor": "down_weight", "position": 0, "kind": "input"},
+        {
+          "name": "src1",
+          "tensor": "shared_dst",
+          "position": 1,
+          "kind": "input",
+          "storage": "graph_transient"
+        },
+        {
+          "name": "raw_gate",
+          "tensor": "raw_gate_dst",
+          "position": 2,
+          "kind": "input",
+          "storage": "graph_transient"
+        },
+        {
+          "name": "addend",
+          "tensor": "addend",
+          "position": 3,
+          "kind": "input",
+          "storage": "graph_transient"
+        },
+        {"name": "dst", "tensor": "dst", "position": 4, "kind": "output"}
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": ["shape.down_weight.down_rows", "shape.producer_input.cols", 1],
+        "workgroup_size": [128, 1, 1]
+      }
+    }
+  ]
+}

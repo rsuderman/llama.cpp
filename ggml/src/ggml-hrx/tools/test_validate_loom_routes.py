@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import copy
 import json
 import sys
 import tempfile
@@ -17,6 +18,15 @@ METADATA_PATH = Path("metadata.json")
 ROUTE_PATH = Path("routes/generic/add/f32/contiguous.json")
 SUM_ROWS_ROUTE_PATH = Path("routes/generic/sum_rows/f32/contiguous_4d.json")
 FUSION_ROUTE_PATH = Path("routes/generic/rms_norm_mul/f32/contiguous_4d.json")
+RECURRENT_ROUTE_PATH = Path(
+    "routes/gfx1151/gated_delta_net/f32/state_cache_decode_token1_compound.json"
+)
+PP_GDN_RMS_SIDE_ROUTE_PATH = Path(
+    "routes/gfx1151/gated_delta_net/f32/"
+    "sv128_qk_l2_full_head_rms_scale_fused.json"
+)
+RUNTIME_PUBLIC_HEADER = CATALOG_ROOT / "ggml-hrx-loom-catalog-runtime.h"
+RUNTIME_INTERNAL_HEADER = CATALOG_ROOT / "ggml-hrx-loom-catalog-runtime-internal.h"
 TEST_TARGET_A = "__test_target_a"
 TEST_TARGET_B = "__test_target_b"
 TEST_TARGET_MISSING = "__test_missing_target"
@@ -472,6 +482,184 @@ def expect_transient_storage_invalid():
         raise AssertionError("graph-transient-invalid: validator accepted invalid route")
 
 
+def fusion_route_with_consumed_count(route, count):
+    result = copy.deepcopy(route)
+    for i in range(len(result["match"]["ops"]), count):
+        result["match"]["ops"][f"capacity_view_{i}"] = {
+            "op": "GGML_OP_VIEW",
+            "tensors": {"src0": "y", "dst": "y"},
+            "attributes": {},
+        }
+    return result
+
+
+def fusion_route_with_binding_count(route, definition, count):
+    result_route = copy.deepcopy(route)
+    result_definition = copy.deepcopy(definition)
+    dispatch = result_route["dispatches"][0]
+    for i in range(len(dispatch["buffers"]), count):
+        name = f"capacity_input_{i}"
+        dispatch["buffers"].append({
+            "name": name,
+            "tensor": "x",
+            "position": i,
+            "kind": "input",
+        })
+        result_definition["bindings"].append({"name": name, "access": "read"})
+    result_definition["abi"]["binding_count"] = count
+    result_definition["abi"]["parameter_count"] = (
+        count + len(result_definition["parameters"])
+    )
+    return result_route, result_definition
+
+
+def expect_native_fusion_capacity_boundaries():
+    if route_impl.MAX_CONSUMED_NODES != 40:
+        raise AssertionError("route generator consumed-node capacity must be exactly 40")
+    if route_impl.MAX_BINDINGS != 10:
+        raise AssertionError("route generator binding capacity must be exactly 10")
+
+    public_header = RUNTIME_PUBLIC_HEADER.read_text(encoding="utf-8")
+    if "GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES = 40;" not in public_header:
+        raise AssertionError("public runtime consumed-node capacity must be exactly 40")
+    internal_header = RUNTIME_INTERNAL_HEADER.read_text(encoding="utf-8")
+    if "GGML_BACKEND_HRX_LOOM_MAX_BINDINGS        = 10;" not in internal_header:
+        raise AssertionError("internal runtime binding capacity must be exactly 10")
+
+    route_path = CATALOG_ROOT / FUSION_ROUTE_PATH
+    base_route, base_definition = read_route_and_definition(
+        CATALOG_ROOT, FUSION_ROUTE_PATH
+    )
+    accepted_consumed = fusion_route_with_consumed_count(base_route, 40)
+    accepted_impl = route_impl.generate_route_impl(
+        route_path, accepted_consumed, base_definition
+    )
+    if "static constexpr int matched_node_count = 40;" not in accepted_impl:
+        raise AssertionError("generator did not accept exactly 40 matched nodes")
+    if "plan->consumed_node_count = 40;" not in accepted_impl:
+        raise AssertionError("generator did not materialize exactly 40 consumed nodes")
+
+    rejected_consumed = fusion_route_with_consumed_count(base_route, 41)
+    try:
+        route_impl.generate_route_impl(route_path, rejected_consumed, base_definition)
+    except ValueError as err:
+        if "route consumes too many graph nodes: 41" not in str(err):
+            raise AssertionError(f"unexpected 41-node rejection: {err}") from err
+    else:
+        raise AssertionError("generator accepted 41 consumed nodes")
+
+    definition_path = (
+        route_path.parent / base_route["dispatches"][0]["definition"]
+    ).resolve()
+    accepted_bindings, accepted_definition = fusion_route_with_binding_count(
+        base_route, base_definition, 10
+    )
+    loom.validate_definition(accepted_definition, definition_path, CATALOG_ROOT)
+    accepted_binding_impl = route_impl.generate_route_impl(
+        route_path, accepted_bindings, accepted_definition
+    )
+    if "plan->dispatches[0].binding_count = 10;" not in accepted_binding_impl:
+        raise AssertionError("generator did not accept exactly 10 bindings")
+
+    rejected_bindings, rejected_definition = fusion_route_with_binding_count(
+        base_route, base_definition, 11
+    )
+    loom.validate_definition(rejected_definition, definition_path, CATALOG_ROOT)
+    try:
+        route_impl.generate_route_impl(
+            route_path, rejected_bindings, rejected_definition
+        )
+    except ValueError as err:
+        if "route has too many bindings: 11" not in str(err):
+            raise AssertionError(f"unexpected 11-binding rejection: {err}") from err
+    else:
+        raise AssertionError("generator accepted 11 bindings")
+
+
+def expect_native_recurrent_op_schema_and_generation():
+    expected_rules = {
+        "GGML_OP_RESHAPE": ({"src0", "dst"}, set()),
+        "GGML_OP_CONCAT": ({"src0", "src1", "dst"}, set()),
+        "GGML_OP_CONT": ({"src0", "dst"}, set()),
+        "GGML_OP_SSM_CONV": ({"src0", "src1", "dst"}, set()),
+        "GGML_OP_UNARY": ({"src0", "dst"}, set()),
+        "GGML_OP_L2_NORM": ({"src0", "dst"}, set()),
+        "GGML_OP_GATED_DELTA_NET": (
+            {"src0", "src1", "src2", "src3", "src4", "src5", "dst"},
+            set(),
+        ),
+        "GGML_OP_CPY": ({"src0", "dst"}, {"src1"}),
+    }
+    for op, (required, optional) in expected_rules.items():
+        rule = loom.route_schema.OP_RULES.get(op)
+        if rule is None:
+            raise AssertionError(f"missing native fusion op schema for {op}")
+        if rule["required_tensors"] != required:
+            raise AssertionError(f"wrong required tensor schema for {op}")
+        if rule["optional_tensors"] != optional:
+            raise AssertionError(f"wrong optional tensor schema for {op}")
+
+    expected_attribute_indices = {
+        "GGML_OP_CONCAT": {"dim": 0},
+        "GGML_OP_UNARY": {"unary_op": 0},
+        "GGML_OP_L2_NORM": {"eps": 0},
+        "GGML_OP_GATED_DELTA_NET": {"K": 0},
+    }
+    for op, indices in expected_attribute_indices.items():
+        if route_impl.ATTRIBUTE_INDICES.get(op) != indices:
+            raise AssertionError(f"wrong native fusion attribute indices for {op}")
+
+    route_path = CATALOG_ROOT / RECURRENT_ROUTE_PATH
+    definitions = loom.load_definitions(CATALOG_ROOT)
+    loom.validate_route(route_path, definitions, {"gfx1151"})
+    route = read_json(route_path)
+    dispatch_definitions = loom.resolve_dispatch_definitions(
+        route, route_path, definitions
+    )
+    impl = route_impl.generate_route_impl(
+        route_path, route, dispatch_definitions
+    )
+    for fragment in (
+        "static constexpr int matched_node_count = 40;",
+        "plan->consumed_node_count = 40;",
+        "plan->dispatch_count = 5;",
+        "plan->dispatches[3].binding_count = 10;",
+        "plan->transient_count = 1;",
+    ):
+        if fragment not in impl:
+            raise AssertionError(
+                f"native recurrent generator missing {fragment!r}"
+            )
+
+
+def expect_native_pp_gdn_rms_side_generation():
+    route_path = CATALOG_ROOT / PP_GDN_RMS_SIDE_ROUTE_PATH
+    definitions = loom.load_definitions(CATALOG_ROOT)
+    loom.validate_route(route_path, definitions, {"gfx1151"})
+    route = read_json(route_path)
+    dispatch_definitions = loom.resolve_dispatch_definitions(
+        route, route_path, definitions
+    )
+    impl = route_impl.generate_route_impl(
+        route_path, route, dispatch_definitions
+    )
+    for fragment in (
+        "static constexpr int matched_node_count = 25;",
+        "plan->consumed_node_count = 25;",
+        "plan->dispatch_count = 5;",
+        "plan->dispatches[0].binding_count = 10;",
+        "plan->dispatches[1].binding_count = 8;",
+        "plan->dispatches[2].binding_count = 2;",
+        "plan->dispatches[3].binding_count = 4;",
+        "plan->dispatches[4].binding_count = 9;",
+        "plan->transient_count = 4;",
+    ):
+        if fragment not in impl:
+            raise AssertionError(
+                f"native PP GDN/RMS-side generator missing {fragment!r}"
+            )
+
+
 def main():
     expect_valid(CATALOG_ROOT)
     sum_rows_route, sum_rows_definition = read_route_and_definition(CATALOG_ROOT, SUM_ROWS_ROUTE_PATH)
@@ -499,6 +687,9 @@ def main():
     expect_undeclared_transient_invalid()
     expect_graph_transient_generation_valid()
     expect_transient_storage_invalid()
+    expect_native_fusion_capacity_boundaries()
+    expect_native_recurrent_op_schema_and_generation()
+    expect_native_pp_gdn_rms_side_generation()
 
     cases = [
         (

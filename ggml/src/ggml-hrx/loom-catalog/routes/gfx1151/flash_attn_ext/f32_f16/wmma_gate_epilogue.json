@@ -77,6 +77,24 @@
         "batch"
       ]
     },
+    "projection_weight": {
+      "type": "Q8_0",
+      "shape": [
+        "k",
+        "rows",
+        "weight_batch2",
+        "weight_batch3"
+      ]
+    },
+    "projection_dst": {
+      "type": "F32",
+      "shape": [
+        "rows",
+        "cols",
+        "dst_batch2",
+        "dst_batch3"
+      ]
+    },
     "fa_reshape_dst": {
       "type": "F32",
       "shape": [
@@ -163,6 +181,15 @@
           "src0": "fa_reshape_dst",
           "src1": "sigmoid_dst",
           "dst": "terminal_dst"
+        },
+        "attributes": {}
+      },
+      "output_projection": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {
+          "src0": "projection_weight",
+          "src1": "terminal_dst",
+          "dst": "projection_dst"
         },
         "attributes": {}
       }
@@ -278,6 +305,38 @@
       {
         "field": "shape.terminal_dst.plane",
         "equals": 1
+      },
+      {
+        "field": "shape.projection_weight.k",
+        "equals": "shape.terminal_dst.attention_width"
+      },
+      {
+        "field": "shape.projection_weight.rows",
+        "equals": 2048
+      },
+      {
+        "field": "shape.projection_weight.weight_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.projection_weight.weight_batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.projection_dst.rows",
+        "equals": "shape.projection_weight.rows"
+      },
+      {
+        "field": "shape.projection_dst.cols",
+        "equals": "shape.terminal_dst.ntokens"
+      },
+      {
+        "field": "shape.projection_dst.dst_batch2",
+        "equals": "shape.terminal_dst.plane"
+      },
+      {
+        "field": "shape.projection_dst.dst_batch3",
+        "equals": "shape.terminal_dst.batch"
       },
       {
         "same_shape": [
@@ -461,17 +520,17 @@
         "contiguous": "terminal_dst"
       },
       {
+        "contiguous": "projection_weight"
+      },
+      {
+        "contiguous": "projection_dst"
+      },
+      {
         "elided": [
           "fa_dst",
           "cont_dst",
           "sigmoid_dst",
           "fa_reshape_dst"
-        ]
-      },
-      {
-        "no_overlap": [
-          "q",
-          "terminal_dst"
         ]
       },
       {
@@ -536,62 +595,8 @@
       },
       {
         "no_overlap": [
-          "terminal_dst",
-          "k"
-        ]
-      },
-      {
-        "no_overlap": [
-          "terminal_dst",
-          "v"
-        ]
-      },
-      {
-        "no_overlap": [
-          "terminal_dst",
-          "mask"
-        ]
-      },
-      {
-        "no_overlap": [
-          "terminal_dst",
-          "raw_gate"
-        ]
-      },
-      {
-        "no_overlap": [
-          "fa_dst",
-          "q"
-        ]
-      },
-      {
-        "no_overlap": [
-          "fa_dst",
-          "k"
-        ]
-      },
-      {
-        "no_overlap": [
-          "fa_dst",
-          "v"
-        ]
-      },
-      {
-        "no_overlap": [
-          "fa_dst",
-          "mask"
-        ]
-      },
-      {
-        "no_overlap": [
-          "fa_dst",
-          "raw_gate"
-        ]
-      },
-      {
-        "no_overlap": [
-          "fa_dst",
-          "terminal_dst"
+          "projection_weight",
+          "projection_dst"
         ]
       }
     ]
@@ -617,6 +622,59 @@
         "shape.q.ntokens",
         32
       ]
+    },
+    "qact_elements": {
+      "type": "i64",
+      "product": [
+        "shape.projection_weight.k",
+        "shape.terminal_dst.ntokens"
+      ]
+    },
+    "qact_scale_bytes": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.qact_elements",
+        8
+      ]
+    },
+    "qact_sum_bytes": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.qact_elements",
+        4
+      ]
+    },
+    "projection_col_workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.terminal_dst.ntokens",
+        64
+      ]
+    },
+    "projection_row_workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.projection_weight.rows",
+        64
+      ]
+    },
+    "qact_workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.qact_elements",
+        8192
+      ]
+    }
+  },
+  "transient_buffers": {
+    "qact_qs": {
+      "size": "derived.qact_elements"
+    },
+    "qact_ds": {
+      "size": "derived.qact_scale_bytes"
+    },
+    "qact_sums": {
+      "size": "derived.qact_sum_bytes"
     }
   },
   "architectures": [
@@ -746,7 +804,8 @@
           "name": "out",
           "tensor": "terminal_dst",
           "position": 5,
-          "kind": "output"
+          "kind": "output",
+          "storage": "graph_transient"
         }
       ],
       "scalars": [
@@ -761,6 +820,141 @@
         "workgroups": [
           "derived.ntiles",
           "shape.q.nheads"
+        ],
+        "workgroup_size": [
+          128,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "quant_act_q8",
+      "definition": "../../../../defs/gfx1151/prepass/quant_act_q8.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_qact_k",
+            "type": "i64",
+            "source": "shape.projection_weight.k"
+          },
+          {
+            "name": "hrx2_shape_qact_cols",
+            "type": "i64",
+            "source": "shape.terminal_dst.ntokens"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src",
+          "tensor": "terminal_dst",
+          "position": 0,
+          "kind": "input",
+          "storage": "graph_transient"
+        },
+        {
+          "name": "qs",
+          "transient": "qact_qs",
+          "position": 1,
+          "kind": "output"
+        },
+        {
+          "name": "ds",
+          "transient": "qact_ds",
+          "position": 2,
+          "kind": "output"
+        },
+        {
+          "name": "sums",
+          "transient": "qact_sums",
+          "position": 3,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.qact_workgroups",
+          1,
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "output_projection",
+      "definition": "../../../../defs/gfx1151/mul_mat/q8_0_f32/mul_mat_q8_0_f32_wmmai8.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_k",
+            "type": "i64",
+            "source": "shape.projection_weight.k"
+          },
+          {
+            "name": "hrx2_shape_rows",
+            "type": "i64",
+            "source": "shape.projection_weight.rows"
+          },
+          {
+            "name": "hrx2_shape_cols",
+            "type": "i64",
+            "source": "shape.terminal_dst.ntokens"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "projection_weight",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "src1",
+          "tensor": "terminal_dst",
+          "position": 1,
+          "kind": "input",
+          "storage": "graph_transient"
+        },
+        {
+          "name": "dst",
+          "tensor": "projection_dst",
+          "position": 2,
+          "kind": "output"
+        },
+        {
+          "name": "aq",
+          "transient": "qact_qs",
+          "position": 3,
+          "kind": "input"
+        },
+        {
+          "name": "as",
+          "transient": "qact_ds",
+          "position": 4,
+          "kind": "input"
+        },
+        {
+          "name": "asum",
+          "transient": "qact_sums",
+          "position": 5,
+          "kind": "input"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.projection_col_workgroups",
+          "derived.projection_row_workgroups",
+          1
         ],
         "workgroup_size": [
           128,

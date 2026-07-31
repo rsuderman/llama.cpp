@@ -13,7 +13,8 @@ import validate_loom_routes as route_validator
 
 ATTRIBUTE_INDICES = route_emit.ATTRIBUTE_INDICES
 CPP_SCALAR_TYPES = route_emit.CPP_SCALAR_TYPES
-MAX_CONSUMED_NODES = 24
+MAX_CONSUMED_NODES = 40
+MAX_BINDINGS = 10
 
 UNSUPPORTED_REASON_BY_PREDICATE = {
     "contiguous": "GGML_BACKEND_HRX_LOOM_UNSUPPORTED_LAYOUT",
@@ -427,6 +428,8 @@ def emit_plan_materialization(lines, route, definition, context, consumed_node_i
         raise ValueError("route has too many transient buffers")
     buffers = sorted(route_schema.require_array(route_dispatch, "buffers", "route"), key=lambda item: item["position"])
     scalars = sorted(route_schema.require_array(route_dispatch, "scalars", "route"), key=lambda item: item["position"])
+    if len(buffers) > MAX_BINDINGS:
+        raise ValueError(f"route has too many bindings: {len(buffers)}")
     dispatch = route_schema.require_dict(route_dispatch, "dispatch", "route")
     abi = route_schema.require_dict(definition, "abi", "definition")
     constant_byte_length = route_schema.require_int(abi, "constant_byte_length", "definition")
@@ -519,6 +522,8 @@ def emit_step_materialization(lines, route_id, dispatches, step_index, step, def
     step_expr = f"plan->dispatches[{step_index}]"
     buffers = sorted(route_schema.require_array(step, "buffers", "route"), key=lambda item: item["position"])
     scalars = sorted(route_schema.require_array(step, "scalars", "route"), key=lambda item: item["position"])
+    if len(buffers) > MAX_BINDINGS:
+        raise ValueError(f"route dispatch has too many bindings: {len(buffers)}")
     dispatch = route_schema.require_dict(step, "dispatch", "route")
     abi = route_schema.require_dict(definition, "abi", "definition")
     constant_byte_length = route_schema.require_int(abi, "constant_byte_length", "definition")

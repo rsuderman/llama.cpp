@@ -24,31 +24,31 @@
 //
 // LDS 63296 B per workgroup; the full-head form admits one eight-wave workgroup per CU.
 
-config.decl @hrx2.shape.gdn.s_v : %value: index where [range(%value, 1, 4096)]
-config.decl @hrx2.shape.gdn.n_heads : %value: index where [range(%value, 1, 4096)]
-config.decl @hrx2.shape.gdn.n_tokens : %value: index where [range(%value, 1, 1048576)]
-config.decl @hrx2.shape.gdn.n_seqs : %value: index where [range(%value, 1, 4096)]
-config.decl @hrx2.shape.gdn_qk_scale.s1 : %value: index where [range(%value, 0, 1073741823)]
-config.decl @hrx2.shape.gdn_qk_scale.s2 : %value: index where [range(%value, 0, 1073741823), mul(%value, 8)]
-config.decl @hrx2.shape.gdn_qk_scale.s3 : %value: index where [range(%value, 0, 1073741823)]
-config.decl @hrx2.shape.gdn.sv1 : %value: index where [range(%value, 0, 1073741823)]
-config.decl @hrx2.shape.gdn.sv2 : %value: index where [range(%value, 0, 1073741823)]
-config.decl @hrx2.shape.gdn.sv3 : %value: index where [range(%value, 0, 1073741823)]
-config.decl @hrx2.shape.gdn.sb1 : %value: index where [range(%value, 0, 1073741823)]
-config.decl @hrx2.shape.gdn.sb2 : %value: index where [range(%value, 0, 1073741823)]
-config.decl @hrx2.shape.gdn.sb3 : %value: index where [range(%value, 0, 1073741823)]
-config.decl @hrx2.shape.gdn.neqk1 : %value: index where [range(%value, 1, 4096)]
-config.decl @hrx2.shape.gdn.rq3 : %value: index where [range(%value, 1, 1024)]
-config.decl @hrx2.tuning.gdn.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+config.decl @hrx2_shape_gdn_s_v : %value: index where [range(%value, 1, 4096)]
+config.decl @hrx2_shape_gdn_n_heads : %value: index where [range(%value, 1, 4096)]
+config.decl @hrx2_shape_gdn_n_tokens : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2_shape_gdn_n_seqs : %value: index where [range(%value, 1, 4096)]
+config.decl @hrx2_shape_gdn_qk_scale_s1 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_shape_gdn_qk_scale_s2 : %value: index where [range(%value, 0, 1073741823), mul(%value, 8)]
+config.decl @hrx2_shape_gdn_qk_scale_s3 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_shape_gdn_sv1 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_shape_gdn_sv2 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_shape_gdn_sv3 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_shape_gdn_sb1 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_shape_gdn_sb2 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_shape_gdn_sb3 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_shape_gdn_neqk1 : %value: index where [range(%value, 1, 4096)]
+config.decl @hrx2_shape_gdn_rq3 : %value: index where [range(%value, 1, 1024)]
+config.decl @hrx2_tuning_gdn_workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
 
 kernel.def export("hrx2_gated_delta_net_f32_sv128_qk_l2_full_head_rms_scale_fused") @hrx2_gated_delta_net_f32_sv128_qk_l2_full_head_rms_scale_fused() {
   %unit = index.constant 1 : index
   %wg = index.constant 256 : index
   %blk = index.constant 128 : index
   %blk_m = index.constant 127 : index
-  %s_v = config.get @hrx2.shape.gdn.s_v : index
-  %n_heads = config.get @hrx2.shape.gdn.n_heads : index
-  %n_seqs = config.get @hrx2.shape.gdn.n_seqs : index
+  %s_v = config.get @hrx2_shape_gdn_s_v : index
+  %n_heads = config.get @hrx2_shape_gdn_n_heads : index
+  %n_seqs = config.get @hrx2_shape_gdn_n_seqs : index
   %cr = index.add %s_v, %blk_m : index
   %col_blocks = index.div %cr, %blk : index
   kernel.launch.config workgroups(%n_heads, %n_seqs, %col_blocks) workgroup_size(%wg, %unit, %unit) : index
@@ -158,21 +158,21 @@ kernel.def export("hrx2_gated_delta_net_f32_sv128_qk_l2_full_head_rms_scale_fuse
   %k6528 = index.constant 6528 : index
   %k11072 = index.constant 11072 : index
 
-  %s_v0 = config.get @hrx2.shape.gdn.s_v : index
-  %n_heads0 = config.get @hrx2.shape.gdn.n_heads : index
-  %n_tokens0 = config.get @hrx2.shape.gdn.n_tokens : index
-  %n_seqs = config.get @hrx2.shape.gdn.n_seqs : index
-  %sq1 = config.get @hrx2.shape.gdn_qk_scale.s1 : index
-  %sq2 = config.get @hrx2.shape.gdn_qk_scale.s2 : index
-  %sq3 = config.get @hrx2.shape.gdn_qk_scale.s3 : index
-  %sv1 = config.get @hrx2.shape.gdn.sv1 : index
-  %sv2 = config.get @hrx2.shape.gdn.sv2 : index
-  %sv3 = config.get @hrx2.shape.gdn.sv3 : index
-  %sb1 = config.get @hrx2.shape.gdn.sb1 : index
-  %sb2 = config.get @hrx2.shape.gdn.sb2 : index
-  %sb3 = config.get @hrx2.shape.gdn.sb3 : index
-  %neqk1 = config.get @hrx2.shape.gdn.neqk1 : index
-  %rq3 = config.get @hrx2.shape.gdn.rq3 : index
+  %s_v0 = config.get @hrx2_shape_gdn_s_v : index
+  %n_heads0 = config.get @hrx2_shape_gdn_n_heads : index
+  %n_tokens0 = config.get @hrx2_shape_gdn_n_tokens : index
+  %n_seqs = config.get @hrx2_shape_gdn_n_seqs : index
+  %sq1 = config.get @hrx2_shape_gdn_qk_scale_s1 : index
+  %sq2 = config.get @hrx2_shape_gdn_qk_scale_s2 : index
+  %sq3 = config.get @hrx2_shape_gdn_qk_scale_s3 : index
+  %sv1 = config.get @hrx2_shape_gdn_sv1 : index
+  %sv2 = config.get @hrx2_shape_gdn_sv2 : index
+  %sv3 = config.get @hrx2_shape_gdn_sv3 : index
+  %sb1 = config.get @hrx2_shape_gdn_sb1 : index
+  %sb2 = config.get @hrx2_shape_gdn_sb2 : index
+  %sb3 = config.get @hrx2_shape_gdn_sb3 : index
+  %neqk1 = config.get @hrx2_shape_gdn_neqk1 : index
+  %rq3 = config.get @hrx2_shape_gdn_rq3 : index
   %s_v = index.assume %s_v0 [range(%s_v0, 128, 128)] : index
   %n_heads = index.assume %n_heads0 [range(%n_heads0, 1, 4096)] : index
   %n_tokens = index.assume %n_tokens0 [range(%n_tokens0, 1, 1048576)] : index
