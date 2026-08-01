@@ -799,6 +799,73 @@ static void run_qwen3_moe_dense_linear_case(ggml_backend_t backend) {
                                     "qwen3_moe_dense_linear_q6k");
 }
 
+static void run_qwen3_moe_dense_linear_next_q8_case(ggml_backend_t backend) {
+    const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    const std::string saved    = previous ? previous : "";
+    setenv("GGML_HRX_LOOM_FORCE_ROUTE", "qwen3_moe_dense_linear_q4k_q8_1_x4_next_q8", 1);
+
+    const int64_t input_size  = 4096;
+    const int64_t output_size = 2048;
+    const int64_t token_count = 1;
+    const float   eps         = 1.0e-6f;
+
+    ggml_context_ptr ctx       = make_context();
+    ggml_tensor *    weight    = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_Q4_K, input_size, output_size);
+    ggml_tensor *    input     = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, input_size, token_count);
+    ggml_tensor *    projected = ggml_mul_mat(ctx.get(), weight, input);
+    ggml_tensor *    residual  = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, output_size, token_count);
+    ggml_tensor *    out       = ggml_add(ctx.get(), projected, residual);
+    ggml_tensor *    norm_w    = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, output_size);
+    ggml_tensor *    rms       = ggml_rms_norm(ctx.get(), out, eps);
+    ggml_tensor *    next      = ggml_mul(ctx.get(), rms, norm_w);
+
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 32, false);
+    ggml_build_forward_expand(graph, out);
+    ggml_build_forward_expand(graph, next);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<uint8_t> weight_data(ggml_nbytes(weight), 0);
+    std::vector<float>   input_data(input_size * token_count, 0.0f);
+    std::vector<float>   residual_data(output_size * token_count);
+    std::vector<float>   norm_w_data(output_size);
+    std::vector<float>   expected_next(output_size * token_count);
+    for (int64_t i = 0; i < output_size; ++i) {
+        residual_data[i] = static_cast<float>((i % 31) - 15) * 0.03125f;
+        norm_w_data[i]   = 0.75f + static_cast<float>(i % 19) * 0.015625f;
+    }
+
+    float sum_squares = 0.0f;
+    for (float value : residual_data) {
+        sum_squares += value * value;
+    }
+    const float scale = 1.0f / std::sqrt(sum_squares / static_cast<float>(output_size) + eps);
+    for (int64_t i = 0; i < output_size; ++i) {
+        expected_next[i] = residual_data[i] * scale * norm_w_data[i];
+    }
+
+    ggml_backend_tensor_set(weight, weight_data.data(), 0, weight_data.size());
+    ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+    ggml_backend_tensor_set(residual, residual_data.data(), 0, residual_data.size() * sizeof(float));
+    ggml_backend_tensor_set(norm_w, norm_w_data.data(), 0, norm_w_data.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> actual_out(residual_data.size(), -1.0f);
+    ggml_backend_tensor_get(out, actual_out.data(), 0, actual_out.size() * sizeof(float));
+    expect_near(actual_out, residual_data, 1e-6f, "qwen3_moe_dense_linear_next_q8_output");
+
+    std::vector<float> actual_next(expected_next.size(), -1.0f);
+    ggml_backend_tensor_get(next, actual_next.data(), 0, actual_next.size() * sizeof(float));
+    expect_near(actual_next, expected_next, 1e-3f, "qwen3_moe_dense_linear_next_q8_next");
+
+    if (previous) {
+        setenv("GGML_HRX_LOOM_FORCE_ROUTE", saved.c_str(), 1);
+    } else {
+        unsetenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    }
+}
+
 static void run_qwen3_moe_router_top8_case(ggml_backend_t backend) {
     const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
     const std::string saved    = previous ? previous : "";
@@ -1626,6 +1693,7 @@ int main() {
         }
         if (std::string(test_only) == "qwen3_moe_dense_linear") {
             run_qwen3_moe_dense_linear_case(backend.get());
+            run_qwen3_moe_dense_linear_next_q8_case(backend.get());
             ggml_backend_synchronize(backend.get());
             return 0;
         }

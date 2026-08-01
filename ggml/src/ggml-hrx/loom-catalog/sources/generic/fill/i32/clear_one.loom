@@ -1,0 +1,14 @@
+kernel.def export("clear_i32_one") @clear_i32_one() {
+  %unit = index.constant 1 : index
+  kernel.launch.config workgroups(%unit, %unit, %unit) workgroup_size(%unit, %unit, %unit) : index
+} launch(%dst: buffer) {
+  %zero = index.constant 0 : index
+  %zero_offset = index.constant 0 : offset
+  %zero_i32 = scalar.constant 0 : i32
+
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %dst_aligned = buffer.assume.alignment %dst_global {minimum_alignment = 4} : buffer
+  %dst_view = buffer.view %dst_aligned[%zero_offset] : buffer -> view<1xi32, #dense>
+  view.store %zero_i32, %dst_view[%zero] : i32, view<1xi32, #dense>
+  kernel.return
+}

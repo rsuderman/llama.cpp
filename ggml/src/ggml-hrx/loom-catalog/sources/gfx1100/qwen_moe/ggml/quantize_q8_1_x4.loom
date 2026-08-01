@@ -73,6 +73,7 @@ func.template<ggml.quantize_q8_1_x4.group_body> device @ggml_quantize_q8_1_x4_gr
   %zero = index.constant 0 : index
   %one = index.constant 1 : index
   %two = index.constant 2 : index
+  %three = index.constant 3 : index
   %four = index.constant 4 : index
   %eight = index.constant 8 : index
   %thirtytwo = index.constant 32 : index
@@ -97,7 +98,9 @@ func.template<ggml.quantize_q8_1_x4.group_body> device @ggml_quantize_q8_1_x4_gr
   %block_word_add = index.mul %block_in_group, %eight : index
   %word_element_add = index.mul %word_in_block, %four : index
   %input_block_base = index.add %group_element_base, %block_element_add : index
-  %input_index = index.add %input_block_base, %word_element_add : index
+  %input_index0 = index.add %input_block_base, %word_element_add : index
+  %input_packet_end = index.sub %element_count, %three : index
+  %input_index = index.assume %input_index0 [lt(%input_index0, %input_packet_end)] : index
   %input_noalias, %output_noalias = buffer.assume.noalias %input, %output : buffer, buffer
   %input_view = buffer.view %input_noalias[%zero_offset] : buffer -> view<[%element_count]xf32, #dense>
   %input_values = vector.load %input_view[%input_index] : view<[%element_count]xf32, #dense> -> vector<4xf32>
