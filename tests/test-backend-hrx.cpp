@@ -211,6 +211,26 @@ static bool run_argsort_support_case(ggml_backend_dev_t dev) {
     return argsort_f32_i32_supported;
 }
 
+static bool run_swiglu_support_case(ggml_backend_dev_t dev) {
+    bool swiglu_f32_supported = false;
+    {
+        ggml_context_ptr ctx = make_context();
+        ggml_tensor * gate = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, 33, 2, 67);
+        ggml_tensor * up = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, 33, 2, 67);
+        ggml_tensor * out = ggml_swiglu_split(ctx.get(), gate, up);
+        swiglu_f32_supported = ggml_backend_dev_supports_op(dev, out);
+    }
+
+    {
+        ggml_context_ptr ctx = make_context();
+        ggml_tensor * gate = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F16, 33, 2, 67);
+        ggml_tensor * up = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F16, 33, 2, 67);
+        ggml_tensor * out = ggml_swiglu_split(ctx.get(), gate, up);
+        GGML_ASSERT(!ggml_backend_dev_supports_op(dev, out));
+    }
+    return swiglu_f32_supported;
+}
+
 static void run_scale_case(ggml_backend_t backend, ggml_backend_dev_t dev, int64_t n) {
     ggml_context_ptr ctx = make_context();
     ggml_tensor * src = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n);
@@ -524,6 +544,38 @@ static void run_argsort_case(ggml_backend_t backend, ggml_backend_dev_t dev, ggm
     expect_eq_i32(actual, expected, "argsort");
 }
 
+static void run_swiglu_case(ggml_backend_t backend, ggml_backend_dev_t dev, int64_t output_size, int64_t route_count, int64_t token_count) {
+    const int64_t element_count = output_size * route_count * token_count;
+    ggml_context_ptr ctx = make_context();
+    ggml_tensor * gate = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, output_size, route_count, token_count);
+    ggml_tensor * up = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, output_size, route_count, token_count);
+    ggml_tensor * out = ggml_swiglu_split(ctx.get(), gate, up);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, out));
+
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 16, false);
+    ggml_build_forward_expand(graph, out);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> gate_data(element_count);
+    std::vector<float> up_data(element_count);
+    std::vector<float> expected(element_count);
+    for (int64_t i = 0; i < element_count; ++i) {
+        gate_data[i] = static_cast<float>((i % 29) - 14) * 0.125f;
+        up_data[i] = static_cast<float>((i % 17) - 8) * 0.25f;
+        expected[i] = gate_data[i] / (1.0f + std::exp(-gate_data[i])) * up_data[i];
+    }
+
+    ggml_backend_tensor_set(gate, gate_data.data(), 0, gate_data.size() * sizeof(float));
+    ggml_backend_tensor_set(up, up_data.data(), 0, up_data.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> actual(element_count, -1.0f);
+    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+    expect_near(actual, expected, 1e-5f, "swiglu");
+}
+
 } // namespace
 
 int main() {
@@ -620,6 +672,14 @@ int main() {
             ggml_backend_synchronize(backend.get());
             return 0;
         }
+        if (std::string(test_only) == "swiglu") {
+            if (run_swiglu_support_case(dev)) {
+                run_swiglu_case(backend.get(), dev, 33, 2, 67);
+                run_swiglu_case(backend.get(), dev, 768, 8, 1);
+            }
+            ggml_backend_synchronize(backend.get());
+            return 0;
+        }
         std::fprintf(stderr, "unknown GGML_HRX_TEST_ONLY=%s\n", test_only);
         return 1;
     }
@@ -653,6 +713,10 @@ int main() {
     if (run_argsort_support_case(dev)) {
         run_argsort_case(backend.get(), dev, GGML_SORT_ORDER_ASC);
         run_argsort_case(backend.get(), dev, GGML_SORT_ORDER_DESC);
+    }
+    if (run_swiglu_support_case(dev)) {
+        run_swiglu_case(backend.get(), dev, 33, 2, 67);
+        run_swiglu_case(backend.get(), dev, 768, 8, 1);
     }
 
     ggml_backend_synchronize(backend.get());

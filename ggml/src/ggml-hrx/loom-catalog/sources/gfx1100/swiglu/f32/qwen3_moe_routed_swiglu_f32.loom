@@ -1,0 +1,47 @@
+// Applies the model's SwiGLU epilogue to gate and up projections already
+// scattered into logical [token][route][output channel] order.
+amdgpu.target<gfx11-generic> @qwen3_moe_gfx11_wave64 {subgroup_size = 64}
+
+config.decl @qwen3_moe_routed_gate_up_route_count : %value: index where [range(%value, 1, 8)]
+config.decl @qwen3_moe_routed_gate_up_output_size : %value: index where [range(%value, 1, 4096)]
+
+func.decl inline @qwen3_moe_routed_swiglu_f32_element(%gate: f32, %up: f32) -> (f32)
+
+kernel.def target(@qwen3_moe_gfx11_wave64) export("qwen3_moe_routed_swiglu_f32") @qwen3_moe_routed_swiglu_f32(%token_count: index) {
+  %one = index.constant 1 : index
+  %workgroup_size = index.constant 256 : index
+  %rounding = index.constant 255 : index
+  %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048)] : index
+  %output_size = config.get @qwen3_moe_routed_gate_up_output_size : index
+  %route_count = config.get @qwen3_moe_routed_gate_up_route_count : index
+  %row_count = index.mul %bounded_token_count, %route_count : index
+  %element_count = index.mul %row_count, %output_size : index
+  %rounded_count = index.add %element_count, %rounding : index
+  %workgroup_count = index.div %rounded_count, %workgroup_size : index
+  kernel.launch.config workgroups(%workgroup_count, %one, %one) workgroup_size(%workgroup_size, %one, %one) : index
+} launch(%token_count: index, %gate: buffer, %up: buffer, %output: buffer) {
+  %route_count = config.get @qwen3_moe_routed_gate_up_route_count : index
+  %output_size = config.get @qwen3_moe_routed_gate_up_output_size : index
+  %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048)] : index
+  %bounded_route_count = index.assume %route_count [range(%route_count, 1, 8)] : index
+  %bounded_output_size = index.assume %output_size [range(%output_size, 1, 4096)] : index
+  %workgroup = kernel.workgroup.id<x> : index
+  %lane = kernel.workitem.id<x> : index
+  %workgroup_size = index.constant 256 : index
+  %zero_offset = index.constant 0 : offset
+  %row_count = index.mul %bounded_token_count, %bounded_route_count : index
+  %element_count = index.mul %row_count, %bounded_output_size : index
+  %element = index.madd %workgroup, %workgroup_size, %lane : index
+  %in_bounds = index.cmp ult, %element, %element_count : index
+  %gate_noalias, %up_noalias, %output_noalias = buffer.assume.noalias %gate, %up, %output : buffer, buffer, buffer
+  %gate_view = buffer.view %gate_noalias[%zero_offset] : buffer -> view<[%element_count]xf32, #dense>
+  %up_view = buffer.view %up_noalias[%zero_offset] : buffer -> view<[%element_count]xf32, #dense>
+  %output_view = buffer.view %output_noalias[%zero_offset] : buffer -> view<[%element_count]xf32, #dense>
+  scf.if %in_bounds {
+      %gate_value = view.load %gate_view[%element] : view<[%element_count]xf32, #dense> -> f32
+      %up_value = view.load %up_view[%element] : view<[%element_count]xf32, #dense> -> f32
+      %result = func.call inline @qwen3_moe_routed_swiglu_f32_element(%gate_value, %up_value) : (f32, f32) -> (f32)
+      view.store %result, %output_view[%element] : f32, view<[%element_count]xf32, #dense>
+  }
+  kernel.return
+}

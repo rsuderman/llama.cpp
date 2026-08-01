@@ -131,15 +131,19 @@ static bool ggml_backend_hrx_loom_copy_artifact_bytes(const loomc_artifact_t * a
 }
 
 struct ggml_backend_hrx_loom_compile_state {
-    loomc_target_environment_t * target_environment = nullptr;
-    loomc_context_t *            context            = nullptr;
-    loomc_workspace_t *          workspace          = nullptr;
-    loomc_source_t *             source             = nullptr;
-    loomc_module_t *             module             = nullptr;
-    loomc_target_profile_t *     target_profile     = nullptr;
-    loomc_compiler_t *           compiler           = nullptr;
-    loomc_pass_program_t *       pass_program       = nullptr;
-    loomc_result_t *             result             = nullptr;
+    loomc_target_environment_t *  target_environment = nullptr;
+    loomc_context_t *             context            = nullptr;
+    loomc_workspace_t *           workspace          = nullptr;
+    loomc_source_t *              source             = nullptr;
+    std::vector<loomc_source_t *> dependency_sources;
+    loomc_link_index_builder_t *  link_index_builder = nullptr;
+    loomc_link_index_t *          link_index         = nullptr;
+    loomc_linker_t *              linker             = nullptr;
+    loomc_module_t *              module             = nullptr;
+    loomc_target_profile_t *      target_profile     = nullptr;
+    loomc_compiler_t *            compiler           = nullptr;
+    loomc_pass_program_t *        pass_program       = nullptr;
+    loomc_result_t *              result             = nullptr;
 
     ~ggml_backend_hrx_loom_compile_state() {
         loomc_result_release(result);
@@ -147,6 +151,12 @@ struct ggml_backend_hrx_loom_compile_state {
         loomc_compiler_release(compiler);
         loomc_target_profile_release(target_profile);
         loomc_module_release(module);
+        loomc_linker_release(linker);
+        loomc_link_index_release(link_index);
+        loomc_link_index_builder_release(link_index_builder);
+        for (loomc_source_t * dependency_source : dependency_sources) {
+            loomc_source_release(dependency_source);
+        }
         loomc_source_release(source);
         loomc_workspace_release(workspace);
         loomc_context_release(context);
@@ -158,6 +168,137 @@ struct ggml_backend_hrx_loom_compile_state {
         result = nullptr;
     }
 };
+
+static bool ggml_backend_hrx_loom_create_text_source(const char *      source_name,
+                                                     const void *      source_data,
+                                                     size_t            source_size,
+                                                     loomc_source_t ** out_source) {
+    loomc_source_options_t source_options = {
+        /* .type              = */ LOOMC_STRUCTURE_TYPE_SOURCE_OPTIONS,
+        /* .structure_size    = */ sizeof(loomc_source_options_t),
+        /* .next              = */ nullptr,
+        /* .format            = */ LOOMC_SOURCE_FORMAT_TEXT,
+        /* .identifier        = */ loomc_make_cstring_view(source_name),
+        /* .contents          = */ loomc_make_byte_span(source_data, source_size),
+        /* .storage           = */ LOOMC_SOURCE_STORAGE_BORROWED,
+        /* .release           = */ nullptr,
+        /* .release_user_data = */ nullptr,
+    };
+    const loomc_status_t status = loomc_source_create(&source_options, loomc_allocator_system(), out_source);
+    if (!loomc_status_is_ok(status)) {
+        GGML_HRX_LOOMC_CHECK(status);
+        return false;
+    }
+    return true;
+}
+
+static bool ggml_backend_hrx_loom_add_link_source(loomc_link_index_builder_t * builder,
+                                                  loomc_source_t *             source,
+                                                  const char *                 source_name,
+                                                  loomc_link_provider_role_t   role) {
+    loomc_link_index_source_options_t source_options = {
+        /* .provider_name = */ loomc_make_cstring_view(source_name),
+        /* .role          = */ role,
+    };
+    const loomc_status_t status = loomc_link_index_builder_add_source(builder, source, &source_options, nullptr);
+    if (!loomc_status_is_ok(status)) {
+        GGML_HRX_LOOMC_CHECK(status);
+        return false;
+    }
+    return true;
+}
+
+static bool ggml_backend_hrx_loom_deserialize_or_link_module(
+    ggml_backend_hrx_loom_compile_state *       state,
+    const ggml_backend_hrx_loom_compile_input * input,
+    const std::vector<loomc_config_binding_t> & config_bindings) {
+    if (input->dependency_count == 0) {
+        loomc_status_t status =
+            loomc_module_deserialize_from_source(state->context, state->workspace, state->source, nullptr,
+                                                 loomc_allocator_system(), &state->module, &state->result);
+        if (!loomc_status_is_ok(status)) {
+            GGML_HRX_LOOMC_CHECK(status);
+            return false;
+        }
+        if (!ggml_backend_hrx_loom_require_success(state->result, "source deserialization")) {
+            return false;
+        }
+        state->reset_result();
+        return true;
+    }
+
+    loomc_status_t status =
+        loomc_link_index_builder_create(state->context, nullptr, loomc_allocator_system(), &state->link_index_builder);
+    if (!loomc_status_is_ok(status)) {
+        GGML_HRX_LOOMC_CHECK(status);
+        return false;
+    }
+    if (!ggml_backend_hrx_loom_add_link_source(state->link_index_builder, state->source, input->source_name,
+                                               LOOMC_LINK_PROVIDER_ROLE_INPUT)) {
+        return false;
+    }
+
+    state->dependency_sources.reserve(input->dependency_count);
+    for (size_t i = 0; i < input->dependency_count; ++i) {
+        const ggml_backend_hrx_loom_source_entry & dependency        = input->dependencies[i];
+        loomc_source_t *                           dependency_source = nullptr;
+        if (!ggml_backend_hrx_loom_create_text_source(dependency.name, dependency.data, dependency.size,
+                                                      &dependency_source)) {
+            return false;
+        }
+        state->dependency_sources.push_back(dependency_source);
+        if (!ggml_backend_hrx_loom_add_link_source(state->link_index_builder, dependency_source, dependency.name,
+                                                   LOOMC_LINK_PROVIDER_ROLE_LIBRARY)) {
+            return false;
+        }
+    }
+
+    status = loomc_link_index_builder_finish(state->link_index_builder, &state->link_index, &state->result);
+    if (!loomc_status_is_ok(status)) {
+        GGML_HRX_LOOMC_CHECK(status);
+        return false;
+    }
+    if (!ggml_backend_hrx_loom_require_success(state->result, "link index preparation")) {
+        return false;
+    }
+    state->reset_result();
+
+    status = loomc_linker_create(state->context, nullptr, loomc_allocator_system(), &state->linker);
+    if (!loomc_status_is_ok(status)) {
+        GGML_HRX_LOOMC_CHECK(status);
+        return false;
+    }
+
+    const loomc_string_view_t root_symbol  = loomc_make_cstring_view(input->symbol);
+    loomc_link_options_t      link_options = {
+        /* .type              = */ LOOMC_STRUCTURE_TYPE_LINK_OPTIONS,
+        /* .structure_size    = */ sizeof(loomc_link_options_t),
+        /* .next              = */ nullptr,
+        /* .link_index        = */ state->link_index,
+        /* .module_name       = */ loomc_make_cstring_view(input->symbol),
+        /* .root_symbols      = */ &root_symbol,
+        /* .root_symbol_count = */ 1,
+        /* .flags             = */ 0,
+        /* .config            = */
+            {
+                /* .bindings      = */ config_bindings.empty() ? nullptr : config_bindings.data(),
+                /* .binding_count = */ config_bindings.size(),
+                /* .json_object   = */ loomc_string_view_empty(),
+                /* .flags         = */ LOOMC_CONFIG_POLICY_FLAG_REJECT_UNKNOWN |
+                                      LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED,
+            },
+    };
+    status = loomc_link_module(state->linker, state->workspace, &link_options, &state->module, &state->result);
+    if (!loomc_status_is_ok(status)) {
+        GGML_HRX_LOOMC_CHECK(status);
+        return false;
+    }
+    if (!ggml_backend_hrx_loom_require_success(state->result, "linking")) {
+        return false;
+    }
+    state->reset_result();
+    return true;
+}
 
 }  // namespace
 
@@ -245,6 +386,8 @@ static ggml_backend_hrx_loaded_loom_route * ggml_backend_hrx_loom_get_loaded_rou
         /* .source_name          = */ plan->entry->source_name,
         /* .target               = */ catalog->target.c_str(),
         /* .symbol               = */ plan->entry->symbol,
+        /* .dependencies         = */ plan->entry->dependencies,
+        /* .dependency_count     = */ plan->entry->dependency_count,
         /* .config_bindings      = */ plan->config_bindings,
         /* .config_binding_count = */ plan->config_binding_count,
     };
@@ -354,9 +497,24 @@ bool ggml_backend_hrx_loom_compile(const ggml_backend_hrx_loom_compile_input * i
         GGML_LOG_ERROR("%s: invalid Loom compile config bindings\n", __func__);
         return false;
     }
+    if (input->dependency_count > 0 && !input->dependencies) {
+        GGML_LOG_ERROR("%s: invalid Loom compile dependencies\n", __func__);
+        return false;
+    }
     if (std::strcmp(input->source_format, "loom-text") != 0) {
         GGML_LOG_ERROR("%s: unsupported Loom source format %s\n", __func__, input->source_format);
         return false;
+    }
+    for (size_t i = 0; i < input->dependency_count; ++i) {
+        const ggml_backend_hrx_loom_source_entry & dependency = input->dependencies[i];
+        if (!dependency.data || dependency.size == 0 || !dependency.format || !dependency.name) {
+            GGML_LOG_ERROR("%s: invalid Loom dependency\n", __func__);
+            return false;
+        }
+        if (std::strcmp(dependency.format, "loom-text") != 0) {
+            GGML_LOG_ERROR("%s: unsupported Loom dependency format %s\n", __func__, dependency.format);
+            return false;
+        }
     }
 
     std::vector<loomc_config_binding_t> config_bindings;
@@ -400,20 +558,8 @@ bool ggml_backend_hrx_loom_compile(const ggml_backend_hrx_loom_compile_input * i
         return false;
     }
 
-    loomc_source_options_t source_options = {
-        /* .type              = */ LOOMC_STRUCTURE_TYPE_SOURCE_OPTIONS,
-        /* .structure_size    = */ sizeof(loomc_source_options_t),
-        /* .next              = */ nullptr,
-        /* .format            = */ LOOMC_SOURCE_FORMAT_TEXT,
-        /* .identifier        = */ loomc_make_cstring_view(input->source_name),
-        /* .contents          = */ loomc_make_byte_span(input->source_data, input->source_size),
-        /* .storage           = */ LOOMC_SOURCE_STORAGE_BORROWED,
-        /* .release           = */ nullptr,
-        /* .release_user_data = */ nullptr,
-    };
-    status = loomc_source_create(&source_options, loomc_allocator_system(), &state.source);
-    if (!loomc_status_is_ok(status)) {
-        GGML_HRX_LOOMC_CHECK(status);
+    if (!ggml_backend_hrx_loom_create_text_source(input->source_name, input->source_data, input->source_size,
+                                                  &state.source)) {
         return false;
     }
 
@@ -456,21 +602,20 @@ bool ggml_backend_hrx_loom_compile(const ggml_backend_hrx_loom_compile_input * i
     }
     state.reset_result();
 
-    status = loomc_module_deserialize_from_source(state.context, state.workspace, state.source, nullptr,
-                                                  loomc_allocator_system(), &state.module, &state.result);
-    if (!loomc_status_is_ok(status)) {
-        GGML_HRX_LOOMC_CHECK(status);
+    const bool module_was_linked = input->dependency_count > 0;
+    if (!ggml_backend_hrx_loom_deserialize_or_link_module(&state, input, config_bindings)) {
         return false;
     }
-    if (!ggml_backend_hrx_loom_require_success(state.result, "source deserialization")) {
-        return false;
-    }
-    state.reset_result();
 
     const loomc_target_specialization_t target_specialization = {
         /* .function_symbol = */ loomc_make_cstring_view(input->symbol),
         /* .target_profile  = */ state.target_profile,
     };
+    const loomc_config_binding_t * compile_bindings =
+        module_was_linked || config_bindings.empty() ? nullptr : config_bindings.data();
+    const size_t   compile_binding_count = module_was_linked ? 0 : config_bindings.size();
+    const uint32_t compile_config_flags =
+        module_was_linked ? 0 : LOOMC_CONFIG_POLICY_FLAG_REJECT_UNKNOWN | LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED;
     loomc_target_specialization_options_t target_options = {
         /* .type                 = */ LOOMC_STRUCTURE_TYPE_TARGET_SPECIALIZATION_OPTIONS,
         /* .structure_size       = */ sizeof(loomc_target_specialization_options_t),
@@ -486,11 +631,10 @@ bool ggml_backend_hrx_loom_compile(const ggml_backend_hrx_loom_compile_input * i
         /* .artifact_flags = */ 0,
         /* .config         = */
             {
-                /* .bindings      = */ config_bindings.empty() ? nullptr : config_bindings.data(),
-                /* .binding_count = */ config_bindings.size(),
+                /* .bindings      = */ compile_bindings,
+                /* .binding_count = */ compile_binding_count,
                 /* .json_object   = */ loomc_string_view_empty(),
-                /* .flags         = */ LOOMC_CONFIG_POLICY_FLAG_REJECT_UNKNOWN |
-                                      LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED,
+                /* .flags         = */ compile_config_flags,
             },
     };
     status = loomc_compile_module(state.compiler, state.workspace, state.pass_program, state.module, &compile_options,

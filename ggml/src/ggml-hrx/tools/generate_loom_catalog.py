@@ -29,6 +29,13 @@ def write_generated_header(path):
 #include <cstddef>
 #include <cstdint>
 
+struct ggml_backend_hrx_loom_source_entry {
+    const char * name;
+    const unsigned char * data;
+    size_t size;
+    const char * format;
+};
+
 struct ggml_backend_hrx_loom_catalog_entry {
     const char * id;
     const char * op;
@@ -38,6 +45,8 @@ struct ggml_backend_hrx_loom_catalog_entry {
     size_t source_size;
     const char * source_format;
     const char * symbol;
+    const ggml_backend_hrx_loom_source_entry * dependencies;
+    size_t dependency_count;
     uint32_t workgroup_size[3];
     uint32_t binding_count;
     uint32_t parameter_count;
@@ -56,10 +65,30 @@ def write_generated_source(path, header_path, entries):
         chunks.append(f"static const unsigned char {entry['array_name']}[] = {{\n")
         chunks.append(c_array(entry["source_data"]))
         chunks.append("\n};\n\n")
+        for dependency in entry["dependencies"]:
+            chunks.append(f"static const unsigned char {dependency['array_name']}[] = {{\n")
+            chunks.append(c_array(dependency["source_data"]))
+            chunks.append("\n};\n\n")
+        if entry["dependencies"]:
+            chunks.append(
+                f"static const ggml_backend_hrx_loom_source_entry {entry['dependency_array_name']}[] = {{\n"
+            )
+            for dependency in entry["dependencies"]:
+                chunks.append(
+                    "    {\n"
+                    f"        /* .name = */ {c_string(dependency['source_name'])},\n"
+                    f"        /* .data = */ {dependency['array_name']},\n"
+                    f"        /* .size = */ sizeof({dependency['array_name']}),\n"
+                    f"        /* .format = */ {c_string(dependency['source_format'])},\n"
+                    "    },\n"
+                )
+            chunks.append("};\n\n")
 
     chunks.append("static const ggml_backend_hrx_loom_catalog_entry GGML_HRX_LOOM_CATALOG[] = {\n")
     for entry in entries:
         workgroup_size = entry["workgroup_size"]
+        dependency_entries = entry["dependency_array_name"] if entry["dependencies"] else "nullptr"
+        dependency_count = f"sizeof({entry['dependency_array_name']}) / sizeof({entry['dependency_array_name']}[0])" if entry["dependencies"] else "0"
         chunks.append(
             "    {\n"
             f"        /* .id = */ {c_string(entry['id'])},\n"
@@ -70,6 +99,8 @@ def write_generated_source(path, header_path, entries):
             f"        /* .source_size = */ sizeof({entry['array_name']}),\n"
             f"        /* .source_format = */ {c_string(entry['source_format'])},\n"
             f"        /* .symbol = */ {c_string(entry['symbol'])},\n"
+            f"        /* .dependencies = */ {dependency_entries},\n"
+            f"        /* .dependency_count = */ {dependency_count},\n"
             f"        /* .workgroup_size = */ {{{workgroup_size[0]}, {workgroup_size[1]}, {workgroup_size[2]}}},\n"
             f"        /* .binding_count = */ {entry['binding_count']},\n"
             f"        /* .parameter_count = */ {entry['parameter_count']},\n"
@@ -121,6 +152,28 @@ def build_entries(source_root, targets):
         if source_format not in loom.SOURCE_FORMATS:
             supported = ", ".join(sorted(loom.SOURCE_FORMATS))
             raise ValueError(f"{definition_path}: unsupported source_format {source_format}; expected one of {supported}")
+        route_id = require_string(route, "id", route_path)
+        definition_id = require_string(definition, "id", definition_path)
+        dependencies = []
+        for i, dependency in enumerate(definition.get("dependencies", [])):
+            source = f"{definition_path}: dependencies[{i}]"
+            if not isinstance(dependency, dict):
+                raise ValueError(f"{source}: expected object")
+            dependency_source_name = require_string(dependency, "source", source)
+            dependency_source_path = (source_root / dependency_source_name).resolve()
+            if not dependency_source_path.is_file():
+                raise ValueError(f"{source}: missing source {dependency_source_path}")
+            dependency_source_format = require_string(dependency, "source_format", source)
+            if dependency_source_format not in loom.DEPENDENCY_SOURCE_FORMATS:
+                supported = ", ".join(sorted(loom.DEPENDENCY_SOURCE_FORMATS))
+                raise ValueError(
+                    f"{source}: unsupported source_format {dependency_source_format}; expected one of {supported}"
+                )
+            dependencies.append({
+                "source_name": dependency_source_name,
+                "source_data": dependency_source_path.read_bytes(),
+                "source_format": dependency_source_format,
+            })
         workgroup_size = require_list(definition, "workgroup_size", definition_path)
         if len(workgroup_size) != 3:
             raise ValueError(f"{definition_path}: workgroup_size must have 3 values")
@@ -128,14 +181,20 @@ def build_entries(source_root, targets):
         if not isinstance(abi, dict):
             raise ValueError(f"{definition_path}: expected object field abi")
 
-        route_id = require_string(route, "id", route_path)
-        definition_id = require_string(definition, "id", definition_path)
         source_data = source_path.read_bytes()
         route_architectures = set(require_list(route, "architectures", route_path))
         for target in selected_targets:
             if loom.ARCHITECTURE_ANY not in route_architectures and target not in route_architectures:
                 continue
             selected_target_entries[target] += 1
+            target_dependencies = []
+            for i, dependency in enumerate(dependencies):
+                target_dependency = dict(dependency)
+                target_dependency["array_name"] = (
+                    f"ggml_hrx_loom_{c_identifier(definition_id)}_"
+                    f"{c_identifier(route_id)}_{c_identifier(target)}_dep_{i}"
+                )
+                target_dependencies.append(target_dependency)
             entries.append({
                 "id": route_id,
                 "op": require_string(definition, "op", definition_path),
@@ -147,6 +206,11 @@ def build_entries(source_root, targets):
                 "array_name": (
                     f"ggml_hrx_loom_{c_identifier(definition_id)}_"
                     f"{c_identifier(route_id)}_{c_identifier(target)}"
+                ),
+                "dependencies": target_dependencies,
+                "dependency_array_name": (
+                    f"ggml_hrx_loom_{c_identifier(definition_id)}_"
+                    f"{c_identifier(route_id)}_{c_identifier(target)}_deps"
                 ),
                 "workgroup_size": [int(value) for value in workgroup_size],
                 "binding_count": require_int(abi, "binding_count", definition_path),

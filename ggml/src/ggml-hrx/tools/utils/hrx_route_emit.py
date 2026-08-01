@@ -48,6 +48,7 @@ CPP_SCALAR_TYPES = {
     "f64": "double",
     "i32": "int32_t",
     "i64": "int64_t",
+    "index": "int32_t",
 }
 
 CPP_DTYPE_NAMES = {
@@ -67,6 +68,7 @@ ATTRIBUTE_GETTERS = {
     "f64": "ggml_get_op_params_f32",
     "i32": "ggml_get_op_params_i32",
     "i64": "ggml_get_op_params_i32",
+    "index": "ggml_get_op_params_i32",
 }
 
 
@@ -117,7 +119,7 @@ def scalar_literal(value, scalar_type):
         return f"{float_text(value, 9)}f"
     if scalar_type == "f64":
         return float_text(value, 17)
-    if scalar_type in {"i32", "i64"}:
+    if scalar_type in {"i32", "i64", "index"}:
         return str(int(value))
     raise ValueError(f"unsupported scalar literal type {scalar_type}")
 

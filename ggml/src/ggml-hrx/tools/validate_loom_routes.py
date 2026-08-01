@@ -18,6 +18,7 @@ ROUTE_FORMAT = "loom"
 ARCHITECTURE_ANY = "*"
 
 SOURCE_FORMATS = {"loom-text", "loom-bytecode", "amdgpu-hsaco"}
+DEPENDENCY_SOURCE_FORMATS = {"loom-text"}
 
 METADATA_FIELDS = {"schema", "version", "targets", "routes"}
 DEFINITION_FIELDS = {
@@ -31,7 +32,9 @@ DEFINITION_FIELDS = {
     "workgroup_size",
     "parameters",
     "bindings",
+    "dependencies",
 }
+DEFINITION_DEPENDENCY_FIELDS = {"source", "source_format"}
 TOP_LEVEL_FIELDS = {
     "schema",
     "id",
@@ -87,6 +90,31 @@ def validate_definition(definition, definition_path, source_root):
         supported = ", ".join(sorted(SOURCE_FORMATS))
         raise ValueError(f"{definition_path}: unsupported source_format {source_format}; expected one of {supported}")
     route_schema.validate_definition(definition, definition_path, source_root)
+
+    if "dependencies" in definition:
+        dependencies = route_schema.require_array(definition, "dependencies", definition_path)
+        if not dependencies:
+            raise ValueError(f"{definition_path}: dependencies must not be empty")
+        dependency_sources = {}
+        for i, dependency in enumerate(dependencies):
+            source = f"{definition_path}: dependencies[{i}]"
+            if not isinstance(dependency, dict):
+                raise ValueError(f"{source}: expected object")
+            route_schema.unknown_fields(dependency, DEFINITION_DEPENDENCY_FIELDS, source)
+            dependency_source = route_schema.require_string(dependency, "source", source)
+            dependency_source_path = (source_root / dependency_source).resolve()
+            if not dependency_source_path.is_file():
+                raise ValueError(f"{source}: missing source {dependency_source_path}")
+            if dependency_source_path in dependency_sources:
+                raise ValueError(f"{definition_path}: duplicate dependency source {dependency_source}")
+            dependency_sources[dependency_source_path] = True
+
+            dependency_source_format = route_schema.require_string(dependency, "source_format", source)
+            if dependency_source_format not in DEPENDENCY_SOURCE_FORMATS:
+                supported = ", ".join(sorted(DEPENDENCY_SOURCE_FORMATS))
+                raise ValueError(
+                    f"{source}: unsupported source_format {dependency_source_format}; expected one of {supported}"
+                )
 
 
 def load_definitions(source_root):
@@ -153,7 +181,7 @@ def validate_config(route, route_path, context):
             raise ValueError(f"{source}: expected exactly one of source or value")
         if has_source:
             value_type = context.resolve_source(route_schema.require_string(binding, "source", source), f"{source}.source")
-            if value_type != binding_type:
+            if not route_schema.scalar_source_matches_type(value_type, binding_type):
                 raise ValueError(f"{source}.source: source type {value_type} does not match config type {binding_type}")
         else:
             route_schema.validate_literal(binding["value"], binding_type, f"{source}.value")

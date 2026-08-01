@@ -47,6 +47,8 @@ struct ggml_backend_hrx_loom_compile_input {
     const char *                                 source_name;
     const char *                                 target;
     const char *                                 symbol;
+    const ggml_backend_hrx_loom_source_entry *   dependencies;
+    size_t                                       dependency_count;
     const ggml_backend_hrx_loom_config_binding * config_bindings;
     size_t                                       config_binding_count;
 };
@@ -107,6 +109,14 @@ static inline std::string ggml_backend_hrx_loom_cache_key(const char *          
     ggml_backend_hrx_loom_append_key_field(key, static_cast<uint64_t>(entry->source_size));
     ggml_backend_hrx_loom_append_key_field(key, ggml_backend_hrx_loom_fnv1a64(entry->source_data, entry->source_size));
     ggml_backend_hrx_loom_append_key_field(key, entry->symbol);
+    ggml_backend_hrx_loom_append_key_field(key, static_cast<uint64_t>(entry->dependency_count));
+    for (size_t i = 0; i < entry->dependency_count; ++i) {
+        const ggml_backend_hrx_loom_source_entry & dependency = entry->dependencies[i];
+        ggml_backend_hrx_loom_append_key_field(key, dependency.name);
+        ggml_backend_hrx_loom_append_key_field(key, dependency.format);
+        ggml_backend_hrx_loom_append_key_field(key, static_cast<uint64_t>(dependency.size));
+        ggml_backend_hrx_loom_append_key_field(key, ggml_backend_hrx_loom_fnv1a64(dependency.data, dependency.size));
+    }
 
     for (size_t i = 0; i < plan->config_binding_count; ++i) {
         const ggml_backend_hrx_loom_config_binding & binding = plan->config_bindings[i];

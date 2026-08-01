@@ -14,14 +14,15 @@ SCALAR_FIELDS = {"name", "source", "value", "type", "position"}
 DISPATCH_FIELDS = {"work_items", "workgroups", "workgroup_size"}
 INVOCATION_FIELDS = {"buffers", "scalars", "dispatch"}
 
-SCALAR_TYPES = {"i32", "i64", "f32", "f64"}
-INTEGER_TYPES = {"i32", "i64"}
+SCALAR_TYPES = {"i32", "i64", "index", "f32", "f64"}
+INTEGER_TYPES = {"i32", "i64", "index"}
 DTYPES = {"BF16", "F16", "F32", "I32", "I64", "Q4_K", "Q5_K", "Q6_K", "Q8_0"}
 SUPPORTED_BINDING_ACCESSES = {"read", "write", "read_write"}
 SUPPORTED_SCALAR_TYPES = {
     "f32": (4, 4),
     "i32": (4, 4),
     "i64": (8, 8),
+    "index": (4, 4),
 }
 
 OP_RULES = {
@@ -296,6 +297,10 @@ def validate_literal(value, expected_type, source):
             raise ValueError(f"{source}: expected tensor dtype")
         return
     raise ValueError(f"{source}: cannot validate literal for {expected_type}")
+
+
+def scalar_source_matches_type(value_type, scalar_type):
+    return value_type == scalar_type or (scalar_type == "index" and value_type in INTEGER_TYPES)
 
 
 def validate_workgroup_size(value, source):
@@ -965,7 +970,7 @@ def validate_scalars(scalars, route_path, definition, context):
             raise ValueError(f"{source}: expected exactly one of source or value")
         if has_source:
             value_type = context.resolve_source(require_string(scalar, "source", source), f"{source}.source")
-            if value_type != scalar_type:
+            if not scalar_source_matches_type(value_type, scalar_type):
                 raise ValueError(f"{source}.source: source type {value_type} does not match scalar type {scalar_type}")
         else:
             validate_literal(scalar["value"], scalar_type, f"{source}.value")

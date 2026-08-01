@@ -5,7 +5,10 @@
 #include <cstring>
 #include <string>
 
-static ggml_backend_hrx_loom_catalog_entry make_entry(const unsigned char * source_data, size_t source_size) {
+static ggml_backend_hrx_loom_catalog_entry make_entry(const unsigned char *                      source_data,
+                                                      size_t                                     source_size,
+                                                      const ggml_backend_hrx_loom_source_entry * dependencies,
+                                                      size_t                                     dependency_count) {
     return {
         /* .id                   = */ "add_f32",
         /* .op                   = */ "GGML_OP_ADD",
@@ -15,6 +18,8 @@ static ggml_backend_hrx_loom_catalog_entry make_entry(const unsigned char * sour
         /* .source_size          = */ source_size,
         /* .source_format        = */ "loom-text",
         /* .symbol               = */ "hrx_add_f32",
+        /* .dependencies         = */ dependencies,
+        /* .dependency_count     = */ dependency_count,
         /* .workgroup_size       = */ {256, 1, 1},
         /* .binding_count        = */ 3,
         /* .parameter_count      = */ 4,
@@ -57,19 +62,43 @@ static void expect_true(bool condition, const char * message) {
 }
 
 int main() {
-    static const unsigned char source_a[] = "kernel.def @a() { }";
-    static const unsigned char source_b[] = "kernel.def @b() { }";
+    static const unsigned char                      source_a[]       = "kernel.def @a() { }";
+    static const unsigned char                      source_b[]       = "kernel.def @b() { }";
+    static const unsigned char                      dependency_a[]   = "kernel.func @helper_a() { }";
+    static const unsigned char                      dependency_b[]   = "kernel.func @helper_b() { }";
+    static const ggml_backend_hrx_loom_source_entry dependencies_a[] = {
+        {
+            /* .name   = */ "sources/helper.loom",
+            /* .data   = */ dependency_a,
+            /* .size   = */ sizeof(dependency_a) - 1,
+            /* .format = */ "loom-text",
+        },
+    };
+    static const ggml_backend_hrx_loom_source_entry dependencies_b[] = {
+        {
+            /* .name   = */ "sources/helper.loom",
+            /* .data   = */ dependency_b,
+            /* .size   = */ sizeof(dependency_b) - 1,
+            /* .format = */ "loom-text",
+        },
+    };
 
-    const ggml_backend_hrx_loom_catalog_entry entry_a  = make_entry(source_a, sizeof(source_a) - 1);
-    const ggml_backend_hrx_loom_catalog_entry entry_b  = make_entry(source_b, sizeof(source_b) - 1);
-    const ggml_backend_hrx_loom_execution_plan plan_a0 = make_plan(&entry_a, "257", "256");
-    const ggml_backend_hrx_loom_execution_plan plan_a1 = make_plan(&entry_a, "257", "256");
-    const ggml_backend_hrx_loom_execution_plan plan_b0 = make_plan(&entry_a, "2048", "256");
-    const ggml_backend_hrx_loom_execution_plan plan_c0 = make_plan(&entry_b, "257", "256");
+    const ggml_backend_hrx_loom_catalog_entry  entry_a  = make_entry(source_a, sizeof(source_a) - 1, nullptr, 0);
+    const ggml_backend_hrx_loom_catalog_entry  entry_b  = make_entry(source_b, sizeof(source_b) - 1, nullptr, 0);
+    const ggml_backend_hrx_loom_catalog_entry  entry_d0 = make_entry(source_a, sizeof(source_a) - 1, dependencies_a, 1);
+    const ggml_backend_hrx_loom_catalog_entry  entry_d1 = make_entry(source_a, sizeof(source_a) - 1, dependencies_b, 1);
+    const ggml_backend_hrx_loom_execution_plan plan_a0  = make_plan(&entry_a, "257", "256");
+    const ggml_backend_hrx_loom_execution_plan plan_a1  = make_plan(&entry_a, "257", "256");
+    const ggml_backend_hrx_loom_execution_plan plan_b0  = make_plan(&entry_a, "2048", "256");
+    const ggml_backend_hrx_loom_execution_plan plan_c0  = make_plan(&entry_b, "257", "256");
+    const ggml_backend_hrx_loom_execution_plan plan_d0  = make_plan(&entry_d0, "257", "256");
+    const ggml_backend_hrx_loom_execution_plan plan_d1  = make_plan(&entry_d1, "257", "256");
 
     expect_true(cache_key(plan_a0) == cache_key(plan_a1), "identical plans must produce identical cache keys");
     expect_true(cache_key(plan_a0) != cache_key(plan_b0), "config changes must produce different cache keys");
     expect_true(cache_key(plan_a0) != cache_key(plan_c0), "source changes must produce different cache keys");
+    expect_true(cache_key(plan_a0) != cache_key(plan_d0), "dependency presence must produce different cache keys");
+    expect_true(cache_key(plan_d0) != cache_key(plan_d1), "dependency changes must produce different cache keys");
     expect_true(ggml_backend_hrx_loom_cache_key("gfx1100", nullptr).empty(), "null plan must produce empty cache key");
     return 0;
 }

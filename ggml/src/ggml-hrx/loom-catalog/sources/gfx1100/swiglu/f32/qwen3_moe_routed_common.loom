@@ -1,0 +1,5 @@
+func.def inline @qwen3_moe_routed_swiglu_f32_element(%gate: f32, %up: f32) -> (f32) {
+  %activated = scalar.siluf %gate : f32
+  %result = scalar.mulf %activated, %up : f32
+  func.return %result : f32
+}

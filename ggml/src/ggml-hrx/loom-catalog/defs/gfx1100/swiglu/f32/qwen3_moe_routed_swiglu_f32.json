@@ -1,0 +1,24 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "qwen3_moe_routed_swiglu_f32",
+  "op": "GGML_OP_GLU",
+  "source": "sources/gfx1100/swiglu/f32/qwen3_moe_routed_swiglu_f32.loom",
+  "source_format": "loom-text",
+  "symbol": "qwen3_moe_routed_swiglu_f32",
+  "dependencies": [
+    {
+      "source": "sources/gfx1100/swiglu/f32/qwen3_moe_routed_common.loom",
+      "source_format": "loom-text"
+    }
+  ],
+  "abi": {"binding_count": 3, "parameter_count": 4, "constant_byte_length": 4},
+  "workgroup_size": [256, 1, 1],
+  "parameters": [
+    {"name": "token_count", "type": "index"}
+  ],
+  "bindings": [
+    {"name": "gate", "access": "read"},
+    {"name": "up", "access": "read"},
+    {"name": "output", "access": "write"}
+  ]
+}

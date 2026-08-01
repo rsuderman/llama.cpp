@@ -23,6 +23,8 @@ Each route captures the tensor dtypes, shapes, layout predicates, derived values
 
 This catalog uses only the final Loom route fields: `match`, `derived`, `config`, and `invocation`. It does not include HSACO compatibility fields.
 
+Definitions may include an optional `dependencies` array. Each dependency has `source` and `source_format`; only `loom-text` dependency sources are supported. Dependency sources are linked as Loom libraries before the selected route symbol is compiled.
+
 The `config` section is required. Its `mode` must be `compile`, and `bindings` is an ordered array of compile-time values. Each binding has a C identifier `name`, a scalar `type`, and exactly one of `source` or `value`. The current generated runtime stores at most 32 config bindings, with names limited to 63 bytes and formatted values limited to 127 bytes.
 
 ## Validation
@@ -74,6 +76,7 @@ ctest --test-dir build-hrx -R test-hrx-loom-cache --output-on-failure
 ```
 
 It verifies that identical target, route, source, symbol, and config values produce the same provider cache key, while config value changes and source byte changes produce different keys.
+Dependency count, source names, formats, sizes, and content hashes are part of the cache key when a definition lists dependencies.
 
 ## Current Scope
 

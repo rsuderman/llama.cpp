@@ -236,7 +236,7 @@ def config_value_expr(binding):
 
 
 def config_format_args(value_var, scalar_type):
-    if scalar_type in {"i32", "i64"}:
+    if scalar_type in {"i32", "i64", "index"}:
         return '"%lld"', f"static_cast<long long>({value_var})"
     if scalar_type == "f32":
         return '"%.9g"', f"static_cast<double>({value_var})"

@@ -51,6 +51,15 @@ def mutate_route(source_root, mutator):
     mutate_route_at(source_root, ROUTE_PATH, mutator)
 
 
+def mutate_definition(source_root, mutator):
+    route_path = source_root / ROUTE_PATH
+    route = read_json(route_path)
+    definition_path = (route_path.parent / route["definition"]).resolve()
+    definition = read_json(definition_path)
+    mutator(definition)
+    write_json(definition_path, definition)
+
+
 def mutate_route_at(source_root, route_path, mutator):
     path = source_root / route_path
     route = read_json(path)
@@ -76,6 +85,18 @@ def set_route_architectures(source_root, architectures):
 def set_targets_and_architectures(source_root, targets, architectures):
     set_metadata_targets(source_root, targets)
     set_route_architectures(source_root, architectures)
+
+
+def add_dependency_source(source_root):
+    source_name = "sources/generic/add/f32/helper.loom"
+    source_path = source_root / source_name
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("kernel.func @helper() { }\n", encoding="utf-8")
+    return source_name
+
+
+def set_definition_dependencies(source_root, dependencies):
+    mutate_definition(source_root, lambda definition: definition.update({"dependencies": dependencies}))
 
 
 def expect_valid(source_root):
@@ -167,6 +188,50 @@ def expect_generation_invalid(name, mutator, targets, expected):
         raise AssertionError(f"{name}: generator accepted invalid catalog")
 
 
+def expect_dependency_generation_valid():
+    with tempfile.TemporaryDirectory(prefix="generate-dependencies-") as tmpdir:
+        source_root = copy_catalog(tmpdir)
+        dependency_source = add_dependency_source(source_root)
+        set_definition_dependencies(
+            source_root,
+            [{"source": dependency_source, "source_format": "loom-text"}],
+        )
+        loom.validate_catalog(source_root)
+        entries = catalog.build_entries(source_root, ["gfx1100"])
+        if len(entries) != 1:
+            raise AssertionError(f"generate-dependencies: expected 1 entry, got {len(entries)}")
+        dependencies = entries[0]["dependencies"]
+        if len(dependencies) != 1:
+            raise AssertionError(f"generate-dependencies: expected 1 dependency, got {len(dependencies)}")
+        if dependencies[0]["source_name"] != dependency_source:
+            raise AssertionError("generate-dependencies: dependency source name was not preserved")
+        if dependencies[0]["source_format"] != "loom-text":
+            raise AssertionError("generate-dependencies: dependency source format was not preserved")
+
+
+def expect_index_scalar_valid():
+    with tempfile.TemporaryDirectory(prefix="index-scalar-") as tmpdir:
+        source_root = copy_catalog(tmpdir)
+
+        def add_index_parameter(definition):
+            definition["abi"].update({"parameter_count": 4, "constant_byte_length": 4})
+            definition["parameters"] = [{"name": "tile_count", "type": "index"}]
+
+        def add_index_scalar(route):
+            route["invocation"]["scalars"] = [
+                {"name": "tile_count", "type": "index", "position": 0, "source": "shape.dst.d0"}
+            ]
+
+        mutate_definition(source_root, add_index_parameter)
+        mutate_route(source_root, add_index_scalar)
+        loom.validate_catalog(source_root)
+
+        route, definition = read_route_and_definition(source_root, ROUTE_PATH)
+        impl = route_impl.generate_route_impl(str(ROUTE_PATH), route, definition)
+        if "const int32_t constant_tile_count = static_cast<int32_t>(shape_dst_d0);" not in impl:
+            raise AssertionError("index-scalar: expected index scalar to pack as int32_t")
+
+
 def main():
     expect_valid(CATALOG_ROOT)
     sum_rows_route, sum_rows_definition = read_route_and_definition(CATALOG_ROOT, SUM_ROWS_ROUTE_PATH)
@@ -185,6 +250,8 @@ def main():
             "dispatch": {"workgroups": ["derived.total_size"], "workgroup_size": [256, 1, 1]}
         }),
     )
+    expect_dependency_generation_valid()
+    expect_index_scalar_valid()
 
     cases = [
         (
@@ -319,6 +386,73 @@ def main():
         "empty-metadata-target",
         lambda source_root: set_metadata_targets(source_root, ["gfx1100", ""]),
         "targets must contain non-empty strings",
+    )
+    expect_invalid_catalog_mutation(
+        "empty-definition-dependencies",
+        lambda source_root: set_definition_dependencies(source_root, []),
+        "dependencies must not be empty",
+    )
+    expect_invalid_catalog_mutation(
+        "scalar-definition-dependencies",
+        lambda source_root: mutate_definition(source_root, lambda definition: definition.update({"dependencies": 7})),
+        "expected array field dependencies",
+    )
+    expect_invalid_catalog_mutation(
+        "non-object-definition-dependency",
+        lambda source_root: set_definition_dependencies(source_root, [7]),
+        "expected object",
+    )
+    expect_invalid_catalog_mutation(
+        "unknown-definition-dependency-field",
+        lambda source_root: (
+            set_definition_dependencies(
+                source_root,
+                [{"source": add_dependency_source(source_root), "source_format": "loom-text", "extra": True}],
+            )
+        ),
+        "unsupported field extra",
+    )
+    expect_invalid_catalog_mutation(
+        "empty-definition-dependency-source",
+        lambda source_root: set_definition_dependencies(source_root, [{"source": "", "source_format": "loom-text"}]),
+        "expected non-empty string field source",
+    )
+    expect_invalid_catalog_mutation(
+        "empty-definition-dependency-format",
+        lambda source_root: set_definition_dependencies(
+            source_root,
+            [{"source": add_dependency_source(source_root), "source_format": ""}],
+        ),
+        "expected non-empty string field source_format",
+    )
+    expect_invalid_catalog_mutation(
+        "missing-definition-dependency-source",
+        lambda source_root: set_definition_dependencies(
+            source_root,
+            [{"source": "sources/generic/add/f32/missing.loom", "source_format": "loom-text"}],
+        ),
+        "missing source",
+    )
+    expect_invalid_catalog_mutation(
+        "unsupported-definition-dependency-format",
+        lambda source_root: set_definition_dependencies(
+            source_root,
+            [{"source": add_dependency_source(source_root), "source_format": "amdgpu-hsaco"}],
+        ),
+        "unsupported source_format amdgpu-hsaco; expected one of loom-text",
+    )
+    expect_invalid_catalog_mutation(
+        "duplicate-definition-dependency-source",
+        lambda source_root: (
+            lambda dependency_source: set_definition_dependencies(
+                source_root,
+                [
+                    {"source": dependency_source, "source_format": "loom-text"},
+                    {"source": f"./{dependency_source}", "source_format": "loom-text"},
+                ],
+            )
+        )(add_dependency_source(source_root)),
+        "duplicate dependency source",
     )
 
     expect_invalid_catalog_mutation(
