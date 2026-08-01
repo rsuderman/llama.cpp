@@ -12,7 +12,7 @@
 #include <limits>
 #include <string>
 
-static constexpr size_t GGML_BACKEND_HRX_LOOM_MAX_BINDINGS        = 8;
+static constexpr size_t GGML_BACKEND_HRX_LOOM_MAX_BINDINGS        = 16;
 static constexpr size_t GGML_BACKEND_HRX_LOOM_MAX_CONSTANTS_SIZE  = 256;
 static constexpr size_t GGML_BACKEND_HRX_LOOM_MAX_CONFIG_BINDINGS = 64;
 static constexpr size_t GGML_BACKEND_HRX_LOOM_CONFIG_NAME_BYTES   = 64;
