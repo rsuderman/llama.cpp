@@ -1079,6 +1079,7 @@ static void run_qwen3_moe_routed_down_case(ggml_backend_t backend) {
 static void run_qwen3_moe_routed_down_next_rmsnorm_case(ggml_backend_t backend,
                                                         ggml_type      weight_type,
                                                         const char *   route_id,
+                                                        int64_t        token_count,
                                                         const char *   label) {
     const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
     const std::string saved    = previous ? previous : "";
@@ -1088,7 +1089,6 @@ static void run_qwen3_moe_routed_down_next_rmsnorm_case(ggml_backend_t backend,
     const int64_t output_size  = 2048;
     const int64_t expert_count = 128;
     const int64_t route_count  = 8;
-    const int64_t token_count  = 17;
     const float   eps          = 1.0e-6f;
 
     ggml_context_ptr ctx           = make_context();
@@ -1182,10 +1182,19 @@ static void run_qwen3_moe_routed_down_next_rmsnorm_case(ggml_backend_t backend,
 static void run_qwen3_moe_routed_down_next_rmsnorm_case(ggml_backend_t backend) {
     run_qwen3_moe_routed_down_next_rmsnorm_case(backend, GGML_TYPE_Q4_K,
                                                 "qwen3_moe_routed_down_q4k_f16_wmma_next_rmsnorm",
-                                                "qwen3_moe_routed_down_q4k_next_rmsnorm");
+                                                17, "qwen3_moe_routed_down_q4k_next_rmsnorm");
     run_qwen3_moe_routed_down_next_rmsnorm_case(backend, GGML_TYPE_Q6_K,
                                                 "qwen3_moe_routed_down_q6k_f16_wmma_next_rmsnorm",
-                                                "qwen3_moe_routed_down_q6k_next_rmsnorm");
+                                                17, "qwen3_moe_routed_down_q6k_next_rmsnorm");
+}
+
+static void run_qwen3_moe_routed_down_next_q8_case(ggml_backend_t backend) {
+    run_qwen3_moe_routed_down_next_rmsnorm_case(backend, GGML_TYPE_Q4_K,
+                                                "qwen3_moe_routed_down_q4k_q8_1_x4_next_q8",
+                                                1, "qwen3_moe_routed_down_q4k_next_q8");
+    run_qwen3_moe_routed_down_next_rmsnorm_case(backend, GGML_TYPE_Q6_K,
+                                                "qwen3_moe_routed_down_q6k_q8_1_x4_next_q8",
+                                                1, "qwen3_moe_routed_down_q6k_next_q8");
 }
 
 static void run_qwen3_moe_attention_postprocess_case(ggml_backend_t backend) {
@@ -1710,6 +1719,11 @@ int main() {
         }
         if (std::string(test_only) == "qwen3_moe_routed_down_next_rmsnorm") {
             run_qwen3_moe_routed_down_next_rmsnorm_case(backend.get());
+            ggml_backend_synchronize(backend.get());
+            return 0;
+        }
+        if (std::string(test_only) == "qwen3_moe_routed_down_next_q8") {
+            run_qwen3_moe_routed_down_next_q8_case(backend.get());
             ggml_backend_synchronize(backend.get());
             return 0;
         }
