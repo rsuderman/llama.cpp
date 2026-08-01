@@ -152,6 +152,12 @@ OP_RULES = {
         "input_tensors": {"src0"},
         "attributes": {},
     },
+    "GGML_OP_RESHAPE": {
+        "required_tensors": {"src0", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0"},
+        "attributes": {},
+    },
     "GGML_OP_SUB": {
         "required_tensors": {"src0", "src1", "dst"},
         "optional_tensors": set(),

@@ -293,6 +293,34 @@ def expect_view_field_predicates_valid():
             raise AssertionError("view-field-predicates: expected view offset comparison")
 
 
+def expect_fusion_reshape_valid():
+    with tempfile.TemporaryDirectory(prefix="fusion-reshape-") as tmpdir:
+        source_root = copy_catalog(tmpdir)
+        mutate_metadata(source_root, lambda metadata: metadata.update({"routes": [str(FUSION_ROUTE_PATH)]}))
+
+        def add_reshape(route):
+            route["tensors"]["rms_view"] = json.loads(json.dumps(route["tensors"]["rms_out"]))
+            route["match"]["ops"] = {
+                "rms": route["match"]["ops"]["rms"],
+                "reshape": {
+                    "op": "GGML_OP_RESHAPE",
+                    "tensors": {"src0": "rms_out", "dst": "rms_view"},
+                    "attributes": {},
+                },
+                "mul": route["match"]["ops"]["mul"],
+            }
+            route["match"]["ops"]["mul"]["tensors"]["src0"] = "rms_view"
+            route["match"]["predicates"][2] = {"elided": ["rms_out", "rms_view"]}
+
+        mutate_route_at(source_root, FUSION_ROUTE_PATH, add_reshape)
+        loom.validate_catalog(source_root)
+
+        route, definition = read_route_and_definition(source_root, FUSION_ROUTE_PATH)
+        impl = route_impl.generate_route_impl(str(FUSION_ROUTE_PATH), route, definition)
+        if "reshape_op->op != GGML_OP_RESHAPE" not in impl:
+            raise AssertionError("fusion-reshape: expected reshape op check")
+
+
 def make_multi_step_add_route(route):
     base_dispatch = route["dispatches"][0]
     definition = base_dispatch["definition"]
@@ -466,6 +494,7 @@ def main():
     expect_index_scalar_valid()
     expect_derived_math_valid()
     expect_view_field_predicates_valid()
+    expect_fusion_reshape_valid()
     expect_multi_step_generation_valid()
     expect_undeclared_transient_invalid()
     expect_graph_transient_generation_valid()
