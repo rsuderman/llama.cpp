@@ -1092,9 +1092,7 @@ static bool ggml_backend_hrx_validate_consumed_nodes(const ggml_cgraph *        
         if (consumed_index < node_index || consumed_index >= cgraph->n_nodes || visited_nodes[consumed_index]) {
             return false;
         }
-        if (ggml_backend_hrx_is_metadata_op(cgraph->nodes[consumed_index])) {
-            return false;
-        }
+        // Fusion routes may consume metadata nodes when their predicates model the view layout.
         if (consumed_index == node_index) {
             has_current_node = true;
         }

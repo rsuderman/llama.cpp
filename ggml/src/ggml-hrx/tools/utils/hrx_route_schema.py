@@ -145,6 +145,12 @@ OP_RULES = {
         "input_tensors": {"src0"},
         "attributes": {},
     },
+    "GGML_OP_VIEW": {
+        "required_tensors": {"src0", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0"},
+        "attributes": {},
+    },
     "GGML_OP_SUB": {
         "required_tensors": {"src0", "src1", "dst"},
         "optional_tensors": set(),
@@ -409,6 +415,9 @@ class RouteContext:
         raise ValueError(f"{source}: unsupported source {value}")
 
     def resolve_tensor_source(self, parts, source):
+        if len(parts) == 2:
+            self.validate_tensor_role(parts[1], source)
+            return "tensor_ref"
         if len(parts) not in {3, 4}:
             raise ValueError(f"{source}: unsupported tensor source")
         role = parts[1]
@@ -426,6 +435,10 @@ class RouteContext:
             index = parts[3]
             if not index.isdigit():
                 raise ValueError(f"{source}: tensor {field} index must be a non-negative integer")
+            return "i64"
+        if field == "view_source" and len(parts) == 3:
+            return "tensor_ref"
+        if field == "view_offset_bytes" and len(parts) == 3:
             return "i64"
         raise ValueError(f"{source}: unsupported tensor source")
 
@@ -492,6 +505,9 @@ class FusionRouteContext:
         raise ValueError(f"{source}: unsupported source {value}")
 
     def resolve_tensor_source(self, parts, source):
+        if len(parts) == 2:
+            self.validate_tensor_role(parts[1], source)
+            return "tensor_ref"
         if len(parts) not in {3, 4}:
             raise ValueError(f"{source}: unsupported tensor source")
         name = parts[1]
@@ -509,6 +525,10 @@ class FusionRouteContext:
             index = parts[3]
             if not index.isdigit():
                 raise ValueError(f"{source}: tensor {field} index must be a non-negative integer")
+            return "i64"
+        if field == "view_source" and len(parts) == 3:
+            return "tensor_ref"
+        if field == "view_offset_bytes" and len(parts) == 3:
             return "i64"
         raise ValueError(f"{source}: unsupported tensor source")
 

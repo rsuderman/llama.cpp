@@ -176,6 +176,18 @@ def emit_tensor_permutation_source(tensor, parts):
     return f"ggml_backend_hrx_loom_tensor_permutation_axis({tensor}, {int(parts[3])})"
 
 
+def emit_tensor_view_source_source(tensor, parts):
+    if len(parts) != 3:
+        raise ValueError("tensor view_source source does not accept an index")
+    return f"({tensor}->view_src ? {tensor}->view_src : nullptr)"
+
+
+def emit_tensor_view_offset_bytes_source(tensor, parts):
+    if len(parts) != 3:
+        raise ValueError("tensor view_offset_bytes source does not accept an index")
+    return f"static_cast<int64_t>({tensor}->view_offs)"
+
+
 TENSOR_FIELD_EMITTERS = {
     "type": emit_tensor_type_source,
     "rank": emit_tensor_rank_source,
@@ -184,10 +196,14 @@ TENSOR_FIELD_EMITTERS = {
     "strides": emit_tensor_strides_source,
     "element_strides": emit_tensor_element_strides_source,
     "permutation": emit_tensor_permutation_source,
+    "view_source": emit_tensor_view_source_source,
+    "view_offset_bytes": emit_tensor_view_offset_bytes_source,
 }
 
 
 def emit_tensor_source(parts):
+    if len(parts) == 2:
+        return role_var(parts[1])
     if len(parts) not in {3, 4}:
         raise ValueError("unsupported tensor source")
     role = parts[1]

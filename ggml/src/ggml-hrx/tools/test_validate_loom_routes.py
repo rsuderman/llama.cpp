@@ -272,6 +272,27 @@ def expect_derived_math_valid():
             raise AssertionError("derived-math: expected maximum expression")
 
 
+def expect_view_field_predicates_valid():
+    with tempfile.TemporaryDirectory(prefix="view-field-predicates-") as tmpdir:
+        source_root = copy_catalog(tmpdir)
+
+        def add_view_predicates(route):
+            route["match"]["predicates"].extend([
+                {"field": "tensor.dst.view_source", "equals": "tensor.src0"},
+                {"field": "tensor.dst.view_offset_bytes", "equals": 0},
+            ])
+
+        mutate_route(source_root, add_view_predicates)
+        loom.validate_catalog(source_root)
+
+        route, definition = read_route_and_definition(source_root, ROUTE_PATH)
+        impl = route_impl.generate_route_impl(str(ROUTE_PATH), route, definition)
+        if "(dst->view_src ? dst->view_src : nullptr) == src0" not in impl:
+            raise AssertionError("view-field-predicates: expected view source comparison")
+        if "static_cast<int64_t>(dst->view_offs) == 0" not in impl:
+            raise AssertionError("view-field-predicates: expected view offset comparison")
+
+
 def make_multi_step_add_route(route):
     base_dispatch = route["dispatches"][0]
     definition = base_dispatch["definition"]
@@ -390,6 +411,7 @@ def main():
     expect_dependency_generation_valid()
     expect_index_scalar_valid()
     expect_derived_math_valid()
+    expect_view_field_predicates_valid()
     expect_multi_step_generation_valid()
     expect_undeclared_transient_invalid()
 

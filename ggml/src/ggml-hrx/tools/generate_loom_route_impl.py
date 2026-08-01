@@ -13,6 +13,7 @@ import validate_loom_routes as route_validator
 
 ATTRIBUTE_INDICES = route_emit.ATTRIBUTE_INDICES
 CPP_SCALAR_TYPES = route_emit.CPP_SCALAR_TYPES
+MAX_CONSUMED_NODES = 24
 
 UNSUPPORTED_REASON_BY_PREDICATE = {
     "contiguous": "GGML_BACKEND_HRX_LOOM_UNSUPPORTED_LAYOUT",
@@ -400,7 +401,7 @@ def emit_plan_materialization(lines, route, definition, context, consumed_node_i
     ])
 
     if consumed_node_indices is not None:
-        if len(consumed_node_indices) > 8:
+        if len(consumed_node_indices) > MAX_CONSUMED_NODES:
             raise ValueError(f"route consumes too many graph nodes: {len(consumed_node_indices)}")
         lines.append(f"    plan->consumed_node_count = {len(consumed_node_indices)};")
         for i, node_index in enumerate(consumed_node_indices):
@@ -522,7 +523,7 @@ def emit_multi_step_plan_materialization(lines, route, step_definitions, context
         lines.append("    }")
 
     if consumed_node_indices is not None:
-        if len(consumed_node_indices) > 8:
+        if len(consumed_node_indices) > MAX_CONSUMED_NODES:
             raise ValueError(f"route consumes too many graph nodes: {len(consumed_node_indices)}")
         lines.append(f"    plan->consumed_node_count = {len(consumed_node_indices)};")
         for i, node_index in enumerate(consumed_node_indices):

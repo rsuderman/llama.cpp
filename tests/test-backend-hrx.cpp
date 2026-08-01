@@ -701,6 +701,78 @@ static void run_qwen3_moe_gate_up_case(ggml_backend_t backend) {
     }
 }
 
+static void run_qwen3_moe_routed_down_case(ggml_backend_t backend) {
+    const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    const std::string saved    = previous ? previous : "";
+    setenv("GGML_HRX_LOOM_FORCE_ROUTE", "qwen3_moe_routed_down_q4k_f16_wmma_residual", 1);
+
+    const int64_t input_size   = 768;
+    const int64_t output_size  = 2048;
+    const int64_t expert_count = 128;
+    const int64_t route_count  = 8;
+    const int64_t token_count  = 17;
+
+    ggml_context_ptr ctx         = make_context();
+    ggml_tensor *    down_weight = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_Q4_K, input_size, output_size, expert_count);
+    ggml_tensor *    input       = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, input_size, route_count, token_count);
+    ggml_tensor *    route_ids   = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_I32, route_count, token_count);
+    ggml_tensor *    down        = ggml_mul_mat_id(ctx.get(), down_weight, input, route_ids);
+    ggml_tensor *    route_weights = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, 1, route_count, token_count);
+    ggml_tensor *    weighted_down = ggml_mul(ctx.get(), down, route_weights);
+
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 64, false);
+    ggml_build_forward_expand(graph, weighted_down);
+
+    ggml_tensor * route_outputs[8] = {};
+    for (int64_t i = 0; i < route_count; ++i) {
+        route_outputs[i] = ggml_view_2d(ctx.get(), weighted_down, output_size, token_count, weighted_down->nb[2],
+                                        i * weighted_down->nb[1]);
+        ggml_build_forward_expand(graph, route_outputs[i]);
+    }
+
+    ggml_tensor * moe_out = route_outputs[0];
+    for (int64_t i = 1; i < route_count; ++i) {
+        moe_out = ggml_add(ctx.get(), moe_out, route_outputs[i]);
+        ggml_build_forward_expand(graph, moe_out);
+    }
+
+    ggml_tensor * residual = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, output_size, token_count);
+    ggml_tensor * out      = ggml_add(ctx.get(), moe_out, residual);
+    ggml_build_forward_expand(graph, out);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<uint8_t> down_weight_data(ggml_nbytes(down_weight), 0);
+    std::vector<float>   input_data(input_size * route_count * token_count, 0.0f);
+    std::vector<int32_t> route_id_data(route_count * token_count);
+    std::vector<float>   route_weight_data(route_count * token_count, 0.125f);
+    std::vector<float>   residual_data(output_size * token_count);
+    for (int64_t i = 0; i < route_count * token_count; ++i) {
+        route_id_data[i] = static_cast<int32_t>(i % expert_count);
+    }
+    for (int64_t i = 0; i < output_size * token_count; ++i) {
+        residual_data[i] = static_cast<float>((i % 31) - 15) * 0.03125f;
+    }
+
+    ggml_backend_tensor_set(down_weight, down_weight_data.data(), 0, down_weight_data.size());
+    ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+    ggml_backend_tensor_set(route_ids, route_id_data.data(), 0, route_id_data.size() * sizeof(int32_t));
+    ggml_backend_tensor_set(route_weights, route_weight_data.data(), 0, route_weight_data.size() * sizeof(float));
+    ggml_backend_tensor_set(residual, residual_data.data(), 0, residual_data.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> actual(residual_data.size(), -1.0f);
+    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+    expect_near(actual, residual_data, 1e-6f, "qwen3_moe_routed_down");
+
+    if (previous) {
+        setenv("GGML_HRX_LOOM_FORCE_ROUTE", saved.c_str(), 1);
+    } else {
+        unsetenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -821,6 +893,11 @@ int main() {
         }
         if (std::string(test_only) == "qwen3_moe_gate_up") {
             run_qwen3_moe_gate_up_case(backend.get());
+            ggml_backend_synchronize(backend.get());
+            return 0;
+        }
+        if (std::string(test_only) == "qwen3_moe_routed_down") {
+            run_qwen3_moe_routed_down_case(backend.get());
             ggml_backend_synchronize(backend.get());
             return 0;
         }
