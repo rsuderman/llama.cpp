@@ -83,6 +83,16 @@
           "n_dims": {"type": "i32", "source": "op_param.1"}
         }
       },
+      "value_projection": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {"src0": "value_weight", "src1": "attention_normalized", "dst": "value_raw"},
+        "attributes": {}
+      },
+      "value_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {"src0": "value_raw", "dst": "value_input"},
+        "attributes": {}
+      },
       "key_projection": {
         "op": "GGML_OP_MUL_MAT",
         "tensors": {"src0": "key_weight", "src1": "attention_normalized", "dst": "key_raw"},
@@ -126,16 +136,6 @@
       "key_set_rows": {
         "op": "GGML_OP_SET_ROWS",
         "tensors": {"src0": "key_rows", "src1": "key_cache_indices", "src2": "key_cache", "dst": "key_cache_output"},
-        "attributes": {}
-      },
-      "value_projection": {
-        "op": "GGML_OP_MUL_MAT",
-        "tensors": {"src0": "value_weight", "src1": "attention_normalized", "dst": "value_raw"},
-        "attributes": {}
-      },
-      "value_reshape": {
-        "op": "GGML_OP_RESHAPE",
-        "tensors": {"src0": "value_raw", "dst": "value_input"},
         "attributes": {}
       },
       "value_view": {

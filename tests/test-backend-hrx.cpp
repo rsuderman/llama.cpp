@@ -1257,6 +1257,7 @@ static void run_qwen3_moe_attention_qkv_postprocess_fused_case(ggml_backend_t ba
 
     ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 64, false);
     ggml_build_forward_expand(graph, query_output);
+    ggml_build_forward_expand(graph, value_input);
     ggml_build_forward_expand(graph, key_set);
     ggml_build_forward_expand(graph, value_set);
 
