@@ -152,7 +152,7 @@
     },
     "predicates": [
       {"field": "shape.attention_input.hidden_size", "equals": 2048},
-      {"field": "shape.attention_input.token_count", "equals": 1},
+      {"field": "shape.attention_input.token_count", "equals": -1},
       {"field": "shape.query_input.head_size", "equals": 128},
       {"field": "shape.query_input.query_head_count", "equals": 32},
       {"field": "shape.key_input.key_value_head_count", "equals": 4},

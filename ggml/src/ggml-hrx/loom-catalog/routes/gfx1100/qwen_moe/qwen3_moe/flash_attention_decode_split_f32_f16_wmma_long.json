@@ -20,7 +20,7 @@
     },
     "predicates": [
       {"src_absent": "src4"},
-      {"field": "attribute.precision", "equals": 10},
+      {"field": "attribute.precision", "equals": -1},
       {"field": "attribute.logit_softcap", "equals": 0.0},
       {"field": "attribute.max_bias", "equals": 0.0},
       {"field": "attribute.scale", "min": 0.08838834},
