@@ -168,6 +168,7 @@ set(GGML_HRX_LOOM_ROUTE_FILES
         routes/gfx1100/qwen_moe/qwen3_moe/dense_linear_q4k_q8_1_x4_next_q8.json
         routes/gfx1100/qwen_moe/qwen3_moe/dense_linear_q4k_f16_wmma.json
         routes/gfx1100/qwen_moe/qwen3_moe/dense_linear_q6k_f16_wmma.json
+        routes/gfx1100/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k_q8_1_x4_next_q8.json
         routes/gfx1100/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k_f16_wmma_prefill_512_partition_fused.json
         routes/gfx1100/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k_f16_wmma.json
         routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q4k_f16_wmma_next_rmsnorm.json

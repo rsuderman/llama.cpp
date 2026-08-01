@@ -1685,6 +1685,12 @@ int main() {
             ggml_backend_synchronize(backend.get());
             return 0;
         }
+        if (std::string(test_only) == "qwen3_moe_gate_up_next_q8") {
+            run_qwen3_moe_gate_up_case(backend.get(), "qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8", 1, false,
+                                       "qwen3_moe_gate_up_next_q8");
+            ggml_backend_synchronize(backend.get());
+            return 0;
+        }
         if (std::string(test_only) == "qwen3_moe_router") {
             run_qwen3_moe_router_projection_case(backend.get());
             run_qwen3_moe_router_top8_case(backend.get());
