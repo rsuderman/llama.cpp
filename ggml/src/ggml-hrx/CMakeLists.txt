@@ -412,6 +412,7 @@ if (GGML_HRX_EMBED_ROCM_LIBS)
 
     ggml_hrx_collect_bundle_paths(GGML_HRX_EMBED_MAIN_LIBS TRUE
         "libhrx.so*"
+        "libloomc.so*"
         "libhsa-runtime64.so*"
         "libhsa-amd-aqlprofile64.so*"
         "librocprofiler-register.so*"
