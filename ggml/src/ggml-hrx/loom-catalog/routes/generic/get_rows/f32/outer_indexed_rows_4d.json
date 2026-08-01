@@ -1,24 +1,14 @@
 {
   "schema": "ggml-hrx-loom-route-v1",
   "id": "get_rows_f32_outer_indexed_rows_4d",
-  "definition": "../../../../defs/generic/get_rows/f32/outer_indexed_rows_4d.json",
   "format": "loom",
   "priority": 101,
   "match": {
     "op": "GGML_OP_GET_ROWS",
     "tensors": {
-      "src0": {
-        "type": "F32",
-        "shape": ["d0", "d1", "d2", "d3"]
-      },
-      "src1": {
-        "type": "I32",
-        "shape": ["d0", "d1", "d2", "d3"]
-      },
-      "dst": {
-        "type": "F32",
-        "shape": ["d0", "d1", "d2", "d3"]
-      }
+      "src0": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"]},
+      "src1": {"type": "I32", "shape": ["d0", "d1", "d2", "d3"]},
+      "dst": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"]}
     },
     "attributes": {},
     "predicates": [
@@ -47,29 +37,75 @@
       "product": ["shape.dst.d0", "shape.dst.d1", "shape.dst.d2", "shape.dst.d3"]
     }
   },
-  "config": {
-    "mode": "compile",
-    "bindings": [
-      {"name": "shape_get_rows_outer_source_row_count", "type": "i64", "source": "shape.src0.d1"},
-      {"name": "shape_get_rows_outer_index_count", "type": "i64", "source": "shape.dst.d1"},
-      {"name": "shape_get_rows_outer_outer_count", "type": "i64", "source": "shape.dst.d2"},
-      {"name": "shape_get_rows_outer_src0_outer_stride", "type": "i64", "source": "tensor.src0.element_strides.2"},
-      {"name": "shape_get_rows_outer_idx_outer_stride", "type": "i64", "source": "tensor.src1.element_strides.1"},
-      {"name": "shape_get_rows_outer_dst_outer_stride", "type": "i64", "source": "tensor.dst.element_strides.2"},
-      {"name": "tuning_get_rows_outer_workgroup_size", "type": "i64", "value": 256}
-    ]
-  },
-  "invocation": {
-    "buffers": [
-      {"name": "src0", "tensor": "src0", "position": 0, "kind": "input"},
-      {"name": "idx", "tensor": "src1", "position": 1, "kind": "input"},
-      {"name": "dst", "tensor": "dst", "position": 2, "kind": "output"}
-    ],
-    "scalars": [],
-    "dispatch": {
-      "workgroups": ["shape.dst.d2", "derived.index_tiles", "shape.dst.d0"],
-      "workgroup_size": [256, 1, 1]
+  "architectures": ["*"],
+  "dispatches": [
+    {
+      "definition": "../../../../defs/generic/get_rows/f32/outer_indexed_rows_4d.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "shape_get_rows_outer_source_row_count",
+            "type": "i64",
+            "source": "shape.src0.d1"
+          },
+          {
+            "name": "shape_get_rows_outer_index_count",
+            "type": "i64",
+            "source": "shape.dst.d1"
+          },
+          {
+            "name": "shape_get_rows_outer_outer_count",
+            "type": "i64",
+            "source": "shape.dst.d2"
+          },
+          {
+            "name": "shape_get_rows_outer_src0_outer_stride",
+            "type": "i64",
+            "source": "tensor.src0.element_strides.2"
+          },
+          {
+            "name": "shape_get_rows_outer_idx_outer_stride",
+            "type": "i64",
+            "source": "tensor.src1.element_strides.1"
+          },
+          {
+            "name": "shape_get_rows_outer_dst_outer_stride",
+            "type": "i64",
+            "source": "tensor.dst.element_strides.2"
+          },
+          {
+            "name": "tuning_get_rows_outer_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "idx",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": ["shape.dst.d2", "derived.index_tiles", "shape.dst.d0"],
+        "workgroup_size": [256, 1, 1]
+      }
     }
-  },
-  "architectures": ["*"]
+  ]
 }

@@ -1,20 +1,13 @@
 {
   "schema": "ggml-hrx-loom-route-v1",
   "id": "soft_max_f32_skinny_contiguous_4d",
-  "definition": "../../../../defs/generic/soft_max/f32/skinny_contiguous_4d.json",
   "format": "loom",
   "priority": 100,
   "match": {
     "op": "GGML_OP_SOFT_MAX",
     "tensors": {
-      "src0": {
-        "type": "F32",
-        "shape": ["d0", "d1", "d2", "d3"]
-      },
-      "dst": {
-        "type": "F32",
-        "shape": ["d0", "d1", "d2", "d3"]
-      }
+      "src0": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"]},
+      "dst": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"]}
     },
     "attributes": {
       "max_bias": {"type": "f32"},
@@ -31,9 +24,7 @@
       {"src_absent": "src1"},
       {"src_absent": "src2"},
       {"field": "attribute.max_bias", "equals": 0.0},
-      {
-        "same_shape": ["src0", "dst"]
-      },
+      {"same_shape": ["src0", "dst"]},
       {"contiguous": "src0"},
       {"contiguous": "dst"}
     ]
@@ -52,26 +43,56 @@
       "product": ["shape.dst.d1", "shape.dst.d2", "shape.dst.d3"]
     }
   },
-  "config": {
-    "mode": "compile",
-    "bindings": [
-      {"name": "shape_soft_max_ncols", "type": "i64", "source": "derived.ncols"},
-      {"name": "shape_soft_max_nrows", "type": "i64", "source": "derived.nrows"},
-      {"name": "tuning_soft_max_workgroup_size", "type": "i64", "value": 32}
-    ]
-  },
-  "invocation": {
-    "buffers": [
-      {"name": "src0", "tensor": "src0", "position": 0, "kind": "input"},
-      {"name": "dst", "tensor": "dst", "position": 1, "kind": "output"}
-    ],
-    "scalars": [
-      {"name": "scale", "type": "f32", "position": 0, "source": "attribute.scale"}
-    ],
-    "dispatch": {
-      "workgroup_size": [32, 1, 1],
-      "workgroups": ["derived.nrows"]
+  "architectures": ["*"],
+  "dispatches": [
+    {
+      "definition": "../../../../defs/generic/soft_max/f32/skinny_contiguous_4d.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "shape_soft_max_ncols",
+            "type": "i64",
+            "source": "derived.ncols"
+          },
+          {
+            "name": "shape_soft_max_nrows",
+            "type": "i64",
+            "source": "derived.nrows"
+          },
+          {
+            "name": "tuning_soft_max_workgroup_size",
+            "type": "i64",
+            "value": 32
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 1,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "scale",
+          "type": "f32",
+          "position": 0,
+          "source": "attribute.scale"
+        }
+      ],
+      "dispatch": {
+        "workgroup_size": [32, 1, 1],
+        "workgroups": ["derived.nrows"]
+      }
     }
-  },
-  "architectures": ["*"]
+  ]
 }

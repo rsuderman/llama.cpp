@@ -380,7 +380,7 @@ def emit_product(value, context, scalar_type):
     if isinstance(value, str):
         operands = source_expr(value)
     else:
-        operands = [source_expr(item) for item in value]
+        operands = [source_expr(item) if not isinstance(item, int) else str(item) for item in value]
     expr = " * ".join([typed_expr(operand, scalar_type) for operand in operands])
     return expr if expr else scalar_literal(1, scalar_type)
 
@@ -558,12 +558,12 @@ def emit_src_present_predicate(predicate, context, schema):
     return f"{role_expr(predicate['src_present'])} != nullptr"
 
 
-def emit_transients_predicate(predicate, context, schema):
+def emit_elided_predicate(predicate, context, schema):
     del context
     del schema
     return " && ".join([
         f"ggml_backend_hrx_loom_tensor_is_transient(request, {role_var(tensor)}, matched_node_count)"
-        for tensor in predicate["transients"]
+        for tensor in predicate["elided"]
     ])
 
 
@@ -582,7 +582,7 @@ PREDICATE_EMITTERS = {
     "field": emit_field_predicate,
     "src_absent": emit_src_absent_predicate,
     "src_present": emit_src_present_predicate,
-    "transients": emit_transients_predicate,
+    "elided": emit_elided_predicate,
     "no_overlap": emit_no_overlap_predicate,
 }
 

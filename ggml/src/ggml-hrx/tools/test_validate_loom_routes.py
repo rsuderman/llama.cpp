@@ -30,7 +30,7 @@ def read_json(path):
 def read_route_and_definition(source_root, route_path):
     route_full_path = source_root / route_path
     route = read_json(route_full_path)
-    definition = read_json((route_full_path.parent / route["definition"]).resolve())
+    definition = read_json((route_full_path.parent / route["dispatches"][0]["definition"]).resolve())
     return route, definition
 
 
@@ -54,7 +54,7 @@ def mutate_route(source_root, mutator):
 def mutate_definition(source_root, mutator):
     route_path = source_root / ROUTE_PATH
     route = read_json(route_path)
-    definition_path = (route_path.parent / route["definition"]).resolve()
+    definition_path = (route_path.parent / route["dispatches"][0]["definition"]).resolve()
     definition = read_json(definition_path)
     mutator(definition)
     write_json(definition_path, definition)
@@ -218,7 +218,7 @@ def expect_index_scalar_valid():
             definition["parameters"] = [{"name": "tile_count", "type": "index"}]
 
         def add_index_scalar(route):
-            route["invocation"]["scalars"] = [
+            route["dispatches"][0]["scalars"] = [
                 {"name": "tile_count", "type": "index", "position": 0, "source": "shape.dst.d0"}
             ]
 
@@ -230,6 +230,103 @@ def expect_index_scalar_valid():
         impl = route_impl.generate_route_impl(str(ROUTE_PATH), route, definition)
         if "const int32_t constant_tile_count = static_cast<int32_t>(shape_dst_d0);" not in impl:
             raise AssertionError("index-scalar: expected index scalar to pack as int32_t")
+
+
+def make_multi_step_add_route(route):
+    base_dispatch = route["dispatches"][0]
+    definition = base_dispatch["definition"]
+    config = base_dispatch["config"]
+    route["derived"]["total_bytes"] = {
+        "type": "i64",
+        "product": ["derived.total_size", 4],
+    }
+    route["transient_buffers"] = {
+        "tmp": {"size": "derived.total_bytes"},
+    }
+    first_dispatch = json.loads(json.dumps(base_dispatch))
+    first_dispatch.pop("definition")
+    first_dispatch.pop("config")
+    first_dispatch["buffers"][2] = {
+        "name": "dst",
+        "transient": "tmp",
+        "position": 2,
+        "kind": "output",
+    }
+    second_dispatch = json.loads(json.dumps(base_dispatch))
+    second_dispatch.pop("definition")
+    second_dispatch.pop("config")
+    second_dispatch["buffers"][0] = {
+        "name": "src0",
+        "transient": "tmp",
+        "position": 0,
+        "kind": "input",
+    }
+    route["dispatches"] = [
+        {
+            "name": "first",
+            "definition": definition,
+            "config": json.loads(json.dumps(config)),
+            "buffers": first_dispatch["buffers"],
+            "scalars": first_dispatch["scalars"],
+            "dispatch": first_dispatch["dispatch"],
+        },
+        {
+            "name": "second",
+            "definition": definition,
+            "config": json.loads(json.dumps(config)),
+            "buffers": second_dispatch["buffers"],
+            "scalars": second_dispatch["scalars"],
+            "dispatch": second_dispatch["dispatch"],
+        },
+    ]
+
+
+def expect_multi_step_generation_valid():
+    with tempfile.TemporaryDirectory(prefix="multi-step-route-") as tmpdir:
+        source_root = copy_catalog(tmpdir)
+        mutate_route(source_root, make_multi_step_add_route)
+        loom.validate_catalog(source_root)
+        entries = catalog.build_entries(source_root, ["gfx1100"])
+        entry_ids = [entry["id"] for entry in entries]
+        expected_ids = ["add_f32_contiguous::first", "add_f32_contiguous::second"]
+        if entry_ids != expected_ids:
+            raise AssertionError(f"multi-step-route: expected entries {expected_ids}, got {entry_ids}")
+
+        route_path, route, _, dispatch_definitions = route_impl.load_route(source_root, str(ROUTE_PATH))
+        impl = route_impl.generate_op_router_impl([(route_path, route, dispatch_definitions)], "GGML_OP_ADD")
+        if "plan->transients[0].offset = transient_cursor;" not in impl:
+            raise AssertionError("multi-step-route: expected transient offset materialization")
+        if "plan->transients[0].size = transient_0_size;" not in impl:
+            raise AssertionError("multi-step-route: expected transient size materialization")
+        if "GGML_BACKEND_HRX_LOOM_TRANSIENT_ALIGNMENT" not in impl:
+            raise AssertionError("multi-step-route: expected fixed transient alignment")
+        if "plan->transient_byte_length = transient_cursor;" not in impl:
+            raise AssertionError("multi-step-route: expected total transient byte length")
+        if "plan->dispatches[0].transient_binding_indices[2] = 0;" not in impl:
+            raise AssertionError("multi-step-route: expected transient output binding")
+        if "plan->dispatches[1].transient_binding_indices[0] = 0;" not in impl:
+            raise AssertionError("multi-step-route: expected transient input binding")
+        if "GGML_HRX_LOOM_ROUTE_ID_ADD_F32_CONTIGUOUS__FIRST" not in impl:
+            raise AssertionError("multi-step-route: expected step catalog entry id")
+
+
+def expect_undeclared_transient_invalid():
+    with tempfile.TemporaryDirectory(prefix="undeclared-transient-") as tmpdir:
+        source_root = copy_catalog(tmpdir)
+
+        def mutator(route):
+            make_multi_step_add_route(route)
+            route["dispatches"][0]["buffers"][2]["transient"] = "missing"
+
+        mutate_route(source_root, mutator)
+        try:
+            loom.validate_catalog(source_root)
+        except ValueError as err:
+            message = str(err)
+            if "transient buffer missing is not declared" in message:
+                return
+            raise AssertionError(f"undeclared-transient: unexpected error {message!r}") from err
+        raise AssertionError("undeclared-transient: validator accepted invalid route")
 
 
 def main():
@@ -246,12 +343,14 @@ def main():
 
     expect_valid_mutation(
         "workgroups-dispatch",
-        lambda route: route["invocation"].update({
+        lambda route: route["dispatches"][0].update({
             "dispatch": {"workgroups": ["derived.total_size"], "workgroup_size": [256, 1, 1]}
         }),
     )
     expect_dependency_generation_valid()
     expect_index_scalar_valid()
+    expect_multi_step_generation_valid()
+    expect_undeclared_transient_invalid()
 
     cases = [
         (
@@ -296,37 +395,37 @@ def main():
         ),
         (
             "ambiguous-dispatch",
-            lambda route: route["invocation"]["dispatch"].update({"workgroups": ["derived.total_size"]}),
+            lambda route: route["dispatches"][0]["dispatch"].update({"workgroups": ["derived.total_size"]}),
             "expects exactly one of work_items or workgroups",
         ),
         (
             "scalar-dispatch",
-            lambda route: route["invocation"]["dispatch"].update({"work_items": "derived.total_size"}),
+            lambda route: route["dispatches"][0]["dispatch"].update({"work_items": "derived.total_size"}),
             "expected an array with 1 to 3 integer values",
         ),
         (
             "too-many-dispatch-axes",
-            lambda route: route["invocation"]["dispatch"].update({"work_items": [1, 1, 1, 1]}),
+            lambda route: route["dispatches"][0]["dispatch"].update({"work_items": [1, 1, 1, 1]}),
             "expected an array with 1 to 3 integer values",
         ),
         (
             "missing-config",
-            lambda route: route.pop("config"),
+            lambda route: route["dispatches"][0].pop("config"),
             "expected object field config",
         ),
         (
             "duplicate-config-names",
-            lambda route: route["config"]["bindings"][1].update({"name": "shape_pointwise_total_size"}),
+            lambda route: route["dispatches"][0]["config"]["bindings"][1].update({"name": "shape_pointwise_total_size"}),
             "duplicate config binding name shape_pointwise_total_size",
         ),
         (
             "unresolved-config-source",
-            lambda route: route["config"]["bindings"][0].update({"source": "derived.missing"}),
+            lambda route: route["dispatches"][0]["config"]["bindings"][0].update({"source": "derived.missing"}),
             "derived value missing is not available",
         ),
         (
             "source-value-conflict",
-            lambda route: route["config"]["bindings"][0].update({"value": 7}),
+            lambda route: route["dispatches"][0]["config"]["bindings"][0].update({"value": 7}),
             "expected exactly one of source or value",
         ),
         (
@@ -345,10 +444,16 @@ def main():
         expect_invalid(name, mutator, expected)
 
     expect_invalid_full_catalog_mutation(
-        "fusion-unknown-transient",
+        "fusion-unknown-elided",
         FUSION_ROUTE_PATH,
-        lambda route: route["match"]["predicates"][2].update({"transients": ["missing"]}),
+        lambda route: route["match"]["predicates"][2].update({"elided": ["missing"]}),
         "tensor missing is not declared in tensors",
+    )
+    expect_invalid_full_catalog_mutation(
+        "fusion-output-elided",
+        FUSION_ROUTE_PATH,
+        lambda route: route["dispatches"][0]["buffers"][2].update({"tensor": "rms_out"}),
+        "elided tensor rms_out cannot be bound as a dispatch buffer",
     )
     expect_invalid_full_catalog_mutation(
         "fusion-no-overlap-arity",

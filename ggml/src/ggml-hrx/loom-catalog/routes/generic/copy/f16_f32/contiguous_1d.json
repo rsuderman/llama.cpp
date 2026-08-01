@@ -1,101 +1,65 @@
 {
   "schema": "ggml-hrx-loom-route-v1",
   "id": "copy_f16_f32_contiguous_1d",
-  "definition": "../../../../defs/generic/copy/f16_f32/contiguous_1d.json",
   "format": "loom",
   "priority": 124,
   "match": {
     "op": "GGML_OP_CPY",
     "tensors": {
-      "src0": {
-        "type": "F16",
-        "shape": [
-          "d0",
-          "d1",
-          "d2",
-          "d3"
-        ]
-      },
-      "dst": {
-        "type": "F32",
-        "shape": [
-          "d0",
-          "d1",
-          "d2",
-          "d3"
-        ]
-      }
+      "src0": {"type": "F16", "shape": ["d0", "d1", "d2", "d3"]},
+      "dst": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"]}
     },
     "attributes": {},
     "predicates": [
-      {
-        "same_shape": [
-          "src0",
-          "dst"
-        ]
-      },
-      {
-        "contiguous": "src0"
-      },
-      {
-        "contiguous": "dst"
-      }
+      {"same_shape": ["src0", "dst"]},
+      {"contiguous": "src0"},
+      {"contiguous": "dst"}
     ]
   },
   "derived": {
     "total_size": {
       "type": "i64",
-      "product": [
-        "shape.dst.d0",
-        "shape.dst.d1",
-        "shape.dst.d2",
-        "shape.dst.d3"
-      ]
+      "product": ["shape.dst.d0", "shape.dst.d1", "shape.dst.d2", "shape.dst.d3"]
     }
   },
-  "config": {
-    "mode": "compile",
-    "bindings": [
-      {
-        "name": "shape_copy_n",
-        "type": "i64",
-        "source": "derived.total_size"
+  "architectures": ["*"],
+  "dispatches": [
+    {
+      "definition": "../../../../defs/generic/copy/f16_f32/contiguous_1d.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "shape_copy_n",
+            "type": "i64",
+            "source": "derived.total_size"
+          },
+          {
+            "name": "tuning_copy_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
       },
-      {
-        "name": "tuning_copy_workgroup_size",
-        "type": "i64",
-        "value": 256
-      }
-    ]
-  },
-  "invocation": {
-    "buffers": [
-      {
-        "name": "src0",
-        "tensor": "src0",
-        "position": 0,
-        "kind": "input"
-      },
-      {
-        "name": "dst",
-        "tensor": "dst",
-        "position": 1,
-        "kind": "output"
-      }
-    ],
-    "scalars": [],
-    "dispatch": {
-      "work_items": [
-        "derived.total_size"
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 1,
+          "kind": "output"
+        }
       ],
-      "workgroup_size": [
-        256,
-        1,
-        1
-      ]
+      "scalars": [],
+      "dispatch": {
+        "work_items": ["derived.total_size"],
+        "workgroup_size": [256, 1, 1]
+      }
     }
-  },
-  "architectures": [
-    "*"
   ]
 }

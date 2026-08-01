@@ -14,18 +14,18 @@ This catalog contains Loom routes for HRX. Routes, definitions, and sources are 
 
 - `metadata.json` lists the catalog version, target set, and route files.
 - `defs/generic/<op>/<dtype>/<name>.json` describes the Loom source identity and runtime ABI.
-- `routes/generic/<op>/<dtype>/<name>.json` describes route matching, derived values, compile config, tensor and scalar invocation, and dispatch geometry.
+- `routes/generic/<op>/<dtype>/<name>.json` describes route matching, derived values, dispatch definitions, compile config, tensor and scalar bindings, and dispatch geometry.
 - `sources/generic/<op>/<dtype>/<name>.loom` contains platform-agnostic Loom source.
 
 ## Route Shape
 
-Each route captures the tensor dtypes, shapes, layout predicates, derived values, compile config bindings, invocation buffers and scalars, and dispatch geometry needed by one Loom kernel.
+Each route captures the tensor dtypes, shapes, layout predicates, derived values, and one or more dispatches. Each dispatch owns its Loom definition, compile config bindings, buffer and scalar bindings, and dispatch geometry.
 
-This catalog uses only the final Loom route fields: `match`, `derived`, `config`, and `invocation`. It does not include HSACO compatibility fields.
+This catalog uses only the final Loom route fields: `match`, `derived`, and `dispatches`. It does not include HSACO compatibility fields.
 
 Definitions may include an optional `dependencies` array. Each dependency has `source` and `source_format`; only `loom-text` dependency sources are supported. Dependency sources are linked as Loom libraries before the selected route symbol is compiled.
 
-The `config` section is required. Its `mode` must be `compile`, and `bindings` is an ordered array of compile-time values. Each binding has a C identifier `name`, a scalar `type`, and exactly one of `source` or `value`. The current generated runtime stores at most 32 config bindings, with names limited to 63 bytes and formatted values limited to 127 bytes.
+Each dispatch `config` section is required. Its `mode` must be `compile`, and `bindings` is an ordered array of compile-time values. Each binding has a C identifier `name`, a scalar `type`, and exactly one of `source` or `value`. The current generated runtime stores at most 64 config bindings, with names limited to 63 bytes and formatted values limited to 127 bytes.
 
 ## Validation
 

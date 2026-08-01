@@ -39,14 +39,13 @@ TOP_LEVEL_FIELDS = {
     "schema",
     "id",
     "architectures",
-    "definition",
     "format",
     "priority",
     "tensors",
     "match",
     "derived",
-    "config",
-    "invocation",
+    "transient_buffers",
+    "dispatches",
     "tests",
 }
 CONFIG_FIELDS = {"mode", "bindings"}
@@ -190,6 +189,68 @@ def validate_config(route, route_path, context):
                 raise ValueError(f"{source}.value: string representation must fit in 127 bytes")
 
 
+def route_dispatches(route, route_path):
+    dispatches = route_schema.require_list(route, "dispatches", route_path)
+    if not dispatches:
+        raise ValueError(f"{route_path}: dispatches must not be empty")
+    return dispatches
+
+
+def resolve_dispatch_definition(dispatch, route_path, definitions, source):
+    definition_path = (route_path.parent / route_schema.require_string(dispatch, "definition", source)).resolve()
+    definition = definitions.get(definition_path)
+    if definition is None:
+        raise ValueError(f"{source}: missing definition {definition_path}")
+    return definition_path, definition
+
+
+def resolve_dispatch_definitions(route, route_path, definitions):
+    resolved = []
+    for i, dispatch in enumerate(route_dispatches(route, route_path)):
+        dispatch_source = f"{route_path}: dispatches[{i}]"
+        resolved.append(resolve_dispatch_definition(dispatch, route_path, definitions, dispatch_source))
+    return resolved
+
+
+def elided_tensors_from_predicates(predicates):
+    elided_tensors = set()
+    for predicate in predicates:
+        for tensor in predicate.get("elided", []):
+            elided_tensors.add(tensor)
+    return elided_tensors
+
+
+def validate_elided_dispatch_buffers(dispatch, dispatch_source, elided_tensors):
+    if not elided_tensors:
+        return
+    for i, buffer in enumerate(route_schema.require_array(dispatch, "buffers", dispatch_source)):
+        tensor = buffer.get("tensor")
+        if tensor in elided_tensors:
+            raise ValueError(f"{dispatch_source}: buffers[{i}] elided tensor {tensor} cannot be bound as a dispatch buffer")
+
+
+def validate_dispatches(route, route_path, definitions, context, transient_buffers, elided_tensors):
+    dispatches = route_dispatches(route, route_path)
+    dispatch_names = {}
+    requires_names = len(dispatches) > 1
+    for i, dispatch in enumerate(dispatches):
+        dispatch_source = f"{route_path}: dispatches[{i}]"
+        if not isinstance(dispatch, dict):
+            raise ValueError(f"{dispatch_source}: expected object")
+        route_schema.unknown_fields(dispatch, route_schema.ROUTE_DISPATCH_FIELDS, dispatch_source)
+        if requires_names:
+            name = route_schema.require_string(dispatch, "name", dispatch_source)
+            if name in dispatch_names:
+                raise ValueError(f"{route_path}: duplicate dispatch name {name}")
+            dispatch_names[name] = dispatch_source
+        elif "name" in dispatch:
+            route_schema.require_string(dispatch, "name", dispatch_source)
+        _, definition = resolve_dispatch_definition(dispatch, route_path, definitions, dispatch_source)
+        validate_config(dispatch, dispatch_source, context)
+        route_schema.validate_dispatch_body(dispatch, dispatch_source, definition, context, transient_buffers, False)
+        validate_elided_dispatch_buffers(dispatch, dispatch_source, elided_tensors)
+
+
 def validate_architectures(route, route_path, metadata_targets):
     architectures = route_schema.require_array(route, "architectures", route_path)
     if not architectures:
@@ -227,10 +288,12 @@ def validate_route(route_path, definitions, metadata_targets):
     if "tests" in route:
         route_schema.require_dict(route, "tests", route_path)
 
-    definition_path = (route_path.parent / route_schema.require_string(route, "definition", route_path)).resolve()
-    definition = definitions.get(definition_path)
-    if definition is None:
-        raise ValueError(f"{route_path}: missing definition {definition_path}")
+    dispatches = route_dispatches(route, route_path)
+    has_multiple_dispatches = len(dispatches) > 1
+    if has_multiple_dispatches:
+        definition = None
+    else:
+        _, definition = resolve_dispatch_definition(dispatches[0], route_path, definitions, f"{route_path}: dispatches[0]")
 
     derived = route_schema.require_dict(route, "derived", route_path)
     if schema == FUSION_ROUTE_SCHEMA_V2:
@@ -241,8 +304,14 @@ def validate_route(route_path, definitions, metadata_targets):
         context = route_schema.RouteContext(route_path, op_rule, tensors, attributes, derived)
     route_schema.validate_derived(route, route_path, context)
     route_schema.validate_predicates(predicates, route_path, context)
-    validate_config(route, route_path, context)
-    route_schema.validate_invocation(route, route_path, definition, context)
+    transient_buffers = route_schema.validate_transient_buffers(route.get("transient_buffers"), route_path, context)
+    elided_tensors = elided_tensors_from_predicates(predicates)
+    if has_multiple_dispatches:
+        validate_dispatches(route, route_path, definitions, context, transient_buffers, elided_tensors)
+    else:
+        if "transient_buffers" in route:
+            raise ValueError(f"{route_path}: single-step routes cannot use transient_buffers")
+        validate_dispatches(route, route_path, definitions, context, None, elided_tensors)
     return architectures
 
 

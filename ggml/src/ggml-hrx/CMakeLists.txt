@@ -124,6 +124,7 @@ set(GGML_HRX_LOOM_GENERATED_H "${GGML_HRX_LOOM_GENERATED_DIR}/ggml-hrx-loom-cata
 set(GGML_HRX_LOOM_ROUTE_DISPATCH_CPP "${GGML_HRX_LOOM_GENERATED_DIR}/ggml-hrx-loom-route-dispatch.cpp")
 set(GGML_HRX_LOOM_ROUTE_FILES
         routes/generic/add/f32/contiguous.json
+        routes/generic/add/f32/transient_demo.json
         routes/generic/argsort/f32_i32/contiguous_wg256.json
         routes/generic/sum_rows/f32/contiguous_4d.json
         routes/generic/rope/f32/neox.json

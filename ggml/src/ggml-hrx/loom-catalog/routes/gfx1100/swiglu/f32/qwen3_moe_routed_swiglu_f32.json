@@ -1,24 +1,14 @@
 {
   "schema": "ggml-hrx-loom-route-v1",
   "id": "qwen3_moe_routed_swiglu_f32",
-  "definition": "../../../../defs/gfx1100/swiglu/f32/qwen3_moe_routed_swiglu_f32.json",
   "format": "loom",
   "priority": 204,
   "match": {
     "op": "GGML_OP_GLU",
     "tensors": {
-      "src0": {
-        "type": "F32",
-        "shape": ["output_size", "route_count", "token_count", "d3"]
-      },
-      "src1": {
-        "type": "F32",
-        "shape": ["output_size", "route_count", "token_count", "d3"]
-      },
-      "dst": {
-        "type": "F32",
-        "shape": ["output_size", "route_count", "token_count", "d3"]
-      }
+      "src0": {"type": "F32", "shape": ["output_size", "route_count", "token_count", "d3"]},
+      "src1": {"type": "F32", "shape": ["output_size", "route_count", "token_count", "d3"]},
+      "dst": {"type": "F32", "shape": ["output_size", "route_count", "token_count", "d3"]}
     },
     "attributes": {
       "glu_op": {"type": "i32"}
@@ -45,26 +35,57 @@
       "product": ["shape.dst.output_size", "shape.dst.route_count", "shape.dst.token_count"]
     }
   },
-  "config": {
-    "mode": "compile",
-    "bindings": [
-      {"name": "qwen3_moe_routed_gate_up_route_count", "type": "i64", "source": "shape.dst.route_count"},
-      {"name": "qwen3_moe_routed_gate_up_output_size", "type": "i64", "source": "shape.dst.output_size"}
-    ]
-  },
-  "invocation": {
-    "buffers": [
-      {"name": "gate", "tensor": "src0", "position": 0, "kind": "input"},
-      {"name": "up", "tensor": "src1", "position": 1, "kind": "input"},
-      {"name": "output", "tensor": "dst", "position": 2, "kind": "output"}
-    ],
-    "scalars": [
-      {"name": "token_count", "type": "index", "position": 0, "source": "shape.dst.token_count"}
-    ],
-    "dispatch": {
-      "work_items": ["derived.total_size"],
-      "workgroup_size": [256, 1, 1]
+  "architectures": ["gfx1100"],
+  "dispatches": [
+    {
+      "definition": "../../../../defs/gfx1100/swiglu/f32/qwen3_moe_routed_swiglu_f32.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "qwen3_moe_routed_gate_up_route_count",
+            "type": "i64",
+            "source": "shape.dst.route_count"
+          },
+          {
+            "name": "qwen3_moe_routed_gate_up_output_size",
+            "type": "i64",
+            "source": "shape.dst.output_size"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "gate",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "up",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "output",
+          "tensor": "dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "token_count",
+          "type": "index",
+          "position": 0,
+          "source": "shape.dst.token_count"
+        }
+      ],
+      "dispatch": {
+        "work_items": ["derived.total_size"],
+        "workgroup_size": [256, 1, 1]
+      }
     }
-  },
-  "architectures": ["gfx1100"]
+  ]
 }

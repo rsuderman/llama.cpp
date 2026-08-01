@@ -1,14 +1,14 @@
 {
   "schema": "ggml-hrx-loom-route-v1",
-  "id": "mul_f16_contiguous",
+  "id": "add_f32_transient_demo",
   "format": "loom",
-  "priority": 108,
+  "priority": 1,
   "match": {
-    "op": "GGML_OP_MUL",
+    "op": "GGML_OP_ADD",
     "tensors": {
-      "src0": {"type": "F16", "shape": ["d0", "d1", "d2", "d3"]},
-      "src1": {"type": "F16", "shape": ["d0", "d1", "d2", "d3"]},
-      "dst": {"type": "F16", "shape": ["d0", "d1", "d2", "d3"]}
+      "src0": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"]},
+      "src1": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"]},
+      "dst": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"]}
     },
     "attributes": {},
     "predicates": [
@@ -25,12 +25,20 @@
     "total_size": {
       "type": "i64",
       "product": ["shape.dst.d0", "shape.dst.d1", "shape.dst.d2", "shape.dst.d3"]
+    },
+    "transient_bytes": {
+      "type": "i64",
+      "product": ["derived.total_size", 4]
     }
+  },
+  "transient_buffers": {
+    "sum": {"size": "derived.transient_bytes"}
   },
   "architectures": ["*"],
   "dispatches": [
     {
-      "definition": "../../../../defs/generic/mul/f16/contiguous.json",
+      "name": "stage",
+      "definition": "../../../../defs/generic/add/f32/transient_stage.json",
       "config": {
         "mode": "compile",
         "bindings": [
@@ -60,9 +68,47 @@
           "kind": "input"
         },
         {
+          "name": "tmp",
+          "transient": "sum",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "work_items": ["derived.total_size"],
+        "workgroup_size": [256, 1, 1]
+      }
+    },
+    {
+      "name": "commit",
+      "definition": "../../../../defs/generic/add/f32/transient_commit.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "shape_pointwise_total_size",
+            "type": "i64",
+            "source": "derived.total_size"
+          },
+          {
+            "name": "tuning_pointwise_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "tmp",
+          "transient": "sum",
+          "position": 0,
+          "kind": "input"
+        },
+        {
           "name": "dst",
           "tensor": "dst",
-          "position": 2,
+          "position": 1,
           "kind": "output"
         }
       ],

@@ -7,9 +7,11 @@ FUSION_MATCH_FIELDS = {"anchors", "ops", "predicates"}
 FUSION_OP_FIELDS = {"op", "tensors", "attributes"}
 TENSOR_FIELDS = {"type", "optional", "shape", "layout"}
 ATTRIBUTE_FIELDS = {"type", "source", "default"}
-PREDICATE_FIELDS = {"contiguous", "same_shape", "same_layout", "rank", "field", "equals", "in", "min", "max", "multiple_of", "divisible_by", "src_absent", "src_present", "transients", "no_overlap"}
+PREDICATE_FIELDS = {"contiguous", "same_shape", "same_layout", "rank", "field", "equals", "in", "min", "max", "multiple_of", "divisible_by", "src_absent", "src_present", "elided", "no_overlap"}
 DERIVED_FIELDS = {"type", "field", "value", "product", "ceil_div", "next_power_of_2"}
-BUFFER_FIELDS = {"name", "tensor", "position", "kind"}
+TRANSIENT_BUFFER_FIELDS = {"size"}
+ROUTE_DISPATCH_FIELDS = {"name", "definition", "config", "buffers", "scalars", "dispatch"}
+BUFFER_FIELDS = {"name", "tensor", "transient", "position", "kind"}
 SCALAR_FIELDS = {"name", "source", "value", "type", "position"}
 DISPATCH_FIELDS = {"work_items", "workgroups", "workgroup_size"}
 INVOCATION_FIELDS = {"buffers", "scalars", "dispatch"}
@@ -550,9 +552,10 @@ def validate_match(route, route_path, definition):
     op = require_string(match, "op", f"{route_path}: match")
     if op not in OP_RULES:
         raise ValueError(f"{route_path}: unsupported match.op {op}")
-    definition_op = require_string(definition, "op", route_path)
-    if op != definition_op:
-        raise ValueError(f"{route_path}: match.op {op} does not match definition op {definition_op}")
+    if definition is not None:
+        definition_op = require_string(definition, "op", route_path)
+        if op != definition_op:
+            raise ValueError(f"{route_path}: match.op {op} does not match definition op {definition_op}")
 
     op_rule = OP_RULES[op]
     tensors = validate_tensors(route, route_path, op_rule)
@@ -696,10 +699,11 @@ def validate_fusion_match(route, route_path, definition):
         op_attributes = validate_attributes(op_match, f"{route_path}: match.ops.{op_name}", op_rule)
         attributes[op_name] = op_attributes
 
-    definition_op = require_string(definition, "op", route_path)
-    anchor_op = require_string(ops[anchors[0]], "op", f"{route_path}: match.ops.{anchors[0]}")
-    if definition_op != anchor_op:
-        raise ValueError(f"{route_path}: definition op {definition_op} does not match anchor op {anchor_op}")
+    if definition is not None:
+        definition_op = require_string(definition, "op", route_path)
+        anchor_op = require_string(ops[anchors[0]], "op", f"{route_path}: match.ops.{anchors[0]}")
+        if definition_op != anchor_op:
+            raise ValueError(f"{route_path}: definition op {definition_op} does not match anchor op {anchor_op}")
 
     predicates = match.get("predicates", [])
     if not isinstance(predicates, list):
@@ -708,17 +712,17 @@ def validate_fusion_match(route, route_path, definition):
         source = f"{route_path}: match.predicates[{i}]"
         if not isinstance(predicate, dict):
             raise ValueError(f"{source}: expected object")
-        if "transients" in predicate:
-            values = predicate["transients"]
+        if "elided" in predicate:
+            values = predicate["elided"]
             if not isinstance(values, list) or not values:
-                raise ValueError(f"{source}.transients: expected non-empty tensor list")
+                raise ValueError(f"{source}.elided: expected non-empty tensor list")
             for j, tensor_name in enumerate(values):
                 if tensor_name not in tensors:
-                    raise ValueError(f"{source}.transients[{j}]: tensor {tensor_name} is not declared in tensors")
+                    raise ValueError(f"{source}.elided[{j}]: tensor {tensor_name} is not declared in tensors")
                 if tensor_name not in produced_tensors:
-                    raise ValueError(f"{source}.transients[{j}]: tensor {tensor_name} is not produced inside the fusion")
+                    raise ValueError(f"{source}.elided[{j}]: tensor {tensor_name} is not produced inside the fusion")
                 if tensor_name not in consumed_tensors:
-                    raise ValueError(f"{source}.transients[{j}]: tensor {tensor_name} is not consumed inside the fusion")
+                    raise ValueError(f"{source}.elided[{j}]: tensor {tensor_name} is not consumed inside the fusion")
 
     return tensors, attributes, predicates
 
@@ -769,9 +773,15 @@ def validate_product(value, item_type, context, available, source):
     if not isinstance(value, list) or not value:
         raise ValueError(f"{source}: expected non-empty array or integer vector source")
     for i, operand in enumerate(value):
-        operand_type = context.resolve_source(operand, f"{source}[{i}]", available)
-        if operand_type not in INTEGER_TYPES and operand_type != "vector_i64":
-            raise ValueError(f"{source}[{i}]: expected integer or integer vector source")
+        if is_source_string(operand):
+            operand_type = context.resolve_source(operand, f"{source}[{i}]", available)
+            if operand_type not in INTEGER_TYPES and operand_type != "vector_i64":
+                raise ValueError(f"{source}[{i}]: expected integer or integer vector source")
+        elif type(operand) is int:
+            if operand <= 0:
+                raise ValueError(f"{source}[{i}]: expected positive integer literal")
+        else:
+            raise ValueError(f"{source}[{i}]: expected integer literal or source string")
 
 
 def validate_ceil_div(value, item_type, context, available, source):
@@ -807,7 +817,7 @@ def validate_predicates(predicates, route_path, context):
                 "field",
                 "src_absent",
                 "src_present",
-                "transients",
+                "elided",
                 "no_overlap",
             ) if key in keys
         ]
@@ -838,10 +848,10 @@ def validate_predicates(predicates, route_path, context):
             context.validate_tensor_role(predicate[form], f"{source}.{form}", allow_optional=True, require_input=True)
             if len(keys) != 1:
                 raise ValueError(f"{source}: {form} predicate does not accept extra fields")
-        elif form == "transients":
-            validate_tensor_list_predicate(predicate["transients"], source, context, "transients")
+        elif form == "elided":
+            validate_tensor_list_predicate(predicate["elided"], source, context, "elided")
             if len(keys) != 1:
-                raise ValueError(f"{source}: transients predicate does not accept extra fields")
+                raise ValueError(f"{source}: elided predicate does not accept extra fields")
         elif form == "no_overlap":
             validate_tensor_pair_predicate(predicate["no_overlap"], source, context, "no_overlap")
             if len(keys) != 1:
@@ -898,27 +908,45 @@ def validate_field_predicate(predicate, source, context):
 def validate_comparator_value(value, field_type, context, source):
     if is_source_string(value):
         value_type = context.resolve_source(value, source)
-        if value_type != field_type:
+        if value_type != field_type and (field_type not in INTEGER_TYPES or value_type not in INTEGER_TYPES):
             raise ValueError(f"{source}: source type {value_type} does not match field type {field_type}")
     else:
         validate_literal(value, field_type, source)
 
 
-def validate_invocation(route, route_path, definition, context):
-    invocation = require_dict(route, "invocation", route_path)
-    unknown_fields(invocation, INVOCATION_FIELDS, f"{route_path}: invocation")
-    validate_buffers(require_array(invocation, "buffers", f"{route_path}: invocation"), route_path, definition, context)
-    validate_scalars(require_array(invocation, "scalars", f"{route_path}: invocation"), route_path, definition, context)
-    validate_dispatch(require_dict(invocation, "dispatch", f"{route_path}: invocation"), route_path, definition, context)
+def validate_transient_buffers(transient_buffers, route_path, context):
+    if transient_buffers is None:
+        return {}
+    if not isinstance(transient_buffers, dict) or not transient_buffers:
+        raise ValueError(f"{route_path}: transient_buffers must be a non-empty object")
+    for name, transient in transient_buffers.items():
+        source = f"{route_path}: transient_buffers.{name}"
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"{route_path}: transient buffer names must be non-empty strings")
+        if not isinstance(transient, dict):
+            raise ValueError(f"{source}: expected object")
+        unknown_fields(transient, TRANSIENT_BUFFER_FIELDS, source)
+        if "size" not in transient:
+            raise ValueError(f"{source}: expected size")
+        validate_integer_operand(transient["size"], context, f"{source}.size")
+    return transient_buffers
 
 
-def validate_buffers(buffers, route_path, definition, context):
-    validate_positions(buffers, "invocation.buffers", route_path)
+def validate_dispatch_body(dispatch, route_path, definition, context, transient_buffers=None, check_unknown=True):
+    if check_unknown:
+        unknown_fields(dispatch, INVOCATION_FIELDS, f"{route_path}: dispatch")
+    validate_buffers(require_array(dispatch, "buffers", f"{route_path}: dispatch"), route_path, definition, context, transient_buffers)
+    validate_scalars(require_array(dispatch, "scalars", f"{route_path}: dispatch"), route_path, definition, context)
+    validate_dispatch(require_dict(dispatch, "dispatch", f"{route_path}: dispatch"), route_path, definition, context)
+
+
+def validate_buffers(buffers, route_path, definition, context, transient_buffers=None):
+    validate_positions(buffers, "buffers", route_path)
     bindings = require_array(definition, "bindings", route_path)
     binding_by_name = {binding["name"]: binding for binding in bindings}
     seen = set()
     for i, buffer in enumerate(buffers):
-        source = f"{route_path}: invocation.buffers[{i}]"
+        source = f"{route_path}: buffers[{i}]"
         if not isinstance(buffer, dict):
             raise ValueError(f"{source}: expected object")
         unknown_fields(buffer, BUFFER_FIELDS, source)
@@ -929,8 +957,17 @@ def validate_buffers(buffers, route_path, definition, context):
         if name in seen:
             raise ValueError(f"{source}: duplicate buffer name {name}")
         seen.add(name)
-        tensor = require_string(buffer, "tensor", source)
-        context.validate_tensor_role(tensor, f"{source}.tensor")
+        has_tensor = "tensor" in buffer
+        has_transient = "transient" in buffer
+        if has_tensor == has_transient:
+            raise ValueError(f"{source}: expected exactly one of tensor or transient")
+        if has_tensor:
+            tensor = require_string(buffer, "tensor", source)
+            context.validate_tensor_role(tensor, f"{source}.tensor")
+        else:
+            transient = require_string(buffer, "transient", source)
+            if transient_buffers is None or transient not in transient_buffers:
+                raise ValueError(f"{source}.transient: transient buffer {transient} is not declared")
         kind = require_string(buffer, "kind", source)
         access = BUFFER_KIND_ACCESS.get(kind)
         if access is None:
@@ -940,16 +977,16 @@ def validate_buffers(buffers, route_path, definition, context):
             raise ValueError(f"{source}: kind {kind} does not match binding access {expected_access}")
     missing = sorted(set(binding_by_name) - seen)
     if missing:
-        raise ValueError(f"{route_path}: invocation.buffers missing bindings {', '.join(missing)}")
+        raise ValueError(f"{route_path}: buffers missing bindings {', '.join(missing)}")
 
 
 def validate_scalars(scalars, route_path, definition, context):
-    validate_positions(scalars, "invocation.scalars", route_path)
+    validate_positions(scalars, "scalars", route_path)
     parameters = require_array(definition, "parameters", route_path)
     parameter_by_name = {parameter["name"]: parameter for parameter in parameters}
     seen = set()
     for i, scalar in enumerate(scalars):
-        source = f"{route_path}: invocation.scalars[{i}]"
+        source = f"{route_path}: scalars[{i}]"
         if not isinstance(scalar, dict):
             raise ValueError(f"{source}: expected object")
         unknown_fields(scalar, SCALAR_FIELDS, source)
@@ -976,32 +1013,32 @@ def validate_scalars(scalars, route_path, definition, context):
             validate_literal(scalar["value"], scalar_type, f"{source}.value")
     missing = sorted(set(parameter_by_name) - seen)
     if missing:
-        raise ValueError(f"{route_path}: invocation.scalars missing parameters {', '.join(missing)}")
+        raise ValueError(f"{route_path}: scalars missing parameters {', '.join(missing)}")
 
     abi = require_dict(definition, "abi", route_path)
     constant_byte_length = require_int(abi, "constant_byte_length", route_path)
     packed_size = packed_parameter_size(scalars, route_path)
     if packed_size != constant_byte_length:
         raise ValueError(
-            f"{route_path}: invocation scalar packed size {packed_size} does not match "
+            f"{route_path}: scalar packed size {packed_size} does not match "
             f"definition abi.constant_byte_length {constant_byte_length}")
 
 
 def validate_dispatch(dispatch, route_path, definition, context):
-    unknown_fields(dispatch, DISPATCH_FIELDS, f"{route_path}: invocation.dispatch")
+    unknown_fields(dispatch, DISPATCH_FIELDS, f"{route_path}: dispatch")
     workgroup_size = dispatch.get("workgroup_size")
-    validate_workgroup_size(workgroup_size, f"{route_path}: invocation.dispatch")
+    validate_workgroup_size(workgroup_size, f"{route_path}: dispatch")
     definition_workgroup_size = require_array(definition, "workgroup_size", route_path)
     if workgroup_size != definition_workgroup_size:
-        raise ValueError(f"{route_path}: invocation.dispatch.workgroup_size does not match definition workgroup_size")
+        raise ValueError(f"{route_path}: dispatch.workgroup_size does not match definition workgroup_size")
     has_work_items = "work_items" in dispatch
     has_workgroups = "workgroups" in dispatch
     if has_work_items == has_workgroups:
-        raise ValueError(f"{route_path}: invocation.dispatch expects exactly one of work_items or workgroups")
+        raise ValueError(f"{route_path}: dispatch expects exactly one of work_items or workgroups")
     if has_work_items:
-        validate_dispatch_axis_list(dispatch["work_items"], context, f"{route_path}: invocation.dispatch.work_items")
+        validate_dispatch_axis_list(dispatch["work_items"], context, f"{route_path}: dispatch.work_items")
     else:
-        validate_dispatch_axis_list(dispatch["workgroups"], context, f"{route_path}: invocation.dispatch.workgroups")
+        validate_dispatch_axis_list(dispatch["workgroups"], context, f"{route_path}: dispatch.workgroups")
 
 
 def validate_dispatch_axis_list(values, context, source):

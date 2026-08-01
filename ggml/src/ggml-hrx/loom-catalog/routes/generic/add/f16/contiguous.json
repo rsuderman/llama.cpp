@@ -1,133 +1,76 @@
 {
   "schema": "ggml-hrx-loom-route-v1",
   "id": "add_f16_contiguous",
-  "definition": "../../../../defs/generic/add/f16/contiguous.json",
   "format": "loom",
   "priority": 100,
   "match": {
     "op": "GGML_OP_ADD",
     "tensors": {
-      "src0": {
-        "type": "F16",
-        "shape": [
-          "d0",
-          "d1",
-          "d2",
-          "d3"
-        ]
-      },
-      "src1": {
-        "type": "F16",
-        "shape": [
-          "d0",
-          "d1",
-          "d2",
-          "d3"
-        ]
-      },
-      "dst": {
-        "type": "F16",
-        "shape": [
-          "d0",
-          "d1",
-          "d2",
-          "d3"
-        ]
-      }
+      "src0": {"type": "F16", "shape": ["d0", "d1", "d2", "d3"]},
+      "src1": {"type": "F16", "shape": ["d0", "d1", "d2", "d3"]},
+      "dst": {"type": "F16", "shape": ["d0", "d1", "d2", "d3"]}
     },
     "attributes": {},
     "predicates": [
-      {
-        "field": "derived.total_size",
-        "min": 1
-      },
-      {
-        "field": "derived.total_size",
-        "max": 1073741824
-      },
-      {
-        "same_shape": [
-          "src0",
-          "src1"
-        ]
-      },
-      {
-        "same_shape": [
-          "src0",
-          "dst"
-        ]
-      },
-      {
-        "contiguous": "src0"
-      },
-      {
-        "contiguous": "src1"
-      },
-      {
-        "contiguous": "dst"
-      }
+      {"field": "derived.total_size", "min": 1},
+      {"field": "derived.total_size", "max": 1073741824},
+      {"same_shape": ["src0", "src1"]},
+      {"same_shape": ["src0", "dst"]},
+      {"contiguous": "src0"},
+      {"contiguous": "src1"},
+      {"contiguous": "dst"}
     ]
   },
   "derived": {
     "total_size": {
       "type": "i64",
-      "product": [
-        "shape.dst.d0",
-        "shape.dst.d1",
-        "shape.dst.d2",
-        "shape.dst.d3"
-      ]
+      "product": ["shape.dst.d0", "shape.dst.d1", "shape.dst.d2", "shape.dst.d3"]
     }
   },
-  "config": {
-    "mode": "compile",
-    "bindings": [
-      {
-        "name": "shape_pointwise_total_size",
-        "type": "i64",
-        "source": "derived.total_size"
+  "architectures": ["*"],
+  "dispatches": [
+    {
+      "definition": "../../../../defs/generic/add/f16/contiguous.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "shape_pointwise_total_size",
+            "type": "i64",
+            "source": "derived.total_size"
+          },
+          {
+            "name": "tuning_pointwise_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
       },
-      {
-        "name": "tuning_pointwise_workgroup_size",
-        "type": "i64",
-        "value": 256
-      }
-    ]
-  },
-  "invocation": {
-    "buffers": [
-      {
-        "name": "src0",
-        "tensor": "src0",
-        "position": 0,
-        "kind": "input"
-      },
-      {
-        "name": "src1",
-        "tensor": "src1",
-        "position": 1,
-        "kind": "input"
-      },
-      {
-        "name": "dst",
-        "tensor": "dst",
-        "position": 2,
-        "kind": "output"
-      }
-    ],
-    "scalars": [],
-    "dispatch": {
-      "work_items": [
-        "derived.total_size"
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "src1",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 2,
+          "kind": "output"
+        }
       ],
-      "workgroup_size": [
-        256,
-        1,
-        1
-      ]
+      "scalars": [],
+      "dispatch": {
+        "work_items": ["derived.total_size"],
+        "workgroup_size": [256, 1, 1]
+      }
     }
-  },
-  "architectures": [
-    "*"
   ]
 }

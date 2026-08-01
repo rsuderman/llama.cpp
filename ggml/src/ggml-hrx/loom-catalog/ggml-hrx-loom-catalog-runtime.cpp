@@ -358,19 +358,55 @@ const ggml_backend_hrx_loom_catalog_entry * ggml_backend_hrx_loom_find_entry(
 
 namespace {
 
+static std::string ggml_backend_hrx_loom_entry_cache_key(const char *                                 target,
+                                                         const ggml_backend_hrx_loom_catalog_entry *  entry,
+                                                         const ggml_backend_hrx_loom_config_binding * config_bindings,
+                                                         size_t config_binding_count) {
+    std::string key;
+    if (!entry) {
+        return key;
+    }
+
+    ggml_backend_hrx_loom_append_key_field(key, target);
+    ggml_backend_hrx_loom_append_key_field(key, entry->id);
+    ggml_backend_hrx_loom_append_key_field(key, entry->source_name);
+    ggml_backend_hrx_loom_append_key_field(key, entry->source_format);
+    ggml_backend_hrx_loom_append_key_field(key, static_cast<uint64_t>(entry->source_size));
+    ggml_backend_hrx_loom_append_key_field(key, ggml_backend_hrx_loom_fnv1a64(entry->source_data, entry->source_size));
+    ggml_backend_hrx_loom_append_key_field(key, entry->symbol);
+    ggml_backend_hrx_loom_append_key_field(key, static_cast<uint64_t>(entry->dependency_count));
+    for (size_t i = 0; i < entry->dependency_count; ++i) {
+        const ggml_backend_hrx_loom_source_entry & dependency = entry->dependencies[i];
+        ggml_backend_hrx_loom_append_key_field(key, dependency.name);
+        ggml_backend_hrx_loom_append_key_field(key, dependency.format);
+        ggml_backend_hrx_loom_append_key_field(key, static_cast<uint64_t>(dependency.size));
+        ggml_backend_hrx_loom_append_key_field(key, ggml_backend_hrx_loom_fnv1a64(dependency.data, dependency.size));
+    }
+
+    for (size_t i = 0; i < config_binding_count; ++i) {
+        const ggml_backend_hrx_loom_config_binding & binding = config_bindings[i];
+        ggml_backend_hrx_loom_append_key_field(key, binding.name);
+        ggml_backend_hrx_loom_append_key_field(key, binding.type);
+        ggml_backend_hrx_loom_append_key_field(key, binding.value);
+    }
+    return key;
+}
+
 static ggml_backend_hrx_loaded_loom_route * ggml_backend_hrx_loom_get_loaded_route(
     ggml_backend_hrx_loom_catalog *              catalog,
-    const ggml_backend_hrx_loom_execution_plan * plan) {
-    if (!catalog || !plan || !plan->entry) {
+    const ggml_backend_hrx_loom_catalog_entry *  entry,
+    const ggml_backend_hrx_loom_config_binding * config_bindings,
+    size_t                                       config_binding_count) {
+    if (!catalog || !entry) {
         return nullptr;
     }
-    if (plan->config_binding_count > GGML_BACKEND_HRX_LOOM_MAX_CONFIG_BINDINGS) {
-        GGML_LOG_ERROR("%s: route %s has too many config bindings: %zu\n", __func__, plan->entry->id,
-                       plan->config_binding_count);
+    if (config_binding_count > GGML_BACKEND_HRX_LOOM_MAX_CONFIG_BINDINGS) {
+        GGML_LOG_ERROR("%s: route %s has too many config bindings: %zu\n", __func__, entry->id, config_binding_count);
         return nullptr;
     }
 
-    const std::string cache_key = ggml_backend_hrx_loom_cache_key(catalog->target.c_str(), plan);
+    const std::string cache_key =
+        ggml_backend_hrx_loom_entry_cache_key(catalog->target.c_str(), entry, config_bindings, config_binding_count);
 
     std::lock_guard<std::mutex> lock(catalog->routes_mutex);
     for (const auto & route : catalog->routes) {
@@ -380,16 +416,16 @@ static ggml_backend_hrx_loaded_loom_route * ggml_backend_hrx_loom_get_loaded_rou
     }
 
     ggml_backend_hrx_loom_compile_input compile_input = {
-        /* .source_data          = */ plan->entry->source_data,
-        /* .source_size          = */ plan->entry->source_size,
-        /* .source_format        = */ plan->entry->source_format,
-        /* .source_name          = */ plan->entry->source_name,
+        /* .source_data          = */ entry->source_data,
+        /* .source_size          = */ entry->source_size,
+        /* .source_format        = */ entry->source_format,
+        /* .source_name          = */ entry->source_name,
         /* .target               = */ catalog->target.c_str(),
-        /* .symbol               = */ plan->entry->symbol,
-        /* .dependencies         = */ plan->entry->dependencies,
-        /* .dependency_count     = */ plan->entry->dependency_count,
-        /* .config_bindings      = */ plan->config_bindings,
-        /* .config_binding_count = */ plan->config_binding_count,
+        /* .symbol               = */ entry->symbol,
+        /* .dependencies         = */ entry->dependencies,
+        /* .dependency_count     = */ entry->dependency_count,
+        /* .config_bindings      = */ config_bindings,
+        /* .config_binding_count = */ config_binding_count,
     };
     ggml_backend_hrx_loom_compile_output compile_output = {};
     if (!ggml_backend_hrx_loom_compile(&compile_input, &compile_output)) {
@@ -407,7 +443,7 @@ static ggml_backend_hrx_loaded_loom_route * ggml_backend_hrx_loom_get_loaded_rou
     }
 
     uint32_t export_ordinal = 0;
-    if (!GGML_HRX_LOOM_CHECK(hrx_executable_lookup_export_by_name(executable, plan->entry->symbol, &export_ordinal))) {
+    if (!GGML_HRX_LOOM_CHECK(hrx_executable_lookup_export_by_name(executable, entry->symbol, &export_ordinal))) {
         hrx_executable_release(executable);
         ggml_backend_hrx_loom_compile_output_free(&compile_output);
         return nullptr;
@@ -420,8 +456,8 @@ static ggml_backend_hrx_loaded_loom_route * ggml_backend_hrx_loom_get_loaded_rou
         return nullptr;
     }
 
-    if (!ggml_backend_hrx_export_abi_matches(__func__, plan->entry->id, export_info, plan->entry->binding_count,
-                                             plan->entry->parameter_count, plan->entry->constant_byte_length)) {
+    if (!ggml_backend_hrx_export_abi_matches(__func__, entry->id, export_info, entry->binding_count,
+                                             entry->parameter_count, entry->constant_byte_length)) {
         hrx_executable_release(executable);
         ggml_backend_hrx_loom_compile_output_free(&compile_output);
         return nullptr;
@@ -440,27 +476,124 @@ static ggml_backend_hrx_loaded_loom_route * ggml_backend_hrx_loom_get_loaded_rou
     return catalog->routes.back().get();
 }
 
-static bool ggml_backend_hrx_loom_dispatch_plan(ggml_backend_hrx_loom_catalog *              catalog,
-                                                hrx_stream_t                                 stream,
-                                                const ggml_backend_hrx_loom_execution_plan * plan) {
-    if (!plan || !plan->entry) {
+static bool ggml_backend_hrx_loom_dispatch_one(ggml_backend_hrx_loom_catalog *        catalog,
+                                               hrx_stream_t                           stream,
+                                               ggml_backend_hrx_loom_execution_plan * plan,
+                                               ggml_backend_hrx_loom_dispatch_plan *  dispatch,
+                                               hrx_buffer_t                           transient_buffer,
+                                               size_t                                 transient_buffer_size) {
+    if (!plan || !dispatch || !dispatch->entry) {
         return false;
     }
-
-    auto * route = ggml_backend_hrx_loom_get_loaded_route(catalog, plan);
+    auto * route =
+        ggml_backend_hrx_loom_get_loaded_route(catalog, dispatch->entry, dispatch->config_bindings,
+                                               dispatch->config_binding_count);
     if (!route || !stream) {
         return false;
     }
 
-    if (!ggml_backend_hrx_dispatch_abi_matches(__func__, plan->entry->id, plan->binding_count,
-                                               plan->entry->binding_count, plan->constants_size,
-                                               plan->entry->constant_byte_length)) {
+    if (!ggml_backend_hrx_dispatch_abi_matches(__func__, dispatch->entry->id, dispatch->binding_count,
+                                               dispatch->entry->binding_count, dispatch->constants_size,
+                                               dispatch->entry->constant_byte_length)) {
         return false;
     }
 
-    return GGML_HRX_LOOM_CHECK(hrx_stream_dispatch(stream, route->executable, route->export_ordinal, &plan->dispatch,
-                                                   plan->constants, plan->constants_size, plan->bindings,
-                                                   plan->binding_count, HRX_DISPATCH_FLAG_NONE));
+    for (size_t i = 0; i < dispatch->binding_count; ++i) {
+        const int transient_index = dispatch->transient_binding_indices[i];
+        if (transient_index < 0) {
+            continue;
+        }
+        if (static_cast<size_t>(transient_index) >= plan->transient_count || !transient_buffer) {
+            return false;
+        }
+        const ggml_backend_hrx_loom_transient_buffer_plan & transient = plan->transients[transient_index];
+        if (transient.size == 0 || transient.offset > transient_buffer_size ||
+            transient.size > transient_buffer_size - transient.offset) {
+            return false;
+        }
+        dispatch->bindings[i].buffer = transient_buffer;
+        dispatch->bindings[i].offset = transient.offset;
+        dispatch->bindings[i].length = transient.size;
+    }
+
+    return GGML_HRX_LOOM_CHECK(hrx_stream_dispatch(stream, route->executable, route->export_ordinal,
+                                                   &dispatch->dispatch, dispatch->constants,
+                                                   dispatch->constants_size, dispatch->bindings,
+                                                   dispatch->binding_count, HRX_DISPATCH_FLAG_NONE));
+}
+
+static bool ggml_backend_hrx_loom_allocate_transients(hrx_stream_t                                 stream,
+                                                      const ggml_backend_hrx_loom_execution_plan * plan,
+                                                      hrx_buffer_t *                               out_buffer) {
+    if (!stream || !plan || !out_buffer) {
+        return false;
+    }
+    *out_buffer = nullptr;
+    if (plan->transient_count == 0) {
+        return true;
+    }
+    if (plan->transient_byte_length == 0) {
+        return false;
+    }
+    for (size_t i = 0; i < plan->transient_count; ++i) {
+        const ggml_backend_hrx_loom_transient_buffer_plan & transient = plan->transients[i];
+        if (transient.size == 0 || transient.offset > plan->transient_byte_length ||
+            transient.size > plan->transient_byte_length - transient.offset) {
+            return false;
+        }
+    }
+    return GGML_HRX_LOOM_CHECK(hrx_buffer_allocate(stream, plan->transient_byte_length, HRX_MEMORY_TYPE_DEVICE_LOCAL,
+                                                   HRX_BUFFER_USAGE_DEFAULT, out_buffer));
+}
+
+static bool ggml_backend_hrx_loom_dispatch_all(ggml_backend_hrx_loom_catalog *        catalog,
+                                               hrx_stream_t                           stream,
+                                               ggml_backend_hrx_loom_execution_plan * plan,
+                                               hrx_buffer_t                           transient_buffer,
+                                               size_t                                 transient_buffer_size) {
+    if (!plan || plan->dispatch_count == 0 || plan->dispatch_count > GGML_BACKEND_HRX_LOOM_MAX_DISPATCHES) {
+        return false;
+    }
+    if (plan->transient_count > 0) {
+        if (!transient_buffer || transient_buffer_size < plan->transient_byte_length) {
+            return false;
+        }
+    }
+    for (size_t i = 0; i < plan->transient_count; ++i) {
+        const ggml_backend_hrx_loom_transient_buffer_plan & transient = plan->transients[i];
+        if (transient.size == 0 || transient.offset > transient_buffer_size ||
+            transient.size > transient_buffer_size - transient.offset) {
+            return false;
+        }
+    }
+
+    for (size_t i = 0; i < plan->dispatch_count; ++i) {
+        if (!ggml_backend_hrx_loom_dispatch_one(catalog, stream, plan, &plan->dispatches[i], transient_buffer,
+                                                transient_buffer_size)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool ggml_backend_hrx_loom_dispatch_with_owned_transients(ggml_backend_hrx_loom_catalog *        catalog,
+                                                                 hrx_stream_t                           stream,
+                                                                 ggml_backend_hrx_loom_execution_plan * plan) {
+    if (!plan || plan->dispatch_count == 0 || plan->dispatch_count > GGML_BACKEND_HRX_LOOM_MAX_DISPATCHES) {
+        return false;
+    }
+    hrx_buffer_t transient_buffer = nullptr;
+    if (!ggml_backend_hrx_loom_allocate_transients(stream, plan, &transient_buffer)) {
+        return false;
+    }
+    const bool dispatched = ggml_backend_hrx_loom_dispatch_all(
+        catalog, stream, plan, transient_buffer, plan->transient_byte_length);
+    if (transient_buffer && !GGML_HRX_LOOM_CHECK(hrx_stream_synchronize(stream))) {
+        hrx_buffer_release(transient_buffer);
+        return false;
+    }
+    hrx_buffer_release(transient_buffer);
+    return dispatched;
 }
 
 }  // namespace
@@ -481,6 +614,17 @@ ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_prepare_plan(
     const ggml_backend_hrx_loom_op_request * request,
     ggml_backend_hrx_loom_execution_plan *   plan) {
     return ggml_backend_hrx_loom_match_or_prepare_request(catalog, request, plan);
+}
+
+bool ggml_backend_hrx_loom_dispatch_prepared(ggml_backend_hrx_loom_catalog *        catalog,
+                                             hrx_stream_t                           stream,
+                                             ggml_backend_hrx_loom_execution_plan * plan,
+                                             hrx_buffer_t                           transient_buffer,
+                                             size_t                                 transient_buffer_size) {
+    if (!plan) {
+        return false;
+    }
+    return ggml_backend_hrx_loom_dispatch_all(catalog, stream, plan, transient_buffer, transient_buffer_size);
 }
 
 bool ggml_backend_hrx_loom_compile(const ggml_backend_hrx_loom_compile_input * input,
@@ -766,7 +910,8 @@ ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_invoke(
     if (response.result != GGML_BACKEND_HRX_LOOM_INVOKED) {
         return response;
     }
-    if (!ggml_backend_hrx_loom_dispatch_plan(catalog, request->stream, &plan)) {
+    const bool dispatched = ggml_backend_hrx_loom_dispatch_with_owned_transients(catalog, request->stream, &plan);
+    if (!dispatched) {
         return ggml_backend_hrx_loom_failed(response.route_id);
     }
     if (consumed_nodes) {

@@ -38,10 +38,11 @@ static ggml_backend_hrx_loom_execution_plan make_plan(const ggml_backend_hrx_loo
                                                       const char *                                 nelements,
                                                       const char *                                 workgroup_size_x) {
     ggml_backend_hrx_loom_execution_plan plan = {};
-    plan.entry                                = entry;
-    set_binding(plan.config_bindings[0], "nelements", nelements);
-    set_binding(plan.config_bindings[1], "workgroup_size_x", workgroup_size_x);
-    plan.config_binding_count = 2;
+    plan.dispatches[0].entry                  = entry;
+    set_binding(plan.dispatches[0].config_bindings[0], "nelements", nelements);
+    set_binding(plan.dispatches[0].config_bindings[1], "workgroup_size_x", workgroup_size_x);
+    plan.dispatches[0].config_binding_count = 2;
+    plan.dispatch_count = 1;
     return plan;
 }
 

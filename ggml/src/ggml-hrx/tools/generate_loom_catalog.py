@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from utils import hrx_catalog_emit as catalog_emit
+from utils import hrx_route_schema as route_schema
 import validate_loom_routes as loom
 
 
@@ -118,6 +119,88 @@ def write_generated_source(path, header_path, entries):
     path.write_text("".join(chunks), encoding="utf-8")
 
 
+def catalog_entry_from_definition(source_root, route_id, definition_path, definition, target):
+    source_name = require_string(definition, "source", definition_path)
+    source_path = (source_root / source_name).resolve()
+    if not source_path.is_file():
+        raise ValueError(f"{definition_path}: missing source {source_path}")
+    source_format = require_string(definition, "source_format", definition_path)
+    if source_format not in loom.SOURCE_FORMATS:
+        supported = ", ".join(sorted(loom.SOURCE_FORMATS))
+        raise ValueError(f"{definition_path}: unsupported source_format {source_format}; expected one of {supported}")
+
+    definition_id = require_string(definition, "id", definition_path)
+    dependencies = []
+    for i, dependency in enumerate(definition.get("dependencies", [])):
+        source = f"{definition_path}: dependencies[{i}]"
+        if not isinstance(dependency, dict):
+            raise ValueError(f"{source}: expected object")
+        dependency_source_name = require_string(dependency, "source", source)
+        dependency_source_path = (source_root / dependency_source_name).resolve()
+        if not dependency_source_path.is_file():
+            raise ValueError(f"{source}: missing source {dependency_source_path}")
+        dependency_source_format = require_string(dependency, "source_format", source)
+        if dependency_source_format not in loom.DEPENDENCY_SOURCE_FORMATS:
+            supported = ", ".join(sorted(loom.DEPENDENCY_SOURCE_FORMATS))
+            raise ValueError(
+                f"{source}: unsupported source_format {dependency_source_format}; expected one of {supported}"
+            )
+        dependencies.append({
+            "source_name": dependency_source_name,
+            "source_data": dependency_source_path.read_bytes(),
+            "source_format": dependency_source_format,
+            "array_name": (
+                f"ggml_hrx_loom_{c_identifier(definition_id)}_"
+                f"{c_identifier(route_id)}_{c_identifier(target)}_dep_{i}"
+            ),
+        })
+
+    workgroup_size = require_list(definition, "workgroup_size", definition_path)
+    if len(workgroup_size) != 3:
+        raise ValueError(f"{definition_path}: workgroup_size must have 3 values")
+    abi = definition.get("abi")
+    if not isinstance(abi, dict):
+        raise ValueError(f"{definition_path}: expected object field abi")
+
+    return {
+        "id": route_id,
+        "op": require_string(definition, "op", definition_path),
+        "target": target,
+        "source_name": source_name,
+        "source_data": source_path.read_bytes(),
+        "source_format": source_format,
+        "symbol": require_string(definition, "symbol", definition_path),
+        "array_name": (
+            f"ggml_hrx_loom_{c_identifier(definition_id)}_"
+            f"{c_identifier(route_id)}_{c_identifier(target)}"
+        ),
+        "dependencies": dependencies,
+        "dependency_array_name": (
+            f"ggml_hrx_loom_{c_identifier(definition_id)}_"
+            f"{c_identifier(route_id)}_{c_identifier(target)}_deps"
+        ),
+        "workgroup_size": [int(value) for value in workgroup_size],
+        "binding_count": require_int(abi, "binding_count", definition_path),
+        "parameter_count": require_int(abi, "parameter_count", definition_path),
+        "constant_byte_length": require_int(abi, "constant_byte_length", definition_path),
+    }
+
+
+def route_catalog_entries(source_root, route_path, route, definitions, target):
+    route_id = require_string(route, "id", route_path)
+    dispatches = loom.route_dispatches(route, route_path)
+    dispatch_definitions = loom.resolve_dispatch_definitions(route, route_path, definitions)
+    if len(dispatches) == 1:
+        definition_path, definition = dispatch_definitions[0]
+        return [catalog_entry_from_definition(source_root, route_id, definition_path, definition, target)]
+
+    entries = []
+    for dispatch, (definition_path, definition) in zip(dispatches, dispatch_definitions):
+        dispatch_name = route_schema.require_string(dispatch, "name", route_path)
+        entries.append(catalog_entry_from_definition(source_root, f"{route_id}::{dispatch_name}", definition_path, definition, target))
+    return entries
+
+
 def build_entries(source_root, targets):
     metadata_path = source_root / "metadata.json"
     metadata = read_json(metadata_path)
@@ -137,86 +220,19 @@ def build_entries(source_root, targets):
     selected_target_entries = {target: 0 for target in selected_targets}
 
     entries = []
+    definitions = loom.load_definitions(source_root)
     for route_name in require_list(metadata, "routes", metadata_path):
         if not isinstance(route_name, str) or not route_name:
             raise ValueError(f"{metadata_path}: routes must contain non-empty strings")
         route_path = source_root / route_name
         route = read_json(route_path)
-        definition_path = (route_path.parent / require_string(route, "definition", route_path)).resolve()
-        definition = read_json(definition_path)
-        source_name = require_string(definition, "source", definition_path)
-        source_path = (source_root / source_name).resolve()
-        if not source_path.is_file():
-            raise ValueError(f"{definition_path}: missing source {source_path}")
-        source_format = require_string(definition, "source_format", definition_path)
-        if source_format not in loom.SOURCE_FORMATS:
-            supported = ", ".join(sorted(loom.SOURCE_FORMATS))
-            raise ValueError(f"{definition_path}: unsupported source_format {source_format}; expected one of {supported}")
         route_id = require_string(route, "id", route_path)
-        definition_id = require_string(definition, "id", definition_path)
-        dependencies = []
-        for i, dependency in enumerate(definition.get("dependencies", [])):
-            source = f"{definition_path}: dependencies[{i}]"
-            if not isinstance(dependency, dict):
-                raise ValueError(f"{source}: expected object")
-            dependency_source_name = require_string(dependency, "source", source)
-            dependency_source_path = (source_root / dependency_source_name).resolve()
-            if not dependency_source_path.is_file():
-                raise ValueError(f"{source}: missing source {dependency_source_path}")
-            dependency_source_format = require_string(dependency, "source_format", source)
-            if dependency_source_format not in loom.DEPENDENCY_SOURCE_FORMATS:
-                supported = ", ".join(sorted(loom.DEPENDENCY_SOURCE_FORMATS))
-                raise ValueError(
-                    f"{source}: unsupported source_format {dependency_source_format}; expected one of {supported}"
-                )
-            dependencies.append({
-                "source_name": dependency_source_name,
-                "source_data": dependency_source_path.read_bytes(),
-                "source_format": dependency_source_format,
-            })
-        workgroup_size = require_list(definition, "workgroup_size", definition_path)
-        if len(workgroup_size) != 3:
-            raise ValueError(f"{definition_path}: workgroup_size must have 3 values")
-        abi = definition.get("abi")
-        if not isinstance(abi, dict):
-            raise ValueError(f"{definition_path}: expected object field abi")
-
-        source_data = source_path.read_bytes()
         route_architectures = set(require_list(route, "architectures", route_path))
         for target in selected_targets:
             if loom.ARCHITECTURE_ANY not in route_architectures and target not in route_architectures:
                 continue
             selected_target_entries[target] += 1
-            target_dependencies = []
-            for i, dependency in enumerate(dependencies):
-                target_dependency = dict(dependency)
-                target_dependency["array_name"] = (
-                    f"ggml_hrx_loom_{c_identifier(definition_id)}_"
-                    f"{c_identifier(route_id)}_{c_identifier(target)}_dep_{i}"
-                )
-                target_dependencies.append(target_dependency)
-            entries.append({
-                "id": route_id,
-                "op": require_string(definition, "op", definition_path),
-                "target": target,
-                "source_name": source_name,
-                "source_data": source_data,
-                "source_format": source_format,
-                "symbol": require_string(definition, "symbol", definition_path),
-                "array_name": (
-                    f"ggml_hrx_loom_{c_identifier(definition_id)}_"
-                    f"{c_identifier(route_id)}_{c_identifier(target)}"
-                ),
-                "dependencies": target_dependencies,
-                "dependency_array_name": (
-                    f"ggml_hrx_loom_{c_identifier(definition_id)}_"
-                    f"{c_identifier(route_id)}_{c_identifier(target)}_deps"
-                ),
-                "workgroup_size": [int(value) for value in workgroup_size],
-                "binding_count": require_int(abi, "binding_count", definition_path),
-                "parameter_count": require_int(abi, "parameter_count", definition_path),
-                "constant_byte_length": require_int(abi, "constant_byte_length", definition_path),
-            })
+            entries.extend(route_catalog_entries(source_root, route_path, route, definitions, target))
 
     if not entries:
         raise ValueError(f"{metadata_path}: no routes selected for targets {selected_targets}")

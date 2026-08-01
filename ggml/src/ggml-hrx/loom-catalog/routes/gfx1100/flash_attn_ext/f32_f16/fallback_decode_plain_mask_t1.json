@@ -1,32 +1,16 @@
 {
   "schema": "ggml-hrx-loom-route-v1",
   "id": "flash_attn_ext_f32_f16_fallback_decode_plain_mask_t1",
-  "definition": "../../../../defs/gfx1100/flash_attn_ext/f32_f16/fallback_decode_plain_mask_t1.json",
   "format": "loom",
   "priority": 105,
   "match": {
     "op": "GGML_OP_FLASH_ATTN_EXT",
     "tensors": {
-      "src0": {
-        "type": "F32",
-        "shape": ["src0_d0", "src0_d1", "src0_d2", "src0_d3"]
-      },
-      "src1": {
-        "type": "F16",
-        "shape": ["src1_d0", "src1_d1", "src1_d2", "src1_d3"]
-      },
-      "src2": {
-        "type": "F16",
-        "shape": ["src2_d0", "src2_d1", "src2_d2", "src2_d3"]
-      },
-      "src3": {
-        "type": "F16",
-        "shape": ["src3_d0", "src3_d1", "src3_d2", "src3_d3"]
-      },
-      "dst": {
-        "type": "F32",
-        "shape": ["dst_d0", "dst_d1", "dst_d2", "dst_d3"]
-      }
+      "src0": {"type": "F32", "shape": ["src0_d0", "src0_d1", "src0_d2", "src0_d3"]},
+      "src1": {"type": "F16", "shape": ["src1_d0", "src1_d1", "src1_d2", "src1_d3"]},
+      "src2": {"type": "F16", "shape": ["src2_d0", "src2_d1", "src2_d2", "src2_d3"]},
+      "src3": {"type": "F16", "shape": ["src3_d0", "src3_d1", "src3_d2", "src3_d3"]},
+      "dst": {"type": "F32", "shape": ["dst_d0", "dst_d1", "dst_d2", "dst_d3"]}
     },
     "attributes": {
       "precision": {"type": "i32"},
@@ -80,60 +64,229 @@
     ]
   },
   "derived": {},
-  "config": {
-    "mode": "compile",
-    "bindings": [
-      {"name": "shape_flash_attn_ext_qk_dim", "type": "i64", "source": "shape.src0.src0_d0"},
-      {"name": "shape_flash_attn_ext_value_dim", "type": "i64", "source": "shape.dst.dst_d0"},
-      {"name": "shape_flash_attn_ext_tokens", "type": "i64", "source": "shape.dst.dst_d1"},
-      {"name": "shape_flash_attn_ext_heads", "type": "i64", "source": "shape.dst.dst_d2"},
-      {"name": "shape_flash_attn_ext_kv_heads", "type": "i64", "source": "shape.src1.src1_d2"},
-      {"name": "shape_flash_attn_ext_kv_len", "type": "i64", "source": "shape.src1.src1_d1"},
-      {"name": "shape_flash_attn_ext_batch", "type": "i64", "source": "shape.dst.dst_d3"},
-      {"name": "layout_flash_attn_ext_q_stride_dim", "type": "i64", "source": "tensor.src0.element_strides.0"},
-      {"name": "layout_flash_attn_ext_q_stride_token", "type": "i64", "source": "tensor.src0.element_strides.1"},
-      {"name": "layout_flash_attn_ext_q_stride_head", "type": "i64", "source": "tensor.src0.element_strides.2"},
-      {"name": "layout_flash_attn_ext_q_stride_batch", "type": "i64", "source": "tensor.src0.element_strides.3"},
-      {"name": "layout_flash_attn_ext_k_stride_dim", "type": "i64", "source": "tensor.src1.element_strides.0"},
-      {"name": "layout_flash_attn_ext_k_stride_kv", "type": "i64", "source": "tensor.src1.element_strides.1"},
-      {"name": "layout_flash_attn_ext_k_stride_head", "type": "i64", "source": "tensor.src1.element_strides.2"},
-      {"name": "layout_flash_attn_ext_k_stride_batch", "type": "i64", "source": "tensor.src1.element_strides.3"},
-      {"name": "layout_flash_attn_ext_v_stride_dim", "type": "i64", "source": "tensor.src2.element_strides.0"},
-      {"name": "layout_flash_attn_ext_v_stride_kv", "type": "i64", "source": "tensor.src2.element_strides.1"},
-      {"name": "layout_flash_attn_ext_v_stride_head", "type": "i64", "source": "tensor.src2.element_strides.2"},
-      {"name": "layout_flash_attn_ext_v_stride_batch", "type": "i64", "source": "tensor.src2.element_strides.3"},
-      {"name": "layout_flash_attn_ext_mask_stride_kv", "type": "i64", "source": "tensor.src3.element_strides.0"},
-      {"name": "layout_flash_attn_ext_mask_stride_token", "type": "i64", "source": "tensor.src3.element_strides.1"},
-      {"name": "layout_flash_attn_ext_mask_stride_batch", "type": "i64", "source": "tensor.src3.element_strides.3"},
-      {"name": "layout_flash_attn_ext_dst_stride_dim", "type": "i64", "source": "tensor.dst.element_strides.0"},
-      {"name": "layout_flash_attn_ext_dst_stride_token", "type": "i64", "source": "tensor.dst.element_strides.1"},
-      {"name": "layout_flash_attn_ext_dst_stride_head", "type": "i64", "source": "tensor.dst.element_strides.2"},
-      {"name": "layout_flash_attn_ext_dst_stride_batch", "type": "i64", "source": "tensor.dst.element_strides.3"},
-      {"name": "mode_flash_attn_ext_has_mask", "type": "i64", "value": 1},
-      {"name": "mode_flash_attn_ext_sinks", "type": "i64", "value": 0},
-      {"name": "mode_flash_attn_ext_precision", "type": "i64", "value": 10},
-      {"name": "mode_flash_attn_ext_max_bias_enabled", "type": "i64", "value": 0},
-      {"name": "mode_flash_attn_ext_logit_softcap_enabled", "type": "i64", "value": 0},
-      {"name": "tuning_flash_attn_ext_workgroup_size", "type": "i64", "value": 256},
-      {"name": "tuning_flash_attn_ext_block_kv", "type": "i64", "source": "shape.src1.src1_d1"},
-      {"name": "tuning_flash_attn_ext_block_tokens", "type": "i64", "value": 1}
-    ]
-  },
-  "invocation": {
-    "buffers": [
-      {"name": "q", "tensor": "src0", "position": 0, "kind": "input"},
-      {"name": "kbuf", "tensor": "src1", "position": 1, "kind": "input"},
-      {"name": "vbuf", "tensor": "src2", "position": 2, "kind": "input"},
-      {"name": "mask", "tensor": "src3", "position": 3, "kind": "input"},
-      {"name": "dst", "tensor": "dst", "position": 4, "kind": "output"}
-    ],
-    "scalars": [
-      {"name": "scale", "type": "f32", "position": 0, "source": "attribute.scale"}
-    ],
-    "dispatch": {
-      "workgroups": ["shape.dst.dst_d2", "shape.dst.dst_d0", "shape.dst.dst_d3"],
-      "workgroup_size": [256, 1, 1]
+  "architectures": ["gfx1100"],
+  "dispatches": [
+    {
+      "definition": "../../../../defs/gfx1100/flash_attn_ext/f32_f16/fallback_decode_plain_mask_t1.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "shape_flash_attn_ext_qk_dim",
+            "type": "i64",
+            "source": "shape.src0.src0_d0"
+          },
+          {
+            "name": "shape_flash_attn_ext_value_dim",
+            "type": "i64",
+            "source": "shape.dst.dst_d0"
+          },
+          {
+            "name": "shape_flash_attn_ext_tokens",
+            "type": "i64",
+            "source": "shape.dst.dst_d1"
+          },
+          {
+            "name": "shape_flash_attn_ext_heads",
+            "type": "i64",
+            "source": "shape.dst.dst_d2"
+          },
+          {
+            "name": "shape_flash_attn_ext_kv_heads",
+            "type": "i64",
+            "source": "shape.src1.src1_d2"
+          },
+          {
+            "name": "shape_flash_attn_ext_kv_len",
+            "type": "i64",
+            "source": "shape.src1.src1_d1"
+          },
+          {
+            "name": "shape_flash_attn_ext_batch",
+            "type": "i64",
+            "source": "shape.dst.dst_d3"
+          },
+          {
+            "name": "layout_flash_attn_ext_q_stride_dim",
+            "type": "i64",
+            "source": "tensor.src0.element_strides.0"
+          },
+          {
+            "name": "layout_flash_attn_ext_q_stride_token",
+            "type": "i64",
+            "source": "tensor.src0.element_strides.1"
+          },
+          {
+            "name": "layout_flash_attn_ext_q_stride_head",
+            "type": "i64",
+            "source": "tensor.src0.element_strides.2"
+          },
+          {
+            "name": "layout_flash_attn_ext_q_stride_batch",
+            "type": "i64",
+            "source": "tensor.src0.element_strides.3"
+          },
+          {
+            "name": "layout_flash_attn_ext_k_stride_dim",
+            "type": "i64",
+            "source": "tensor.src1.element_strides.0"
+          },
+          {
+            "name": "layout_flash_attn_ext_k_stride_kv",
+            "type": "i64",
+            "source": "tensor.src1.element_strides.1"
+          },
+          {
+            "name": "layout_flash_attn_ext_k_stride_head",
+            "type": "i64",
+            "source": "tensor.src1.element_strides.2"
+          },
+          {
+            "name": "layout_flash_attn_ext_k_stride_batch",
+            "type": "i64",
+            "source": "tensor.src1.element_strides.3"
+          },
+          {
+            "name": "layout_flash_attn_ext_v_stride_dim",
+            "type": "i64",
+            "source": "tensor.src2.element_strides.0"
+          },
+          {
+            "name": "layout_flash_attn_ext_v_stride_kv",
+            "type": "i64",
+            "source": "tensor.src2.element_strides.1"
+          },
+          {
+            "name": "layout_flash_attn_ext_v_stride_head",
+            "type": "i64",
+            "source": "tensor.src2.element_strides.2"
+          },
+          {
+            "name": "layout_flash_attn_ext_v_stride_batch",
+            "type": "i64",
+            "source": "tensor.src2.element_strides.3"
+          },
+          {
+            "name": "layout_flash_attn_ext_mask_stride_kv",
+            "type": "i64",
+            "source": "tensor.src3.element_strides.0"
+          },
+          {
+            "name": "layout_flash_attn_ext_mask_stride_token",
+            "type": "i64",
+            "source": "tensor.src3.element_strides.1"
+          },
+          {
+            "name": "layout_flash_attn_ext_mask_stride_batch",
+            "type": "i64",
+            "source": "tensor.src3.element_strides.3"
+          },
+          {
+            "name": "layout_flash_attn_ext_dst_stride_dim",
+            "type": "i64",
+            "source": "tensor.dst.element_strides.0"
+          },
+          {
+            "name": "layout_flash_attn_ext_dst_stride_token",
+            "type": "i64",
+            "source": "tensor.dst.element_strides.1"
+          },
+          {
+            "name": "layout_flash_attn_ext_dst_stride_head",
+            "type": "i64",
+            "source": "tensor.dst.element_strides.2"
+          },
+          {
+            "name": "layout_flash_attn_ext_dst_stride_batch",
+            "type": "i64",
+            "source": "tensor.dst.element_strides.3"
+          },
+          {
+            "name": "mode_flash_attn_ext_has_mask",
+            "type": "i64",
+            "value": 1
+          },
+          {
+            "name": "mode_flash_attn_ext_sinks",
+            "type": "i64",
+            "value": 0
+          },
+          {
+            "name": "mode_flash_attn_ext_precision",
+            "type": "i64",
+            "value": 10
+          },
+          {
+            "name": "mode_flash_attn_ext_max_bias_enabled",
+            "type": "i64",
+            "value": 0
+          },
+          {
+            "name": "mode_flash_attn_ext_logit_softcap_enabled",
+            "type": "i64",
+            "value": 0
+          },
+          {
+            "name": "tuning_flash_attn_ext_workgroup_size",
+            "type": "i64",
+            "value": 256
+          },
+          {
+            "name": "tuning_flash_attn_ext_block_kv",
+            "type": "i64",
+            "source": "shape.src1.src1_d1"
+          },
+          {
+            "name": "tuning_flash_attn_ext_block_tokens",
+            "type": "i64",
+            "value": 1
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "q",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "kbuf",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "vbuf",
+          "tensor": "src2",
+          "position": 2,
+          "kind": "input"
+        },
+        {
+          "name": "mask",
+          "tensor": "src3",
+          "position": 3,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 4,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "scale",
+          "type": "f32",
+          "position": 0,
+          "source": "attribute.scale"
+        }
+      ],
+      "dispatch": {
+        "workgroups": ["shape.dst.dst_d2", "shape.dst.dst_d0", "shape.dst.dst_d3"],
+        "workgroup_size": [256, 1, 1]
+      }
     }
-  },
-  "architectures": ["gfx1100"]
+  ]
 }

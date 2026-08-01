@@ -1,24 +1,14 @@
 {
   "schema": "ggml-hrx-loom-route-v1",
   "id": "mul_mat_f16_f16_contiguous_c1_gfx1100_4d",
-  "definition": "../../../../defs/gfx1100/mul_mat/f16_f16/contiguous_c1_gfx1100_4d.json",
   "format": "loom",
   "priority": 121,
   "match": {
     "op": "GGML_OP_MUL_MAT",
     "tensors": {
-      "src0": {
-        "type": "F16",
-        "shape": ["d0", "d1", "d2", "d3"]
-      },
-      "src1": {
-        "type": "F16",
-        "shape": ["d0", "d1", "d2", "d3"]
-      },
-      "dst": {
-        "type": "F32",
-        "shape": ["d0", "d1", "d2", "d3"]
-      }
+      "src0": {"type": "F16", "shape": ["d0", "d1", "d2", "d3"]},
+      "src1": {"type": "F16", "shape": ["d0", "d1", "d2", "d3"]},
+      "dst": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"]}
     },
     "attributes": {},
     "predicates": [
@@ -70,28 +60,70 @@
       "product": ["shape.dst.d1", "shape.dst.d2", "shape.dst.d3"]
     }
   },
-  "config": {
-    "mode": "compile",
-    "bindings": [
-      {"name": "shape_mul_mat_f16_f16_contiguous_c1_gfx1100_k", "type": "i64", "source": "derived.k"},
-      {"name": "shape_mul_mat_f16_f16_contiguous_c1_gfx1100_rows", "type": "i64", "source": "shape.dst.d0"},
-      {"name": "shape_mul_mat_f16_f16_contiguous_c1_gfx1100_cols", "type": "i64", "source": "shape.dst.d1"},
-      {"name": "shape_mul_mat_f16_f16_contiguous_c1_gfx1100_batch2", "type": "i64", "source": "shape.dst.d2"},
-      {"name": "shape_mul_mat_f16_f16_contiguous_c1_gfx1100_batch3", "type": "i64", "source": "shape.dst.d3"},
-      {"name": "tuning_mul_mat_f16_f16_contiguous_c1_gfx1100_workgroup_size", "type": "i64", "value": 128}
-    ]
-  },
-  "invocation": {
-    "buffers": [
-      {"name": "src0", "tensor": "src0", "position": 0, "kind": "input"},
-      {"name": "src1", "tensor": "src1", "position": 1, "kind": "input"},
-      {"name": "dst", "tensor": "dst", "position": 2, "kind": "output"}
-    ],
-    "scalars": [],
-    "dispatch": {
-      "workgroups": ["derived.mul_mat_row_groups", "derived.mul_mat_outer"],
-      "workgroup_size": [128, 1, 1]
+  "architectures": ["gfx1100"],
+  "dispatches": [
+    {
+      "definition": "../../../../defs/gfx1100/mul_mat/f16_f16/contiguous_c1_gfx1100_4d.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "shape_mul_mat_f16_f16_contiguous_c1_gfx1100_k",
+            "type": "i64",
+            "source": "derived.k"
+          },
+          {
+            "name": "shape_mul_mat_f16_f16_contiguous_c1_gfx1100_rows",
+            "type": "i64",
+            "source": "shape.dst.d0"
+          },
+          {
+            "name": "shape_mul_mat_f16_f16_contiguous_c1_gfx1100_cols",
+            "type": "i64",
+            "source": "shape.dst.d1"
+          },
+          {
+            "name": "shape_mul_mat_f16_f16_contiguous_c1_gfx1100_batch2",
+            "type": "i64",
+            "source": "shape.dst.d2"
+          },
+          {
+            "name": "shape_mul_mat_f16_f16_contiguous_c1_gfx1100_batch3",
+            "type": "i64",
+            "source": "shape.dst.d3"
+          },
+          {
+            "name": "tuning_mul_mat_f16_f16_contiguous_c1_gfx1100_workgroup_size",
+            "type": "i64",
+            "value": 128
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "src1",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": ["derived.mul_mat_row_groups", "derived.mul_mat_outer"],
+        "workgroup_size": [128, 1, 1]
+      }
     }
-  },
-  "architectures": ["gfx1100"]
+  ]
 }
