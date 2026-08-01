@@ -1,5 +1,6 @@
 #include <ggml-backend.h>
 #include <ggml-cpp.h>
+#include <ggml-cpu.h>
 #include <ggml-hrx.h>
 #include <ggml.h>
 
@@ -21,6 +22,23 @@ static ggml_context_ptr make_context() {
         /* .no_alloc   = */ true,
     };
     return ggml_context_ptr(ggml_init(params));
+}
+
+struct test_backend_sched {
+    ggml_backend_ptr       cpu_backend;
+    ggml_backend_sched_ptr sched;
+};
+
+static test_backend_sched make_single_backend_sched(ggml_backend_t backend, size_t graph_size) {
+    test_backend_sched result = {};
+    result.cpu_backend.reset(ggml_backend_cpu_init());
+    GGML_ASSERT(result.cpu_backend != nullptr);
+    ggml_backend_t             backends[] = {backend, result.cpu_backend.get()};
+    ggml_backend_buffer_type_t bufts[]    = {ggml_backend_get_default_buffer_type(backend),
+                                             ggml_backend_get_default_buffer_type(result.cpu_backend.get())};
+    result.sched.reset(
+        ggml_backend_sched_new(backends, bufts, 2, graph_size, /* parallel = */ false, /* op_offload = */ true));
+    return result;
 }
 
 static void expect_eq(const std::vector<float> & actual, const std::vector<float> & expected, const char * label) {
@@ -1200,7 +1218,8 @@ static void run_qwen3_moe_attention_postprocess_case(ggml_backend_t backend) {
 static void run_qwen3_moe_attention_qkv_postprocess_fused_case(ggml_backend_t backend,
                                                                ggml_type      value_type,
                                                                const char *   route_id,
-                                                               const char *   label) {
+                                                               const char *   label,
+                                                               bool           scheduler_reorder = false) {
     const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
     const std::string saved    = previous ? previous : "";
     setenv("GGML_HRX_LOOM_FORCE_ROUTE", route_id, 1);
@@ -1257,12 +1276,25 @@ static void run_qwen3_moe_attention_qkv_postprocess_fused_case(ggml_backend_t ba
 
     ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 64, false);
     ggml_build_forward_expand(graph, query_output);
-    ggml_build_forward_expand(graph, value_input);
-    ggml_build_forward_expand(graph, key_set);
+    if (scheduler_reorder) {
+        ggml_build_forward_expand(graph, key_set);
+        ggml_build_forward_expand(graph, value_input);
+    } else {
+        ggml_build_forward_expand(graph, value_input);
+        ggml_build_forward_expand(graph, key_set);
+    }
     ggml_build_forward_expand(graph, value_set);
 
-    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
-    GGML_ASSERT(buffer != nullptr);
+    ggml_backend_buffer_ptr buffer;
+    test_backend_sched      sched;
+    if (scheduler_reorder) {
+        sched = make_single_backend_sched(backend, 64);
+        GGML_ASSERT(sched.sched != nullptr);
+        GGML_ASSERT(ggml_backend_sched_alloc_graph(sched.sched.get(), graph));
+    } else {
+        buffer.reset(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+        GGML_ASSERT(buffer != nullptr);
+    }
 
     std::vector<float>   input_data(ggml_nelements(input), 0.0f);
     std::vector<float>   attention_norm_weight_data(hidden_size, 1.0f);
@@ -1292,7 +1324,11 @@ static void run_qwen3_moe_attention_qkv_postprocess_fused_case(ggml_backend_t ba
                             cache_index_data.size() * sizeof(int64_t));
     ggml_backend_tensor_set(key_cache, key_cache_data.data(), 0, key_cache_data.size());
     ggml_backend_tensor_set(value_cache, value_cache_data.data(), 0, value_cache_data.size());
-    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+    if (scheduler_reorder) {
+        GGML_ASSERT(ggml_backend_sched_graph_compute(sched.sched.get(), graph) == GGML_STATUS_SUCCESS);
+    } else {
+        GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+    }
 
     std::vector<float> actual_query(ggml_nelements(query_output), -1.0f);
     std::vector<float> expected_query(actual_query.size(), 0.0f);
@@ -1317,6 +1353,9 @@ static void run_qwen3_moe_attention_qkv_postprocess_fused_case(ggml_backend_t ba
     run_qwen3_moe_attention_qkv_postprocess_fused_case(
         backend, GGML_TYPE_Q4_K, "qwen3_moe_attention_qkv_postprocess_fused_decode_q4",
         "qwen3_moe_attention_qkv_postprocess_fused_q4");
+    run_qwen3_moe_attention_qkv_postprocess_fused_case(
+        backend, GGML_TYPE_Q4_K, "qwen3_moe_attention_qkv_postprocess_fused_decode_q4",
+        "qwen3_moe_attention_qkv_postprocess_fused_q4_reorder", true);
     run_qwen3_moe_attention_qkv_postprocess_fused_case(
         backend, GGML_TYPE_Q6_K, "qwen3_moe_attention_qkv_postprocess_fused_decode_q6",
         "qwen3_moe_attention_qkv_postprocess_fused_q6");

@@ -68,6 +68,11 @@ static inline bool ggml_backend_hrx_loom_match_only(const ggml_backend_hrx_loom_
     return plan == nullptr;
 }
 
+static inline bool ggml_backend_hrx_loom_reorder_match(const ggml_backend_hrx_loom_op_request * request,
+                                                       const ggml_backend_hrx_loom_execution_plan * plan) {
+    return request && plan && request->stream == nullptr && request->bind_tensor == nullptr;
+}
+
 static inline bool ggml_backend_hrx_loom_checked_add_size(size_t lhs, size_t rhs, size_t * out) {
     if (!out || lhs > std::numeric_limits<size_t>::max() - rhs) {
         return false;
@@ -210,6 +215,11 @@ bool ggml_backend_hrx_loom_dispatch_prepared(ggml_backend_hrx_loom_catalog *    
                                              size_t                                 transient_buffer_size);
 
 ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_match_or_prepare_request(
+    ggml_backend_hrx_loom_catalog *          catalog,
+    const ggml_backend_hrx_loom_op_request * request,
+    ggml_backend_hrx_loom_execution_plan *   plan);
+
+ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_match_reorder_request(
     ggml_backend_hrx_loom_catalog *          catalog,
     const ggml_backend_hrx_loom_op_request * request,
     ggml_backend_hrx_loom_execution_plan *   plan);

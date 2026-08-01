@@ -36,6 +36,7 @@
     "value_cache_output": {"type": "F16", "shape": ["key_value_size", "cache_row_count", 1, 1], "layout": "contiguous"}
   },
   "match": {
+    "reorder": true,
     "anchors": ["attention_norm"],
     "ops": {
       "attention_norm": {

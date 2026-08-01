@@ -3,7 +3,7 @@ import json
 
 MATCH_FIELDS = {"op", "tensors", "attributes", "predicates"}
 SINGLE_MATCH_V2_FIELDS = {"op", "attributes", "predicates"}
-FUSION_MATCH_FIELDS = {"anchors", "ops", "predicates"}
+FUSION_MATCH_FIELDS = {"anchors", "ops", "predicates", "reorder"}
 FUSION_OP_FIELDS = {"op", "tensors", "attributes"}
 TENSOR_FIELDS = {"type", "optional", "shape", "layout"}
 ATTRIBUTE_FIELDS = {"type", "source", "default"}
@@ -673,6 +673,8 @@ def validate_fusion_match(route, route_path, definition):
 
     match = require_dict(route, "match", route_path)
     unknown_fields(match, FUSION_MATCH_FIELDS, f"{route_path}: match")
+    if "reorder" in match:
+        require_bool(match, "reorder", f"{route_path}: match")
     ops = require_non_empty_dict(match, "ops", f"{route_path}: match")
     if len(ops) < 2:
         raise ValueError(f"{route_path}: match.ops expects at least two operations")

@@ -623,7 +623,7 @@ def emit_elided_predicate(predicate, context, schema):
     del context
     del schema
     return " && ".join([
-        f"ggml_backend_hrx_loom_tensor_is_transient(request, {role_var(tensor)}, matched_node_count)"
+        f"ggml_backend_hrx_loom_tensor_is_transient(request, {role_var(tensor)}, matched_node_indices, matched_node_count)"
         for tensor in predicate["elided"]
     ])
 
@@ -632,7 +632,7 @@ def emit_no_overlap_predicate(predicate, context, schema):
     del context
     del schema
     lhs, rhs = predicate["no_overlap"]
-    return f"!ggml_backend_hrx_loom_tensors_overlap({role_var(lhs)}, {role_var(rhs)})"
+    return f"ggml_backend_hrx_loom_reorder_match(request, plan) || !ggml_backend_hrx_loom_tensors_overlap({role_var(lhs)}, {role_var(rhs)})"
 
 
 PREDICATE_EMITTERS = {

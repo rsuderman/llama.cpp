@@ -1126,6 +1126,164 @@ static void ggml_backend_hrx_mark_consumed_nodes(const ggml_backend_hrx_loom_con
     }
 }
 
+static bool ggml_backend_hrx_reorder_plan_is_valid(const ggml_cgraph * cgraph,
+                                                   int                 start,
+                                                   int                 end,
+                                                   const std::vector<ggml_tensor *> & nodes) {
+    if (!cgraph || start < 0 || end < start || static_cast<int>(nodes.size()) != end - start + 1) {
+        return false;
+    }
+
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        const ggml_tensor * node = nodes[i];
+        if (!node) {
+            return false;
+        }
+        for (int j = 0; j < GGML_MAX_SRC; ++j) {
+            const int producer_index = ggml_backend_hrx_graph_node_index(cgraph, node->src[j]);
+            if (producer_index < start || producer_index > end) {
+                continue;
+            }
+
+            bool producer_before = false;
+            for (size_t k = 0; k < i; ++k) {
+                if (nodes[k] == cgraph->nodes[producer_index]) {
+                    producer_before = true;
+                    break;
+                }
+            }
+            if (!producer_before) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static bool ggml_backend_hrx_node_is_reorder_barrier(const ggml_tensor * node) {
+    if (!node) {
+        return true;
+    }
+
+    switch (node->op) {
+        case GGML_OP_RESHAPE:
+        case GGML_OP_VIEW:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_TRANSPOSE:
+            return false;
+        default:
+            return node->view_src != nullptr;
+    }
+}
+
+static bool ggml_backend_hrx_try_reorder_loom_match(ggml_backend_hrx_device_context * device_context,
+                                                    ggml_cgraph *                     cgraph,
+                                                    int                               node_index,
+                                                    std::vector<bool> &               fixed_nodes) {
+    if (!device_context || !cgraph || node_index < 0 || node_index >= cgraph->n_nodes || fixed_nodes[node_index]) {
+        return false;
+    }
+
+    const ggml_backend_hrx_loom_op_request request = {
+        /* .op                    = */ cgraph->nodes[node_index],
+        /* .cgraph                = */ cgraph,
+        /* .node_index            = */ node_index,
+        /* .stream                = */ nullptr,
+        /* .bind_tensor           = */ nullptr,
+        /* .bind_tensor_user_data = */ nullptr,
+    };
+    ggml_backend_hrx_loom_execution_plan plan = {};
+    const ggml_backend_hrx_loom_op_response response =
+        ggml_backend_hrx_loom_match_reorder_request(ggml_backend_hrx_get_loom_catalog(device_context), &request, &plan);
+    if (response.result != GGML_BACKEND_HRX_LOOM_INVOKED || plan.consumed_node_count <= 1 ||
+        plan.consumed_node_count > GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES ||
+        plan.consumed_node_indices[0] != node_index) {
+        return false;
+    }
+
+    int end = node_index;
+    for (int i = 0; i < plan.consumed_node_count; ++i) {
+        const int index = plan.consumed_node_indices[i];
+        if (index < node_index || index >= cgraph->n_nodes || fixed_nodes[index]) {
+            return false;
+        }
+        for (int j = i + 1; j < plan.consumed_node_count; ++j) {
+            if (index == plan.consumed_node_indices[j]) {
+                return false;
+            }
+        }
+        end = std::max(end, index);
+    }
+    for (int i = node_index; i <= end; ++i) {
+        if (fixed_nodes[i]) {
+            return false;
+        }
+    }
+
+    std::vector<ggml_tensor *> reordered;
+    reordered.reserve(static_cast<size_t>(end - node_index + 1));
+    for (int i = 0; i < plan.consumed_node_count; ++i) {
+        reordered.push_back(cgraph->nodes[plan.consumed_node_indices[i]]);
+    }
+    for (int i = node_index; i <= end; ++i) {
+        bool consumed = false;
+        for (int j = 0; j < plan.consumed_node_count; ++j) {
+            if (plan.consumed_node_indices[j] == i) {
+                consumed = true;
+                break;
+            }
+        }
+        if (!consumed) {
+            if (ggml_backend_hrx_node_is_reorder_barrier(cgraph->nodes[i])) {
+                return false;
+            }
+            reordered.push_back(cgraph->nodes[i]);
+        }
+    }
+
+    if (!ggml_backend_hrx_reorder_plan_is_valid(cgraph, node_index, end, reordered)) {
+        return false;
+    }
+
+    for (size_t i = 0; i < reordered.size(); ++i) {
+        cgraph->nodes[node_index + static_cast<int>(i)] = reordered[i];
+    }
+    for (int i = 0; i < plan.consumed_node_count; ++i) {
+        fixed_nodes[node_index + i] = true;
+    }
+
+    if (device_context->options && device_context->options->trace_graph) {
+        ggml_backend_hrx_trace_event(device_context->reg_context,
+                                     {
+                                         { "event",      "loom_route_reorder"                      },
+                                         { "device",     device_context->name                       },
+                                         { "route_id",   response.route_id ? response.route_id : "" },
+                                         { "node_count", plan.consumed_node_count                   },
+        });
+    }
+    return true;
+}
+
+static void ggml_backend_hrx_graph_optimize(ggml_backend_t backend, ggml_cgraph * cgraph) {
+    if (!backend || !cgraph) {
+        return;
+    }
+
+    auto *            context = static_cast<ggml_backend_hrx_context *>(backend->context);
+    std::vector<bool> fixed_nodes(cgraph->n_nodes, false);
+    for (int i = 0; i < cgraph->n_nodes; ++i) {
+        if (fixed_nodes[i]) {
+            continue;
+        }
+        if (ggml_backend_hrx_try_reorder_loom_match(context->device_context, cgraph, i, fixed_nodes)) {
+            while (i < cgraph->n_nodes && fixed_nodes[i]) {
+                ++i;
+            }
+            --i;
+        }
+    }
+}
+
 struct ggml_backend_hrx_loom_transient_assignment {
     ggml_backend_hrx_loom_execution_plan * plan            = nullptr;
     size_t                                 transient_index = 0;
@@ -1605,7 +1763,7 @@ static const ggml_backend_i ggml_backend_hrx_i = {
     /* .graph_compute      = */ ggml_backend_hrx_graph_compute,
     /* .event_record       = */ nullptr,
     /* .event_wait         = */ nullptr,
-    /* .graph_optimize     = */ nullptr,
+    /* .graph_optimize     = */ ggml_backend_hrx_graph_optimize,
 };
 
 static const char * ggml_backend_hrx_device_get_name(ggml_backend_dev_t dev) {
