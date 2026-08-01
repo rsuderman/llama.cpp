@@ -1417,6 +1417,75 @@ static void run_qwen3_moe_flash_attention_case(ggml_backend_t backend, ggml_back
     }
 }
 
+static void run_qwen3_moe_flash_attention_decode_case(ggml_backend_t      backend,
+                                                      ggml_backend_dev_t  dev,
+                                                      const char *        route,
+                                                      const char *        label,
+                                                      int64_t             key_value_token_count) {
+    const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    const std::string saved    = previous ? previous : "";
+    setenv("GGML_HRX_LOOM_FORCE_ROUTE", route, 1);
+
+    const int64_t head_dim             = 128;
+    const int64_t query_head_count     = 32;
+    const int64_t key_value_head_count = 4;
+    const int64_t query_token_count    = 1;
+
+    ggml_context_ptr ctx           = make_context();
+    ggml_tensor *    query_storage = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, head_dim, query_head_count,
+                                                        query_token_count);
+    ggml_tensor *    key_storage   = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F16, head_dim, key_value_head_count,
+                                                        key_value_token_count);
+    ggml_tensor *    value_storage = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F16, head_dim, key_value_head_count,
+                                                        key_value_token_count);
+    ggml_tensor *    query         = ggml_permute(ctx.get(), query_storage, 0, 2, 1, 3);
+    ggml_tensor *    key           = ggml_permute(ctx.get(), key_storage, 0, 2, 1, 3);
+    ggml_tensor *    value         = ggml_permute(ctx.get(), value_storage, 0, 2, 1, 3);
+    ggml_tensor *    mask          = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, key_value_token_count,
+                                                        query_token_count);
+    ggml_tensor *    out =
+        ggml_flash_attn_ext(ctx.get(), query, key, value, mask, 1.0f / std::sqrt(128.0f), 0.0f, 0.0f);
+    ggml_flash_attn_ext_set_prec(out, GGML_PREC_F32);
+    GGML_ASSERT(ggml_backend_dev_supports_op(dev, out));
+
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 16, false);
+    ggml_build_forward_expand(graph, out);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float>   query_data(ggml_nelements(query_storage), 0.0f);
+    std::vector<uint8_t> key_data(ggml_nbytes(key_storage), 0);
+    std::vector<uint8_t> value_data(ggml_nbytes(value_storage), 0);
+    std::vector<uint8_t> mask_data(ggml_nbytes(mask), 0);
+    std::vector<float>   expected(ggml_nelements(out), 0.0f);
+
+    ggml_backend_tensor_set(query_storage, query_data.data(), 0, query_data.size() * sizeof(float));
+    ggml_backend_tensor_set(key_storage, key_data.data(), 0, key_data.size());
+    ggml_backend_tensor_set(value_storage, value_data.data(), 0, value_data.size());
+    ggml_backend_tensor_set(mask, mask_data.data(), 0, mask_data.size());
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> actual(expected.size(), -1.0f);
+    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+    expect_near(actual, expected, 1e-6f, label);
+
+    if (previous) {
+        setenv("GGML_HRX_LOOM_FORCE_ROUTE", saved.c_str(), 1);
+    } else {
+        unsetenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    }
+}
+
+static void run_qwen3_moe_flash_attention_decode_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
+    run_qwen3_moe_flash_attention_decode_case(
+        backend, dev, "qwen3_moe_flash_attention_decode_split_f32_f16_wmma_short",
+        "qwen3_moe_flash_attention_decode_short", 65);
+    run_qwen3_moe_flash_attention_decode_case(
+        backend, dev, "qwen3_moe_flash_attention_decode_split_f32_f16_wmma_long",
+        "qwen3_moe_flash_attention_decode_long", 129);
+}
+
 }  // namespace
 
 int main() {
@@ -1582,6 +1651,11 @@ int main() {
         }
         if (std::string(test_only) == "qwen3_moe_flash_attention") {
             run_qwen3_moe_flash_attention_case(backend.get(), dev);
+            ggml_backend_synchronize(backend.get());
+            return 0;
+        }
+        if (std::string(test_only) == "qwen3_moe_flash_attention_decode") {
+            run_qwen3_moe_flash_attention_decode_case(backend.get(), dev);
             ggml_backend_synchronize(backend.get());
             return 0;
         }

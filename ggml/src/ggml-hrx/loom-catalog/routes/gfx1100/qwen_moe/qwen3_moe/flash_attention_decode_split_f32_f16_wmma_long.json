@@ -1,0 +1,133 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "qwen3_moe_flash_attention_decode_split_f32_f16_wmma_long",
+  "format": "loom",
+  "priority": 274,
+  "match": {
+    "op": "GGML_OP_FLASH_ATTN_EXT",
+    "tensors": {
+      "src0": {"type": "F32", "shape": ["head_dim", "query_token_count", "query_head_count", 1]},
+      "src1": {"type": "F16", "shape": ["head_dim", "key_value_token_count", "key_value_head_count", 1]},
+      "src2": {"type": "F16", "shape": ["head_dim", "key_value_token_count", "key_value_head_count", 1]},
+      "src3": {"type": "F16", "shape": ["key_value_token_count", "query_token_count", 1, 1]},
+      "dst": {"type": "F32", "shape": ["head_dim", "query_head_count", "query_token_count", 1]}
+    },
+    "attributes": {
+      "precision": {"type": "i32"},
+      "scale": {"type": "f32"},
+      "logit_softcap": {"type": "f32"},
+      "max_bias": {"type": "f32"}
+    },
+    "predicates": [
+      {"src_absent": "src4"},
+      {"field": "attribute.precision", "equals": 10},
+      {"field": "attribute.logit_softcap", "equals": 0.0},
+      {"field": "attribute.max_bias", "equals": 0.0},
+      {"field": "attribute.scale", "min": 0.08838834},
+      {"field": "attribute.scale", "max": 0.08838835},
+      {"field": "shape.dst.head_dim", "equals": 128},
+      {"field": "shape.dst.query_head_count", "equals": 32},
+      {"field": "shape.dst.query_token_count", "equals": 1},
+      {"field": "shape.src1.key_value_token_count", "min": 129},
+      {"field": "shape.src1.key_value_token_count", "max": 32768},
+      {"field": "shape.src1.key_value_head_count", "equals": 4},
+      {"field": "shape.src0.head_dim", "equals": "shape.dst.head_dim"},
+      {"field": "shape.src1.head_dim", "equals": "shape.dst.head_dim"},
+      {"field": "shape.src2.head_dim", "equals": "shape.dst.head_dim"},
+      {"field": "shape.src0.query_token_count", "equals": "shape.dst.query_token_count"},
+      {"field": "shape.src3.query_token_count", "equals": "shape.dst.query_token_count"},
+      {"field": "shape.src0.query_head_count", "equals": "shape.dst.query_head_count"},
+      {"field": "shape.src1.key_value_token_count", "equals": "shape.src2.key_value_token_count"},
+      {"field": "shape.src1.key_value_token_count", "equals": "shape.src3.key_value_token_count"},
+      {"field": "shape.src1.key_value_head_count", "equals": "shape.src2.key_value_head_count"},
+      {"field": "tensor.src0.permutation.0", "equals": 0},
+      {"field": "tensor.src0.permutation.1", "equals": 2},
+      {"field": "tensor.src0.permutation.2", "equals": 1},
+      {"field": "tensor.src0.permutation.3", "equals": 3},
+      {"field": "tensor.src1.permutation.0", "equals": 0},
+      {"field": "tensor.src1.permutation.1", "equals": 2},
+      {"field": "tensor.src1.permutation.2", "equals": 1},
+      {"field": "tensor.src1.permutation.3", "equals": 3},
+      {"field": "tensor.src2.permutation.0", "equals": 0},
+      {"field": "tensor.src2.permutation.1", "equals": 2},
+      {"field": "tensor.src2.permutation.2", "equals": 1},
+      {"field": "tensor.src2.permutation.3", "equals": 3},
+      {"field": "tensor.src0.element_strides.0", "equals": 1},
+      {"field": "tensor.src0.element_strides.1", "equals": "derived.src0_permuted_contiguous_strides_d1"},
+      {"field": "tensor.src0.element_strides.2", "equals": "shape.src0.head_dim"},
+      {"field": "tensor.src0.element_strides.3", "equals": "derived.src0_permuted_contiguous_strides_d3"},
+      {"field": "tensor.src1.element_strides.0", "equals": 1},
+      {"field": "tensor.src1.element_strides.1", "equals": "derived.src1_permuted_contiguous_strides_d1"},
+      {"field": "tensor.src1.element_strides.2", "equals": "shape.src1.head_dim"},
+      {"field": "tensor.src1.element_strides.3", "equals": "derived.src1_permuted_contiguous_strides_d3"},
+      {"field": "tensor.src2.element_strides.0", "equals": 1},
+      {"field": "tensor.src2.element_strides.1", "equals": "derived.src2_permuted_contiguous_strides_d1"},
+      {"field": "tensor.src2.element_strides.2", "equals": "shape.src2.head_dim"},
+      {"field": "tensor.src2.element_strides.3", "equals": "derived.src2_permuted_contiguous_strides_d3"},
+      {"contiguous": "src3"},
+      {"contiguous": "dst"}
+    ]
+  },
+  "derived": {
+    "src0_permuted_contiguous_strides_d1": {"type": "i64", "product": ["shape.src0.head_dim", "shape.src0.query_head_count"]},
+    "src0_permuted_contiguous_strides_d3": {"type": "i64", "product": ["shape.src0.head_dim", "shape.src0.query_head_count", "shape.src0.query_token_count"]},
+    "src1_permuted_contiguous_strides_d1": {"type": "i64", "product": ["shape.src1.head_dim", "shape.src1.key_value_head_count"]},
+    "src1_permuted_contiguous_strides_d3": {"type": "i64", "product": ["shape.src1.head_dim", "shape.src1.key_value_head_count", "shape.src1.key_value_token_count"]},
+    "src2_permuted_contiguous_strides_d1": {"type": "i64", "product": ["shape.src2.head_dim", "shape.src2.key_value_head_count"]},
+    "src2_permuted_contiguous_strides_d3": {"type": "i64", "product": ["shape.src2.head_dim", "shape.src2.key_value_head_count", "shape.src2.key_value_token_count"]},
+    "key_value_block_count": {"type": "i64", "ceil_div": ["shape.src1.key_value_token_count", 64]},
+    "partial_stat_bytes": {"type": "i64", "product": ["shape.src1.key_value_head_count", "derived.key_value_block_count", 16, 4]},
+    "partial_output_bytes": {"type": "i64", "product": ["shape.src1.key_value_head_count", "derived.key_value_block_count", 16, "shape.dst.head_dim", 2]}
+  },
+  "transient_buffers": {
+    "partial_max": {"size": "derived.partial_stat_bytes"},
+    "partial_sum": {"size": "derived.partial_stat_bytes"},
+    "partial_output": {"size": "derived.partial_output_bytes"}
+  },
+  "architectures": ["gfx1100"],
+  "dispatches": [
+    {
+      "name": "produce_partials",
+      "definition": "../../../../defs/gfx1100/qwen_moe/qwen3_moe/flash_attention_decode_split_produce_partials_f32_f16_wmma.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {"name": "qwen3_moe_attention_query_head_count", "type": "i64", "source": "shape.dst.query_head_count"},
+          {"name": "qwen3_moe_attention_key_value_head_count", "type": "i64", "source": "shape.src1.key_value_head_count"},
+          {"name": "qwen3_moe_attention_key_value_token_count", "type": "i64", "source": "shape.src1.key_value_token_count"}
+        ]
+      },
+      "buffers": [
+        {"name": "query", "tensor": "src0", "position": 0, "kind": "input"},
+        {"name": "key", "tensor": "src1", "position": 1, "kind": "input"},
+        {"name": "value", "tensor": "src2", "position": 2, "kind": "input"},
+        {"name": "mask", "tensor": "src3", "position": 3, "kind": "input"},
+        {"name": "partial_max", "transient": "partial_max", "position": 4, "kind": "output"},
+        {"name": "partial_sum", "transient": "partial_sum", "position": 5, "kind": "output"},
+        {"name": "partial_output", "transient": "partial_output", "position": 6, "kind": "output"}
+      ],
+      "scalars": [],
+      "dispatch": {"workgroups": ["derived.key_value_block_count", "shape.src1.key_value_head_count"], "workgroup_size": [256, 1, 1]}
+    },
+    {
+      "name": "reduce",
+      "definition": "../../../../defs/gfx1100/qwen_moe/qwen3_moe/flash_attention_decode_split_reduce_f32.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {"name": "qwen3_moe_attention_query_head_count", "type": "i64", "source": "shape.dst.query_head_count"},
+          {"name": "qwen3_moe_attention_key_value_head_count", "type": "i64", "source": "shape.src1.key_value_head_count"},
+          {"name": "qwen3_moe_attention_key_value_token_count", "type": "i64", "source": "shape.src1.key_value_token_count"}
+        ]
+      },
+      "buffers": [
+        {"name": "partial_max", "transient": "partial_max", "position": 0, "kind": "inout"},
+        {"name": "partial_sum", "transient": "partial_sum", "position": 1, "kind": "input"},
+        {"name": "partial_output", "transient": "partial_output", "position": 2, "kind": "input"},
+        {"name": "output", "tensor": "dst", "position": 3, "kind": "output"}
+      ],
+      "scalars": [],
+      "dispatch": {"workgroups": [1, "shape.dst.query_head_count"], "workgroup_size": [128, 1, 1]}
+    }
+  ]
+}
