@@ -53,10 +53,9 @@
     "routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q6k_f16_wmma_next_rmsnorm.json",
     "routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q4k_f16_wmma_residual.json",
     "routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q6k_f16_wmma_residual.json",
+    "routes/gfx1100/qwen_moe/qwen3_moe/flash_attention_f32_f16_wmma.json",
     "routes/gfx1100/flash_attn_ext/f32_f16/tiled_decode_d128_h32_hkv4_kv512_40960_t1.json",
     "routes/gfx1100/flash_attn_ext/f32_f16/tiled_decode_d128_h32_hkv8_kv512_8192_t1.json",
-    "routes/gfx1100/flash_attn_ext/f32_f16/tiled_prefill_d128_h32_hkv4_cap_kv40960_t512.json",
-    "routes/gfx1100/flash_attn_ext/f32_f16/tiled_prefill_d128_h32_hkv8_cap_kv8192_t512.json",
     "routes/gfx1100/flash_attn_ext/f32_f16/fallback_decode_plain_mask_t1.json",
     "routes/generic/mul_mat/q8_0_f32/contiguous_c4_4d.json",
     "routes/generic/mul_mat/q8_0_f32/contiguous_c1_4d.json",
@@ -82,7 +81,6 @@
     "routes/generic/mul_mat_id/q4_k_f32/expert_planes_src1_broadcast_4d.json",
     "routes/generic/mul_mat_id/q6_k_f32/expert_planes_4d.json",
     "routes/generic/mul_mat_id/q6_k_f32/expert_planes_src1_broadcast_4d.json",
-    "routes/gfx1100/flash_attn_ext/f32_f16/perm0213_decode_d128_h32_hkv4_kv40960.json",
-    "routes/gfx1100/flash_attn_ext/f32_f16/perm0213_prefill_d128_h32_hkv4_kv40960_t512.json"
+    "routes/gfx1100/flash_attn_ext/f32_f16/perm0213_decode_d128_h32_hkv4_kv40960.json"
   ]
 }
