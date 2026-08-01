@@ -732,6 +732,55 @@ static void run_qwen3_moe_router_projection_case(ggml_backend_t backend) {
     }
 }
 
+static void run_qwen3_moe_dense_linear_case(ggml_backend_t backend,
+                                            ggml_type      weight_type,
+                                            const char *   route_id,
+                                            const char *   label) {
+    const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    const std::string saved    = previous ? previous : "";
+    setenv("GGML_HRX_LOOM_FORCE_ROUTE", route_id, 1);
+
+    const int64_t input_size  = 2048;
+    const int64_t output_size = 512;
+    const int64_t token_count = 33;
+
+    ggml_context_ptr ctx    = make_context();
+    ggml_tensor *    weight = ggml_new_tensor_2d(ctx.get(), weight_type, input_size, output_size);
+    ggml_tensor *    input  = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, input_size, token_count);
+    ggml_tensor *    out    = ggml_mul_mat(ctx.get(), weight, input);
+
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 16, false);
+    ggml_build_forward_expand(graph, out);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<uint8_t> weight_data(ggml_nbytes(weight), 0);
+    std::vector<float>   input_data(input_size * token_count, 0.0f);
+    std::vector<float>   expected(output_size * token_count, 0.0f);
+
+    ggml_backend_tensor_set(weight, weight_data.data(), 0, weight_data.size());
+    ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> actual(expected.size(), -1.0f);
+    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+    expect_near(actual, expected, 1e-6f, label);
+
+    if (previous) {
+        setenv("GGML_HRX_LOOM_FORCE_ROUTE", saved.c_str(), 1);
+    } else {
+        unsetenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    }
+}
+
+static void run_qwen3_moe_dense_linear_case(ggml_backend_t backend) {
+    run_qwen3_moe_dense_linear_case(backend, GGML_TYPE_Q4_K, "qwen3_moe_dense_linear_q4k_f16_wmma",
+                                    "qwen3_moe_dense_linear_q4k");
+    run_qwen3_moe_dense_linear_case(backend, GGML_TYPE_Q6_K, "qwen3_moe_dense_linear_q6k_f16_wmma",
+                                    "qwen3_moe_dense_linear_q6k");
+}
+
 static void run_qwen3_moe_router_top8_case(ggml_backend_t backend) {
     const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
     const std::string saved    = previous ? previous : "";
@@ -1189,6 +1238,11 @@ int main() {
         if (std::string(test_only) == "qwen3_moe_router") {
             run_qwen3_moe_router_projection_case(backend.get());
             run_qwen3_moe_router_top8_case(backend.get());
+            ggml_backend_synchronize(backend.get());
+            return 0;
+        }
+        if (std::string(test_only) == "qwen3_moe_dense_linear") {
+            run_qwen3_moe_dense_linear_case(backend.get());
             ggml_backend_synchronize(backend.get());
             return 0;
         }
