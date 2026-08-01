@@ -1197,6 +1197,130 @@ static void run_qwen3_moe_attention_postprocess_case(ggml_backend_t backend) {
     }
 }
 
+static void run_qwen3_moe_attention_qkv_postprocess_fused_case(ggml_backend_t backend,
+                                                               ggml_type      value_type,
+                                                               const char *   route_id,
+                                                               const char *   label) {
+    const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    const std::string saved    = previous ? previous : "";
+    setenv("GGML_HRX_LOOM_FORCE_ROUTE", route_id, 1);
+
+    const float   eps                  = 1.0e-6f;
+    const int64_t hidden_size          = 2048;
+    const int64_t head_size            = 128;
+    const int64_t query_head_count     = 32;
+    const int64_t key_value_head_count = 4;
+    const int64_t token_count          = 1;
+    const int64_t cache_row_count      = 64;
+    const int64_t query_size           = head_size * query_head_count;
+    const int64_t key_value_size       = head_size * key_value_head_count;
+
+    ggml_context_ptr ctx = make_context();
+
+    ggml_tensor * input                 = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, hidden_size, token_count);
+    ggml_tensor * attention_norm_weight = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, hidden_size);
+    ggml_tensor * query_weight          = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_Q4_K, hidden_size, query_size);
+    ggml_tensor * key_weight            = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_Q4_K, hidden_size, key_value_size);
+    ggml_tensor * value_weight          = ggml_new_tensor_2d(ctx.get(), value_type, hidden_size, key_value_size);
+    ggml_tensor * query_norm_weight     = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, head_size);
+    ggml_tensor * key_norm_weight       = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, head_size);
+    ggml_tensor * positions             = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_I32, token_count);
+    ggml_tensor * key_cache_indices     = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_I64, token_count);
+    ggml_tensor * value_cache_indices   = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_I64, token_count);
+    ggml_tensor * key_cache             = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, key_value_size, cache_row_count);
+    ggml_tensor * value_cache           = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, key_value_size, cache_row_count);
+
+    ggml_tensor * attention_rms        = ggml_rms_norm(ctx.get(), input, eps);
+    ggml_tensor * attention_normalized = ggml_mul(ctx.get(), attention_rms, attention_norm_weight);
+    ggml_tensor * query_raw            = ggml_mul_mat(ctx.get(), query_weight, attention_normalized);
+    ggml_tensor * key_raw              = ggml_mul_mat(ctx.get(), key_weight, attention_normalized);
+    ggml_tensor * value_raw            = ggml_mul_mat(ctx.get(), value_weight, attention_normalized);
+
+    ggml_tensor * query_input = ggml_reshape_3d(ctx.get(), query_raw, head_size, query_head_count, token_count);
+    ggml_tensor * key_input   = ggml_reshape_3d(ctx.get(), key_raw, head_size, key_value_head_count, token_count);
+    ggml_tensor * value_input = ggml_reshape_3d(ctx.get(), value_raw, head_size, key_value_head_count, token_count);
+
+    ggml_tensor * query_rms    = ggml_rms_norm(ctx.get(), query_input, eps);
+    ggml_tensor * query_mul    = ggml_mul(ctx.get(), query_rms, query_norm_weight);
+    ggml_tensor * query_output = ggml_rope_ext(ctx.get(), query_mul, positions, nullptr, head_size, GGML_ROPE_TYPE_NEOX,
+                                               40960, 1000000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+
+    ggml_tensor * key_rms    = ggml_rms_norm(ctx.get(), key_input, eps);
+    ggml_tensor * key_mul    = ggml_mul(ctx.get(), key_rms, key_norm_weight);
+    ggml_tensor * key_output = ggml_rope_ext(ctx.get(), key_mul, positions, nullptr, head_size, GGML_ROPE_TYPE_NEOX,
+                                             40960, 1000000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+    ggml_tensor * key_rows   = ggml_view_2d(ctx.get(), key_output, key_value_size, token_count, key_output->nb[2], 0);
+    ggml_tensor * key_set    = ggml_set_rows(ctx.get(), key_cache, key_rows, key_cache_indices);
+
+    ggml_tensor * value_rows = ggml_view_2d(ctx.get(), value_input, key_value_size, token_count, value_input->nb[2], 0);
+    ggml_tensor * value_set  = ggml_set_rows(ctx.get(), value_cache, value_rows, value_cache_indices);
+
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 64, false);
+    ggml_build_forward_expand(graph, query_output);
+    ggml_build_forward_expand(graph, key_set);
+    ggml_build_forward_expand(graph, value_set);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float>   input_data(ggml_nelements(input), 0.0f);
+    std::vector<float>   attention_norm_weight_data(hidden_size, 1.0f);
+    std::vector<uint8_t> query_weight_data(ggml_nbytes(query_weight), 0);
+    std::vector<uint8_t> key_weight_data(ggml_nbytes(key_weight), 0);
+    std::vector<uint8_t> value_weight_data(ggml_nbytes(value_weight), 0);
+    std::vector<float>   query_norm_weight_data(head_size, 1.0f);
+    std::vector<float>   key_norm_weight_data(head_size, 1.0f);
+    std::vector<int32_t> position_data(token_count, 0);
+    std::vector<int64_t> cache_index_data(token_count, 0);
+    std::vector<uint8_t> key_cache_data(ggml_nbytes(key_cache), 0);
+    std::vector<uint8_t> value_cache_data(ggml_nbytes(value_cache), 0);
+
+    ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+    ggml_backend_tensor_set(attention_norm_weight, attention_norm_weight_data.data(), 0,
+                            attention_norm_weight_data.size() * sizeof(float));
+    ggml_backend_tensor_set(query_weight, query_weight_data.data(), 0, query_weight_data.size());
+    ggml_backend_tensor_set(key_weight, key_weight_data.data(), 0, key_weight_data.size());
+    ggml_backend_tensor_set(value_weight, value_weight_data.data(), 0, value_weight_data.size());
+    ggml_backend_tensor_set(query_norm_weight, query_norm_weight_data.data(), 0,
+                            query_norm_weight_data.size() * sizeof(float));
+    ggml_backend_tensor_set(key_norm_weight, key_norm_weight_data.data(), 0,
+                            key_norm_weight_data.size() * sizeof(float));
+    ggml_backend_tensor_set(positions, position_data.data(), 0, position_data.size() * sizeof(int32_t));
+    ggml_backend_tensor_set(key_cache_indices, cache_index_data.data(), 0, cache_index_data.size() * sizeof(int64_t));
+    ggml_backend_tensor_set(value_cache_indices, cache_index_data.data(), 0,
+                            cache_index_data.size() * sizeof(int64_t));
+    ggml_backend_tensor_set(key_cache, key_cache_data.data(), 0, key_cache_data.size());
+    ggml_backend_tensor_set(value_cache, value_cache_data.data(), 0, value_cache_data.size());
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> actual_query(ggml_nelements(query_output), -1.0f);
+    std::vector<float> expected_query(actual_query.size(), 0.0f);
+    ggml_backend_tensor_get(query_output, actual_query.data(), 0, actual_query.size() * sizeof(float));
+    expect_near(actual_query, expected_query, 1e-6f, label);
+
+    std::vector<uint8_t> actual_key_cache(ggml_nbytes(key_set), 0xff);
+    std::vector<uint8_t> actual_value_cache(ggml_nbytes(value_set), 0xff);
+    ggml_backend_tensor_get(key_set, actual_key_cache.data(), 0, actual_key_cache.size());
+    ggml_backend_tensor_get(value_set, actual_value_cache.data(), 0, actual_value_cache.size());
+    GGML_ASSERT(actual_key_cache == key_cache_data);
+    GGML_ASSERT(actual_value_cache == value_cache_data);
+
+    if (previous) {
+        setenv("GGML_HRX_LOOM_FORCE_ROUTE", saved.c_str(), 1);
+    } else {
+        unsetenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    }
+}
+
+static void run_qwen3_moe_attention_qkv_postprocess_fused_case(ggml_backend_t backend) {
+    run_qwen3_moe_attention_qkv_postprocess_fused_case(
+        backend, GGML_TYPE_Q4_K, "qwen3_moe_attention_qkv_postprocess_fused_decode_q4",
+        "qwen3_moe_attention_qkv_postprocess_fused_q4");
+    run_qwen3_moe_attention_qkv_postprocess_fused_case(
+        backend, GGML_TYPE_Q6_K, "qwen3_moe_attention_qkv_postprocess_fused_decode_q6",
+        "qwen3_moe_attention_qkv_postprocess_fused_q6");
+}
+
 static void run_qwen3_moe_flash_attention_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
     const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
     const std::string saved    = previous ? previous : "";
@@ -1408,6 +1532,11 @@ int main() {
         }
         if (std::string(test_only) == "qwen3_moe_attention_postprocess") {
             run_qwen3_moe_attention_postprocess_case(backend.get());
+            ggml_backend_synchronize(backend.get());
+            return 0;
+        }
+        if (std::string(test_only) == "qwen3_moe_attention_qkv_postprocess_fused") {
+            run_qwen3_moe_attention_qkv_postprocess_fused_case(backend.get());
             ggml_backend_synchronize(backend.get());
             return 0;
         }

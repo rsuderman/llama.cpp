@@ -1,0 +1,91 @@
+// Decode-only Qwen Q/K/V projection with last-arrival head postprocessing.
+//
+// The accepted quantized projection publishes eight adjacent raw F32 rows per
+// 256-workitem workgroup. Head width is fixed at 128 for this model, so sixteen
+// workgroups publish each Q, K, or V head. One device-scope completion counter
+// per head forms a release sequence over those stores. The last arrival
+// acquires the complete raw row and invokes the canonical per-head
+// normalization, NEOX rotary, and cache-publication body.
+//
+// Raw Q/K/V rows remain explicit because they are the inter-workgroup
+// communication surface. The fusion removes the command-buffer boundary and
+// lets the postprocess consume freshly published rows; it does not impose a
+// hidden cache-index or position relationship. Counters return to zero only
+// after semantic outputs are visible, preserving reusable command buffers.
+amdgpu.target<gfx11-generic> @qwen3_moe_attention_qkv_postprocess_gfx11_wave32 {subgroup_size = 32}
+
+kernel.def target(@qwen3_moe_attention_qkv_postprocess_gfx11_wave32) @qwen3_moe_attention_qkv_postprocess_fused_decode(%token_count: index, %cache_row_count: index) {
+  %query_size = config.get @qwen3_moe_attention_query_size : index
+  %key_value_size = config.get @qwen3_moe_attention_key_value_size : index
+  %one = index.constant 1 : index
+  %two = index.constant 2 : index
+  %seven = index.constant 7 : index
+  %eight = index.constant 8 : index
+  %twofiftysix = index.constant 256 : index
+  %key_value_output_size = index.mul %key_value_size, %two : index
+  %output_size = index.add %query_size, %key_value_output_size : index
+  %padded_output_size = index.add %output_size, %seven : index
+  %output_tiles = index.div %padded_output_size, %eight : index
+  kernel.launch.config workgroups(%output_tiles, %one, %one) workgroup_size(%twofiftysix, %one, %one) : index
+} launch(%token_count: index, %cache_row_count: index, %q8_input: buffer, %query_weight: buffer, %key_weight: buffer, %value_weight: buffer, %positions: buffer, %key_cache_indices: buffer, %value_cache_indices: buffer, %query_output_raw: buffer, %key_output_raw: buffer, %value_output_raw: buffer, %query_norm_weight: buffer, %key_norm_weight: buffer, %query_output: buffer, %key_cache: buffer, %value_cache: buffer, %completion_counters: buffer) {
+  func.apply<qwen3_moe.attention.qkv_quantized.body>(%token_count, %q8_input, %query_weight, %key_weight, %value_weight, %query_output_raw, %key_output_raw, %value_output_raw) : (index, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
+  %query_size0 = config.get @qwen3_moe_attention_query_size : index
+  %key_value_size0 = config.get @qwen3_moe_attention_key_value_size : index
+  %head_size0 = config.get @qwen3_moe_attention_head_size : index
+  %bounded_token_count = index.assume %token_count [range(%token_count, 1, 1)] : index
+  %query_size, %key_value_size, %head_size = index.assume %query_size0, %key_value_size0, %head_size0 [range(%query_size0, 128, 262144), range(%key_value_size0, 128, 262144), range(%head_size0, 128, 128), mul(%query_size0, %head_size0), mul(%key_value_size0, %head_size0)] : index, index, index
+  %zero = index.constant 0 : index
+  %one = index.constant 1 : index
+  %two = index.constant 2 : index
+  %eight = index.constant 8 : index
+  %zero_i32 = scalar.constant 0 : i32
+  %one_i32 = scalar.constant 1 : i32
+  %zero_offset = index.constant 0 : offset
+  %channel_tile = kernel.workgroup.id<x> : index
+  %workitem = kernel.workitem.id<x> : index
+  %token = index.assume %zero [lt(%zero, %bounded_token_count)] : index
+  %head_tile_count = index.div %head_size, %eight : index
+  %head_domain0 = index.div %channel_tile, %head_tile_count : index
+  %query_head_count = index.div %query_size, %head_size : index
+  %key_value_head_count = index.div %key_value_size, %head_size : index
+  %key_value_domain_count = index.mul %key_value_head_count, %two : index
+  %head_domain_count = index.add %query_head_count, %key_value_domain_count : index
+  %head_domain, %completion_counter_count = index.assume %head_domain0, %head_domain_count [lt(%head_domain0, %head_domain_count)] : index, index
+  %is_arrival_workitem = index.cmp eq, %workitem, %zero : index
+  %completion_counters_global = buffer.assume.memory_space<global> %completion_counters : buffer
+  %completion_counters_aligned = buffer.assume.alignment %completion_counters_global {minimum_alignment = 16} : buffer
+  %completion_counters_view = buffer.view %completion_counters_aligned[%zero_offset] : buffer -> view<[%completion_counter_count]xi32, #dense>
+  // All eight subgroup stores precede the workgroup's release. The last of
+  // sixteen arrivals acquires every raw projection row in this head.
+  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  %local_old_counter = scf.if %is_arrival_workitem -> (i32) {
+    %old_counter = view.atomic.rmw<addi> %one_i32, %completion_counters_view[%head_domain] {ordering = acq_rel, scope = device} : i32, view<[%completion_counter_count]xi32, #dense> -> i32
+    scf.yield %old_counter : i32
+  } else {
+    scf.yield %zero_i32 : i32
+  }
+  %old_counter = kernel.workgroup.reduce<addi> %local_old_counter : i32
+  %head_tile_count_i32 = index.cast %head_tile_count : index to i32
+  %last_head_tile_i32 = scalar.subi %head_tile_count_i32, %one_i32 : i32
+  %negative_head_tile_count_i32 = scalar.subi %zero_i32, %head_tile_count_i32 : i32
+  // Temporary, non-sanctioned lowering workaround: AMDGPU scalar.cmpi cannot
+  // consume the divergent reduction result. Both values are in [0, 15], so
+  // their F32 representations and equality comparison remain exact.
+  %old_counter_f32 = scalar.sitofp %old_counter : i32 to f32
+  %last_head_tile_f32 = scalar.sitofp %last_head_tile_i32 : i32 to f32
+  %is_last_head_tile = scalar.cmpf oeq, %old_counter_f32, %last_head_tile_f32 : f32
+  scf.if %is_last_head_tile {
+    func.apply<qwen3_moe.attention.postprocess.head_body>(%bounded_token_count, %cache_row_count, %head_domain, %token, %positions, %key_cache_indices, %value_cache_indices, %query_output_raw, %key_output_raw, %value_output_raw, %query_norm_weight, %key_norm_weight, %query_output, %key_cache, %value_cache) : (index, index, index, index, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
+    // The counter becomes reusable only after all semantic output stores.
+    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    scf.if %is_arrival_workitem {
+      view.atomic.reduce<addi> %negative_head_tile_count_i32, %completion_counters_view[%head_domain] {ordering = release, scope = device} : i32, view<[%completion_counter_count]xi32, #dense>
+    }
+  }
+  kernel.return
+}
+
+// Uses the production head geometry, nonzero rotary position, and distinct K/V
+// cache rows. Two fused calls reuse the same counters after comparison with
+// the ordinary storage-selected composition. The value buffer has production
+// Q6_K capacity and is intentionally oversized when the Q4_K config is tested.

@@ -173,6 +173,8 @@ set(GGML_HRX_LOOM_ROUTE_FILES
         routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q6k_f16_wmma_next_rmsnorm.json
         routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q4k_f16_wmma_residual.json
         routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q6k_f16_wmma_residual.json
+        routes/gfx1100/qwen_moe/qwen3_moe/attention_qkv_postprocess_fused_decode_q4.json
+        routes/gfx1100/qwen_moe/qwen3_moe/attention_qkv_postprocess_fused_decode_q6.json
         routes/gfx1100/qwen_moe/qwen3_moe/attention_postprocess_f32_f16.json
         routes/gfx1100/qwen_moe/qwen3_moe/flash_attention_f32_f16_wmma.json
         routes/gfx1100/flash_attn_ext/f32_f16/tiled_decode_d128_h32_hkv4_kv512_40960_t1.json
