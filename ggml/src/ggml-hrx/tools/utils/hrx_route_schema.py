@@ -8,7 +8,7 @@ FUSION_OP_FIELDS = {"op", "tensors", "attributes"}
 TENSOR_FIELDS = {"type", "optional", "shape", "layout"}
 ATTRIBUTE_FIELDS = {"type", "source", "default"}
 PREDICATE_FIELDS = {"contiguous", "same_shape", "same_layout", "rank", "field", "equals", "in", "min", "max", "multiple_of", "divisible_by", "src_absent", "src_present", "elided", "no_overlap"}
-DERIVED_FIELDS = {"type", "field", "value", "product", "ceil_div", "next_power_of_2"}
+DERIVED_FIELDS = {"type", "field", "value", "sum", "difference", "product", "ceil_div", "maximum", "next_power_of_2"}
 TRANSIENT_BUFFER_FIELDS = {"size"}
 ROUTE_DISPATCH_FIELDS = {"name", "definition", "config", "buffers", "scalars", "dispatch"}
 BUFFER_FIELDS = {"name", "tensor", "transient", "position", "kind"}
@@ -740,7 +740,7 @@ def validate_derived(route, route_path, context):
         item_type = require_string(item, "type", item_source)
         if item_type not in SCALAR_TYPES:
             raise ValueError(f"{item_source}: unsupported derived type {item_type}")
-        ops = [key for key in ("field", "value", "product", "ceil_div", "next_power_of_2") if key in item]
+        ops = [key for key in ("field", "value", "sum", "difference", "product", "ceil_div", "maximum", "next_power_of_2") if key in item]
         if len(ops) != 1:
             raise ValueError(f"{item_source}: expected exactly one derived operation")
         op = ops[0]
@@ -748,10 +748,16 @@ def validate_derived(route, route_path, context):
             context.resolve_source(require_string(item, "field", item_source), f"{item_source}.field", available)
         elif op == "value":
             validate_literal(item["value"], item_type, f"{item_source}.value")
+        elif op == "sum":
+            validate_integer_operands(item["sum"], item_type, context, available, f"{item_source}.sum")
+        elif op == "difference":
+            validate_integer_operands(item["difference"], item_type, context, available, f"{item_source}.difference")
         elif op == "product":
             validate_product(item["product"], item_type, context, available, f"{item_source}.product")
         elif op == "ceil_div":
             validate_ceil_div(item["ceil_div"], item_type, context, available, f"{item_source}.ceil_div")
+        elif op == "maximum":
+            validate_integer_operands(item["maximum"], item_type, context, available, f"{item_source}.maximum")
         elif op == "next_power_of_2":
             source_type = context.resolve_source(
                 require_string(item, "next_power_of_2", item_source),
@@ -760,6 +766,20 @@ def validate_derived(route, route_path, context):
             if source_type not in INTEGER_TYPES:
                 raise ValueError(f"{item_source}.next_power_of_2: expected integer source")
         available.add(name)
+
+
+def validate_integer_operands(value, item_type, context, available, source):
+    if item_type not in INTEGER_TYPES:
+        raise ValueError(f"{source}: result must be an integer type")
+    if not isinstance(value, list) or len(value) < 2:
+        raise ValueError(f"{source}: expected at least two operands")
+    for i, operand in enumerate(value):
+        if is_source_string(operand):
+            operand_type = context.resolve_source(operand, f"{source}[{i}]", available)
+            if operand_type not in INTEGER_TYPES:
+                raise ValueError(f"{source}[{i}]: expected integer source")
+        elif type(operand) is not int:
+            raise ValueError(f"{source}[{i}]: expected integer literal or source string")
 
 
 def validate_product(value, item_type, context, available, source):

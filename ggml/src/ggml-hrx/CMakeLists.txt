@@ -162,6 +162,7 @@ set(GGML_HRX_LOOM_ROUTE_FILES
         routes/generic/set_rows/f32_f16/cont.json
         routes/generic/swiglu/f32/split_strided_4d.json
         routes/gfx1100/swiglu/f32/qwen3_moe_routed_swiglu_f32.json
+        routes/gfx1100/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k_f16_wmma.json
         routes/gfx1100/flash_attn_ext/f32_f16/tiled_decode_d128_h32_hkv4_kv512_40960_t1.json
         routes/gfx1100/flash_attn_ext/f32_f16/tiled_decode_d128_h32_hkv8_kv512_8192_t1.json
         routes/gfx1100/flash_attn_ext/f32_f16/tiled_prefill_d128_h32_hkv4_cap_kv40960_t512.json

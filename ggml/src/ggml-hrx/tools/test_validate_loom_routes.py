@@ -232,6 +232,46 @@ def expect_index_scalar_valid():
             raise AssertionError("index-scalar: expected index scalar to pack as int32_t")
 
 
+def expect_derived_math_valid():
+    with tempfile.TemporaryDirectory(prefix="derived-math-") as tmpdir:
+        source_root = copy_catalog(tmpdir)
+
+        def add_derived_math(route):
+            route["derived"]["plus_padding"] = {
+                "type": "i64",
+                "sum": ["derived.total_size", 1, 3],
+            }
+            route["derived"]["without_padding"] = {
+                "type": "i64",
+                "difference": ["derived.plus_padding", 4],
+            }
+            route["derived"]["max_extent"] = {
+                "type": "i64",
+                "maximum": ["derived.total_size", 32],
+            }
+
+        mutate_route(source_root, add_derived_math)
+        loom.validate_catalog(source_root)
+
+        route, definition = read_route_and_definition(source_root, ROUTE_PATH)
+        impl = route_impl.generate_route_impl(str(ROUTE_PATH), route, definition)
+        if (
+            "const int64_t derived_plus_padding = static_cast<int64_t>(derived_total_size) "
+            "+ static_cast<int64_t>(1) + static_cast<int64_t>(3);"
+        ) not in impl:
+            raise AssertionError("derived-math: expected sum expression")
+        if (
+            "const int64_t derived_without_padding = static_cast<int64_t>(derived_plus_padding) "
+            "- static_cast<int64_t>(4);"
+        ) not in impl:
+            raise AssertionError("derived-math: expected difference expression")
+        if (
+            "const int64_t derived_max_extent = "
+            "std::max(static_cast<int64_t>(derived_total_size), static_cast<int64_t>(32));"
+        ) not in impl:
+            raise AssertionError("derived-math: expected maximum expression")
+
+
 def make_multi_step_add_route(route):
     base_dispatch = route["dispatches"][0]
     definition = base_dispatch["definition"]
@@ -349,6 +389,7 @@ def main():
     )
     expect_dependency_generation_valid()
     expect_index_scalar_valid()
+    expect_derived_math_valid()
     expect_multi_step_generation_valid()
     expect_undeclared_transient_invalid()
 
@@ -427,6 +468,16 @@ def main():
             "source-value-conflict",
             lambda route: route["dispatches"][0]["config"]["bindings"][0].update({"value": 7}),
             "expected exactly one of source or value",
+        ),
+        (
+            "float-derived-sum",
+            lambda route: route["derived"].update({"bad_sum": {"type": "f32", "sum": ["derived.total_size", 1]}}),
+            "result must be an integer type",
+        ),
+        (
+            "short-derived-difference",
+            lambda route: route["derived"].update({"bad_difference": {"type": "i64", "difference": ["derived.total_size"]}}),
+            "expected at least two operands",
         ),
         (
             "forbidden-routing-field",

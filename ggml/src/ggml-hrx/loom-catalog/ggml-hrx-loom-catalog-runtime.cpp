@@ -269,7 +269,8 @@ static bool ggml_backend_hrx_loom_deserialize_or_link_module(
         return false;
     }
 
-    const loomc_string_view_t root_symbol  = loomc_make_cstring_view(input->symbol);
+    const std::string         root_symbol_name = std::string("@") + input->symbol;
+    const loomc_string_view_t root_symbol      = loomc_make_cstring_view(root_symbol_name.c_str());
     loomc_link_options_t      link_options = {
         /* .type              = */ LOOMC_STRUCTURE_TYPE_LINK_OPTIONS,
         /* .structure_size    = */ sizeof(loomc_link_options_t),
@@ -751,8 +752,9 @@ bool ggml_backend_hrx_loom_compile(const ggml_backend_hrx_loom_compile_input * i
         return false;
     }
 
+    const std::string compile_function_symbol_name = std::string("@") + input->symbol;
     const loomc_target_specialization_t target_specialization = {
-        /* .function_symbol = */ loomc_make_cstring_view(input->symbol),
+        /* .function_symbol = */ loomc_make_cstring_view(compile_function_symbol_name.c_str()),
         /* .target_profile  = */ state.target_profile,
     };
     const loomc_config_binding_t * compile_bindings =

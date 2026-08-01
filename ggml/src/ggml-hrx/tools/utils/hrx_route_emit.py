@@ -376,6 +376,27 @@ def emit_integer_operand(value, context, schema):
     return str(int(value))
 
 
+def emit_integer_operands(value, scalar_type, operator):
+    operands = [source_expr(item) if not isinstance(item, int) else str(item) for item in value]
+    return f" {operator} ".join([typed_expr(operand, scalar_type) for operand in operands])
+
+
+def emit_sum(value, scalar_type):
+    return emit_integer_operands(value, scalar_type, "+")
+
+
+def emit_difference(value, scalar_type):
+    return emit_integer_operands(value, scalar_type, "-")
+
+
+def emit_maximum(value, scalar_type):
+    operands = [typed_expr(source_expr(item) if not isinstance(item, int) else str(item), scalar_type) for item in value]
+    expr = operands[0]
+    for operand in operands[1:]:
+        expr = f"std::max({expr}, {operand})"
+    return expr
+
+
 def emit_product(value, context, scalar_type):
     if isinstance(value, str):
         operands = source_expr(value)
@@ -411,6 +432,27 @@ def emit_derived_value(item, context, scalar_type, schema, next_power_of_2_funct
     return scalar_literal(item["value"], scalar_type)
 
 
+def emit_derived_sum(item, context, scalar_type, schema, next_power_of_2_function):
+    del context
+    del schema
+    del next_power_of_2_function
+    return emit_sum(item["sum"], scalar_type)
+
+
+def emit_derived_difference(item, context, scalar_type, schema, next_power_of_2_function):
+    del context
+    del schema
+    del next_power_of_2_function
+    return emit_difference(item["difference"], scalar_type)
+
+
+def emit_derived_maximum(item, context, scalar_type, schema, next_power_of_2_function):
+    del context
+    del schema
+    del next_power_of_2_function
+    return emit_maximum(item["maximum"], scalar_type)
+
+
 def emit_derived_product(item, context, scalar_type, schema, next_power_of_2_function):
     del schema
     del next_power_of_2_function
@@ -429,8 +471,11 @@ def emit_derived_next_power_of_2(item, context, scalar_type, schema, next_power_
 DERIVED_EMITTERS = {
     "field": emit_derived_field,
     "value": emit_derived_value,
+    "sum": emit_derived_sum,
+    "difference": emit_derived_difference,
     "product": emit_derived_product,
     "ceil_div": emit_derived_ceil_div,
+    "maximum": emit_derived_maximum,
     "next_power_of_2": emit_derived_next_power_of_2,
 }
 
