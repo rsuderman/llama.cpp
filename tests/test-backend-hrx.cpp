@@ -701,10 +701,13 @@ static void run_qwen3_moe_gate_up_case(ggml_backend_t backend) {
     }
 }
 
-static void run_qwen3_moe_routed_down_case(ggml_backend_t backend) {
+static void run_qwen3_moe_routed_down_case(ggml_backend_t backend,
+                                           ggml_type      weight_type,
+                                           const char *   route_id,
+                                           const char *   label) {
     const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
     const std::string saved    = previous ? previous : "";
-    setenv("GGML_HRX_LOOM_FORCE_ROUTE", "qwen3_moe_routed_down_q4k_f16_wmma_residual", 1);
+    setenv("GGML_HRX_LOOM_FORCE_ROUTE", route_id, 1);
 
     const int64_t input_size   = 768;
     const int64_t output_size  = 2048;
@@ -712,11 +715,11 @@ static void run_qwen3_moe_routed_down_case(ggml_backend_t backend) {
     const int64_t route_count  = 8;
     const int64_t token_count  = 17;
 
-    ggml_context_ptr ctx         = make_context();
-    ggml_tensor *    down_weight = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_Q4_K, input_size, output_size, expert_count);
-    ggml_tensor *    input       = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, input_size, route_count, token_count);
-    ggml_tensor *    route_ids   = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_I32, route_count, token_count);
-    ggml_tensor *    down        = ggml_mul_mat_id(ctx.get(), down_weight, input, route_ids);
+    ggml_context_ptr ctx           = make_context();
+    ggml_tensor *    down_weight   = ggml_new_tensor_3d(ctx.get(), weight_type, input_size, output_size, expert_count);
+    ggml_tensor *    input         = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, input_size, route_count, token_count);
+    ggml_tensor *    route_ids     = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_I32, route_count, token_count);
+    ggml_tensor *    down          = ggml_mul_mat_id(ctx.get(), down_weight, input, route_ids);
     ggml_tensor *    route_weights = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, 1, route_count, token_count);
     ggml_tensor *    weighted_down = ggml_mul(ctx.get(), down, route_weights);
 
@@ -764,13 +767,20 @@ static void run_qwen3_moe_routed_down_case(ggml_backend_t backend) {
 
     std::vector<float> actual(residual_data.size(), -1.0f);
     ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
-    expect_near(actual, residual_data, 1e-6f, "qwen3_moe_routed_down");
+    expect_near(actual, residual_data, 1e-6f, label);
 
     if (previous) {
         setenv("GGML_HRX_LOOM_FORCE_ROUTE", saved.c_str(), 1);
     } else {
         unsetenv("GGML_HRX_LOOM_FORCE_ROUTE");
     }
+}
+
+static void run_qwen3_moe_routed_down_case(ggml_backend_t backend) {
+    run_qwen3_moe_routed_down_case(backend, GGML_TYPE_Q4_K, "qwen3_moe_routed_down_q4k_f16_wmma_residual",
+                                   "qwen3_moe_routed_down_q4k");
+    run_qwen3_moe_routed_down_case(backend, GGML_TYPE_Q6_K, "qwen3_moe_routed_down_q6k_f16_wmma_residual",
+                                   "qwen3_moe_routed_down_q6k");
 }
 
 }  // namespace
