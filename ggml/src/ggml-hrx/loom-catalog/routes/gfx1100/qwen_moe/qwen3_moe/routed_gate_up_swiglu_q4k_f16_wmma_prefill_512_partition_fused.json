@@ -1,0 +1,120 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma_prefill_512_partition_fused",
+  "format": "loom",
+  "priority": 275,
+  "tensors": {
+    "gate_weight": {"type": "Q4_K", "shape": ["input_size", "output_size", "expert_count", 1], "layout": "contiguous"},
+    "input": {"type": "F32", "shape": ["input_size", 1, "token_count", 1], "layout": "contiguous"},
+    "route_ids": {"type": "I32", "shape": ["route_count", "token_count", 1, 1]},
+    "gate_projection": {"type": "F32", "shape": ["output_size", "route_count", "token_count", 1], "layout": "contiguous"},
+    "up_weight": {"type": "Q4_K", "shape": ["input_size", "output_size", "expert_count", 1], "layout": "contiguous"},
+    "up_projection": {"type": "F32", "shape": ["output_size", "route_count", "token_count", 1], "layout": "contiguous"},
+    "output": {"type": "F32", "shape": ["output_size", "route_count", "token_count", 1], "layout": "contiguous"}
+  },
+  "match": {
+    "anchors": ["gate"],
+    "ops": {
+      "gate": {
+        "op": "GGML_OP_MUL_MAT_ID",
+        "tensors": {"src0": "gate_weight", "src1": "input", "src2": "route_ids", "dst": "gate_projection"},
+        "attributes": {}
+      },
+      "up": {
+        "op": "GGML_OP_MUL_MAT_ID",
+        "tensors": {"src0": "up_weight", "src1": "input", "src2": "route_ids", "dst": "up_projection"},
+        "attributes": {}
+      },
+      "swiglu": {
+        "op": "GGML_OP_GLU",
+        "tensors": {"src0": "gate_projection", "src1": "up_projection", "dst": "output"},
+        "attributes": {"glu_op": {"type": "i32", "source": "op_param.0"}}
+      }
+    },
+    "predicates": [
+      {"field": "attribute.swiglu.glu_op", "equals": 2},
+      {"field": "shape.gate_weight.input_size", "equals": 2048},
+      {"field": "shape.output.output_size", "equals": 768},
+      {"field": "shape.output.route_count", "equals": 8},
+      {"field": "shape.gate_weight.expert_count", "equals": 128},
+      {"field": "shape.output.token_count", "equals": 512},
+      {"field": "tensor.route_ids.element_strides.1", "min": 8},
+      {"field": "tensor.route_ids.element_strides.1", "max": 128},
+      {"elided": ["gate_projection", "up_projection"]},
+      {"no_overlap": ["input", "output"]},
+      {"no_overlap": ["gate_weight", "output"]},
+      {"no_overlap": ["up_weight", "output"]}
+    ]
+  },
+  "derived": {
+    "token_count": {"type": "i64", "field": "shape.output.token_count"},
+    "route_count": {"type": "i64", "field": "shape.output.route_count"},
+    "route_stride": {"type": "i64", "field": "tensor.route_ids.element_strides.1"},
+    "expert_count": {"type": "i64", "field": "shape.gate_weight.expert_count"},
+    "token_plus_one": {"type": "i64", "sum": ["derived.token_count", 1]},
+    "expert_table_i32_count": {"type": "i64", "product": ["derived.expert_count", "derived.token_plus_one"]},
+    "expert_table_bytes": {"type": "i64", "product": ["derived.expert_table_i32_count", 4]},
+    "assignment_count": {"type": "i64", "product": ["derived.token_count", "derived.route_count"]},
+    "assignment_partition_count": {"type": "i64", "ceil_div": ["derived.assignment_count", 32]},
+    "partition_descriptor_count": {"type": "i64", "sum": ["derived.assignment_partition_count", "derived.expert_count"]},
+    "partition_table_i32_count": {"type": "i64", "sum": [1, "derived.partition_descriptor_count"]},
+    "partition_table_bytes": {"type": "i64", "product": ["derived.partition_table_i32_count", 4]},
+    "completion_counter_bytes": {"type": "i64", "product": [1, 4]},
+    "output_tiles": {"type": "i64", "ceil_div": ["shape.output.output_size", 64]},
+    "launch_partition_count": {"type": "i64", "maximum": ["derived.assignment_partition_count", "derived.expert_count"]}
+  },
+  "transient_buffers": {
+    "expert_table": {"size": "derived.expert_table_bytes"},
+    "partition_table": {"size": "derived.partition_table_bytes"},
+    "completion_counter": {"size": "derived.completion_counter_bytes"}
+  },
+  "architectures": ["gfx1100"],
+  "dispatches": [
+    {
+      "name": "build_expert_table_partition",
+      "definition": "../../../../defs/gfx1100/qwen_moe/qwen3_moe/build_expert_table_partition_prefill_512.json",
+      "config": {
+        "mode": "compile",
+        "bindings": []
+      },
+      "buffers": [
+        {"name": "route_ids", "tensor": "route_ids", "position": 0, "kind": "input"},
+        {"name": "expert_table", "transient": "expert_table", "position": 1, "kind": "output"},
+        {"name": "partition_table", "transient": "partition_table", "position": 2, "kind": "output"},
+        {"name": "completion_counter", "transient": "completion_counter", "position": 3, "kind": "inout"}
+      ],
+      "scalars": [
+        {"name": "token_count", "type": "index", "position": 0, "source": "derived.token_count"},
+        {"name": "route_count", "type": "index", "position": 1, "source": "derived.route_count"},
+        {"name": "route_stride", "type": "index", "position": 2, "source": "derived.route_stride"},
+        {"name": "expert_count", "type": "index", "position": 3, "source": "derived.expert_count"}
+      ],
+      "dispatch": {"workgroups": ["derived.expert_count"], "workgroup_size": [256, 1, 1]}
+    },
+    {
+      "name": "fused_gate_up_swiglu",
+      "definition": "../../../../defs/gfx1100/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k_f16_wmma.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {"name": "qwen3_moe_routed_gate_up_input_size", "type": "i64", "source": "shape.gate_weight.input_size"},
+          {"name": "qwen3_moe_routed_gate_up_route_count", "type": "i64", "source": "derived.route_count"},
+          {"name": "qwen3_moe_routed_gate_up_expert_count", "type": "i64", "source": "derived.expert_count"},
+          {"name": "qwen3_moe_routed_gate_up_output_size", "type": "i64", "source": "shape.output.output_size"}
+        ]
+      },
+      "buffers": [
+        {"name": "input", "tensor": "input", "position": 0, "kind": "input"},
+        {"name": "expert_table", "transient": "expert_table", "position": 1, "kind": "input"},
+        {"name": "partition_table", "transient": "partition_table", "position": 2, "kind": "input"},
+        {"name": "gate_weight", "tensor": "gate_weight", "position": 3, "kind": "input"},
+        {"name": "up_weight", "tensor": "up_weight", "position": 4, "kind": "input"},
+        {"name": "output", "tensor": "output", "position": 5, "kind": "output"}
+      ],
+      "scalars": [
+        {"name": "token_count", "type": "index", "position": 0, "source": "derived.token_count"}
+      ],
+      "dispatch": {"workgroups": ["derived.output_tiles", "derived.launch_partition_count"], "workgroup_size": [256, 1, 1]}
+    }
+  ]
+}

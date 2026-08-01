@@ -798,25 +798,32 @@ static void run_qwen3_moe_router_top8_case(ggml_backend_t backend) {
     }
 }
 
-static void run_qwen3_moe_gate_up_case(ggml_backend_t backend) {
+static void run_qwen3_moe_gate_up_case(ggml_backend_t backend,
+                                       const char *   route_id,
+                                       int64_t        token_count,
+                                       bool           strided_route_ids,
+                                       const char *   label) {
     const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
     const std::string saved    = previous ? previous : "";
-    setenv("GGML_HRX_LOOM_FORCE_ROUTE", "qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma", 1);
+    setenv("GGML_HRX_LOOM_FORCE_ROUTE", route_id, 1);
 
     const int64_t input_size   = 2048;
     const int64_t output_size  = 768;
     const int64_t expert_count = 128;
     const int64_t route_count  = 8;
-    const int64_t token_count  = 1;
+    const int64_t route_stride = strided_route_ids ? expert_count : route_count;
 
     ggml_context_ptr ctx         = make_context();
     ggml_tensor *    gate_weight = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_Q4_K, input_size, output_size, expert_count);
     ggml_tensor *    up_weight   = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_Q4_K, input_size, output_size, expert_count);
     ggml_tensor *    input       = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, input_size, 1, token_count);
-    ggml_tensor *    route_ids   = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_I32, route_count, token_count);
-    ggml_tensor *    gate        = ggml_mul_mat_id(ctx.get(), gate_weight, input, route_ids);
-    ggml_tensor *    up          = ggml_mul_mat_id(ctx.get(), up_weight, input, route_ids);
-    ggml_tensor *    out         = ggml_swiglu_split(ctx.get(), gate, up);
+    ggml_tensor *    route_ids_storage = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_I32, route_stride, token_count);
+    ggml_tensor * route_ids = strided_route_ids ? ggml_view_2d(ctx.get(), route_ids_storage, route_count, token_count,
+                                                               route_stride * ggml_element_size(route_ids_storage), 0) :
+                                                  route_ids_storage;
+    ggml_tensor * gate      = ggml_mul_mat_id(ctx.get(), gate_weight, input, route_ids);
+    ggml_tensor * up        = ggml_mul_mat_id(ctx.get(), up_weight, input, route_ids);
+    ggml_tensor * out       = ggml_swiglu_split(ctx.get(), gate, up);
 
     ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 16, false);
     ggml_build_forward_expand(graph, out);
@@ -827,22 +834,24 @@ static void run_qwen3_moe_gate_up_case(ggml_backend_t backend) {
     std::vector<uint8_t> gate_weight_data(ggml_nbytes(gate_weight), 0);
     std::vector<uint8_t> up_weight_data(ggml_nbytes(up_weight), 0);
     std::vector<float>   input_data(input_size * token_count, 0.0f);
-    std::vector<int32_t> route_id_data(route_count * token_count);
-    for (int64_t i = 0; i < route_count * token_count; ++i) {
-        route_id_data[i] = static_cast<int32_t>(i % expert_count);
+    std::vector<int32_t> route_id_data(route_stride * token_count, 0);
+    for (int64_t token = 0; token < token_count; ++token) {
+        for (int64_t route = 0; route < route_count; ++route) {
+            route_id_data[token * route_stride + route] = static_cast<int32_t>(route % expert_count);
+        }
     }
 
     ggml_backend_tensor_set(gate_weight, gate_weight_data.data(), 0, gate_weight_data.size());
     ggml_backend_tensor_set(up_weight, up_weight_data.data(), 0, up_weight_data.size());
     ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
-    ggml_backend_tensor_set(route_ids, route_id_data.data(), 0, route_id_data.size() * sizeof(int32_t));
+    ggml_backend_tensor_set(route_ids_storage, route_id_data.data(), 0, route_id_data.size() * sizeof(int32_t));
     GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
 
     const int64_t      element_count = output_size * route_count * token_count;
     std::vector<float> actual(element_count, -1.0f);
     std::vector<float> expected(element_count, 0.0f);
     ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
-    expect_near(actual, expected, 1e-6f, "qwen3_moe_gate_up");
+    expect_near(actual, expected, 1e-6f, label);
 
     if (previous) {
         setenv("GGML_HRX_LOOM_FORCE_ROUTE", saved.c_str(), 1);
@@ -1169,7 +1178,11 @@ int main() {
             return 0;
         }
         if (std::string(test_only) == "qwen3_moe_gate_up") {
-            run_qwen3_moe_gate_up_case(backend.get());
+            run_qwen3_moe_gate_up_case(backend.get(), "qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma", 1, false,
+                                       "qwen3_moe_gate_up");
+            run_qwen3_moe_gate_up_case(backend.get(),
+                                       "qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma_prefill_512_partition_fused", 512,
+                                       true, "qwen3_moe_gate_up_prefill_512_partition_fused");
             ggml_backend_synchronize(backend.get());
             return 0;
         }
