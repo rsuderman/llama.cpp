@@ -387,6 +387,50 @@ static void run_add_transient_pair_case(ggml_backend_t backend, ggml_backend_dev
     }
 }
 
+static void run_graph_transient_case(ggml_backend_t backend) {
+    const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    const std::string saved    = previous ? previous : "";
+    unsetenv("GGML_HRX_LOOM_FORCE_ROUTE");
+
+    const int64_t    n     = 509;
+    ggml_context_ptr ctx   = make_context();
+    ggml_tensor *    x     = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n);
+    ggml_tensor *    scale = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n);
+    ggml_tensor *    tmp   = ggml_mul(ctx.get(), x, scale);
+    ggml_tensor *    bias  = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n);
+    ggml_tensor *    out   = ggml_add(ctx.get(), tmp, bias);
+
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 16, false);
+    ggml_build_forward_expand(graph, out);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> x_data(n);
+    std::vector<float> scale_data(n);
+    std::vector<float> bias_data(n);
+    std::vector<float> expected(n);
+    for (int64_t i = 0; i < n; ++i) {
+        x_data[i]     = static_cast<float>(i % 17) - 8.0f;
+        scale_data[i] = static_cast<float>(i % 5) * 0.25f + 0.5f;
+        bias_data[i]  = static_cast<float>(i % 11) - 5.0f;
+        expected[i]   = x_data[i] * scale_data[i] + bias_data[i];
+    }
+
+    ggml_backend_tensor_set(x, x_data.data(), 0, x_data.size() * sizeof(float));
+    ggml_backend_tensor_set(scale, scale_data.data(), 0, scale_data.size() * sizeof(float));
+    ggml_backend_tensor_set(bias, bias_data.data(), 0, bias_data.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> actual(n, -1.0f);
+    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+    expect_near(actual, expected, 1e-6f, "graph_transient");
+
+    if (previous) {
+        setenv("GGML_HRX_LOOM_FORCE_ROUTE", saved.c_str(), 1);
+    }
+}
+
 static void run_mul_row_broadcast_case(ggml_backend_t backend, ggml_backend_dev_t dev) {
     const int64_t    ncols = 128;
     const int64_t    nrows = 32;
@@ -688,9 +732,9 @@ static void run_qwen3_moe_gate_up_case(ggml_backend_t backend) {
     ggml_backend_tensor_set(route_ids, route_id_data.data(), 0, route_id_data.size() * sizeof(int32_t));
     GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
 
-    const int64_t        element_count = output_size * route_count * token_count;
-    std::vector<float>   actual(element_count, -1.0f);
-    std::vector<float>   expected(element_count, 0.0f);
+    const int64_t      element_count = output_size * route_count * token_count;
+    std::vector<float> actual(element_count, -1.0f);
+    std::vector<float> expected(element_count, 0.0f);
     ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
     expect_near(actual, expected, 1e-6f, "qwen3_moe_gate_up");
 
@@ -783,6 +827,118 @@ static void run_qwen3_moe_routed_down_case(ggml_backend_t backend) {
                                    "qwen3_moe_routed_down_q6k");
 }
 
+static void run_qwen3_moe_routed_down_next_rmsnorm_case(ggml_backend_t backend,
+                                                        ggml_type      weight_type,
+                                                        const char *   route_id,
+                                                        const char *   label) {
+    const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    const std::string saved    = previous ? previous : "";
+    setenv("GGML_HRX_LOOM_FORCE_ROUTE", route_id, 1);
+
+    const int64_t input_size   = 768;
+    const int64_t output_size  = 2048;
+    const int64_t expert_count = 128;
+    const int64_t route_count  = 8;
+    const int64_t token_count  = 17;
+    const float   eps          = 1.0e-6f;
+
+    ggml_context_ptr ctx           = make_context();
+    ggml_tensor *    down_weight   = ggml_new_tensor_3d(ctx.get(), weight_type, input_size, output_size, expert_count);
+    ggml_tensor *    input         = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, input_size, route_count, token_count);
+    ggml_tensor *    route_ids     = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_I32, route_count, token_count);
+    ggml_tensor *    down          = ggml_mul_mat_id(ctx.get(), down_weight, input, route_ids);
+    ggml_tensor *    route_weights = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, 1, route_count, token_count);
+    ggml_tensor *    weighted_down = ggml_mul(ctx.get(), down, route_weights);
+
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 96, false);
+    ggml_build_forward_expand(graph, weighted_down);
+
+    ggml_tensor * route_outputs[8] = {};
+    for (int64_t i = 0; i < route_count; ++i) {
+        route_outputs[i] = ggml_view_2d(ctx.get(), weighted_down, output_size, token_count, weighted_down->nb[2],
+                                        i * weighted_down->nb[1]);
+        ggml_build_forward_expand(graph, route_outputs[i]);
+    }
+
+    ggml_tensor * moe_out = route_outputs[0];
+    for (int64_t i = 1; i < route_count; ++i) {
+        moe_out = ggml_add(ctx.get(), moe_out, route_outputs[i]);
+        ggml_build_forward_expand(graph, moe_out);
+    }
+
+    ggml_tensor * residual              = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, output_size, token_count);
+    ggml_tensor * out                   = ggml_add(ctx.get(), moe_out, residual);
+    ggml_tensor * next_norm_weight      = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, output_size);
+    ggml_tensor * rms                   = ggml_rms_norm(ctx.get(), out, eps);
+    ggml_tensor * next_projection_input = ggml_mul(ctx.get(), rms, next_norm_weight);
+    ggml_build_forward_expand(graph, out);
+    ggml_build_forward_expand(graph, next_projection_input);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<uint8_t> down_weight_data(ggml_nbytes(down_weight), 0);
+    std::vector<float>   input_data(input_size * route_count * token_count, 0.0f);
+    std::vector<int32_t> route_id_data(route_count * token_count);
+    std::vector<float>   route_weight_data(route_count * token_count, 0.125f);
+    std::vector<float>   residual_data(output_size * token_count);
+    std::vector<float>   next_norm_weight_data(output_size);
+    std::vector<float>   expected_next(output_size * token_count);
+    for (int64_t i = 0; i < route_count * token_count; ++i) {
+        route_id_data[i] = static_cast<int32_t>(i % expert_count);
+    }
+    for (int64_t i = 0; i < output_size; ++i) {
+        next_norm_weight_data[i] = 0.75f + static_cast<float>(i % 19) * 0.015625f;
+    }
+    for (int64_t i = 0; i < output_size * token_count; ++i) {
+        residual_data[i] = static_cast<float>((i % 31) - 15) * 0.03125f;
+    }
+    for (int64_t token = 0; token < token_count; ++token) {
+        float sum_squares = 0.0f;
+        for (int64_t channel = 0; channel < output_size; ++channel) {
+            const float value = residual_data[token * output_size + channel];
+            sum_squares += value * value;
+        }
+        const float scale = 1.0f / std::sqrt(sum_squares / static_cast<float>(output_size) + eps);
+        for (int64_t channel = 0; channel < output_size; ++channel) {
+            expected_next[token * output_size + channel] =
+                residual_data[token * output_size + channel] * scale * next_norm_weight_data[channel];
+        }
+    }
+
+    ggml_backend_tensor_set(down_weight, down_weight_data.data(), 0, down_weight_data.size());
+    ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+    ggml_backend_tensor_set(route_ids, route_id_data.data(), 0, route_id_data.size() * sizeof(int32_t));
+    ggml_backend_tensor_set(route_weights, route_weight_data.data(), 0, route_weight_data.size() * sizeof(float));
+    ggml_backend_tensor_set(residual, residual_data.data(), 0, residual_data.size() * sizeof(float));
+    ggml_backend_tensor_set(next_norm_weight, next_norm_weight_data.data(), 0,
+                            next_norm_weight_data.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> actual_out(residual_data.size(), -1.0f);
+    ggml_backend_tensor_get(out, actual_out.data(), 0, actual_out.size() * sizeof(float));
+    expect_near(actual_out, residual_data, 1e-6f, label);
+
+    std::vector<float> actual_next(expected_next.size(), -1.0f);
+    ggml_backend_tensor_get(next_projection_input, actual_next.data(), 0, actual_next.size() * sizeof(float));
+    expect_near(actual_next, expected_next, 1e-3f, label);
+
+    if (previous) {
+        setenv("GGML_HRX_LOOM_FORCE_ROUTE", saved.c_str(), 1);
+    } else {
+        unsetenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    }
+}
+
+static void run_qwen3_moe_routed_down_next_rmsnorm_case(ggml_backend_t backend) {
+    run_qwen3_moe_routed_down_next_rmsnorm_case(backend, GGML_TYPE_Q4_K,
+                                                "qwen3_moe_routed_down_q4k_f16_wmma_next_rmsnorm",
+                                                "qwen3_moe_routed_down_q4k_next_rmsnorm");
+    run_qwen3_moe_routed_down_next_rmsnorm_case(backend, GGML_TYPE_Q6_K,
+                                                "qwen3_moe_routed_down_q6k_f16_wmma_next_rmsnorm",
+                                                "qwen3_moe_routed_down_q6k_next_rmsnorm");
+}
+
 }  // namespace
 
 int main() {
@@ -852,6 +1008,11 @@ int main() {
             ggml_backend_synchronize(backend.get());
             return 0;
         }
+        if (std::string(test_only) == "graph_transient") {
+            run_graph_transient_case(backend.get());
+            ggml_backend_synchronize(backend.get());
+            return 0;
+        }
         if (std::string(test_only) == "mul") {
             if (run_mul_support_case(dev)) {
                 run_mul_row_broadcast_case(backend.get(), dev);
@@ -911,6 +1072,11 @@ int main() {
             ggml_backend_synchronize(backend.get());
             return 0;
         }
+        if (std::string(test_only) == "qwen3_moe_routed_down_next_rmsnorm") {
+            run_qwen3_moe_routed_down_next_rmsnorm_case(backend.get());
+            ggml_backend_synchronize(backend.get());
+            return 0;
+        }
         std::fprintf(stderr, "unknown GGML_HRX_TEST_ONLY=%s\n", test_only);
         return 1;
     }
@@ -930,6 +1096,7 @@ int main() {
         run_add_case(backend.get(), dev, 2048);
         run_add_transient_case(backend.get(), dev);
         run_add_transient_pair_case(backend.get(), dev);
+        run_graph_transient_case(backend.get());
     }
     if (run_mul_support_case(dev)) {
         run_mul_row_broadcast_case(backend.get(), dev);

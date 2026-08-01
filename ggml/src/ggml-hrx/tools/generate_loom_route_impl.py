@@ -80,6 +80,7 @@ MULTI_STEP_PLAN_SETUP_TEMPLATE = """
     plan->consumed_node_indices[0] = request->node_index;"""
 
 BIND_BUFFER_TEMPLATE = """    {dispatch_expr}.transient_binding_indices[{position}] = -1;
+    {dispatch_expr}.transient_binding_accesses[{position}] = GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_NONE;
     if (!ggml_backend_hrx_loom_bind_tensor(request, {tensor}, &{dispatch_expr}.bindings[{position}])) {{
         return ggml_backend_hrx_loom_failed({route_id_constant});
     }}"""
@@ -342,11 +343,60 @@ def emit_integer_operand(value, context):
     return route_emit.emit_integer_operand(value, context, route_schema)
 
 
+def transient_access(kind):
+    if kind == "input":
+        return "GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_READ"
+    if kind == "output":
+        return "GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_WRITE"
+    if kind == "inout":
+        return "GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_READ_WRITE"
+    raise ValueError(f"unsupported buffer kind {kind}")
+
+
+def graph_transient_indices(dispatches, base_index=0):
+    indices = {}
+    next_index = base_index
+    for dispatch in dispatches:
+        for buffer in route_schema.require_array(dispatch, "buffers", "route"):
+            if buffer.get("storage") != "graph_transient":
+                continue
+            tensor = route_schema.require_string(buffer, "tensor", "route")
+            if tensor not in indices:
+                indices[tensor] = next_index
+                next_index += 1
+    return indices
+
+
+def emit_graph_transient_materialization(lines, graph_indices, route_constant):
+    for tensor, transient_index in graph_indices.items():
+        tensor_expr = route_emit.role_var(tensor)
+        lines.extend([
+            f"    plan->transients[{transient_index}].graph_tensor = {tensor_expr};",
+            f"    plan->transients[{transient_index}].size = ggml_nbytes({tensor_expr});",
+            f"    if (plan->transients[{transient_index}].size == 0) {{",
+            f"        return ggml_backend_hrx_loom_failed({route_constant});",
+            "    }",
+        ])
+
+
+def emit_graph_transient_binding(lines, dispatch_expr, position, kind, tensor, transient_index):
+    tensor_expr = route_emit.role_var(tensor)
+    access = transient_access(kind)
+    lines.extend([
+        f"    {dispatch_expr}.transient_binding_indices[{position}] = {transient_index};",
+        f"    {dispatch_expr}.transient_binding_accesses[{position}] = {access};",
+        f"    {dispatch_expr}.bindings[{position}].length = ggml_nbytes({tensor_expr});",
+    ])
+
+
 def emit_plan_materialization(lines, route, definition, context, consumed_node_indices=None):
     route_id = route_schema.require_string(route, "id", "route")
     route_constant = route_id_constant(route_id)
     dispatches = route_schema.require_list(route, "dispatches", "route")
     route_dispatch = dispatches[0]
+    graph_indices = graph_transient_indices(dispatches)
+    if len(graph_indices) > 4:
+        raise ValueError("route has too many transient buffers")
     buffers = sorted(route_schema.require_array(route_dispatch, "buffers", "route"), key=lambda item: item["position"])
     scalars = sorted(route_schema.require_array(route_dispatch, "scalars", "route"), key=lambda item: item["position"])
     dispatch = route_schema.require_dict(route_dispatch, "dispatch", "route")
@@ -358,6 +408,9 @@ def emit_plan_materialization(lines, route, definition, context, consumed_node_i
 
     dispatch_expr = "plan->dispatches[0]"
     lines.append(PLAN_SETUP_TEMPLATE.format(route_id_constant=route_constant))
+    emit_graph_transient_materialization(lines, graph_indices, route_constant)
+    if graph_indices:
+        lines.append(f"    plan->transient_count = {len(graph_indices)};")
     lines.extend([
         f"    {dispatch_expr}.entry = entry;",
         "    plan->dispatch_count = 1;",
@@ -368,12 +421,22 @@ def emit_plan_materialization(lines, route, definition, context, consumed_node_i
     for buffer in buffers:
         position = route_schema.require_int(buffer, "position", "route")
         tensor = route_schema.require_string(buffer, "tensor", "route")
-        lines.append(BIND_BUFFER_TEMPLATE.format(
-            dispatch_expr=dispatch_expr,
-            tensor=route_emit.role_var(tensor),
-            position=position,
-            route_id_constant=route_constant,
-        ))
+        if buffer.get("storage") == "graph_transient":
+            emit_graph_transient_binding(
+                lines,
+                dispatch_expr,
+                position,
+                route_schema.require_string(buffer, "kind", "route"),
+                tensor,
+                graph_indices[tensor],
+            )
+        else:
+            lines.append(BIND_BUFFER_TEMPLATE.format(
+                dispatch_expr=dispatch_expr,
+                tensor=route_emit.role_var(tensor),
+                position=position,
+                route_id_constant=route_constant,
+            ))
     lines.append(f"    {dispatch_expr}.binding_count = {len(buffers)};")
 
     for scalar, offset in zip(scalars, offsets):
@@ -436,17 +499,29 @@ def emit_step_materialization(lines, route_id, dispatches, step_index, step, def
         position = route_schema.require_int(buffer, "position", "route")
         if "tensor" in buffer:
             tensor = route_schema.require_string(buffer, "tensor", "route")
-            lines.extend([
-                f"    {step_expr}.transient_binding_indices[{position}] = -1;",
-                f"    if (!ggml_backend_hrx_loom_bind_tensor(request, {route_emit.role_var(tensor)}, &{step_expr}.bindings[{position}])) {{",
-                f"        return ggml_backend_hrx_loom_failed({route_constant});",
-                "    }",
-            ])
+            if buffer.get("storage") == "graph_transient":
+                emit_graph_transient_binding(
+                    lines,
+                    step_expr,
+                    position,
+                    route_schema.require_string(buffer, "kind", "route"),
+                    tensor,
+                    transient_indices[tensor],
+                )
+            else:
+                lines.extend([
+                    f"    {step_expr}.transient_binding_indices[{position}] = -1;",
+                    f"    {step_expr}.transient_binding_accesses[{position}] = GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_NONE;",
+                    f"    if (!ggml_backend_hrx_loom_bind_tensor(request, {route_emit.role_var(tensor)}, &{step_expr}.bindings[{position}])) {{",
+                    f"        return ggml_backend_hrx_loom_failed({route_constant});",
+                    "    }",
+                ])
         else:
             transient = route_schema.require_string(buffer, "transient", "route")
             transient_index = transient_indices[transient]
             lines.extend([
                 f"    {step_expr}.transient_binding_indices[{position}] = {transient_index};",
+                f"    {step_expr}.transient_binding_accesses[{position}] = {transient_access(route_schema.require_string(buffer, 'kind', 'route'))};",
                 f"    {step_expr}.bindings[{position}].offset = plan->transients[{transient_index}].offset;",
                 f"    {step_expr}.bindings[{position}].length = plan->transients[{transient_index}].size;",
             ])
@@ -486,8 +561,11 @@ def emit_multi_step_plan_materialization(lines, route, step_definitions, context
     steps = route_schema.require_list(route, "dispatches", "route")
     if len(transient_buffers) > 4:
         raise ValueError("route has too many transient buffers")
-    if len(steps) > 4:
+    if len(steps) > 5:
         raise ValueError("route has too many dispatches")
+    graph_indices = graph_transient_indices(steps, len(transient_buffers))
+    if len(transient_buffers) + len(graph_indices) > 4:
+        raise ValueError("route has too many transient buffers")
 
     lines.append(MULTI_STEP_PLAN_SETUP_TEMPLATE.format(route_id_constant=route_constant))
 
@@ -513,6 +591,12 @@ def emit_multi_step_plan_materialization(lines, route, step_definitions, context
         ])
     lines.append(f"    plan->transient_count = {len(transient_buffers)};")
     lines.append("    plan->transient_byte_length = transient_cursor;")
+
+    for tensor, transient_index in graph_indices.items():
+        transient_indices[tensor] = transient_index
+    emit_graph_transient_materialization(lines, graph_indices, route_constant)
+    if graph_indices:
+        lines.append(f"    plan->transient_count = {len(transient_buffers) + len(graph_indices)};")
 
     lines.append(f"    plan->dispatch_count = {len(steps)};")
     for i, step in enumerate(steps):

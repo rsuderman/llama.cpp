@@ -1,0 +1,140 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "mul_add_f32_graph_transient_demo",
+  "format": "loom",
+  "priority": 1000,
+  "tensors": {
+    "x": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"], "layout": "contiguous"},
+    "scale": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"], "layout": "contiguous"},
+    "scaled": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"], "layout": "contiguous"},
+    "bias": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"], "layout": "contiguous"},
+    "y": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"], "layout": "contiguous"}
+  },
+  "match": {
+    "anchors": [
+      "mul"
+    ],
+    "ops": {
+      "mul": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "x",
+          "src1": "scale",
+          "dst": "scaled"
+        },
+        "attributes": {}
+      },
+      "add": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "scaled",
+          "src1": "bias",
+          "dst": "y"
+        },
+        "attributes": {}
+      }
+    },
+    "predicates": [
+      {"field": "derived.total_size", "equals": 509}
+    ]
+  },
+  "derived": {
+    "total_size": {
+      "type": "i64",
+      "product": ["shape.y.d0", "shape.y.d1", "shape.y.d2", "shape.y.d3"]
+    }
+  },
+  "architectures": ["*"],
+  "dispatches": [
+    {
+      "name": "mul",
+      "definition": "../../../../defs/generic/mul/f32/contiguous.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "shape_pointwise_total_size",
+            "type": "i64",
+            "source": "derived.total_size"
+          },
+          {
+            "name": "tuning_pointwise_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "x",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "src1",
+          "tensor": "scale",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "scaled",
+          "storage": "graph_transient",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "work_items": ["derived.total_size"],
+        "workgroup_size": [256, 1, 1]
+      }
+    },
+    {
+      "name": "add",
+      "definition": "../../../../defs/generic/add/f32/contiguous.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "shape_pointwise_total_size",
+            "type": "i64",
+            "source": "derived.total_size"
+          },
+          {
+            "name": "tuning_pointwise_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "scaled",
+          "storage": "graph_transient",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "src1",
+          "tensor": "bias",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "y",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "work_items": ["derived.total_size"],
+        "workgroup_size": [256, 1, 1]
+      }
+    }
+  ]
+}

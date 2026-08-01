@@ -11,7 +11,8 @@ PREDICATE_FIELDS = {"contiguous", "same_shape", "same_layout", "rank", "field", 
 DERIVED_FIELDS = {"type", "field", "value", "sum", "difference", "product", "ceil_div", "maximum", "next_power_of_2"}
 TRANSIENT_BUFFER_FIELDS = {"size"}
 ROUTE_DISPATCH_FIELDS = {"name", "definition", "config", "buffers", "scalars", "dispatch"}
-BUFFER_FIELDS = {"name", "tensor", "transient", "position", "kind"}
+BUFFER_FIELDS = {"name", "tensor", "transient", "storage", "position", "kind"}
+BUFFER_STORAGE = {"graph_transient"}
 SCALAR_FIELDS = {"name", "source", "value", "type", "position"}
 DISPATCH_FIELDS = {"work_items", "workgroups", "workgroup_size"}
 INVOCATION_FIELDS = {"buffers", "scalars", "dispatch"}
@@ -1008,6 +1009,13 @@ def validate_buffers(buffers, route_path, definition, context, transient_buffers
             transient = require_string(buffer, "transient", source)
             if transient_buffers is None or transient not in transient_buffers:
                 raise ValueError(f"{source}.transient: transient buffer {transient} is not declared")
+        if "storage" in buffer:
+            storage = require_string(buffer, "storage", source)
+            if storage not in BUFFER_STORAGE:
+                supported = ", ".join(sorted(BUFFER_STORAGE))
+                raise ValueError(f"{source}: unsupported storage {storage}; expected one of {supported}")
+            if not has_tensor:
+                raise ValueError(f"{source}: storage is only supported for tensor buffers")
         kind = require_string(buffer, "kind", source)
         access = BUFFER_KIND_ACCESS.get(kind)
         if access is None:

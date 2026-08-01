@@ -17,7 +17,7 @@ static constexpr size_t GGML_BACKEND_HRX_LOOM_MAX_CONSTANTS_SIZE  = 256;
 static constexpr size_t GGML_BACKEND_HRX_LOOM_MAX_CONFIG_BINDINGS = 64;
 static constexpr size_t GGML_BACKEND_HRX_LOOM_CONFIG_NAME_BYTES   = 64;
 static constexpr size_t GGML_BACKEND_HRX_LOOM_CONFIG_VALUE_BYTES  = 128;
-static constexpr size_t GGML_BACKEND_HRX_LOOM_MAX_DISPATCHES      = 4;
+static constexpr size_t GGML_BACKEND_HRX_LOOM_MAX_DISPATCHES      = 5;
 static constexpr size_t GGML_BACKEND_HRX_LOOM_MAX_TRANSIENTS      = 4;
 static constexpr size_t GGML_BACKEND_HRX_LOOM_TRANSIENT_ALIGNMENT = 256;
 
@@ -28,8 +28,16 @@ struct ggml_backend_hrx_loom_config_binding {
 };
 
 struct ggml_backend_hrx_loom_transient_buffer_plan {
-    size_t offset = 0;
-    size_t size   = 0;
+    size_t              offset       = 0;
+    size_t              size         = 0;
+    const ggml_tensor * graph_tensor = nullptr;
+};
+
+enum ggml_backend_hrx_loom_buffer_access {
+    GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_NONE,
+    GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_READ,
+    GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_WRITE,
+    GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_READ_WRITE,
 };
 
 struct ggml_backend_hrx_loom_dispatch_plan {
@@ -37,15 +45,16 @@ struct ggml_backend_hrx_loom_dispatch_plan {
     hrx_dispatch_config_t                       dispatch                                                      = {};
     hrx_buffer_ref_t                            bindings[GGML_BACKEND_HRX_LOOM_MAX_BINDINGS]                  = {};
     int                                         transient_binding_indices[GGML_BACKEND_HRX_LOOM_MAX_BINDINGS] = {};
-    size_t                                      binding_count                                                 = 0;
-    uint8_t                                     constants[GGML_BACKEND_HRX_LOOM_MAX_CONSTANTS_SIZE]           = {};
-    size_t                                      constants_size                                                = 0;
-    ggml_backend_hrx_loom_config_binding        config_bindings[GGML_BACKEND_HRX_LOOM_MAX_CONFIG_BINDINGS]    = {};
-    size_t                                      config_binding_count                                          = 0;
+    ggml_backend_hrx_loom_buffer_access         transient_binding_accesses[GGML_BACKEND_HRX_LOOM_MAX_BINDINGS] = {};
+    size_t                                      binding_count                                                  = 0;
+    uint8_t                                     constants[GGML_BACKEND_HRX_LOOM_MAX_CONSTANTS_SIZE]            = {};
+    size_t                                      constants_size                                                 = 0;
+    ggml_backend_hrx_loom_config_binding        config_bindings[GGML_BACKEND_HRX_LOOM_MAX_CONFIG_BINDINGS]     = {};
+    size_t                                      config_binding_count                                           = 0;
 };
 
 struct ggml_backend_hrx_loom_execution_plan {
-    const char *                                route_id                                                   = nullptr;
+    const char *                                route_id = nullptr;
     int                                         consumed_node_indices[GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES] = {};
     int                                         consumed_node_count                                             = 0;
     ggml_backend_hrx_loom_transient_buffer_plan transients[GGML_BACKEND_HRX_LOOM_MAX_TRANSIENTS]                = {};
@@ -136,8 +145,9 @@ static inline void ggml_backend_hrx_loom_append_key_field(std::string & key, uin
 static inline std::string ggml_backend_hrx_loom_cache_key(const char *                                 target,
                                                           const ggml_backend_hrx_loom_execution_plan * plan) {
     std::string                                 key;
-    const ggml_backend_hrx_loom_dispatch_plan * dispatch = plan && plan->dispatch_count > 0 ? &plan->dispatches[0] : nullptr;
-    const ggml_backend_hrx_loom_catalog_entry * entry    = dispatch ? dispatch->entry : nullptr;
+    const ggml_backend_hrx_loom_dispatch_plan * dispatch =
+        plan && plan->dispatch_count > 0 ? &plan->dispatches[0] : nullptr;
+    const ggml_backend_hrx_loom_catalog_entry * entry = dispatch ? dispatch->entry : nullptr;
     if (!entry) {
         return key;
     }

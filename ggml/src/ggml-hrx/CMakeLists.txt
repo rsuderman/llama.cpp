@@ -141,6 +141,7 @@ set(GGML_HRX_LOOM_ROUTE_FILES
         routes/generic/mul/f16/contiguous.json
         routes/generic/mul/f16/non_contiguous_4d.json
         routes/generic/mul/f32/contiguous.json
+        routes/generic/mul/f32/graph_transient_mul_add.json
         routes/generic/mul/f32/non_contiguous_4d.json
         routes/generic/sub/f16/contiguous.json
         routes/generic/sub/f16/non_contiguous_4d.json
@@ -163,6 +164,8 @@ set(GGML_HRX_LOOM_ROUTE_FILES
         routes/generic/swiglu/f32/split_strided_4d.json
         routes/gfx1100/swiglu/f32/qwen3_moe_routed_swiglu_f32.json
         routes/gfx1100/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k_f16_wmma.json
+        routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q4k_f16_wmma_next_rmsnorm.json
+        routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q6k_f16_wmma_next_rmsnorm.json
         routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q4k_f16_wmma_residual.json
         routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q6k_f16_wmma_residual.json
         routes/gfx1100/flash_attn_ext/f32_f16/tiled_decode_d128_h32_hkv4_kv512_40960_t1.json

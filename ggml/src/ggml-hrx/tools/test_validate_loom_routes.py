@@ -390,6 +390,60 @@ def expect_undeclared_transient_invalid():
         raise AssertionError("undeclared-transient: validator accepted invalid route")
 
 
+def expect_graph_transient_generation_valid():
+    with tempfile.TemporaryDirectory(prefix="graph-transient-route-") as tmpdir:
+        source_root = copy_catalog(tmpdir)
+
+        def mutator(route):
+            make_multi_step_add_route(route)
+            route.pop("transient_buffers")
+            route["dispatches"][0]["buffers"][2] = {
+                "name": "dst",
+                "tensor": "dst",
+                "storage": "graph_transient",
+                "position": 2,
+                "kind": "output",
+            }
+            route["dispatches"][1]["buffers"][0] = {
+                "name": "src0",
+                "tensor": "dst",
+                "storage": "graph_transient",
+                "position": 0,
+                "kind": "input",
+            }
+
+        mutate_route(source_root, mutator)
+        loom.validate_catalog(source_root)
+
+        route_path, route, _, dispatch_definitions = route_impl.load_route(source_root, str(ROUTE_PATH))
+        impl = route_impl.generate_op_router_impl([(route_path, route, dispatch_definitions)], "GGML_OP_ADD")
+        if "plan->transients[0].graph_tensor = dst;" not in impl:
+            raise AssertionError("graph-transient-route: expected graph tensor materialization")
+        if "plan->dispatches[0].transient_binding_accesses[2] = GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_WRITE;" not in impl:
+            raise AssertionError("graph-transient-route: expected graph transient write binding")
+        if "plan->dispatches[1].transient_binding_accesses[0] = GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_READ;" not in impl:
+            raise AssertionError("graph-transient-route: expected graph transient read binding")
+
+
+def expect_transient_storage_invalid():
+    with tempfile.TemporaryDirectory(prefix="graph-transient-invalid-") as tmpdir:
+        source_root = copy_catalog(tmpdir)
+
+        def mutator(route):
+            make_multi_step_add_route(route)
+            route["dispatches"][0]["buffers"][2]["storage"] = "graph_transient"
+
+        mutate_route(source_root, mutator)
+        try:
+            loom.validate_catalog(source_root)
+        except ValueError as err:
+            message = str(err)
+            if "storage is only supported for tensor buffers" in message:
+                return
+            raise AssertionError(f"graph-transient-invalid: unexpected error {message!r}") from err
+        raise AssertionError("graph-transient-invalid: validator accepted invalid route")
+
+
 def main():
     expect_valid(CATALOG_ROOT)
     sum_rows_route, sum_rows_definition = read_route_and_definition(CATALOG_ROOT, SUM_ROWS_ROUTE_PATH)
@@ -414,6 +468,8 @@ def main():
     expect_view_field_predicates_valid()
     expect_multi_step_generation_valid()
     expect_undeclared_transient_invalid()
+    expect_graph_transient_generation_valid()
+    expect_transient_storage_invalid()
 
     cases = [
         (

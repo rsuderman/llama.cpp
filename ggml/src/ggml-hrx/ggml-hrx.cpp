@@ -1126,14 +1126,25 @@ static void ggml_backend_hrx_mark_consumed_nodes(const ggml_backend_hrx_loom_con
     }
 }
 
-struct ggml_backend_hrx_loom_transient_interval {
+struct ggml_backend_hrx_loom_transient_assignment {
     ggml_backend_hrx_loom_execution_plan * plan            = nullptr;
     size_t                                 transient_index = 0;
-    size_t                                 size            = 0;
-    size_t                                 first_dispatch  = 0;
-    size_t                                 last_dispatch   = 0;
-    size_t                                 offset          = 0;
 };
+
+struct ggml_backend_hrx_loom_transient_interval {
+    std::vector<ggml_backend_hrx_loom_transient_assignment> assignments;
+    const ggml_tensor *                                     graph_tensor         = nullptr;
+    size_t                                                  size                 = 0;
+    size_t                                                  first_dispatch       = 0;
+    size_t                                                  last_dispatch        = 0;
+    size_t                                                  offset               = 0;
+    size_t                                                  read_count           = 0;
+    size_t                                                  write_count          = 0;
+    size_t                                                  first_read_dispatch  = 0;
+    size_t                                                  first_write_dispatch = 0;
+};
+
+static constexpr size_t GGML_BACKEND_HRX_LOOM_INVALID_TRANSIENT_INTERVAL = std::numeric_limits<size_t>::max();
 
 static bool ggml_backend_hrx_transient_intervals_overlap(const ggml_backend_hrx_loom_transient_interval & lhs,
                                                          const ggml_backend_hrx_loom_transient_interval & rhs) {
@@ -1153,7 +1164,229 @@ static bool ggml_backend_hrx_transient_ranges_overlap(size_t lhs_offset,
     return lhs_offset < rhs_end && rhs_offset < lhs_end;
 }
 
+static ggml_backend_hrx_loom_transient_interval ggml_backend_hrx_make_transient_interval(
+    const ggml_tensor * graph_tensor,
+    size_t              size) {
+    return {
+        /* .assignments          = */ {},
+        /* .graph_tensor         = */ graph_tensor,
+        /* .size                 = */ size,
+        /* .first_dispatch       = */ GGML_BACKEND_HRX_LOOM_INVALID_TRANSIENT_INTERVAL,
+        /* .last_dispatch        = */ 0,
+        /* .offset               = */ 0,
+        /* .read_count           = */ 0,
+        /* .write_count          = */ 0,
+        /* .first_read_dispatch  = */ GGML_BACKEND_HRX_LOOM_INVALID_TRANSIENT_INTERVAL,
+        /* .first_write_dispatch = */ GGML_BACKEND_HRX_LOOM_INVALID_TRANSIENT_INTERVAL,
+    };
+}
+
+static void ggml_backend_hrx_add_transient_assignment(ggml_backend_hrx_loom_transient_interval & interval,
+                                                      ggml_backend_hrx_loom_execution_plan *     plan,
+                                                      size_t                                     transient_index) {
+    interval.assignments.push_back({
+        /* .plan            = */ plan,
+        /* .transient_index = */ transient_index,
+    });
+}
+
+static bool ggml_backend_hrx_add_plan_transient_interval(
+    ggml_backend_hrx_loom_execution_plan *                  plan,
+    size_t                                                  transient_index,
+    std::vector<ggml_backend_hrx_loom_transient_interval> & intervals,
+    size_t *                                                out_interval_index) {
+    if (!plan || !out_interval_index || transient_index >= plan->transient_count) {
+        return false;
+    }
+    const ggml_backend_hrx_loom_transient_buffer_plan & transient = plan->transients[transient_index];
+    if (transient.size == 0) {
+        return false;
+    }
+
+    if (!transient.graph_tensor) {
+        intervals.push_back(ggml_backend_hrx_make_transient_interval(nullptr, transient.size));
+        *out_interval_index = intervals.size() - 1;
+        ggml_backend_hrx_add_transient_assignment(intervals[*out_interval_index], plan, transient_index);
+        return true;
+    }
+
+    for (size_t i = 0; i < intervals.size(); ++i) {
+        ggml_backend_hrx_loom_transient_interval & interval = intervals[i];
+        if (interval.graph_tensor != transient.graph_tensor) {
+            continue;
+        }
+        if (interval.size != transient.size) {
+            return false;
+        }
+        *out_interval_index = i;
+        ggml_backend_hrx_add_transient_assignment(interval, plan, transient_index);
+        return true;
+    }
+
+    intervals.push_back(ggml_backend_hrx_make_transient_interval(transient.graph_tensor, transient.size));
+    *out_interval_index = intervals.size() - 1;
+    ggml_backend_hrx_add_transient_assignment(intervals[*out_interval_index], plan, transient_index);
+    return true;
+}
+
+static bool ggml_backend_hrx_record_transient_binding_use(ggml_backend_hrx_loom_transient_interval & interval,
+                                                          ggml_backend_hrx_loom_buffer_access        access,
+                                                          size_t                                     dispatch_index) {
+    if (access == GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_NONE) {
+        return false;
+    }
+
+    interval.first_dispatch = std::min(interval.first_dispatch, dispatch_index);
+    interval.last_dispatch  = std::max(interval.last_dispatch, dispatch_index);
+
+    if (access == GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_READ ||
+        access == GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_READ_WRITE) {
+        ++interval.read_count;
+        interval.first_read_dispatch = std::min(interval.first_read_dispatch, dispatch_index);
+    }
+    if (access == GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_WRITE ||
+        access == GGML_BACKEND_HRX_LOOM_BUFFER_ACCESS_READ_WRITE) {
+        ++interval.write_count;
+        interval.first_write_dispatch = std::min(interval.first_write_dispatch, dispatch_index);
+    }
+    return true;
+}
+
+static bool ggml_backend_hrx_collect_plan_transient_intervals(
+    ggml_backend_hrx_loom_execution_plan &                  plan,
+    std::vector<ggml_backend_hrx_loom_transient_interval> & intervals,
+    std::vector<size_t> &                                   plan_interval_indices,
+    size_t *                                                flattened_dispatch_index) {
+    if (!flattened_dispatch_index || plan.dispatch_count == 0 ||
+        plan.dispatch_count > GGML_BACKEND_HRX_LOOM_MAX_DISPATCHES ||
+        plan.transient_count > GGML_BACKEND_HRX_LOOM_MAX_TRANSIENTS) {
+        return false;
+    }
+
+    plan_interval_indices.assign(plan.transient_count, GGML_BACKEND_HRX_LOOM_INVALID_TRANSIENT_INTERVAL);
+    for (size_t i = 0; i < plan.transient_count; ++i) {
+        if (!ggml_backend_hrx_add_plan_transient_interval(&plan, i, intervals, &plan_interval_indices[i])) {
+            return false;
+        }
+    }
+
+    for (size_t i = 0; i < plan.dispatch_count; ++i) {
+        ggml_backend_hrx_loom_dispatch_plan & dispatch = plan.dispatches[i];
+        if (dispatch.binding_count > GGML_BACKEND_HRX_LOOM_MAX_BINDINGS) {
+            return false;
+        }
+        for (size_t j = 0; j < dispatch.binding_count; ++j) {
+            const int transient_index = dispatch.transient_binding_indices[j];
+            if (transient_index < 0) {
+                continue;
+            }
+            if (static_cast<size_t>(transient_index) >= plan.transient_count) {
+                return false;
+            }
+            const size_t interval_index = plan_interval_indices[static_cast<size_t>(transient_index)];
+            if (interval_index >= intervals.size()) {
+                return false;
+            }
+            if (!ggml_backend_hrx_record_transient_binding_use(
+                    intervals[interval_index], dispatch.transient_binding_accesses[j], *flattened_dispatch_index)) {
+                return false;
+            }
+        }
+        ++(*flattened_dispatch_index);
+    }
+
+    for (const size_t interval_index : plan_interval_indices) {
+        if (interval_index >= intervals.size() ||
+            intervals[interval_index].first_dispatch == GGML_BACKEND_HRX_LOOM_INVALID_TRANSIENT_INTERVAL) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static std::vector<bool> ggml_backend_hrx_covered_loom_nodes(
+    const ggml_cgraph *                                       cgraph,
+    const std::vector<ggml_backend_hrx_loom_graph_dispatch> & dispatches) {
+    std::vector<bool> covered_nodes(cgraph ? cgraph->n_nodes : 0, false);
+    for (const ggml_backend_hrx_loom_graph_dispatch & graph_dispatch : dispatches) {
+        const ggml_backend_hrx_loom_execution_plan & plan = graph_dispatch.plan;
+        for (int i = 0; i < plan.consumed_node_count; ++i) {
+            const int node_index = plan.consumed_node_indices[i];
+            if (node_index >= 0 && cgraph && node_index < cgraph->n_nodes) {
+                covered_nodes[node_index] = true;
+            }
+        }
+    }
+    return covered_nodes;
+}
+
+static bool ggml_backend_hrx_graph_transient_consumers_are_covered(const ggml_cgraph *       cgraph,
+                                                                   const ggml_tensor *       graph_tensor,
+                                                                   const std::vector<bool> & covered_nodes,
+                                                                   bool *                    out_has_consumer) {
+    if (!cgraph || !graph_tensor || !out_has_consumer) {
+        return false;
+    }
+    *out_has_consumer = false;
+    for (int i = 0; i < cgraph->n_nodes; ++i) {
+        const ggml_tensor * node = cgraph->nodes[i];
+        if (!node) {
+            continue;
+        }
+        for (int j = 0; j < GGML_MAX_SRC; ++j) {
+            if (node->src[j] != graph_tensor) {
+                continue;
+            }
+            *out_has_consumer = true;
+            if (i >= static_cast<int>(covered_nodes.size()) || !covered_nodes[i]) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static bool ggml_backend_hrx_validate_graph_transient_interval(
+    const ggml_cgraph *                              cgraph,
+    const std::vector<bool> &                        covered_nodes,
+    const ggml_backend_hrx_loom_transient_interval & interval) {
+    if (!interval.graph_tensor) {
+        return true;
+    }
+    if (!cgraph || interval.write_count != 1 || interval.read_count == 0 ||
+        interval.first_write_dispatch > interval.first_read_dispatch) {
+        return false;
+    }
+
+    const int producer_index = ggml_backend_hrx_graph_node_index(cgraph, interval.graph_tensor);
+    if (producer_index < 0 || producer_index >= static_cast<int>(covered_nodes.size()) ||
+        !covered_nodes[producer_index]) {
+        return false;
+    }
+
+    bool has_consumer = false;
+    if (!ggml_backend_hrx_graph_transient_consumers_are_covered(cgraph, interval.graph_tensor, covered_nodes,
+                                                                &has_consumer)) {
+        return false;
+    }
+    return has_consumer;
+}
+
+static bool ggml_backend_hrx_validate_graph_transient_intervals(
+    const ggml_cgraph *                                           cgraph,
+    const std::vector<ggml_backend_hrx_loom_graph_dispatch> &     dispatches,
+    const std::vector<ggml_backend_hrx_loom_transient_interval> & intervals) {
+    const std::vector<bool> covered_nodes = ggml_backend_hrx_covered_loom_nodes(cgraph, dispatches);
+    for (const ggml_backend_hrx_loom_transient_interval & interval : intervals) {
+        if (!ggml_backend_hrx_validate_graph_transient_interval(cgraph, covered_nodes, interval)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool ggml_backend_hrx_collect_graph_transient_intervals(
+    const ggml_cgraph *                                     cgraph,
     std::vector<ggml_backend_hrx_loom_graph_dispatch> &     dispatches,
     std::vector<ggml_backend_hrx_loom_transient_interval> & intervals) {
     intervals.clear();
@@ -1161,56 +1394,13 @@ static bool ggml_backend_hrx_collect_graph_transient_intervals(
     // If dispatch execution overlaps, this liveness model needs explicit dependency tracking.
     size_t flattened_dispatch_index = 0;
     for (ggml_backend_hrx_loom_graph_dispatch & graph_dispatch : dispatches) {
-        ggml_backend_hrx_loom_execution_plan & plan = graph_dispatch.plan;
-        if (plan.dispatch_count == 0 || plan.dispatch_count > GGML_BACKEND_HRX_LOOM_MAX_DISPATCHES ||
-            plan.transient_count > GGML_BACKEND_HRX_LOOM_MAX_TRANSIENTS) {
+        std::vector<size_t> plan_interval_indices;
+        if (!ggml_backend_hrx_collect_plan_transient_intervals(graph_dispatch.plan, intervals, plan_interval_indices,
+                                                               &flattened_dispatch_index)) {
             return false;
         }
-
-        const size_t base_interval_index = intervals.size();
-        for (size_t i = 0; i < plan.transient_count; ++i) {
-            ggml_backend_hrx_loom_transient_buffer_plan & transient = plan.transients[i];
-            if (transient.size == 0) {
-                return false;
-            }
-            intervals.push_back({
-                /* .plan             = */ &plan,
-                /* .transient_index  = */ i,
-                /* .size             = */ transient.size,
-                /* .first_dispatch   = */ std::numeric_limits<size_t>::max(),
-                /* .last_dispatch    = */ 0,
-                /* .offset           = */ 0,
-            });
-        }
-
-        for (size_t i = 0; i < plan.dispatch_count; ++i) {
-            ggml_backend_hrx_loom_dispatch_plan & dispatch = plan.dispatches[i];
-            if (dispatch.binding_count > GGML_BACKEND_HRX_LOOM_MAX_BINDINGS) {
-                return false;
-            }
-            for (size_t j = 0; j < dispatch.binding_count; ++j) {
-                const int transient_index = dispatch.transient_binding_indices[j];
-                if (transient_index < 0) {
-                    continue;
-                }
-                if (static_cast<size_t>(transient_index) >= plan.transient_count) {
-                    return false;
-                }
-                ggml_backend_hrx_loom_transient_interval & interval =
-                    intervals[base_interval_index + static_cast<size_t>(transient_index)];
-                interval.first_dispatch = std::min(interval.first_dispatch, flattened_dispatch_index);
-                interval.last_dispatch  = std::max(interval.last_dispatch, flattened_dispatch_index);
-            }
-            ++flattened_dispatch_index;
-        }
-
-        for (size_t i = 0; i < plan.transient_count; ++i) {
-            if (intervals[base_interval_index + i].first_dispatch == std::numeric_limits<size_t>::max()) {
-                return false;
-            }
-        }
     }
-    return true;
+    return ggml_backend_hrx_validate_graph_transient_intervals(cgraph, dispatches, intervals);
 }
 
 static bool ggml_backend_hrx_pack_graph_transient_intervals(
@@ -1264,20 +1454,23 @@ static bool ggml_backend_hrx_pack_graph_transient_intervals(
             return false;
         }
         *graph_transient_byte_length = std::max(*graph_transient_byte_length, interval_end);
-        interval.plan->transients[interval.transient_index].offset = interval.offset;
+        for (const ggml_backend_hrx_loom_transient_assignment & assignment : interval.assignments) {
+            assignment.plan->transients[assignment.transient_index].offset = interval.offset;
+        }
         assigned.push_back(interval);
     }
     return true;
 }
 
 static bool ggml_backend_hrx_assign_graph_transient_offsets(
+    const ggml_cgraph *                                 cgraph,
     std::vector<ggml_backend_hrx_loom_graph_dispatch> & dispatches,
     size_t *                                            graph_transient_byte_length) {
     if (!graph_transient_byte_length) {
         return false;
     }
     std::vector<ggml_backend_hrx_loom_transient_interval> intervals;
-    if (!ggml_backend_hrx_collect_graph_transient_intervals(dispatches, intervals) ||
+    if (!ggml_backend_hrx_collect_graph_transient_intervals(cgraph, dispatches, intervals) ||
         !ggml_backend_hrx_pack_graph_transient_intervals(intervals, graph_transient_byte_length)) {
         return false;
     }
@@ -1354,7 +1547,7 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
         return GGML_STATUS_FAILED;
     }
 
-    if (!ggml_backend_hrx_assign_graph_transient_offsets(dispatches, &transient_buffer_size)) {
+    if (!ggml_backend_hrx_assign_graph_transient_offsets(cgraph, dispatches, &transient_buffer_size)) {
         return GGML_STATUS_FAILED;
     }
     if (context->device_context->options && context->device_context->options->trace_graph) {
