@@ -2,6 +2,7 @@
 #include "matcher.h"
 #include "optimizer.h"
 #include "qwen-rules.h"
+#include "qwen-program.h"
 #include "schedule.h"
 
 #include "ggml.h"
@@ -209,10 +210,10 @@ static void test_set_rows_effects_and_views() {
     reversed.invocations = {
         { { "test", "consumer", {} }, { view_id, add_id },
           { { "destination", effect_graph.operations[view_id].inputs[0] }, { "increment", effect_graph.operations[add_id].inputs[1] } },
-          { { "sum", effect_graph.operations[add_id].output } }, {} },
+          { { "sum", effect_graph.operations[add_id].output } }, {}, "", -1 },
         { { "test", "writer", {} }, { set_rows_id },
           { { "rows", operation.inputs[0] }, { "indices", operation.inputs[1] }, { "destination", operation.inputs[2] } },
-          { { "updated", operation.output } }, {} },
+          { { "updated", operation.output } }, {}, "", -1 },
     };
     REQUIRE(!ggml::hrx::verify_schedule(effect_graph, reversed).valid());
 }
@@ -281,6 +282,66 @@ static void test_qwen_multi_output_rules() {
 } // namespace
 
 int main(int argc, char ** argv) {
+    if (argc == 5 && std::string(argv[1]) == "--prove-qwen") {
+        std::ifstream graph_file(argv[2]);
+        REQUIRE(graph_file.good());
+        const std::string graph_text((std::istreambuf_iterator<char>(graph_file)), std::istreambuf_iterator<char>());
+        const ggml::hrx::Graph graph = ggml::hrx::deserialize_graph_json(graph_text);
+        REQUIRE(graph.valid());
+        const ggml::hrx::QwenProgramProof proof = ggml::hrx::recover_owned_qwen3_moe_program(graph);
+        REQUIRE(proof.recognized());
+        const ggml::hrx::VerificationResult verification = ggml::hrx::verify_owned_qwen3_moe_program(graph, proof);
+        for (const std::string & error : verification.errors) std::fprintf(stderr, "verification: %s\n", error.c_str());
+        REQUIRE(verification.valid());
+        REQUIRE(proof.structurally_sufficient());
+        REQUIRE(!proof.natively_complete());
+        REQUIRE(proof.root_seams.size() == 2);
+        REQUIRE(proof.native_gaps.size() == (proof.schedule.workload == "prefill-512" ? 36 : 34));
+        REQUIRE(ggml::hrx::schedule_execution_kind_count(proof.schedule,
+            ggml::hrx::KernelSpecialization::ExecutionKind::CpuFallback) == 0);
+        const std::string serialized = ggml::hrx::serialize_schedule_json(proof.schedule);
+        std::vector<std::string> round_trip_errors;
+        const ggml::hrx::Schedule round_trip = ggml::hrx::deserialize_schedule_json(serialized, round_trip_errors);
+        REQUIRE(round_trip_errors.empty());
+        REQUIRE(ggml::hrx::serialize_schedule_json(round_trip) == serialized);
+        REQUIRE(ggml::hrx::verify_schedule(graph, round_trip).valid());
+
+        ggml::hrx::QwenProgramProof missing_operation = proof;
+        missing_operation.schedule.invocations[1].covered_operations.pop_back();
+        REQUIRE(!ggml::hrx::verify_owned_qwen3_moe_program(graph, missing_operation).valid());
+        ggml::hrx::QwenProgramProof wrong_dispatch_count = proof;
+        wrong_dispatch_count.schedule.invocations[1].dispatches.pop_back();
+        REQUIRE(!ggml::hrx::verify_owned_qwen3_moe_program(graph, wrong_dispatch_count).valid());
+        ggml::hrx::QwenProgramProof wrong_kernel = proof;
+        wrong_kernel.schedule.invocations[1].dispatches[0].kernel.variant = "wrong_kernel";
+        REQUIRE(!ggml::hrx::verify_owned_qwen3_moe_program(graph, wrong_kernel).valid());
+        ggml::hrx::QwenProgramProof wrong_binding = proof;
+        wrong_binding.schedule.invocations[1].dispatches[0].bindings[0].value = graph.values.size();
+        REQUIRE(!ggml::hrx::verify_owned_qwen3_moe_program(graph, wrong_binding).valid());
+        ggml::hrx::QwenProgramProof wrong_dependency = proof;
+        wrong_dependency.schedule.invocations[1].dispatches[0].dependencies.clear();
+        REQUIRE(!ggml::hrx::verify_owned_qwen3_moe_program(graph, wrong_dependency).valid());
+        ggml::hrx::QwenProgramProof cpu_injection = proof;
+        cpu_injection.schedule.invocations[1].dispatches[0].kernel.execution_kind =
+            ggml::hrx::KernelSpecialization::ExecutionKind::CpuFallback;
+        REQUIRE(!ggml::hrx::verify_owned_qwen3_moe_program(graph, cpu_injection).valid());
+        ggml::hrx::QwenProgramProof bad_root = proof;
+        bad_root.schedule.roots[0].replacement.clear();
+        REQUIRE(!ggml::hrx::verify_owned_qwen3_moe_program(graph, bad_root).valid());
+        ggml::hrx::Graph corrupted_graph = graph;
+        corrupted_graph.operations[3].op = GGML_OP_ADD;
+        REQUIRE(!ggml::hrx::recover_owned_qwen3_moe_program(corrupted_graph).recognized());
+        std::ofstream schedule_file(argv[3], std::ios::trunc);
+        REQUIRE(schedule_file.good());
+        schedule_file << serialized << '\n';
+        std::ofstream signature_file(argv[4], std::ios::trunc);
+        REQUIRE(signature_file.good());
+        signature_file << ggml::hrx::qwen_program_signature(proof);
+        std::printf("proved %s topology: %zu operations, %zu dispatches, zero CPU fallback, %zu native gaps, %zu root seams\n",
+            proof.schedule.workload.c_str(), graph.operations.size(), ggml::hrx::schedule_dispatch_count(proof.schedule),
+            proof.native_gaps.size(), proof.root_seams.size());
+        return 0;
+    }
     if (argc == 4 && std::string(argv[1]) == "--materialize") {
         std::ifstream graph_file(argv[2]);
         REQUIRE(graph_file.good());

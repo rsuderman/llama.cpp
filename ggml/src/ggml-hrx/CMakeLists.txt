@@ -9,6 +9,8 @@ add_library(ggml-hrx-graph STATIC
     graph/optimizer.h
     graph/qwen-rules.cpp
     graph/qwen-rules.h
+    graph/qwen-program.cpp
+    graph/qwen-program.h
     graph/schedule.cpp
     graph/schedule.h
 )

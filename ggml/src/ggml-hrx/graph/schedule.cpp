@@ -26,6 +26,20 @@ static std::string escape_json(const std::string & value) {
     return stream.str();
 }
 
+static KernelSpecialization::ExecutionKind parse_execution_kind(const std::string & value) {
+    if (value == "native") return KernelSpecialization::ExecutionKind::Native;
+    if (value == "native_gap") return KernelSpecialization::ExecutionKind::NativeGap;
+    if (value == "cpu_fallback") return KernelSpecialization::ExecutionKind::CpuFallback;
+    throw std::runtime_error("unknown schedule execution kind");
+}
+
+static RootDisposition parse_root_disposition(const std::string & value) {
+    if (value == "materialized") return RootDisposition::Materialized;
+    if (value == "owned_endpoint_replacement") return RootDisposition::OwnedEndpointReplacement;
+    if (value == "unresolved") return RootDisposition::Unresolved;
+    throw std::runtime_error("unknown root disposition");
+}
+
 } // namespace
 
 VerificationResult verify_schedule(const Graph & graph, const Schedule & schedule) {
@@ -39,6 +53,18 @@ VerificationResult verify_schedule(const Graph & graph, const Schedule & schedul
     }
     if (schedule.expected_dispatch_count != 0 && schedule_dispatch_count(schedule) != schedule.expected_dispatch_count) {
         error(result, "schedule dispatch count does not match its oracle");
+    }
+    std::set<ValueId> declared_roots;
+    for (const RootContract & root : schedule.roots) {
+        if (root.value >= graph.values.size() ||
+            std::find(graph.roots.begin(), graph.roots.end(), root.value) == graph.roots.end()) {
+            error(result, "schedule declares an invalid graph root");
+        } else if (!declared_roots.insert(root.value).second) {
+            error(result, "schedule declares a graph root more than once");
+        }
+        if (root.disposition == RootDisposition::OwnedEndpointReplacement && root.replacement.empty()) {
+            error(result, "owned endpoint replacement has no replacement contract");
+        }
     }
 
     std::vector<size_t> owner(graph.operations.size(), SIZE_MAX);
@@ -207,7 +233,7 @@ Schedule deserialize_schedule_json(const std::string & text, std::vector<std::st
     try {
         const nlohmann::json root = nlohmann::json::parse(text);
         const int version = root.at("version").get<int>();
-        if (version != 1 && version != 2) {
+        if (version < 1 || version > 3) {
             errors.emplace_back("unsupported schedule manifest version");
             return schedule;
         }
@@ -216,17 +242,26 @@ Schedule deserialize_schedule_json(const std::string & text, std::vector<std::st
             schedule.workload = root.value("workload", "");
             schedule.expected_dispatch_count = root.value("expected_dispatch_count", 0);
         }
+        if (version >= 3) {
+            schedule.oracle_revision = root.value("oracle_revision", "");
+            for (const nlohmann::json & root_item : root.value("roots", nlohmann::json::array())) {
+                schedule.roots.push_back({ root_item.at("value").get<ValueId>(),
+                    parse_root_disposition(root_item.at("disposition").get<std::string>()),
+                    root_item.value("replacement", "") });
+            }
+        }
         for (const nlohmann::json & item : root.at("invocations")) {
             Invocation invocation;
             const nlohmann::json & kernel = item.at("kernel");
-            const std::string execution = kernel.at("execution").get<std::string>();
-            if (execution == "native") invocation.kernel.execution_kind = KernelSpecialization::ExecutionKind::Native;
-            else if (execution == "cpu_fallback") invocation.kernel.execution_kind = KernelSpecialization::ExecutionKind::CpuFallback;
-            else throw std::runtime_error("unknown schedule execution kind");
+            invocation.kernel.execution_kind = parse_execution_kind(kernel.at("execution").get<std::string>());
             invocation.kernel.family = kernel.at("family").get<std::string>();
             invocation.kernel.variant = kernel.at("variant").get<std::string>();
             invocation.kernel.integer_parameters = kernel.at("parameters").get<std::map<std::string, int64_t>>();
             invocation.covered_operations = item.at("operations").get<std::vector<OperationId>>();
+            if (version >= 3) {
+                invocation.stage = item.value("stage", "");
+                invocation.layer = item.value("layer", -1);
+            }
             auto read_bindings = [](const nlohmann::json & bindings) {
                 std::vector<TensorBinding> result;
                 for (const nlohmann::json & binding : bindings) {
@@ -240,10 +275,7 @@ Schedule deserialize_schedule_json(const std::string & text, std::vector<std::st
                 for (const nlohmann::json & dispatch_item : item.at("dispatches")) {
                     Dispatch dispatch;
                     const nlohmann::json & dispatch_kernel = dispatch_item.at("kernel");
-                    const std::string dispatch_execution = dispatch_kernel.at("execution").get<std::string>();
-                    if (dispatch_execution == "native") dispatch.kernel.execution_kind = KernelSpecialization::ExecutionKind::Native;
-                    else if (dispatch_execution == "cpu_fallback") dispatch.kernel.execution_kind = KernelSpecialization::ExecutionKind::CpuFallback;
-                    else throw std::runtime_error("unknown dispatch execution kind");
+                    dispatch.kernel.execution_kind = parse_execution_kind(dispatch_kernel.at("execution").get<std::string>());
                     dispatch.kernel.family = dispatch_kernel.at("family").get<std::string>();
                     dispatch.kernel.variant = dispatch_kernel.at("variant").get<std::string>();
                     dispatch.kernel.integer_parameters = dispatch_kernel.at("parameters").get<std::map<std::string, int64_t>>();
@@ -268,14 +300,22 @@ Schedule deserialize_schedule_json(const std::string & text, std::vector<std::st
 
 std::string serialize_schedule_json(const Schedule & schedule) {
     std::ostringstream out;
-    out << "{\"version\":2,\"graph_fingerprint\":\"" << escape_json(schedule.graph_fingerprint)
-        << "\",\"workload\":\"" << escape_json(schedule.workload) << "\",\"expected_dispatch_count\":"
-        << schedule.expected_dispatch_count << ",\"invocations\":[";
+    out << "{\"version\":3,\"graph_fingerprint\":\"" << escape_json(schedule.graph_fingerprint)
+        << "\",\"workload\":\"" << escape_json(schedule.workload) << "\",\"oracle_revision\":\""
+        << escape_json(schedule.oracle_revision) << "\",\"expected_dispatch_count\":" << schedule.expected_dispatch_count
+        << ",\"roots\":[";
+    for (size_t i = 0; i < schedule.roots.size(); ++i) {
+        if (i != 0) out << ',';
+        out << "{\"value\":" << schedule.roots[i].value << ",\"disposition\":\""
+            << root_disposition_name(schedule.roots[i].disposition) << "\",\"replacement\":\""
+            << escape_json(schedule.roots[i].replacement) << "\"}";
+    }
+    out << "],\"invocations\":[";
     for (size_t i = 0; i < schedule.invocations.size(); ++i) {
         const Invocation & invocation = schedule.invocations[i];
         if (i != 0) out << ',';
-        out << "{\"kernel\":{\"execution\":\""
-            << (invocation.kernel.execution_kind == KernelSpecialization::ExecutionKind::Native ? "native" : "cpu_fallback")
+        out << "{\"stage\":\"" << escape_json(invocation.stage) << "\",\"layer\":" << invocation.layer
+            << ",\"kernel\":{\"execution\":\"" << execution_kind_name(invocation.kernel.execution_kind)
             << "\",\"family\":\"" << escape_json(invocation.kernel.family)
             << "\",\"variant\":\"" << escape_json(invocation.kernel.variant) << "\",\"parameters\":{";
         size_t parameter_index = 0;
@@ -301,8 +341,7 @@ std::string serialize_schedule_json(const Schedule & schedule) {
         for (size_t j = 0; j < invocation.dispatches.size(); ++j) {
             const Dispatch & dispatch = invocation.dispatches[j];
             if (j != 0) out << ',';
-            out << "{\"kernel\":{\"execution\":\""
-                << (dispatch.kernel.execution_kind == KernelSpecialization::ExecutionKind::Native ? "native" : "cpu_fallback")
+            out << "{\"kernel\":{\"execution\":\"" << execution_kind_name(dispatch.kernel.execution_kind)
                 << "\",\"family\":\"" << escape_json(dispatch.kernel.family) << "\",\"variant\":\""
                 << escape_json(dispatch.kernel.variant) << "\",\"parameters\":{";
             size_t dispatch_parameter_index = 0;
@@ -332,6 +371,32 @@ size_t schedule_dispatch_count(const Schedule & schedule) {
     size_t result = 0;
     for (const Invocation & invocation : schedule.invocations) result += invocation.dispatches.size();
     return result;
+}
+
+size_t schedule_execution_kind_count(const Schedule & schedule, KernelSpecialization::ExecutionKind kind) {
+    size_t result = 0;
+    for (const Invocation & invocation : schedule.invocations) {
+        for (const Dispatch & dispatch : invocation.dispatches) result += dispatch.kernel.execution_kind == kind;
+    }
+    return result;
+}
+
+const char * execution_kind_name(KernelSpecialization::ExecutionKind kind) {
+    switch (kind) {
+        case KernelSpecialization::ExecutionKind::Native: return "native";
+        case KernelSpecialization::ExecutionKind::NativeGap: return "native_gap";
+        case KernelSpecialization::ExecutionKind::CpuFallback: return "cpu_fallback";
+    }
+    return "unknown";
+}
+
+const char * root_disposition_name(RootDisposition disposition) {
+    switch (disposition) {
+        case RootDisposition::Materialized: return "materialized";
+        case RootDisposition::OwnedEndpointReplacement: return "owned_endpoint_replacement";
+        case RootDisposition::Unresolved: return "unresolved";
+    }
+    return "unknown";
 }
 
 } // namespace ggml::hrx

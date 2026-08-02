@@ -3,6 +3,7 @@
 #include "graph/graph-ir.h"
 #include "graph/optimizer.h"
 #include "graph/qwen-rules.h"
+#include "graph/qwen-program.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
 #include "hrx_runtime.h"
@@ -291,6 +292,19 @@ static void dump_schedule(const ggml::hrx::Graph & graph, const ggml::hrx::Sched
     }
 }
 
+static void dump_signature(const ggml::hrx::Graph & graph, const ggml::hrx::QwenProgramProof & proof) {
+    const char * directory = std::getenv("GGML_HRX_DUMP_GRAPH_DIR");
+    if (directory == nullptr || directory[0] == '\0' || !proof.recognized()) return;
+    try {
+        const std::filesystem::path signature_directory = std::filesystem::path(directory) / "program-signatures";
+        std::filesystem::create_directories(signature_directory);
+        std::ofstream output(signature_directory / (graph.fingerprint + ".tsv"), std::ios::trunc);
+        output << ggml::hrx::qwen_program_signature(proof);
+    } catch (const std::exception & error) {
+        GGML_LOG_ERROR("%s: signature dump failed: %s\n", __func__, error.what());
+    }
+}
+
 static ggml_backend_graph_plan_t graph_plan_create(ggml_backend_t backend, const ggml_cgraph * graph) {
     GGML_UNUSED(backend);
     dump_graph(graph, "execute", "owner-split");
@@ -304,15 +318,27 @@ static ggml_backend_graph_plan_t graph_plan_create(ggml_backend_t backend, const
         delete plan;
         return nullptr;
     }
-    const std::vector<ggml::hrx::FusionRule> rules = ggml::hrx::canonical_qwen3_moe_rules();
-    const ggml::hrx::Selection selection = ggml::hrx::select_regions(plan->graph, rules);
-    plan->uncovered_operations = selection.uncovered_operations.size();
-    plan->schedule = ggml::hrx::materialize_schedule_with_cpu_fallback(plan->graph, rules, selection);
-    plan->verification = ggml::hrx::verify_schedule(plan->graph, plan->schedule);
+    const ggml::hrx::QwenProgramProof qwen_proof = ggml::hrx::recover_owned_qwen3_moe_program(plan->graph);
+    if (qwen_proof.recognized()) {
+        plan->schedule = qwen_proof.schedule;
+        plan->uncovered_operations = 0;
+        plan->verification = ggml::hrx::verify_owned_qwen3_moe_program(plan->graph, qwen_proof);
+        dump_signature(plan->graph, qwen_proof);
+        GGML_LOG_WARN("%s: reconstructed %s owned schedule with %zu dispatches, zero CPU fallback, %zu native gaps, and %zu root seams\n",
+            __func__, qwen_proof.schedule.workload.c_str(), ggml::hrx::schedule_dispatch_count(qwen_proof.schedule),
+            qwen_proof.native_gaps.size(), qwen_proof.root_seams.size());
+    } else {
+        const std::vector<ggml::hrx::FusionRule> rules = ggml::hrx::canonical_qwen3_moe_rules();
+        const ggml::hrx::Selection selection = ggml::hrx::select_regions(plan->graph, rules);
+        plan->uncovered_operations = selection.uncovered_operations.size();
+        plan->schedule = ggml::hrx::materialize_schedule_with_cpu_fallback(plan->graph, rules, selection);
+        plan->verification = ggml::hrx::verify_schedule(plan->graph, plan->schedule);
+    }
     dump_schedule(plan->graph, plan->schedule);
-    GGML_LOG_WARN("%s: capture-only HRX plan %s has %zu semantic regions, %zu provisional dispatches, and %zu CPU fallbacks; execution is disabled\n",
+    GGML_LOG_WARN("%s: capture-only HRX plan %s has %zu semantic regions, %zu dispatches, and %zu CPU fallbacks; execution is disabled\n",
         __func__, plan->graph.fingerprint.c_str(), plan->schedule.invocations.size(),
-        ggml::hrx::schedule_dispatch_count(plan->schedule), plan->uncovered_operations);
+        ggml::hrx::schedule_dispatch_count(plan->schedule),
+        ggml::hrx::schedule_execution_kind_count(plan->schedule, ggml::hrx::KernelSpecialization::ExecutionKind::CpuFallback));
     if (!plan->verification.valid()) {
         GGML_LOG_ERROR("%s: candidate schedule verification failed: %s\n", __func__, plan->verification.errors.front().c_str());
     }
