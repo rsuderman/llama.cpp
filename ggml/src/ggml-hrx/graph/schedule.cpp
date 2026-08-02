@@ -29,6 +29,7 @@ static std::string escape_json(const std::string & value) {
 static KernelSpecialization::ExecutionKind parse_execution_kind(const std::string & value) {
     if (value == "native") return KernelSpecialization::ExecutionKind::Native;
     if (value == "native_gap") return KernelSpecialization::ExecutionKind::NativeGap;
+    if (value == "native_eager") return KernelSpecialization::ExecutionKind::NativeEager;
     if (value == "cpu_fallback") return KernelSpecialization::ExecutionKind::CpuFallback;
     throw std::runtime_error("unknown schedule execution kind");
 }
@@ -385,6 +386,7 @@ const char * execution_kind_name(KernelSpecialization::ExecutionKind kind) {
     switch (kind) {
         case KernelSpecialization::ExecutionKind::Native: return "native";
         case KernelSpecialization::ExecutionKind::NativeGap: return "native_gap";
+        case KernelSpecialization::ExecutionKind::NativeEager: return "native_eager";
         case KernelSpecialization::ExecutionKind::CpuFallback: return "cpu_fallback";
     }
     return "unknown";

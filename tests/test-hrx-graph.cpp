@@ -3,16 +3,19 @@
 #include "optimizer.h"
 #include "qwen-rules.h"
 #include "qwen-program.h"
+#include "reactive-plan.h"
 #include "schedule.h"
 
 #include "ggml.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -55,6 +58,23 @@ static ggml::hrx::Graph make_arithmetic_graph(const char * prefix) {
     ggml_set_output(mul);
     ggml_build_forward_expand(fixture.graph, mul);
     return ggml::hrx::import_graph(fixture.graph);
+}
+
+static ggml_tensor * build_arithmetic_graph(Fixture & fixture, const char * prefix) {
+    ggml_tensor * x = ggml_new_tensor_2d(fixture.context, GGML_TYPE_F32, 4, 8);
+    ggml_tensor * y = ggml_new_tensor_2d(fixture.context, GGML_TYPE_F32, 4, 8);
+    ggml_tensor * z = ggml_new_tensor_2d(fixture.context, GGML_TYPE_F32, 4, 8);
+    ggml_set_input(x);
+    ggml_set_input(y);
+    ggml_set_input(z);
+    ggml_tensor * add = ggml_add(fixture.context, x, y);
+    ggml_tensor * mul = ggml_mul(fixture.context, add, z);
+    ggml_set_name(x, (std::string(prefix) + "-x").c_str());
+    ggml_set_name(add, (std::string(prefix) + "-add").c_str());
+    ggml_set_name(mul, (std::string(prefix) + "-mul").c_str());
+    ggml_set_output(mul);
+    ggml_build_forward_expand(fixture.graph, mul);
+    return mul;
 }
 
 static void test_deterministic_import_and_matcher() {
@@ -180,6 +200,24 @@ static void test_set_rows_effects_and_views() {
     REQUIRE(!write->exact);
     REQUIRE(graph.storages[write->storage].mutable_state);
 
+    const ggml::hrx::ProgramPlan mutation_plan = ggml::hrx::build_reactive_plan(graph, "test-target");
+    REQUIRE(mutation_plan.valid());
+    REQUIRE(mutation_plan.resources.resources[write->storage].imported);
+    REQUIRE(mutation_plan.resources.resources[write->storage].exported);
+    const auto planned_mutation = std::find_if(mutation_plan.resources.uses.begin(), mutation_plan.resources.uses.end(),
+        [&](const ggml::hrx::ResourceUse & use) { return use.storage == write->storage; });
+    REQUIRE(planned_mutation != mutation_plan.resources.uses.end());
+    REQUIRE(planned_mutation->access == ggml::hrx::ResourceAccess::ReadWrite);
+    ggml::hrx::ResourceProgram missing_mutation_export = mutation_plan.resources;
+    missing_mutation_export.resources[write->storage].exported = false;
+    REQUIRE(!ggml::hrx::verify_resource_program(graph, mutation_plan.schedule, missing_mutation_export).valid());
+    ggml::hrx::ResourceProgram bad_mutation_version = mutation_plan.resources;
+    const auto mutation_use = std::find_if(bad_mutation_version.uses.begin(), bad_mutation_version.uses.end(),
+        [&](const ggml::hrx::ResourceUse & use) { return use.storage == write->storage; });
+    REQUIRE(mutation_use != bad_mutation_version.uses.end());
+    mutation_use->after_version = graph.storages[write->storage].final_version + 1;
+    REQUIRE(!ggml::hrx::verify_resource_program(graph, mutation_plan.schedule, bad_mutation_version).valid());
+
     ggml_tensor * read_view = ggml_view_tensor(fixture.context, destination);
     ggml_tensor * increment = ggml_new_tensor_2d(fixture.context, GGML_TYPE_F32, 4, 8);
     ggml_tensor * read_after_write = ggml_add(fixture.context, read_view, increment);
@@ -279,6 +317,99 @@ static void test_qwen_multi_output_rules() {
         ggml::hrx::KernelSpecialization::ExecutionKind::CpuFallback);
 }
 
+static void test_reactive_cache_and_bindings() {
+    ggml::hrx::ReactivePlanCache cache;
+    Fixture first;
+    build_arithmetic_graph(first, "first-runtime");
+    const ggml::hrx::ExecutionFrame first_frame = cache.prepare(first.graph, "test-target");
+    REQUIRE(first_frame.valid());
+    REQUIRE(first_frame.plan->schedule.invocations.size() == 2);
+    REQUIRE(ggml::hrx::schedule_execution_kind_count(first_frame.plan->schedule,
+        ggml::hrx::KernelSpecialization::ExecutionKind::NativeEager) == 2);
+    REQUIRE(cache.stats().builds == 1);
+    REQUIRE(cache.stats().hits == 0);
+
+    Fixture second;
+    build_arithmetic_graph(second, "renamed-runtime");
+    const ggml::hrx::ExecutionFrame second_frame = cache.prepare(second.graph, "test-target");
+    REQUIRE(second_frame.valid());
+    REQUIRE(second_frame.plan == first_frame.plan);
+    REQUIRE(cache.stats().builds == 1);
+    REQUIRE(cache.stats().hits == 1);
+    REQUIRE(first_frame.values.size() == second_frame.values.size());
+    REQUIRE(first_frame.values.front() != second_frame.values.front());
+
+    Fixture changed;
+    ggml_tensor * x = ggml_new_tensor_2d(changed.context, GGML_TYPE_F32, 4, 9);
+    ggml_tensor * y = ggml_new_tensor_2d(changed.context, GGML_TYPE_F32, 4, 9);
+    ggml_set_input(x);
+    ggml_set_input(y);
+    ggml_tensor * add = ggml_add(changed.context, x, y);
+    ggml_set_output(add);
+    ggml_build_forward_expand(changed.graph, add);
+    REQUIRE(cache.prepare(changed.graph, "test-target").valid());
+    REQUIRE(cache.stats().builds == 2);
+
+    ggml::hrx::ReactivePlanCache concurrent_cache;
+    std::atomic<int> valid_frames = 0;
+    std::vector<std::thread> workers;
+    for (int i = 0; i < 4; ++i) {
+        workers.emplace_back([&] {
+            if (concurrent_cache.prepare(first.graph, "concurrent-target").valid()) ++valid_frames;
+        });
+    }
+    for (std::thread & worker : workers) worker.join();
+    REQUIRE(valid_frames == 4);
+    REQUIRE(concurrent_cache.stats().builds == 1);
+    REQUIRE(concurrent_cache.stats().hits == 3);
+}
+
+static void test_eager_capabilities_and_resource_verification() {
+    REQUIRE(ggml::hrx::eager_capability_declared(GGML_OP_NONE));
+    for (enum ggml_op op : {
+        GGML_OP_ADD, GGML_OP_ARGSORT, GGML_OP_CLAMP, GGML_OP_DIV, GGML_OP_FLASH_ATTN_EXT,
+        GGML_OP_GET_ROWS, GGML_OP_GLU, GGML_OP_MUL, GGML_OP_MUL_MAT, GGML_OP_MUL_MAT_ID,
+        GGML_OP_PERMUTE, GGML_OP_RESHAPE, GGML_OP_RMS_NORM, GGML_OP_ROPE, GGML_OP_SET_ROWS,
+        GGML_OP_SOFT_MAX, GGML_OP_SUM_ROWS, GGML_OP_VIEW,
+    }) REQUIRE(ggml::hrx::eager_capability_declared(op));
+    REQUIRE(!ggml::hrx::eager_capability_declared(GGML_OP_CONV_2D));
+
+    Fixture fixture;
+    build_arithmetic_graph(fixture, "resource");
+    const ggml::hrx::ImportedGraph imported = ggml::hrx::import_graph_with_bindings(fixture.graph);
+    REQUIRE(imported.graph.valid());
+    const ggml::hrx::ProgramPlan plan = ggml::hrx::build_reactive_plan(imported.graph, "test-target");
+    REQUIRE(plan.valid());
+    REQUIRE(ggml::hrx::verify_resource_program(plan.graph, plan.schedule, plan.resources).valid());
+    const ggml::hrx::StorageId add_storage = plan.graph.values[plan.graph.operations[0].output].access.storage;
+    const ggml::hrx::ResourceContract & add_resource = plan.resources.resources[add_storage];
+    REQUIRE(add_resource.elidable);
+    REQUIRE(add_resource.first_invocation != UINT32_MAX);
+    const auto add_write = std::find_if(plan.resources.uses.begin(), plan.resources.uses.end(),
+        [&](const ggml::hrx::ResourceUse & use) {
+            return use.storage == add_storage &&
+                (use.access == ggml::hrx::ResourceAccess::Write || use.access == ggml::hrx::ResourceAccess::ReadWrite);
+        });
+    REQUIRE(add_write != plan.resources.uses.end());
+
+    ggml::hrx::ResourceProgram missing_import = plan.resources;
+    const auto external = std::find_if(missing_import.resources.begin(), missing_import.resources.end(),
+        [](const ggml::hrx::ResourceContract & resource) { return resource.imported; });
+    REQUIRE(external != missing_import.resources.end());
+    external->imported = false;
+    REQUIRE(!ggml::hrx::verify_resource_program(plan.graph, plan.schedule, missing_import).valid());
+
+    ggml::hrx::ResourceProgram bad_alias = plan.resources;
+    REQUIRE(!bad_alias.resources.empty());
+    bad_alias.resources[0].aliases.push_back(plan.graph.values.size());
+    REQUIRE(!ggml::hrx::verify_resource_program(plan.graph, plan.schedule, bad_alias).valid());
+
+    ggml::hrx::Graph unknown = imported.graph;
+    unknown.operations[0].op = GGML_OP_CONV_2D;
+    unknown.fingerprint = "unknown-op";
+    REQUIRE(!ggml::hrx::build_reactive_plan(unknown, "test-target").valid());
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -305,6 +436,11 @@ int main(int argc, char ** argv) {
         REQUIRE(round_trip_errors.empty());
         REQUIRE(ggml::hrx::serialize_schedule_json(round_trip) == serialized);
         REQUIRE(ggml::hrx::verify_schedule(graph, round_trip).valid());
+
+        const ggml::hrx::ProgramPlan reactive = ggml::hrx::build_reactive_plan(graph, "fixture-target");
+        REQUIRE(reactive.valid());
+        REQUIRE(reactive.semantic_witness == ggml::hrx::schedule_semantic_witness(graph, proof.schedule));
+        REQUIRE(ggml::hrx::verify_resource_program(graph, reactive.schedule, reactive.resources).valid());
 
         ggml::hrx::QwenProgramProof missing_operation = proof;
         missing_operation.schedule.invocations[1].covered_operations.pop_back();
@@ -381,5 +517,7 @@ int main(int argc, char ** argv) {
     test_deterministic_import_and_matcher();
     test_set_rows_effects_and_views();
     test_qwen_multi_output_rules();
+    test_reactive_cache_and_bindings();
+    test_eager_capabilities_and_resource_verification();
     return 0;
 }

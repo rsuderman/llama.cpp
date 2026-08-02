@@ -92,7 +92,16 @@ struct Graph {
     bool valid() const { return errors.empty(); }
 };
 
+// Runtime tensor identity is deliberately kept out of Graph so that cached
+// programs and serialized fixtures cannot retain graph-local pointers.
+struct ImportedGraph {
+    Graph graph;
+    std::vector<const ggml_tensor *> value_tensors;
+    std::vector<const ggml_tensor *> storage_roots;
+};
+
 Graph import_graph(const ggml_cgraph * graph);
+ImportedGraph import_graph_with_bindings(const ggml_cgraph * graph);
 Graph deserialize_graph_json(const std::string & json);
 std::string serialize_graph_json(const Graph & graph);
 const char * boundary_kind_name(BoundaryKind kind);

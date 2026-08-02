@@ -12,6 +12,7 @@ struct KernelSpecialization {
     enum class ExecutionKind : uint8_t {
         Native,
         NativeGap,
+        NativeEager,
         CpuFallback,
     };
 

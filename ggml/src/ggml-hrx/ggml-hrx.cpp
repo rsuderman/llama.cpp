@@ -1,9 +1,7 @@
 #include "ggml-hrx.h"
 
 #include "graph/graph-ir.h"
-#include "graph/optimizer.h"
-#include "graph/qwen-rules.h"
-#include "graph/qwen-program.h"
+#include "graph/reactive-plan.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
 #include "hrx_runtime.h"
@@ -17,6 +15,8 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <sstream>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
@@ -24,6 +24,9 @@ namespace {
 
 static constexpr size_t GGML_HRX_ALIGNMENT = 256;
 static constexpr uintptr_t GGML_HRX_FAKE_PTR_BASE = 0x1000;
+// Deliberately not configurable. The reactive-planning phase must be unable to
+// allocate device storage or submit work while model graphs are being captured.
+static constexpr bool GGML_HRX_PLANNING_ONLY = true;
 
 struct ggml_backend_hrx_device_context;
 
@@ -45,19 +48,16 @@ struct ggml_backend_hrx_device_context {
     size_t memory_total = 0;
     ggml_backend_buffer_type buft = {};
     ggml_backend_hrx_buffer_type_context buft_context = {};
+    ggml::hrx::ReactivePlanCache plan_cache;
 };
 
 struct ggml_backend_hrx_context {
     ggml_backend_hrx_device_context * device;
     hrx_stream_t stream;
     std::string name;
-};
-
-struct ggml_backend_hrx_plan {
-    ggml::hrx::Graph graph;
-    ggml::hrx::Schedule schedule;
-    ggml::hrx::VerificationResult verification;
-    size_t uncovered_operations = 0;
+    bool graph_oracle = false;
+    std::mutex oracle_mutex;
+    std::unordered_map<std::string, std::string> oracle_witnesses;
 };
 
 struct ggml_backend_hrx_reg_context {
@@ -131,6 +131,10 @@ static void * buffer_base(ggml_backend_buffer_t buffer) {
 }
 
 static void buffer_memset(ggml_backend_buffer_t buffer, ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
+    if (GGML_HRX_PLANNING_ONLY) {
+        GGML_UNUSED(buffer); GGML_UNUSED(tensor); GGML_UNUSED(value); GGML_UNUSED(offset); GGML_UNUSED(size);
+        return;
+    }
     if (size == 0) {
         return;
     }
@@ -147,6 +151,10 @@ static void buffer_memset(ggml_backend_buffer_t buffer, ggml_tensor * tensor, ui
 }
 
 static void buffer_set(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    if (GGML_HRX_PLANNING_ONLY) {
+        GGML_UNUSED(buffer); GGML_UNUSED(tensor); GGML_UNUSED(data); GGML_UNUSED(offset); GGML_UNUSED(size);
+        return;
+    }
     if (size == 0) {
         return;
     }
@@ -155,6 +163,10 @@ static void buffer_set(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const
 }
 
 static void buffer_get(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+    if (GGML_HRX_PLANNING_ONLY) {
+        GGML_UNUSED(buffer); GGML_UNUSED(tensor); GGML_UNUSED(data); GGML_UNUSED(offset); GGML_UNUSED(size);
+        GGML_ABORT("HRX planning-only buffers cannot be read");
+    }
     if (size == 0) {
         return;
     }
@@ -163,6 +175,10 @@ static void buffer_get(ggml_backend_buffer_t buffer, const ggml_tensor * tensor,
 }
 
 static bool buffer_copy(ggml_backend_buffer_t buffer, const ggml_tensor * source, ggml_tensor * destination) {
+    if (GGML_HRX_PLANNING_ONLY) {
+        GGML_UNUSED(buffer); GGML_UNUSED(source); GGML_UNUSED(destination);
+        return true;
+    }
     ggml_backend_buffer_t source_buffer = source->view_src != nullptr ? source->view_src->buffer : source->buffer;
     if (source_buffer == nullptr || source_buffer->iface.get_base != buffer_base) {
         return false;
@@ -184,6 +200,10 @@ static bool buffer_copy(ggml_backend_buffer_t buffer, const ggml_tensor * source
 }
 
 static void buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
+    if (GGML_HRX_PLANNING_ONLY) {
+        GGML_UNUSED(buffer); GGML_UNUSED(value);
+        return;
+    }
     if (buffer->size == 0) {
         return;
     }
@@ -208,7 +228,8 @@ static ggml_backend_buffer_t buffer_alloc(ggml_backend_buffer_type_t buft, size_
         HRX_MEMORY_TYPE_DEVICE_LOCAL, HRX_MEMORY_ACCESS_ALL, HRX_BUFFER_USAGE_DEFAULT, 0,
     };
     hrx_buffer_t allocation = nullptr;
-    if (size > 0 && !HRX_CHECK(hrx_allocator_allocate_buffer(hrx_device_allocator(type_context->device->device), params, size, &allocation))) {
+    if (!GGML_HRX_PLANNING_ONLY && size > 0 &&
+        !HRX_CHECK(hrx_allocator_allocate_buffer(hrx_device_allocator(type_context->device->device), params, size, &allocation))) {
         return nullptr;
     }
     auto * context = new (std::nothrow) ggml_backend_hrx_buffer_context {
@@ -245,7 +266,7 @@ static void dump_graph(const ggml_cgraph * graph, const char * mode, const char 
     static std::mutex mutex;
     const uint64_t id = sequence.fetch_add(1);
     try {
-        const ggml::hrx::Graph normalized = ggml::hrx::import_graph(graph);
+        const ggml::hrx::Graph normalized = ggml::hrx::import_graph_with_bindings(graph).graph;
         std::filesystem::create_directories(directory);
         const std::string stem = std::to_string(id) + "-uid-" + std::to_string(graph->uid) + "-" + mode + "-" + stage;
         const std::filesystem::path dot_path = std::filesystem::path(directory) / (stem + ".dot");
@@ -292,76 +313,32 @@ static void dump_schedule(const ggml::hrx::Graph & graph, const ggml::hrx::Sched
     }
 }
 
-static void dump_signature(const ggml::hrx::Graph & graph, const ggml::hrx::QwenProgramProof & proof) {
-    const char * directory = std::getenv("GGML_HRX_DUMP_GRAPH_DIR");
-    if (directory == nullptr || directory[0] == '\0' || !proof.recognized()) return;
-    try {
-        const std::filesystem::path signature_directory = std::filesystem::path(directory) / "program-signatures";
-        std::filesystem::create_directories(signature_directory);
-        std::ofstream output(signature_directory / (graph.fingerprint + ".tsv"), std::ios::trunc);
-        output << ggml::hrx::qwen_program_signature(proof);
-    } catch (const std::exception & error) {
-        GGML_LOG_ERROR("%s: signature dump failed: %s\n", __func__, error.what());
-    }
-}
-
-static ggml_backend_graph_plan_t graph_plan_create(ggml_backend_t backend, const ggml_cgraph * graph) {
-    GGML_UNUSED(backend);
-    dump_graph(graph, "execute", "owner-split");
-    auto * plan = new (std::nothrow) ggml_backend_hrx_plan;
-    if (plan == nullptr) {
-        return nullptr;
-    }
-    plan->graph = ggml::hrx::import_graph(graph);
-    if (!plan->graph.valid()) {
-        GGML_LOG_ERROR("%s: graph import failed: %s\n", __func__, plan->graph.errors.front().c_str());
-        delete plan;
-        return nullptr;
-    }
-    const ggml::hrx::QwenProgramProof qwen_proof = ggml::hrx::recover_owned_qwen3_moe_program(plan->graph);
-    if (qwen_proof.recognized()) {
-        plan->schedule = qwen_proof.schedule;
-        plan->uncovered_operations = 0;
-        plan->verification = ggml::hrx::verify_owned_qwen3_moe_program(plan->graph, qwen_proof);
-        dump_signature(plan->graph, qwen_proof);
-        GGML_LOG_WARN("%s: reconstructed %s owned schedule with %zu dispatches, zero CPU fallback, %zu native gaps, and %zu root seams\n",
-            __func__, qwen_proof.schedule.workload.c_str(), ggml::hrx::schedule_dispatch_count(qwen_proof.schedule),
-            qwen_proof.native_gaps.size(), qwen_proof.root_seams.size());
-    } else {
-        const std::vector<ggml::hrx::FusionRule> rules = ggml::hrx::canonical_qwen3_moe_rules();
-        const ggml::hrx::Selection selection = ggml::hrx::select_regions(plan->graph, rules);
-        plan->uncovered_operations = selection.uncovered_operations.size();
-        plan->schedule = ggml::hrx::materialize_schedule_with_cpu_fallback(plan->graph, rules, selection);
-        plan->verification = ggml::hrx::verify_schedule(plan->graph, plan->schedule);
-    }
-    dump_schedule(plan->graph, plan->schedule);
-    GGML_LOG_WARN("%s: capture-only HRX plan %s has %zu semantic regions, %zu dispatches, and %zu CPU fallbacks; execution is disabled\n",
-        __func__, plan->graph.fingerprint.c_str(), plan->schedule.invocations.size(),
-        ggml::hrx::schedule_dispatch_count(plan->schedule),
-        ggml::hrx::schedule_execution_kind_count(plan->schedule, ggml::hrx::KernelSpecialization::ExecutionKind::CpuFallback));
-    if (!plan->verification.valid()) {
-        GGML_LOG_ERROR("%s: candidate schedule verification failed: %s\n", __func__, plan->verification.errors.front().c_str());
-    }
-    return plan;
-}
-
-static void graph_plan_free(ggml_backend_t backend, ggml_backend_graph_plan_t opaque_plan) {
-    GGML_UNUSED(backend);
-    auto * plan = static_cast<ggml_backend_hrx_plan *>(opaque_plan);
-    delete plan;
-}
-
-static enum ggml_status graph_plan_compute(ggml_backend_t backend, ggml_backend_graph_plan_t opaque_plan) {
-    GGML_UNUSED(backend);
-    GGML_UNUSED(opaque_plan);
-    GGML_LOG_ERROR("%s: refusing execution in the capture-only HRX build\n", __func__);
-    return GGML_STATUS_FAILED;
-}
-
 static enum ggml_backend_graph_claim_result graph_claim(ggml_backend_t backend, const ggml_cgraph * graph, enum ggml_backend_graph_claim_mode mode) {
-    GGML_UNUSED(backend);
-    dump_graph(graph, mode == GGML_BACKEND_GRAPH_CLAIM_MODE_MEASURE ? "measure" : "execute", "claim");
-    return graph->n_nodes > 0 ? GGML_BACKEND_GRAPH_CLAIM_ACCEPTED : GGML_BACKEND_GRAPH_CLAIM_DECLINED;
+    auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
+    if (!context->graph_oracle || graph->n_nodes == 0) {
+        return GGML_BACKEND_GRAPH_CLAIM_DECLINED;
+    }
+    dump_graph(graph, mode == GGML_BACKEND_GRAPH_CLAIM_MODE_MEASURE ? "measure" : "execute", "raw-oracle");
+    if (mode == GGML_BACKEND_GRAPH_CLAIM_MODE_EXECUTE) {
+        // Use the same executable-reachability import as the reactive path.
+        // The raw pre-placement graph carries an additional, unused leaf list;
+        // importing that list perturbs ValueIds and therefore the otherwise
+        // identical ABI ordering of invocation boundary bindings.
+        const ggml::hrx::Graph normalized = ggml::hrx::import_graph_with_bindings(graph).graph;
+        const ggml::hrx::ProgramPlan plan = ggml::hrx::build_reactive_plan(normalized, context->device->description);
+        if (!plan.valid()) {
+            GGML_LOG_WARN("%s: diagnostic oracle could not build a plan: %s\n", __func__, plan.errors.front().c_str());
+        } else {
+            std::lock_guard<std::mutex> lock(context->oracle_mutex);
+            context->oracle_witnesses[plan.schedule.workload] = plan.semantic_witness;
+            GGML_LOG_WARN("%s: recorded diagnostic oracle workload '%s' with %zu operations, %zu values, %zu roots, and %zu dispatches\n",
+                __func__, plan.schedule.workload.c_str(), plan.graph.operations.size(), plan.graph.values.size(), plan.graph.roots.size(),
+                ggml::hrx::schedule_dispatch_count(plan.schedule));
+        }
+    }
+    // This hook is now only a pre-placement diagnostic oracle. Ordinary
+    // supports_op placement and graph_compute are the launch architecture.
+    return GGML_BACKEND_GRAPH_CLAIM_DECLINED;
 }
 
 static const char * backend_name(ggml_backend_t backend) {
@@ -382,9 +359,45 @@ static void backend_synchronize(ggml_backend_t backend) {
 }
 
 static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * graph) {
-    GGML_UNUSED(backend);
-    GGML_UNUSED(graph);
-    GGML_LOG_ERROR("HRX graphs must be executed through an owned graph plan\n");
+    auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
+    dump_graph(graph, "execute", "reactive-split");
+    ggml::hrx::ExecutionFrame frame = context->device->plan_cache.prepare(graph, context->device->description);
+    if (!frame.valid()) {
+        GGML_LOG_ERROR("%s: reactive plan preparation failed: %s\n", __func__, frame.errors.empty() ? "unknown error" : frame.errors.front().c_str());
+        return GGML_STATUS_FAILED;
+    }
+    if (context->graph_oracle) {
+        std::lock_guard<std::mutex> lock(context->oracle_mutex);
+        auto oracle = context->oracle_witnesses.find(frame.plan->schedule.workload);
+        if (oracle == context->oracle_witnesses.end()) {
+            GGML_LOG_ERROR("%s: no diagnostic oracle witness for %s\n", __func__, frame.plan->schedule.workload.c_str());
+            return GGML_STATUS_FAILED;
+        }
+        if (oracle->second != frame.plan->semantic_witness) {
+            GGML_LOG_ERROR("%s: raw and reactive schedule witnesses disagree for %s\n", __func__, frame.plan->schedule.workload.c_str());
+            std::istringstream raw(oracle->second);
+            std::istringstream reactive(frame.plan->semantic_witness);
+            std::string raw_line;
+            std::string reactive_line;
+            size_t line = 0;
+            while (std::getline(raw, raw_line) && std::getline(reactive, reactive_line)) {
+                ++line;
+                if (raw_line != reactive_line) {
+                    GGML_LOG_ERROR("%s: first witness difference at line %zu: raw='%s' reactive='%s'\n",
+                        __func__, line, raw_line.c_str(), reactive_line.c_str());
+                    break;
+                }
+            }
+            return GGML_STATUS_FAILED;
+        }
+    }
+    const ggml::hrx::PlanCacheStats stats = context->device->plan_cache.stats();
+    GGML_LOG_WARN("%s: verified reactive %s plan with %zu operations, %zu dispatches, cache builds=%llu hits=%llu\n",
+        __func__, frame.plan->schedule.workload.c_str(), frame.plan->graph.operations.size(),
+        ggml::hrx::schedule_dispatch_count(frame.plan->schedule),
+        static_cast<unsigned long long>(stats.builds), static_cast<unsigned long long>(stats.hits));
+    dump_schedule(frame.plan->graph, frame.plan->schedule);
+    GGML_LOG_ERROR("%s: refusing dispatch in the planning-only HRX build\n", __func__);
     return GGML_STATUS_FAILED;
 }
 
@@ -392,7 +405,7 @@ static const ggml_backend_i backend_i = {
     backend_name, backend_free,
     nullptr, nullptr, nullptr, nullptr, nullptr,
     backend_synchronize,
-    graph_plan_create, graph_plan_free, nullptr, graph_plan_compute,
+    nullptr, nullptr, nullptr, nullptr,
     graph_compute,
     nullptr, nullptr, nullptr,
     graph_claim,
@@ -432,7 +445,14 @@ static ggml_backend_t device_init(ggml_backend_dev_t device, const char * parame
     if (!HRX_CHECK(hrx_stream_create(device_ctx->device, 0, &stream))) {
         return nullptr;
     }
-    auto * context = new (std::nothrow) ggml_backend_hrx_context { device_ctx, stream, device_ctx->name };
+    const char * oracle = std::getenv("GGML_HRX_GRAPH_ORACLE");
+    auto * context = new (std::nothrow) ggml_backend_hrx_context;
+    if (context != nullptr) {
+        context->device = device_ctx;
+        context->stream = stream;
+        context->name = device_ctx->name;
+        context->graph_oracle = oracle != nullptr && std::string(oracle) == "1";
+    }
     auto * backend = context != nullptr ? new (std::nothrow) ggml_backend { ggml_backend_hrx_guid(), backend_i, device, context } : nullptr;
     if (backend == nullptr) {
         delete context;
@@ -447,15 +467,13 @@ static ggml_backend_buffer_type_t device_buffer_type(ggml_backend_dev_t device) 
 
 static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op) {
     GGML_UNUSED(device);
-    GGML_UNUSED(op);
-    // Graph ownership is the capability boundary. Advertising individual operations ensures
-    // model weights are allocated in HRX memory instead of creating a CPU weight island for
-    // every logical node before graph_claim can run.
-    return true;
+    return op != nullptr && ggml::hrx::eager_capability_declared(op->op);
 }
 
 static bool device_supports_buffer_type(ggml_backend_dev_t device, ggml_backend_buffer_type_t buft) {
-    return buft == &device_context(device)->buft;
+    // Host-backed tensors are valid imports. The residency planner, not the
+    // outer scheduler, will eventually decide whether and when to stage them.
+    return buft == &device_context(device)->buft || ggml_backend_buft_is_host(buft);
 }
 
 static const ggml_backend_device_i device_i = {

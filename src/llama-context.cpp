@@ -494,6 +494,12 @@ llama_context::~llama_context() {
         }
     }
     ggml_opt_free(opt_ctx);
+    opt_ctx = nullptr;
+
+    // The scheduler borrows the backend pointers. `backends` is declared after
+    // `sched`, so implicit reverse member destruction would otherwise free the
+    // backends before the scheduler performs its final synchronization.
+    sched.reset();
 }
 
 void llama_context::resolve_fused_ops(const llama_memory_context_i * mctx, uint32_t n_seqs) {

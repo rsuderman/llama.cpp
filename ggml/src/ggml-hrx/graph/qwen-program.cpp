@@ -289,8 +289,8 @@ QwenProgramProof recover_owned_qwen3_moe_program(const Graph & graph) {
         proof.errors.push_back("cannot recover a Qwen program from an invalid graph");
         return proof;
     }
-    if (graph.operations.size() != 3030 || graph.values.size() != 3711 || graph.roots.size() != 2) {
-        proof.errors.push_back("graph does not have the canonical 3030-op/3711-value/two-root Qwen shape");
+    if (graph.operations.size() != 3030 || graph.roots.size() != 2) {
+        proof.errors.push_back("graph does not have the canonical 3030-op/two-root Qwen shape");
         return proof;
     }
     if (graph.operations[0].op != GGML_OP_GET_ROWS || graph.operations[3027].op != GGML_OP_RMS_NORM ||

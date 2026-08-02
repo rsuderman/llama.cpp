@@ -444,6 +444,49 @@ Graph import_graph(const ggml_cgraph * cgraph) {
     return graph;
 }
 
+ImportedGraph import_graph_with_bindings(const ggml_cgraph * cgraph) {
+    ImportedGraph result;
+    if (cgraph == nullptr) {
+        result.graph.errors.emplace_back("null cgraph");
+        return result;
+    }
+    // Scheduler reserve and pre-placement graphs may list unused leaf tensors.
+    // Execution plans are defined only by values reachable from executable
+    // nodes, which also makes raw and post-split imports canonical.
+    ggml_cgraph execution_graph = *cgraph;
+    execution_graph.n_leafs = 0;
+    result.graph = import_graph(&execution_graph);
+    if (!result.graph.valid()) return result;
+
+    std::unordered_map<const ggml_tensor *, ValueId> ids;
+    auto visit = [&](auto && self, const ggml_tensor * tensor) -> void {
+        if (tensor == nullptr || ids.count(tensor) != 0) {
+            return;
+        }
+        self(self, tensor->view_src);
+        for (int i = 0; i < GGML_MAX_SRC; ++i) {
+            self(self, tensor->src[i]);
+        }
+        ids.emplace(tensor, static_cast<ValueId>(result.value_tensors.size()));
+        result.value_tensors.push_back(tensor);
+    };
+    for (int i = 0; i < cgraph->n_nodes; ++i) visit(visit, cgraph->nodes[i]);
+
+    if (result.value_tensors.size() != result.graph.values.size()) {
+        result.graph.errors.emplace_back("runtime binding count does not match normalized values");
+        return result;
+    }
+    result.storage_roots.reserve(result.graph.storages.size());
+    for (const Storage & storage : result.graph.storages) {
+        if (storage.root >= result.value_tensors.size()) {
+            result.graph.errors.emplace_back("runtime storage root has no tensor binding");
+            return result;
+        }
+        result.storage_roots.push_back(result.value_tensors[storage.root]);
+    }
+    return result;
+}
+
 const char * boundary_kind_name(BoundaryKind kind) {
     switch (kind) {
         case BoundaryKind::Internal: return "internal";
