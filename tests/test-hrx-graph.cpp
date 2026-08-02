@@ -1,3 +1,4 @@
+#include "command-program.h"
 #include "graph-ir.h"
 #include "matcher.h"
 #include "optimizer.h"
@@ -410,6 +411,103 @@ static void test_eager_capabilities_and_resource_verification() {
     REQUIRE(!ggml::hrx::build_reactive_plan(unknown, "test-target").valid());
 }
 
+static ggml::hrx::KernelCorpus make_test_corpus(const ggml::hrx::ProgramPlan & plan) {
+    ggml::hrx::KernelCorpus corpus;
+    corpus.upstream_revision = "test-revision";
+    corpus.corpus_digest = "test-corpus-sha256";
+    corpus.recipe_digest = "test-build-bazel-sha256";
+    corpus.plan_case_count = 1;
+    for (const ggml::hrx::Invocation & invocation : plan.schedule.invocations) {
+        for (const ggml::hrx::Dispatch & dispatch : invocation.dispatches) {
+            if (std::find_if(corpus.kernels.begin(), corpus.kernels.end(), [&](const ggml::hrx::KernelDefinition & item) {
+                    return item.id == dispatch.kernel.variant;
+                }) != corpus.kernels.end()) continue;
+            ggml::hrx::KernelDefinition kernel;
+            kernel.id = dispatch.kernel.variant;
+            kernel.source = "test/" + kernel.id + ".loom";
+            kernel.symbol = kernel.id;
+            kernel.target = plan.target;
+            kernel.source_digest = "sha256-" + kernel.id;
+            for (const ggml::hrx::TensorBinding & binding : dispatch.bindings) {
+                kernel.bindings.push_back({ binding.role, ggml::hrx::ResourceAccess::ReadWrite });
+            }
+            corpus.kernels.push_back(std::move(kernel));
+        }
+    }
+    return corpus;
+}
+
+static void test_command_program_and_diagnostics() {
+    Fixture fixture;
+    build_arithmetic_graph(fixture, "command-program");
+    const ggml::hrx::ImportedGraph imported = ggml::hrx::import_graph_with_bindings(fixture.graph);
+    const ggml::hrx::ProgramPlan plan = ggml::hrx::build_reactive_plan(imported.graph, "gfx1151");
+    REQUIRE(plan.valid());
+    const ggml::hrx::KernelCorpus corpus = make_test_corpus(plan);
+    REQUIRE(ggml::hrx::verify_kernel_corpus(corpus).valid());
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(plan, corpus);
+    for (const std::string & error : commands.errors) std::fprintf(stderr, "command program: %s\n", error.c_str());
+    REQUIRE(commands.valid());
+    REQUIRE(ggml::hrx::verify_command_program(plan, corpus, commands).valid());
+    REQUIRE(commands.commands.size() == 2);
+    REQUIRE(!commands.transients.allocations.empty());
+    REQUIRE(commands.transients.arena_size >= commands.transients.allocations.front().size);
+
+    const std::string command_text = ggml::hrx::format_command_program(commands);
+    REQUIRE(command_text == ggml::hrx::format_command_program(commands));
+    REQUIRE(command_text.find("command-program ggml-hrx-command-program-v1") != std::string::npos);
+    REQUIRE(command_text.find("transients arena=") != std::string::npos);
+    REQUIRE(ggml::hrx::serialize_command_program_json(commands) == ggml::hrx::serialize_command_program_json(commands));
+    REQUIRE(ggml::hrx::format_kernel_corpus(corpus).find("revision=test-revision") != std::string::npos);
+    REQUIRE(ggml::hrx::format_resource_program(plan.resources).find("flags=") != std::string::npos);
+    REQUIRE(ggml::hrx::command_program_dot(commands).find("c0 -> c1") != std::string::npos);
+
+    ggml::hrx::KernelCorpus missing_kernel = corpus;
+    missing_kernel.kernels.pop_back();
+    REQUIRE(!ggml::hrx::build_command_program(plan, missing_kernel).valid());
+    ggml::hrx::CommandProgram bad_range = commands;
+    bad_range.commands.front().bindings.front().length = plan.graph.storages[bad_range.commands.front().bindings.front().storage].size + 1;
+    REQUIRE(!ggml::hrx::verify_command_program(plan, corpus, bad_range).valid());
+    ggml::hrx::CommandProgram bad_dependency = commands;
+    bad_dependency.commands.back().dependencies = { bad_dependency.commands.back().ordinal };
+    REQUIRE(!ggml::hrx::verify_command_program(plan, corpus, bad_dependency).valid());
+    ggml::hrx::CommandProgram bad_abi = commands;
+    bad_abi.commands.front().bindings.pop_back();
+    REQUIRE(!ggml::hrx::verify_command_program(plan, corpus, bad_abi).valid());
+
+    ggml::hrx::BindingSnapshot snapshot;
+    snapshot.device_identity = "gfx1151:0";
+    uint64_t identity = 1;
+    for (const ggml::hrx::ResourceContract & resource : plan.resources.resources) {
+        if (resource.elidable) continue;
+        snapshot.bindings.push_back({ resource.storage, identity++, 1, resource.size, 0, resource.size });
+    }
+    REQUIRE(ggml::hrx::verify_binding_snapshot(plan, snapshot).valid());
+    const ggml::hrx::AllocationFingerprint first = ggml::hrx::fingerprint_bindings(snapshot);
+    REQUIRE(!first.value.empty());
+    REQUIRE(ggml::hrx::format_binding_snapshot(snapshot).find("buffer=<runtime>") != std::string::npos);
+    REQUIRE(ggml::hrx::format_binding_snapshot(snapshot).find("0x") == std::string::npos);
+    REQUIRE(ggml::hrx::format_binding_snapshot(snapshot, true).find("buffer=0x") != std::string::npos);
+    REQUIRE(ggml::hrx::serialize_binding_snapshot_json(snapshot).find("buffer_identity") == std::string::npos);
+    snapshot.bindings.front().generation++;
+    REQUIRE(ggml::hrx::fingerprint_bindings(snapshot) != first);
+    snapshot.bindings.pop_back();
+    REQUIRE(!ggml::hrx::verify_binding_snapshot(plan, snapshot).valid());
+}
+
+static void test_pinned_kernel_corpus_manifest() {
+    std::vector<std::string> errors;
+    const ggml::hrx::KernelCorpus corpus = ggml::hrx::load_kernel_corpus_manifest(
+        GGML_HRX_TEST_CORPUS_MANIFEST, "gfx1151", errors);
+    REQUIRE(errors.empty());
+    REQUIRE(ggml::hrx::verify_kernel_corpus(corpus).valid());
+    REQUIRE(corpus.upstream_revision == "5b1633e36799e2f9edc31b358a3e93c380e8fae4");
+    REQUIRE(corpus.corpus_digest == "919d67ecba681b14a30c46b7980b90ab6090e9500c3b304f7000368efab5448e");
+    REQUIRE(corpus.recipe_digest == "542255e2e245e96ced8744315223e8aeeaeb5e075280930a2fcbc5760cf5551d");
+    REQUIRE(corpus.kernels.size() == 37);
+    REQUIRE(corpus.plan_case_count == 20);
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -426,10 +524,27 @@ int main(int argc, char ** argv) {
         REQUIRE(verification.valid());
         REQUIRE(proof.structurally_sufficient());
         REQUIRE(!proof.natively_complete());
-        REQUIRE(proof.root_seams.size() == 2);
-        REQUIRE(proof.native_gaps.size() == (proof.schedule.workload == "prefill-512" ? 36 : 34));
+        REQUIRE(proof.root_seams.empty());
+        REQUIRE(proof.schedule.roots.size() == 2);
+        REQUIRE(std::all_of(proof.schedule.roots.begin(), proof.schedule.roots.end(), [](const ggml::hrx::RootContract & root) {
+            return root.disposition == ggml::hrx::RootDisposition::Materialized;
+        }));
+        REQUIRE(proof.native_gaps.size() == (proof.schedule.workload == "prefill-512" ? 38 : 36));
         REQUIRE(ggml::hrx::schedule_execution_kind_count(proof.schedule,
             ggml::hrx::KernelSpecialization::ExecutionKind::CpuFallback) == 0);
+        if (proof.schedule.workload.rfind("decode-", 0) == 0) {
+            size_t split_dispatch_count = 0;
+            for (const ggml::hrx::Invocation & invocation : proof.schedule.invocations) {
+                for (const ggml::hrx::Dispatch & dispatch : invocation.dispatches) {
+                    if (dispatch.kernel.variant != "qwen3_moe_flash_attention_decode_split_f32_f16_wmma") continue;
+                    ++split_dispatch_count;
+                    REQUIRE(dispatch.kernel.integer_parameters.at("key_value_token_count") == 768);
+                    REQUIRE(dispatch.kernel.integer_parameters.at("key_value_tile_size") == 64);
+                    REQUIRE(dispatch.kernel.integer_parameters.at("key_value_block_count") == 12);
+                }
+            }
+            REQUIRE(split_dispatch_count == 48);
+        }
         const std::string serialized = ggml::hrx::serialize_schedule_json(proof.schedule);
         std::vector<std::string> round_trip_errors;
         const ggml::hrx::Schedule round_trip = ggml::hrx::deserialize_schedule_json(serialized, round_trip_errors);
@@ -462,11 +577,15 @@ int main(int argc, char ** argv) {
             ggml::hrx::KernelSpecialization::ExecutionKind::CpuFallback;
         REQUIRE(!ggml::hrx::verify_owned_qwen3_moe_program(graph, cpu_injection).valid());
         ggml::hrx::QwenProgramProof bad_root = proof;
-        bad_root.schedule.roots[0].replacement.clear();
+        bad_root.schedule.roots[0].value = graph.values.size();
         REQUIRE(!ggml::hrx::verify_owned_qwen3_moe_program(graph, bad_root).valid());
         ggml::hrx::Graph corrupted_graph = graph;
         corrupted_graph.operations[3].op = GGML_OP_ADD;
         REQUIRE(!ggml::hrx::recover_owned_qwen3_moe_program(corrupted_graph).recognized());
+        ggml::hrx::Graph mismatched_kv_graph = graph;
+        const ggml::hrx::ValueId first_mask = mismatched_kv_graph.operations[25].inputs[3];
+        mismatched_kv_graph.values[first_mask].access.shape[0] -= 64;
+        REQUIRE(!ggml::hrx::recover_owned_qwen3_moe_program(mismatched_kv_graph).recognized());
         std::ofstream schedule_file(argv[3], std::ios::trunc);
         REQUIRE(schedule_file.good());
         schedule_file << serialized << '\n';
@@ -519,5 +638,7 @@ int main(int argc, char ** argv) {
     test_qwen_multi_output_rules();
     test_reactive_cache_and_bindings();
     test_eager_capabilities_and_resource_verification();
+    test_command_program_and_diagnostics();
+    test_pinned_kernel_corpus_manifest();
     return 0;
 }

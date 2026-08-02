@@ -8,12 +8,14 @@
 namespace ggml::hrx {
 namespace {
 
-static constexpr const char * kOracleRevision = "hrx-system:cfde4038a/qwen-program";
+static constexpr const char * kOracleRevision = "hrx-system:5b1633e36799/qwen-program-full-logits-v1";
 static constexpr size_t kLayerCount = 48;
 static constexpr size_t kRegularLayerOperationCount = 63;
 static constexpr OperationId kFirstLayerOperation = 1;
 static constexpr OperationId kTerminalLayerOperation = 2962;
 static constexpr OperationId kEndpointOperation = 3027;
+static constexpr int64_t kAttentionKvTileSize = 64;
+static constexpr int64_t kAttentionKvMaximum = 32768;
 
 static const std::vector<enum ggml_op> & regular_layer_signature() {
     static const std::vector<enum ggml_op> value = {
@@ -80,11 +82,61 @@ static bool has_shape(const Graph & graph, OperationId operation, std::initializ
     return true;
 }
 
+struct AttentionGeometry {
+    int64_t head_size = 0;
+    int64_t key_value_token_count = 0;
+    int64_t key_value_head_count = 0;
+};
+
+static bool recover_attention_geometry(const Graph & graph, size_t layer, AttentionGeometry & geometry,
+                                       std::vector<std::string> & errors) {
+    const OperationId flash = layer_start(layer) + 24;
+    if (flash >= graph.operations.size() || graph.operations[flash].op != GGML_OP_FLASH_ATTN_EXT ||
+        graph.operations[flash].inputs.size() != 4) {
+        errors.push_back("layer " + std::to_string(layer) + " has no canonical flash-attention input tuple");
+        return false;
+    }
+    const Operation & operation = graph.operations[flash];
+    for (ValueId input : operation.inputs) {
+        if (input >= graph.values.size()) {
+            errors.push_back("layer " + std::to_string(layer) + " flash-attention input is invalid");
+            return false;
+        }
+    }
+    const Value & query = graph.values[operation.inputs[0]];
+    const Value & key = graph.values[operation.inputs[1]];
+    const Value & value = graph.values[operation.inputs[2]];
+    const Value & mask = graph.values[operation.inputs[3]];
+    geometry.head_size = key.access.shape[0];
+    geometry.key_value_token_count = key.access.shape[1];
+    geometry.key_value_head_count = key.access.shape[2];
+    if (geometry.head_size != 128 || geometry.key_value_head_count != 4 ||
+        query.access.shape[0] != geometry.head_size || query.access.shape[2] != 32 ||
+        value.access.shape[0] != geometry.head_size ||
+        value.access.shape[1] != geometry.key_value_token_count ||
+        value.access.shape[2] != geometry.key_value_head_count ||
+        mask.access.shape[0] != geometry.key_value_token_count) {
+        errors.push_back("layer " + std::to_string(layer) + " K/V/mask attention geometry does not agree");
+        return false;
+    }
+    if (geometry.key_value_token_count <= 0 || geometry.key_value_token_count > kAttentionKvMaximum) {
+        errors.push_back("layer " + std::to_string(layer) + " KV extent is outside the kernel contract");
+        return false;
+    }
+    if (geometry.key_value_token_count % kAttentionKvTileSize != 0) {
+        errors.push_back("layer " + std::to_string(layer) + " HRX padded KV extent is not a 64-token tile multiple");
+        return false;
+    }
+    return true;
+}
+
 static bool validate_layer_facts(const Graph & graph, size_t layer, size_t token_count,
                                  std::vector<std::string> & errors) {
     const OperationId start = layer_start(layer);
     const bool terminal = layer == 47;
     const int64_t active_rows = terminal ? 1 : static_cast<int64_t>(token_count);
+    AttentionGeometry attention_geometry;
+    if (!recover_attention_geometry(graph, layer, attention_geometry, errors)) return false;
     if (!has_shape(graph, start, { 2048, static_cast<int64_t>(token_count) }) ||
         !has_shape(graph, start + 2, { 4096, static_cast<int64_t>(token_count) }) ||
         !has_shape(graph, start + 7, { 512, static_cast<int64_t>(token_count) }) ||
@@ -223,20 +275,16 @@ static void append_prefill_layer_dispatches(const Graph & graph, Invocation & in
     add_dispatch(invocation, kernel("qwen3_moe_rmsnorm_f32", layer, terminal ? 1 : token_count), ordinal);
     add_dispatch(invocation, kernel("qwen3_moe_router_projection_f32_four_row_wave32", layer, terminal ? 1 : token_count), ordinal);
     add_dispatch(invocation, kernel("qwen3_moe_router_top8_f32", layer, terminal ? 1 : token_count), ordinal);
-    if (terminal) {
-        add_dispatch(invocation, kernel("qwen3_moe_build_expert_table", layer, 1), ordinal);
-        add_dispatch(invocation, kernel("qwen3_moe_build_expert_partition_table", layer, 1), ordinal);
-    } else {
-        add_dispatch(invocation, kernel("qwen3_moe_build_expert_table_partition_prefill_512", layer, token_count), ordinal);
-    }
+    add_dispatch(invocation, kernel("qwen3_moe_build_expert_table", layer, terminal ? 1 : token_count), ordinal);
+    add_dispatch(invocation, kernel("qwen3_moe_build_expert_partition_table", layer, terminal ? 1 : token_count), ordinal);
     add_dispatch(invocation, kernel("qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma", layer, terminal ? 1 : token_count), ordinal);
     const OperationId down_operation = start + (terminal ? 47 : 45);
     add_dispatch(invocation, storage_kernel("qwen3_moe_routed_down_q4k_f16_wmma_grouped",
         "qwen3_moe_routed_down_q6k_f16_wmma_grouped", "routed_down",
         weight_type(graph, down_operation), layer, terminal ? 1 : token_count, gaps), ordinal);
-    add_dispatch(invocation, kernel(terminal ? "qwen3_moe_routed_down_weighted_reduce_f16_f32"
-                                              : "qwen3_moe_routed_down_weighted_reduce_next_rmsnorm_f32",
+    add_dispatch(invocation, kernel("qwen3_moe_routed_down_weighted_reduce_f16_f32",
         layer, terminal ? 1 : token_count), ordinal);
+    if (!terminal) add_dispatch(invocation, kernel("qwen3_moe_rmsnorm_f32", layer, token_count), ordinal);
 }
 
 static void append_decode_layer_dispatches(const Graph & graph, Invocation & invocation, size_t layer,
@@ -248,7 +296,7 @@ static void append_decode_layer_dispatches(const Graph & graph, Invocation & inv
     const enum ggml_type value_type = weight_type(graph, start + 9);
     if ((query_type == GGML_TYPE_Q4_K) && (key_type == GGML_TYPE_Q4_K) &&
         (value_type == GGML_TYPE_Q4_K || value_type == GGML_TYPE_Q6_K)) {
-        KernelSpecialization qkv = kernel("qwen3_moe_attention_qkv_postprocess_fused_decode", layer, token_count);
+        KernelSpecialization qkv = kernel("qwen3_moe_attention_qkv_quantized", layer, token_count);
         qkv.integer_parameters["query_weight_type"] = query_type;
         qkv.integer_parameters["key_weight_type"] = key_type;
         qkv.integer_parameters["value_weight_type"] = value_type;
@@ -259,16 +307,33 @@ static void append_decode_layer_dispatches(const Graph & graph, Invocation & inv
         gaps.push_back("layer " + std::to_string(layer) + ": " + variant);
         add_dispatch(invocation, kernel(variant, layer, token_count, KernelSpecialization::ExecutionKind::NativeGap), ordinal);
     }
-    add_dispatch(invocation, kernel("qwen3_moe_flash_attention_decode_split_f32_f16_wmma", layer, token_count), ordinal);
+    add_dispatch(invocation, kernel("qwen3_moe_attention_postprocess_f32_f16", layer, token_count), ordinal);
+    AttentionGeometry attention_geometry;
+    std::vector<std::string> unreachable_errors;
+    const bool has_attention_geometry = recover_attention_geometry(graph, layer, attention_geometry, unreachable_errors);
+    KernelSpecialization flash = kernel("qwen3_moe_flash_attention_decode_split_f32_f16_wmma", layer, token_count);
+    if (has_attention_geometry) {
+        flash.integer_parameters["key_value_token_count"] = attention_geometry.key_value_token_count;
+        flash.integer_parameters["key_value_tile_size"] = kAttentionKvTileSize;
+        flash.integer_parameters["key_value_block_count"] =
+            (attention_geometry.key_value_token_count + kAttentionKvTileSize - 1) / kAttentionKvTileSize;
+    }
+    add_dispatch(invocation, std::move(flash), ordinal);
     add_dispatch(invocation, kernel("ggml_quantize_q8_1_x4_f32", layer, token_count), ordinal);
-    add_dispatch(invocation, storage_kernel("qwen3_moe_dense_linear_q4k_q8_1_x4_next_q8", "",
-        "dense_attention_output_next_q8", weight_type(graph, start + 26), layer, token_count, gaps), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_router_projection_top8_fused_decode_f32", layer, token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8", layer, token_count), ordinal);
+    add_dispatch(invocation, storage_kernel("qwen3_moe_dense_linear_q4k_q8_1_x4", "",
+        "dense_attention_output_q8", weight_type(graph, start + 26), layer, token_count, gaps), ordinal);
+    add_dispatch(invocation, kernel("qwen3_moe_rmsnorm_f32_quantize_q8_1_x4", layer, token_count), ordinal);
+    add_dispatch(invocation, kernel("qwen3_moe_router_projection_f32_one_row_wave64", layer, token_count), ordinal);
+    add_dispatch(invocation, kernel("qwen3_moe_router_top8_f32", layer, token_count), ordinal);
+    add_dispatch(invocation, kernel("qwen3_moe_routed_gate_up_swiglu_q4k_q8", layer, token_count), ordinal);
+    add_dispatch(invocation, kernel("ggml_quantize_q8_1_x4_f32", layer, token_count * 8), ordinal);
     const OperationId down_operation = start + (terminal ? 47 : 45);
-    add_dispatch(invocation, storage_kernel("qwen3_moe_routed_down_q4k_q8_1_x4_next_q8",
-        "qwen3_moe_routed_down_q6k_q8_1_x4_next_q8", "routed_down_next_q8",
+    add_dispatch(invocation, storage_kernel("qwen3_moe_routed_down_q4k_q8_1_x4",
+        "qwen3_moe_routed_down_q6k_q8_1_x4", "routed_down_q8",
         weight_type(graph, down_operation), layer, token_count, gaps), ordinal);
+    add_dispatch(invocation, kernel(terminal ? "qwen3_moe_rmsnorm_f32_quantize_q8_1_x4"
+                                             : "qwen3_moe_attention_rmsnorm_quantize_q8_1_x4",
+        layer, token_count), ordinal);
 }
 
 } // namespace
@@ -311,22 +376,28 @@ QwenProgramProof recover_owned_qwen3_moe_program(const Graph & graph) {
         proof.errors.push_back("canonical topology has unsupported token count " + std::to_string(token_count));
         return proof;
     }
+    int64_t program_key_value_token_count = 0;
     for (size_t layer = 0; layer < kLayerCount; ++layer) {
         if (!validate_layer_facts(graph, layer, token_count, proof.errors)) return proof;
+        AttentionGeometry attention_geometry;
+        if (!recover_attention_geometry(graph, layer, attention_geometry, proof.errors)) return proof;
+        if (layer == 0) program_key_value_token_count = attention_geometry.key_value_token_count;
+        if (attention_geometry.key_value_token_count != program_key_value_token_count) {
+            proof.errors.push_back("attention KV extent is not coherent across all owned layers");
+            return proof;
+        }
     }
 
     Schedule & schedule = proof.schedule;
     schedule.graph_fingerprint = graph.fingerprint;
-    schedule.workload = prefill ? "prefill-512" : "decode-513";
+    schedule.workload = (prefill ? "prefill-" : "decode-") + std::to_string(program_key_value_token_count);
     schedule.oracle_revision = kOracleRevision;
-    schedule.expected_dispatch_count = prefill ? 631 : 341;
+    schedule.expected_dispatch_count = prefill ? 724 : 580;
     for (ValueId root : graph.roots) {
         const Value & value = graph.values[root];
-        const std::string replacement = value.access.shape[0] == 151936
-            ? "selected_token_from_partial_vocabulary_argmax"
-            : "owned_hidden_state_not_published";
-        schedule.roots.push_back({ root, RootDisposition::OwnedEndpointReplacement, replacement });
-        proof.root_seams.push_back("root " + std::to_string(root) + " -> " + replacement);
+        const std::string materialization = value.access.shape[0] == 151936
+            ? "full_f32_logits" : "normalized_f32_hidden_state";
+        schedule.roots.push_back({ root, RootDisposition::Materialized, materialization });
     }
 
     size_t dispatch_ordinal = 0;
@@ -335,8 +406,14 @@ QwenProgramProof recover_owned_qwen3_moe_program(const Graph & graph) {
     preamble.covered_operations = prefill ? inclusive_range(0, 0) : inclusive_range(0, 2);
     preamble.kernel = kernel("owned_program_preamble", -1, token_count);
     calculate_boundaries(graph, preamble);
-    add_dispatch(preamble, kernel("qwen_token_embedding_q4k_bringup_workaround", -1, token_count), dispatch_ordinal);
-    add_dispatch(preamble, kernel("qwen_attention_metadata_bringup_workaround", -1, token_count), dispatch_ordinal);
+    for (const char * unresolved : {
+             "qwen_token_embedding_q4k_bringup_workaround",
+             "qwen_attention_metadata_bringup_workaround",
+         }) {
+        proof.native_gaps.push_back(std::string("program preamble: ") + unresolved);
+        add_dispatch(preamble, kernel(unresolved, -1, token_count,
+            KernelSpecialization::ExecutionKind::NativeGap), dispatch_ordinal);
+    }
     if (decode) add_dispatch(preamble, kernel("qwen3_moe_attention_rmsnorm_quantize_q8_1_x4", -1, token_count), dispatch_ordinal);
     schedule.invocations.push_back(std::move(preamble));
 
@@ -368,9 +445,8 @@ QwenProgramProof recover_owned_qwen3_moe_program(const Graph & graph) {
     endpoint.kernel = kernel("owned_program_endpoint", -1, 1);
     endpoint.covered_operations = prefill ? inclusive_range(3027, 3029) : inclusive_range(3029, 3029);
     calculate_boundaries(graph, endpoint);
-    if (prefill) add_dispatch(endpoint, kernel("qwen3_moe_attention_rmsnorm_quantize_q8_1_x4", -1, 1), dispatch_ordinal);
-    add_dispatch(endpoint, kernel("ggml_linear_q6k_q8_1_x4_partial_argmax", -1, 1), dispatch_ordinal);
-    add_dispatch(endpoint, kernel("qwen_greedy_argmax_partials_bringup_workaround", -1, 1), dispatch_ordinal);
+    if (prefill) add_dispatch(endpoint, kernel("qwen3_moe_rmsnorm_f32_quantize_q8_1_x4", -1, 1), dispatch_ordinal);
+    add_dispatch(endpoint, kernel("ggml_linear_q6k_q8_1_x4", -1, 1), dispatch_ordinal);
     schedule.invocations.push_back(std::move(endpoint));
     return proof;
 }
@@ -383,7 +459,7 @@ VerificationResult verify_owned_qwen3_moe_program(const Graph & graph, const Qwe
         return result;
     }
     result = verify_schedule(graph, proof.schedule);
-    const size_t expected_dispatch_count = proof.schedule.workload == "prefill-512" ? 631 : 341;
+    const size_t expected_dispatch_count = proof.schedule.workload == "prefill-512" ? 724 : 580;
     if (proof.schedule.expected_dispatch_count != expected_dispatch_count ||
         schedule_dispatch_count(proof.schedule) != expected_dispatch_count) {
         result.errors.push_back("owned Qwen dispatch topology does not match the pinned oracle");

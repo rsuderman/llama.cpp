@@ -1,13 +1,17 @@
 #include "ggml-hrx.h"
 
+#include "graph/command-program.h"
 #include "graph/graph-ir.h"
+#include "graph/qwen-program.h"
 #include "graph/reactive-plan.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
 #include "hrx_runtime.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -16,6 +20,7 @@
 #include <mutex>
 #include <new>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_map>
 #include <string>
 #include <vector>
@@ -45,6 +50,7 @@ struct ggml_backend_hrx_device_context {
     hrx_device_t device = nullptr;
     std::string name;
     std::string description;
+    std::string architecture;
     size_t memory_total = 0;
     ggml_backend_buffer_type buft = {};
     ggml_backend_hrx_buffer_type_context buft_context = {};
@@ -55,7 +61,11 @@ struct ggml_backend_hrx_context {
     ggml_backend_hrx_device_context * device;
     hrx_stream_t stream;
     std::string name;
-    bool graph_oracle = false;
+    struct DiagnosticOptions {
+        std::filesystem::path directory;
+        std::string level = "summary";
+        bool graph_oracle = false;
+    } diagnostics;
     std::mutex oracle_mutex;
     std::unordered_map<std::string, std::string> oracle_witnesses;
 };
@@ -257,9 +267,9 @@ static const ggml_backend_buffer_type_i buffer_type_i = {
     buffer_type_name, buffer_alloc, buffer_alignment, buffer_max_size, nullptr, nullptr,
 };
 
-static void dump_graph(const ggml_cgraph * graph, const char * mode, const char * stage) {
-    const char * directory = std::getenv("GGML_HRX_DUMP_GRAPH_DIR");
-    if (directory == nullptr || directory[0] == '\0') {
+static void dump_graph(const ggml_backend_hrx_context::DiagnosticOptions & options,
+                       const ggml_cgraph * graph, const char * mode, const char * stage) {
+    if (options.directory.empty()) {
         return;
     }
     static std::atomic<uint64_t> sequence = 0;
@@ -267,6 +277,7 @@ static void dump_graph(const ggml_cgraph * graph, const char * mode, const char 
     const uint64_t id = sequence.fetch_add(1);
     try {
         const ggml::hrx::Graph normalized = ggml::hrx::import_graph_with_bindings(graph).graph;
+        const std::filesystem::path & directory = options.directory;
         std::filesystem::create_directories(directory);
         const std::string stem = std::to_string(id) + "-uid-" + std::to_string(graph->uid) + "-" + mode + "-" + stage;
         const std::filesystem::path dot_path = std::filesystem::path(directory) / (stem + ".dot");
@@ -291,41 +302,76 @@ static void dump_graph(const ggml_cgraph * graph, const char * mode, const char 
     }
 }
 
-static void dump_schedule(const ggml::hrx::Graph & graph, const ggml::hrx::Schedule & schedule) {
-    const char * directory = std::getenv("GGML_HRX_DUMP_GRAPH_DIR");
-    if (directory == nullptr || directory[0] == '\0') return;
+static void write_atomic(const std::filesystem::path & path, const std::string & contents) {
+    std::filesystem::create_directories(path.parent_path());
+    const std::filesystem::path temporary = path.string() + ".tmp";
+    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    if (!output) throw std::runtime_error("cannot create diagnostic file " + temporary.string());
+    output << contents;
+    if (contents.empty() || contents.back() != '\n') output << '\n';
+    output.close();
+    std::error_code error;
+    std::filesystem::rename(temporary, path, error);
+    if (error) {
+        std::filesystem::remove(temporary);
+        if (!std::filesystem::exists(path)) throw std::runtime_error("cannot publish diagnostic file " + path.string());
+    }
+}
+
+static void dump_plan(const ggml_backend_hrx_context::DiagnosticOptions & options,
+                      const ggml::hrx::ProgramPlan & plan) {
+    if (options.directory.empty()) return;
     static std::mutex mutex;
     try {
         std::lock_guard<std::mutex> lock(mutex);
-        const std::filesystem::path schedule_directory = std::filesystem::path(directory) / "candidate-schedules";
-        std::filesystem::create_directories(schedule_directory);
-        const std::filesystem::path path = schedule_directory / (graph.fingerprint + ".json");
-        if (std::filesystem::exists(path)) return;
-        const std::filesystem::path temporary_path = path.string() + ".tmp";
-        std::ofstream output(temporary_path, std::ios::binary | std::ios::trunc);
-        output << ggml::hrx::serialize_schedule_json(schedule) << '\n';
-        output.close();
-        std::error_code error;
-        std::filesystem::rename(temporary_path, path, error);
-        if (error) std::filesystem::remove(temporary_path);
+        std::string target = plan.target;
+        std::replace_if(target.begin(), target.end(), [](char ch) { return !std::isalnum(static_cast<unsigned char>(ch)); }, '_');
+        const std::filesystem::path directory = options.directory / "plans" /
+            (plan.schedule.workload + "-" + plan.graph.fingerprint + "-" + target);
+        std::vector<std::string> corpus_errors;
+        const std::filesystem::path corpus_manifest = std::filesystem::path(GGML_HRX_QWEN_CORPUS_DIR) / "manifest.json";
+        const ggml::hrx::KernelCorpus corpus = ggml::hrx::load_kernel_corpus_manifest(
+            corpus_manifest.string(), plan.target, corpus_errors);
+        const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(plan, corpus);
+        const ggml::hrx::VerificationResult command_verification =
+            ggml::hrx::verify_command_program(plan, corpus, commands);
+        const ggml::hrx::QwenProgramProof proof = ggml::hrx::recover_owned_qwen3_moe_program(plan.graph);
+        write_atomic(directory / "program.txt", proof.recognized()
+            ? ggml::hrx::qwen_program_signature(proof) : plan.semantic_witness);
+        write_atomic(directory / "semantic-witness.txt", plan.semantic_witness);
+        write_atomic(directory / "program.json", ggml::hrx::serialize_schedule_json(plan.schedule));
+        write_atomic(directory / "resources.txt", ggml::hrx::format_resource_program(plan.resources));
+        write_atomic(directory / "kernels.txt", ggml::hrx::format_kernel_corpus(corpus));
+        write_atomic(directory / "kernels.json", ggml::hrx::serialize_kernel_corpus_json(corpus));
+        write_atomic(directory / "commands.txt", ggml::hrx::format_command_program(commands));
+        write_atomic(directory / "commands.json", ggml::hrx::serialize_command_program_json(commands));
+        write_atomic(directory / "commands.dot", ggml::hrx::command_program_dot(commands));
+        std::ostringstream status;
+        status << "schema=ggml-hrx-plan-diagnostics-v1\nlevel=" << options.level << "\nvalid="
+               << (corpus_errors.empty() && command_verification.valid() ? "true" : "false") << '\n';
+        std::vector<std::string> errors = corpus_errors;
+        errors.insert(errors.end(), command_verification.errors.begin(), command_verification.errors.end());
+        status << ggml::hrx::format_verification_summary(errors);
+        write_atomic(directory / "status.txt", status.str());
+        write_atomic(directory / "verification-errors.txt", ggml::hrx::format_verification_errors(errors));
     } catch (const std::exception & error) {
-        GGML_LOG_ERROR("%s: schedule dump failed: %s\n", __func__, error.what());
+        GGML_LOG_ERROR("%s: plan dump failed: %s\n", __func__, error.what());
     }
 }
 
 static enum ggml_backend_graph_claim_result graph_claim(ggml_backend_t backend, const ggml_cgraph * graph, enum ggml_backend_graph_claim_mode mode) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
-    if (!context->graph_oracle || graph->n_nodes == 0) {
+    if (!context->diagnostics.graph_oracle || graph->n_nodes == 0) {
         return GGML_BACKEND_GRAPH_CLAIM_DECLINED;
     }
-    dump_graph(graph, mode == GGML_BACKEND_GRAPH_CLAIM_MODE_MEASURE ? "measure" : "execute", "raw-oracle");
+    dump_graph(context->diagnostics, graph, mode == GGML_BACKEND_GRAPH_CLAIM_MODE_MEASURE ? "measure" : "execute", "raw-oracle");
     if (mode == GGML_BACKEND_GRAPH_CLAIM_MODE_EXECUTE) {
         // Use the same executable-reachability import as the reactive path.
         // The raw pre-placement graph carries an additional, unused leaf list;
         // importing that list perturbs ValueIds and therefore the otherwise
         // identical ABI ordering of invocation boundary bindings.
         const ggml::hrx::Graph normalized = ggml::hrx::import_graph_with_bindings(graph).graph;
-        const ggml::hrx::ProgramPlan plan = ggml::hrx::build_reactive_plan(normalized, context->device->description);
+        const ggml::hrx::ProgramPlan plan = ggml::hrx::build_reactive_plan(normalized, context->device->architecture);
         if (!plan.valid()) {
             GGML_LOG_WARN("%s: diagnostic oracle could not build a plan: %s\n", __func__, plan.errors.front().c_str());
         } else {
@@ -360,13 +406,13 @@ static void backend_synchronize(ggml_backend_t backend) {
 
 static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * graph) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
-    dump_graph(graph, "execute", "reactive-split");
-    ggml::hrx::ExecutionFrame frame = context->device->plan_cache.prepare(graph, context->device->description);
+    dump_graph(context->diagnostics, graph, "execute", "reactive-split");
+    ggml::hrx::ExecutionFrame frame = context->device->plan_cache.prepare(graph, context->device->architecture);
     if (!frame.valid()) {
         GGML_LOG_ERROR("%s: reactive plan preparation failed: %s\n", __func__, frame.errors.empty() ? "unknown error" : frame.errors.front().c_str());
         return GGML_STATUS_FAILED;
     }
-    if (context->graph_oracle) {
+    if (context->diagnostics.graph_oracle) {
         std::lock_guard<std::mutex> lock(context->oracle_mutex);
         auto oracle = context->oracle_witnesses.find(frame.plan->schedule.workload);
         if (oracle == context->oracle_witnesses.end()) {
@@ -396,7 +442,7 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
         __func__, frame.plan->schedule.workload.c_str(), frame.plan->graph.operations.size(),
         ggml::hrx::schedule_dispatch_count(frame.plan->schedule),
         static_cast<unsigned long long>(stats.builds), static_cast<unsigned long long>(stats.hits));
-    dump_schedule(frame.plan->graph, frame.plan->schedule);
+    dump_plan(context->diagnostics, *frame.plan);
     GGML_LOG_ERROR("%s: refusing dispatch in the planning-only HRX build\n", __func__);
     return GGML_STATUS_FAILED;
 }
@@ -446,12 +492,16 @@ static ggml_backend_t device_init(ggml_backend_dev_t device, const char * parame
         return nullptr;
     }
     const char * oracle = std::getenv("GGML_HRX_GRAPH_ORACLE");
+    const char * dump_directory = std::getenv("GGML_HRX_DUMP_GRAPH_DIR");
+    const char * dump_level = std::getenv("GGML_HRX_DUMP_LEVEL");
     auto * context = new (std::nothrow) ggml_backend_hrx_context;
     if (context != nullptr) {
         context->device = device_ctx;
         context->stream = stream;
         context->name = device_ctx->name;
-        context->graph_oracle = oracle != nullptr && std::string(oracle) == "1";
+        context->diagnostics.graph_oracle = oracle != nullptr && std::string(oracle) == "1";
+        if (dump_directory != nullptr && dump_directory[0] != '\0') context->diagnostics.directory = dump_directory;
+        if (dump_level != nullptr && dump_level[0] != '\0') context->diagnostics.level = dump_level;
     }
     auto * backend = context != nullptr ? new (std::nothrow) ggml_backend { ggml_backend_hrx_guid(), backend_i, device, context } : nullptr;
     if (backend == nullptr) {
@@ -538,6 +588,7 @@ static std::unique_ptr<ggml_backend_hrx_reg_context> create_registry_context() {
         HRX_CHECK(hrx_device_get_property(hrx_device, HRX_DEVICE_PROPERTY_TOTAL_MEMORY, &memory, sizeof(memory)));
         device_ctx->memory_total = static_cast<size_t>(memory);
         device_ctx->description = std::string(name.data()) + " (" + architecture.data() + ")";
+        device_ctx->architecture = architecture.data();
         device_ctx->buft_context = { device_ctx.get(), device_ctx->name };
         device_ctx->buft = { buffer_type_i, nullptr, &device_ctx->buft_context };
         context->device_contexts.emplace_back(std::move(device_ctx));
