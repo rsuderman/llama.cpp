@@ -34,16 +34,18 @@ static void set_binding(ggml_backend_hrx_loom_config_binding & binding, const ch
     binding.type = "i64";
 }
 
-static ggml_backend_hrx_loom_execution_plan make_plan(const ggml_backend_hrx_loom_catalog_entry * entry,
-                                                      const char *                                 nelements,
-                                                      const char *                                 workgroup_size_x) {
-    ggml_backend_hrx_loom_execution_plan plan = {};
-    plan.dispatches[0].entry                  = entry;
+static void make_plan(ggml_backend_hrx_loom_execution_plan &    plan,
+                      ggml_backend_hrx_loom_config_binding *    storage,
+                      const ggml_backend_hrx_loom_catalog_entry * entry,
+                      const char *                               nelements,
+                      const char *                               workgroup_size_x) {
+    plan.config_storage = storage;
+    ggml_backend_hrx_loom_reset_plan(&plan);
+    plan.dispatches[0].entry = entry;
     set_binding(plan.dispatches[0].config_bindings[0], "nelements", nelements);
     set_binding(plan.dispatches[0].config_bindings[1], "workgroup_size_x", workgroup_size_x);
     plan.dispatches[0].config_binding_count = 2;
-    plan.dispatch_count = 1;
-    return plan;
+    plan.dispatch_count                     = 1;
 }
 
 static std::string cache_key(const ggml_backend_hrx_loom_execution_plan & plan) {
@@ -88,12 +90,20 @@ int main() {
     const ggml_backend_hrx_loom_catalog_entry  entry_b  = make_entry(source_b, sizeof(source_b) - 1, nullptr, 0);
     const ggml_backend_hrx_loom_catalog_entry  entry_d0 = make_entry(source_a, sizeof(source_a) - 1, dependencies_a, 1);
     const ggml_backend_hrx_loom_catalog_entry  entry_d1 = make_entry(source_a, sizeof(source_a) - 1, dependencies_b, 1);
-    const ggml_backend_hrx_loom_execution_plan plan_a0  = make_plan(&entry_a, "257", "256");
-    const ggml_backend_hrx_loom_execution_plan plan_a1  = make_plan(&entry_a, "257", "256");
-    const ggml_backend_hrx_loom_execution_plan plan_b0  = make_plan(&entry_a, "2048", "256");
-    const ggml_backend_hrx_loom_execution_plan plan_c0  = make_plan(&entry_b, "257", "256");
-    const ggml_backend_hrx_loom_execution_plan plan_d0  = make_plan(&entry_d0, "257", "256");
-    const ggml_backend_hrx_loom_execution_plan plan_d1  = make_plan(&entry_d1, "257", "256");
+    ggml_backend_hrx_loom_execution_plan plan_a0 = {};
+    ggml_backend_hrx_loom_execution_plan plan_a1 = {};
+    ggml_backend_hrx_loom_execution_plan plan_b0 = {};
+    ggml_backend_hrx_loom_execution_plan plan_c0 = {};
+    ggml_backend_hrx_loom_execution_plan plan_d0 = {};
+    ggml_backend_hrx_loom_execution_plan plan_d1 = {};
+    ggml_backend_hrx_loom_config_binding storage[6][GGML_BACKEND_HRX_LOOM_MAX_DISPATCHES *
+                                                     GGML_BACKEND_HRX_LOOM_MAX_CONFIG_BINDINGS] = {};
+    make_plan(plan_a0, storage[0], &entry_a, "257", "256");
+    make_plan(plan_a1, storage[1], &entry_a, "257", "256");
+    make_plan(plan_b0, storage[2], &entry_a, "2048", "256");
+    make_plan(plan_c0, storage[3], &entry_b, "257", "256");
+    make_plan(plan_d0, storage[4], &entry_d0, "257", "256");
+    make_plan(plan_d1, storage[5], &entry_d1, "257", "256");
 
     expect_true(cache_key(plan_a0) == cache_key(plan_a1), "identical plans must produce identical cache keys");
     expect_true(cache_key(plan_a0) != cache_key(plan_b0), "config changes must produce different cache keys");

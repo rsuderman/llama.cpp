@@ -1,0 +1,594 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "topk_moe_softmax_norm_pp512",
+  "format": "loom",
+  "priority": 500,
+  "tensors": {
+    "logits": {
+      "type": "F32",
+      "shape": [
+        "nexperts",
+        "ntokens",
+        "logits_batch2",
+        "logits_batch3"
+      ]
+    },
+    "softmax_mask": {
+      "type": "F32",
+      "optional": true
+    },
+    "softmax_bias": {
+      "type": "F32",
+      "optional": true
+    },
+    "softmax_dst": {
+      "type": "F32",
+      "shape": [
+        "nexperts",
+        "ntokens",
+        "softmax_batch2",
+        "softmax_batch3"
+      ]
+    },
+    "probs_reshape_dst": {
+      "type": "F32",
+      "shape": [
+        "probs_one",
+        "probs_experts",
+        "probs_tokens",
+        "probs_batch"
+      ]
+    },
+    "argsort_dst": {
+      "type": "I32",
+      "shape": [
+        "argsort_experts",
+        "argsort_tokens",
+        "argsort_batch2",
+        "argsort_batch3"
+      ]
+    },
+    "ids_view_dst": {
+      "type": "I32",
+      "shape": [
+        "nselected",
+        "ids_tokens",
+        "ids_batch2",
+        "ids_batch3"
+      ]
+    },
+    "get_rows_dst": {
+      "type": "F32",
+      "shape": [
+        "get_rows_one",
+        "get_rows_selected",
+        "get_rows_tokens",
+        "get_rows_batch"
+      ]
+    },
+    "weights_reshape_dst": {
+      "type": "F32",
+      "shape": [
+        "weights_selected",
+        "weights_tokens",
+        "weights_batch2",
+        "weights_batch3"
+      ]
+    },
+    "sum_rows_dst": {
+      "type": "F32",
+      "shape": [
+        "sum_one",
+        "sum_tokens",
+        "sum_batch2",
+        "sum_batch3"
+      ]
+    },
+    "clamp_dst": {
+      "type": "F32",
+      "shape": [
+        "clamp_one",
+        "clamp_tokens",
+        "clamp_batch2",
+        "clamp_batch3"
+      ]
+    },
+    "weights_dst": {
+      "type": "F32",
+      "shape": [
+        "weights_out_selected",
+        "weights_out_tokens",
+        "weights_out_batch2",
+        "weights_out_batch3"
+      ]
+    }
+  },
+  "match": {
+    "anchors": [
+      "softmax"
+    ],
+    "ops": {
+      "softmax": {
+        "op": "GGML_OP_SOFT_MAX",
+        "tensors": {
+          "src0": "logits",
+          "src1": "softmax_mask",
+          "src2": "softmax_bias",
+          "dst": "softmax_dst"
+        },
+        "attributes": {
+          "scale": {
+            "type": "f32",
+            "source": "op_param.0"
+          },
+          "max_bias": {
+            "type": "f32",
+            "source": "op_param.1"
+          }
+        }
+      },
+      "probs_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "softmax_dst",
+          "dst": "probs_reshape_dst"
+        },
+        "attributes": {}
+      },
+      "argsort": {
+        "op": "GGML_OP_ARGSORT",
+        "tensors": {
+          "src0": "softmax_dst",
+          "dst": "argsort_dst"
+        },
+        "attributes": {
+          "order": {
+            "type": "i32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "ids_view": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "argsort_dst",
+          "dst": "ids_view_dst"
+        },
+        "attributes": {}
+      },
+      "get_rows": {
+        "op": "GGML_OP_GET_ROWS",
+        "tensors": {
+          "src0": "probs_reshape_dst",
+          "src1": "ids_view_dst",
+          "dst": "get_rows_dst"
+        },
+        "attributes": {}
+      },
+      "weights_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "get_rows_dst",
+          "dst": "weights_reshape_dst"
+        },
+        "attributes": {}
+      },
+      "sum_rows": {
+        "op": "GGML_OP_SUM_ROWS",
+        "tensors": {
+          "src0": "weights_reshape_dst",
+          "dst": "sum_rows_dst"
+        },
+        "attributes": {}
+      },
+      "clamp": {
+        "op": "GGML_OP_CLAMP",
+        "tensors": {
+          "src0": "sum_rows_dst",
+          "dst": "clamp_dst"
+        },
+        "attributes": {
+          "minimum": {
+            "type": "f32",
+            "source": "op_param.0"
+          },
+          "maximum": {
+            "type": "f32",
+            "source": "op_param.1"
+          }
+        }
+      },
+      "div": {
+        "op": "GGML_OP_DIV",
+        "tensors": {
+          "src0": "weights_reshape_dst",
+          "src1": "clamp_dst",
+          "dst": "weights_dst"
+        },
+        "attributes": {}
+      }
+    },
+    "predicates": [
+      {
+        "src_absent": "softmax_mask"
+      },
+      {
+        "src_absent": "softmax_bias"
+      },
+      {
+        "field": "attribute.softmax.scale",
+        "equals": 1.0
+      },
+      {
+        "field": "attribute.softmax.max_bias",
+        "equals": 0.0
+      },
+      {
+        "field": "attribute.argsort.order",
+        "equals": 1
+      },
+      {
+        "field": "attribute.clamp.minimum",
+        "equals": 6.103515625e-05
+      },
+      {
+        "field": "attribute.clamp.maximum",
+        "min": 1.0
+      },
+      {
+        "field": "shape.logits.nexperts",
+        "equals": 256
+      },
+      {
+        "field": "shape.logits.ntokens",
+        "equals": 512
+      },
+      {
+        "field": "shape.logits.logits_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.logits.logits_batch3",
+        "equals": 1
+      },
+      {
+        "same_shape": [
+          "logits",
+          "softmax_dst"
+        ]
+      },
+      {
+        "field": "shape.probs_reshape_dst.probs_one",
+        "equals": 1
+      },
+      {
+        "field": "shape.probs_reshape_dst.probs_experts",
+        "equals": 256
+      },
+      {
+        "field": "shape.probs_reshape_dst.probs_tokens",
+        "equals": 512
+      },
+      {
+        "field": "shape.probs_reshape_dst.probs_batch",
+        "equals": 1
+      },
+      {
+        "field": "shape.argsort_dst.argsort_experts",
+        "equals": 256
+      },
+      {
+        "field": "shape.argsort_dst.argsort_tokens",
+        "equals": 512
+      },
+      {
+        "field": "shape.argsort_dst.argsort_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.argsort_dst.argsort_batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.ids_view_dst.nselected",
+        "equals": 8
+      },
+      {
+        "field": "shape.ids_view_dst.ids_tokens",
+        "equals": 512
+      },
+      {
+        "field": "shape.ids_view_dst.ids_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.ids_view_dst.ids_batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.get_rows_dst.get_rows_one",
+        "equals": 1
+      },
+      {
+        "field": "shape.get_rows_dst.get_rows_selected",
+        "equals": 8
+      },
+      {
+        "field": "shape.get_rows_dst.get_rows_tokens",
+        "equals": 512
+      },
+      {
+        "field": "shape.get_rows_dst.get_rows_batch",
+        "equals": 1
+      },
+      {
+        "field": "shape.weights_reshape_dst.weights_selected",
+        "equals": 8
+      },
+      {
+        "field": "shape.weights_reshape_dst.weights_tokens",
+        "equals": 512
+      },
+      {
+        "field": "shape.weights_reshape_dst.weights_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.weights_reshape_dst.weights_batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.sum_rows_dst.sum_one",
+        "equals": 1
+      },
+      {
+        "field": "shape.sum_rows_dst.sum_tokens",
+        "equals": 512
+      },
+      {
+        "field": "shape.sum_rows_dst.sum_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.sum_rows_dst.sum_batch3",
+        "equals": 1
+      },
+      {
+        "same_shape": [
+          "sum_rows_dst",
+          "clamp_dst"
+        ]
+      },
+      {
+        "field": "shape.weights_dst.weights_out_selected",
+        "equals": 8
+      },
+      {
+        "field": "shape.weights_dst.weights_out_tokens",
+        "equals": 512
+      },
+      {
+        "field": "shape.weights_dst.weights_out_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.weights_dst.weights_out_batch3",
+        "equals": 1
+      },
+      {
+        "contiguous": "logits"
+      },
+      {
+        "contiguous": "softmax_dst"
+      },
+      {
+        "contiguous": "probs_reshape_dst"
+      },
+      {
+        "contiguous": "argsort_dst"
+      },
+      {
+        "contiguous": "get_rows_dst"
+      },
+      {
+        "contiguous": "weights_reshape_dst"
+      },
+      {
+        "contiguous": "sum_rows_dst"
+      },
+      {
+        "contiguous": "clamp_dst"
+      },
+      {
+        "contiguous": "weights_dst"
+      },
+      {
+        "field": "tensor.ids_view_dst.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.ids_view_dst.element_strides.1",
+        "equals": 256
+      },
+      {
+        "field": "tensor.ids_view_dst.view_offset_bytes",
+        "equals": 0
+      },
+      {
+        "elided": [
+          "softmax_dst",
+          "probs_reshape_dst",
+        "get_rows_dst",
+        "weights_reshape_dst",
+        "sum_rows_dst",
+        "clamp_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "logits",
+          "argsort_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "argsort_dst",
+          "weights_dst"
+        ]
+      }
+    ]
+  },
+  "derived": {
+    "stage_workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.logits.ntokens",
+        8
+      ]
+    },
+    "copy_workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.logits.ntokens",
+        32
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "topk_moe_softmax_norm_stage",
+      "definition": "../../../../defs/gfx1151/prepass/topk_moe_softmax_norm_stage_pp512.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_topk_moe_nexperts",
+            "type": "i64",
+            "source": "shape.logits.nexperts"
+          },
+          {
+            "name": "hrx2_shape_topk_moe_ntokens",
+            "type": "i64",
+            "source": "shape.logits.ntokens"
+          },
+          {
+            "name": "hrx2_shape_topk_moe_nselected",
+            "type": "i64",
+            "source": "shape.ids_view_dst.nselected"
+          },
+          {
+            "name": "hrx2_shape_topk_moe_logits_token_stride",
+            "type": "i64",
+            "source": "tensor.logits.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_topk_moe_ids_token_stride",
+            "type": "i64",
+            "source": "tensor.argsort_dst.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_topk_moe_weights_token_stride",
+            "type": "i64",
+            "source": "tensor.weights_dst.element_strides.1"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "logits",
+          "tensor": "logits",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "ids",
+          "tensor": "argsort_dst",
+          "position": 1,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.stage_workgroups",
+          1,
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/soft_max/f32/topk_moe_softmax_norm_pp512.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_topk_moe_nexperts",
+            "type": "i64",
+            "source": "shape.logits.nexperts"
+          },
+          {
+            "name": "hrx2_shape_topk_moe_ntokens",
+            "type": "i64",
+            "source": "shape.logits.ntokens"
+          },
+          {
+            "name": "hrx2_shape_topk_moe_nselected",
+            "type": "i64",
+            "source": "shape.ids_view_dst.nselected"
+          },
+          {
+            "name": "hrx2_shape_topk_moe_logits_token_stride",
+            "type": "i64",
+            "source": "tensor.logits.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_topk_moe_ids_token_stride",
+            "type": "i64",
+            "source": "tensor.argsort_dst.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_topk_moe_weights_token_stride",
+            "type": "i64",
+            "source": "tensor.weights_dst.element_strides.1"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "ids",
+          "tensor": "argsort_dst",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "weights",
+          "tensor": "weights_dst",
+          "position": 1,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.copy_workgroups",
+          1,
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

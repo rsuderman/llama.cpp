@@ -1,0 +1,265 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "wide_add_rms_norm_mul_f32",
+  "format": "loom",
+  "priority": 400,
+  "tensors": {
+    "src0": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "layout": "contiguous"
+    },
+    "src1": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "layout": "contiguous"
+    },
+    "add_dst": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "layout": "contiguous"
+    },
+    "rms_dst": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "layout": "contiguous"
+    },
+    "weight": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        1,
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "dst": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "layout": "contiguous"
+    }
+  },
+  "match": {
+    "anchors": [
+      "add"
+    ],
+    "ops": {
+      "add": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "src0",
+          "src1": "src1",
+          "dst": "add_dst"
+        },
+        "attributes": {}
+      },
+      "rms": {
+        "op": "GGML_OP_RMS_NORM",
+        "tensors": {
+          "src0": "add_dst",
+          "dst": "rms_dst"
+        },
+        "attributes": {
+          "eps": {
+            "type": "f32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "mul": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "rms_dst",
+          "src1": "weight",
+          "dst": "dst"
+        },
+        "attributes": {}
+      }
+    },
+    "predicates": [
+      {
+        "field": "shape.dst.ncols",
+        "min": 4
+      },
+      {
+        "field": "shape.dst.ncols",
+        "max": 65536
+      },
+      {
+        "field": "shape.dst.ncols",
+        "multiple_of": 4
+      },
+      {
+        "field": "derived.nrows",
+        "min": 1
+      },
+      {
+        "field": "derived.nrows",
+        "max": 1048576
+      },
+      {
+        "elided": [
+          "rms_dst"
+        ]
+      },
+      {
+        "same_or_disjoint_storage": [
+          "src0",
+          "src1",
+          "add_dst",
+          "dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "add_dst",
+          "dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "weight",
+          "src0"
+        ]
+      },
+      {
+        "no_overlap": [
+          "weight",
+          "src1"
+        ]
+      },
+      {
+        "no_overlap": [
+          "weight",
+          "add_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "weight",
+          "dst"
+        ]
+      }
+    ]
+  },
+  "derived": {
+    "nrows": {
+      "type": "i64",
+      "product": [
+        "shape.dst.d1",
+        "shape.dst.d2",
+        "shape.dst.d3"
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/add_rms_norm_mul/f32/wide_wg256.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_add_rms_norm_mul_ncols",
+            "type": "i64",
+            "source": "shape.dst.ncols"
+          },
+          {
+            "name": "hrx2_shape_add_rms_norm_mul_nrows",
+            "type": "i64",
+            "source": "derived.nrows"
+          },
+          {
+            "name": "hrx2_tuning_add_rms_norm_mul_workgroup_size",
+            "type": "i64",
+            "value": 256
+          },
+          {
+            "name": "hrx2_tuning_add_rms_norm_mul_vector_width",
+            "type": "i64",
+            "value": 4
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "src1",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "add_dst",
+          "tensor": "add_dst",
+          "position": 2,
+          "kind": "output"
+        },
+        {
+          "name": "weight",
+          "tensor": "weight",
+          "position": 3,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 4,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "eps",
+          "type": "f32",
+          "position": 0,
+          "source": "attribute.rms.eps"
+        }
+      ],
+      "dispatch": {
+        "workgroups": [
+          "derived.nrows"
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

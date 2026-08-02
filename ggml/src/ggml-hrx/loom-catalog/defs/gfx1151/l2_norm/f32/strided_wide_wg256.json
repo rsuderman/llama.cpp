@@ -1,0 +1,30 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "l2_norm_strided_f32_wide_wg256",
+  "op": "GGML_OP_L2_NORM",
+  "source": "sources/gfx1151/l2_norm/f32/strided_wide_wg256.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_l2_norm_strided_f32",
+  "abi": {
+    "binding_count": 2,
+    "parameter_count": 3,
+    "constant_byte_length": 4
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [
+    {
+      "name": "eps",
+      "type": "f32"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "src0",
+      "access": "read"
+    },
+    {
+      "name": "dst",
+      "access": "write"
+    }
+  ]
+}

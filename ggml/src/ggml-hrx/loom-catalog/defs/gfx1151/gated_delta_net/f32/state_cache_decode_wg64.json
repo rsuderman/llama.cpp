@@ -1,0 +1,50 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "gated_delta_net_f32_state_cache_decode_wg64",
+  "op": "GGML_OP_GET_ROWS",
+  "source": "sources/gfx1151/gated_delta_net/f32/state_cache_decode_wg64.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_gated_delta_net_f32_sv128_state_cache_decode",
+  "abi": {
+    "binding_count": 7,
+    "parameter_count": 8,
+    "constant_byte_length": 4
+  },
+  "workgroup_size": [64, 1, 1],
+  "parameters": [
+    {
+      "name": "scale",
+      "type": "f32"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "q",
+      "access": "read"
+    },
+    {
+      "name": "k",
+      "access": "read"
+    },
+    {
+      "name": "v",
+      "access": "read"
+    },
+    {
+      "name": "g",
+      "access": "read"
+    },
+    {
+      "name": "beta",
+      "access": "read"
+    },
+    {
+      "name": "state_io",
+      "access": "read_write"
+    },
+    {
+      "name": "attn_dst",
+      "access": "write"
+    }
+  ]
+}

@@ -49,8 +49,9 @@ struct ggml_backend_hrx_loom_dispatch_plan {
     size_t                                      binding_count                                                  = 0;
     uint8_t                                     constants[GGML_BACKEND_HRX_LOOM_MAX_CONSTANTS_SIZE]            = {};
     size_t                                      constants_size                                                 = 0;
-    ggml_backend_hrx_loom_config_binding        config_bindings[GGML_BACKEND_HRX_LOOM_MAX_CONFIG_BINDINGS]     = {};
+    ggml_backend_hrx_loom_config_binding *      config_bindings                                                = nullptr;
     size_t                                      config_binding_count                                           = 0;
+    void *                                      loaded_route                                                   = nullptr;
 };
 
 struct ggml_backend_hrx_loom_execution_plan {
@@ -60,9 +61,26 @@ struct ggml_backend_hrx_loom_execution_plan {
     ggml_backend_hrx_loom_transient_buffer_plan transients[GGML_BACKEND_HRX_LOOM_MAX_TRANSIENTS]                = {};
     size_t                                      transient_count                                                 = 0;
     size_t                                      transient_byte_length                                           = 0;
+    ggml_backend_hrx_loom_config_binding *      config_storage                                                  = nullptr;
     ggml_backend_hrx_loom_dispatch_plan         dispatches[GGML_BACKEND_HRX_LOOM_MAX_DISPATCHES]                = {};
     size_t                                      dispatch_count                                                  = 0;
 };
+
+static inline void ggml_backend_hrx_loom_reset_plan(ggml_backend_hrx_loom_execution_plan * plan) {
+    if (!plan) {
+        return;
+    }
+    ggml_backend_hrx_loom_config_binding * config_storage = plan->config_storage;
+    std::memset(plan, 0, sizeof(*plan));
+    plan->config_storage = config_storage;
+    if (!config_storage) {
+        return;
+    }
+    for (size_t i = 0; i < GGML_BACKEND_HRX_LOOM_MAX_DISPATCHES; ++i) {
+        plan->dispatches[i].config_bindings =
+            config_storage + i * GGML_BACKEND_HRX_LOOM_MAX_CONFIG_BINDINGS;
+    }
+}
 
 static inline bool ggml_backend_hrx_loom_match_only(const ggml_backend_hrx_loom_execution_plan * plan) {
     return plan == nullptr;
@@ -200,6 +218,11 @@ int64_t ggml_backend_hrx_loom_next_power_of_2(int64_t value);
 bool ggml_backend_hrx_loom_bind_tensor(const ggml_backend_hrx_loom_op_request * request,
                                        const ggml_tensor *                      tensor,
                                        hrx_buffer_ref_t *                       out_ref);
+
+bool ggml_backend_hrx_loom_storage_layout_matches(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_tensor *                      tensor,
+    const char *                             expected);
 
 ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_match_request(ggml_backend_hrx_loom_catalog *          catalog,
                                                                       const ggml_backend_hrx_loom_op_request * request);

@@ -1,0 +1,307 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "set_rows_f32_f16_generic",
+  "format": "loom",
+  "priority": 200,
+  "match": {
+    "op": "GGML_OP_SET_ROWS",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      },
+      "src1": {
+        "type": "I64",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      },
+      "dst": {
+        "type": "F16",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      }
+    },
+    "attributes": {},
+    "predicates": [
+      {
+        "src_present": "src2"
+      },
+      {
+        "field": "shape.src0.d0",
+        "equals": "shape.dst.d0"
+      },
+      {
+        "field": "shape.src0.d1",
+        "equals": "shape.src1.d0"
+      },
+      {
+        "field": "shape.src0.d2",
+        "equals": "shape.dst.d2"
+      },
+      {
+        "field": "shape.src0.d3",
+        "equals": "shape.dst.d3"
+      },
+      {
+        "field": "shape.src0.d2",
+        "divisible_by": "shape.src1.d1"
+      },
+      {
+        "field": "shape.src0.d3",
+        "divisible_by": "shape.src1.d2"
+      },
+      {
+        "field": "shape.src0.d0",
+        "max": 65536
+      },
+      {
+        "field": "shape.src0.d1",
+        "max": 1048576
+      },
+      {
+        "field": "shape.src0.d2",
+        "max": 1048576
+      },
+      {
+        "field": "shape.src0.d3",
+        "max": 1048576
+      },
+      {
+        "field": "shape.src1.d0",
+        "max": 1048576
+      },
+      {
+        "field": "shape.src1.d1",
+        "max": 1048576
+      },
+      {
+        "field": "shape.src1.d2",
+        "max": 1048576
+      },
+      {
+        "field": "shape.src1.d3",
+        "equals": 1
+      },
+      {
+        "field": "shape.dst.d0",
+        "max": 65536
+      },
+      {
+        "field": "shape.dst.d1",
+        "max": 1048576
+      },
+      {
+        "field": "shape.dst.d2",
+        "max": 1048576
+      },
+      {
+        "field": "shape.dst.d3",
+        "max": 1048576
+      },
+      {
+        "field": "derived.total_size",
+        "max": 1073741824
+      },
+      {
+        "field": "tensor.src0.element_strides.1",
+        "max": 1073741824
+      },
+      {
+        "field": "tensor.src0.element_strides.2",
+        "max": 1073741824
+      },
+      {
+        "field": "tensor.src0.element_strides.3",
+        "max": 1073741824
+      },
+      {
+        "field": "tensor.src1.element_strides.0",
+        "max": 64
+      },
+      {
+        "field": "tensor.src1.element_strides.1",
+        "max": 1073741824
+      },
+      {
+        "field": "tensor.src1.element_strides.2",
+        "max": 1073741824
+      },
+      {
+        "field": "tensor.dst.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.dst.element_strides.1",
+        "max": 1073741824
+      },
+      {
+        "field": "tensor.dst.element_strides.2",
+        "max": 1073741824
+      },
+      {
+        "field": "tensor.dst.element_strides.3",
+        "max": 1073741824
+      },
+      {
+        "contiguous": "src0"
+      },
+      {
+        "contiguous": "src1"
+      }
+    ]
+  },
+  "derived": {
+    "total_size": {
+      "type": "i64",
+      "product": [
+        "shape.src0.d0",
+        "shape.src0.d1",
+        "shape.src0.d2",
+        "shape.src0.d3"
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/set_rows/f32_f16/generic.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_set_rows_nc",
+            "type": "i64",
+            "source": "shape.dst.d0"
+          },
+          {
+            "name": "hrx2_shape_set_rows_nr",
+            "type": "i64",
+            "source": "shape.src0.d1"
+          },
+          {
+            "name": "hrx2_shape_set_rows_ne02",
+            "type": "i64",
+            "source": "shape.src0.d2"
+          },
+          {
+            "name": "hrx2_shape_set_rows_ne03",
+            "type": "i64",
+            "source": "shape.src0.d3"
+          },
+          {
+            "name": "hrx2_shape_set_rows_ne1",
+            "type": "i64",
+            "source": "shape.dst.d1"
+          },
+          {
+            "name": "hrx2_shape_set_rows_ne11",
+            "type": "i64",
+            "source": "shape.src1.d1"
+          },
+          {
+            "name": "hrx2_shape_set_rows_ne12",
+            "type": "i64",
+            "source": "shape.src1.d2"
+          },
+          {
+            "name": "hrx2_stride_set_rows_src0_nb1",
+            "type": "i64",
+            "source": "tensor.src0.element_strides.1"
+          },
+          {
+            "name": "hrx2_stride_set_rows_src0_nb2",
+            "type": "i64",
+            "source": "tensor.src0.element_strides.2"
+          },
+          {
+            "name": "hrx2_stride_set_rows_src0_nb3",
+            "type": "i64",
+            "source": "tensor.src0.element_strides.3"
+          },
+          {
+            "name": "hrx2_stride_set_rows_idx_nb0",
+            "type": "i64",
+            "source": "tensor.src1.element_strides.0"
+          },
+          {
+            "name": "hrx2_stride_set_rows_idx_nb1",
+            "type": "i64",
+            "source": "tensor.src1.element_strides.1"
+          },
+          {
+            "name": "hrx2_stride_set_rows_idx_nb2",
+            "type": "i64",
+            "source": "tensor.src1.element_strides.2"
+          },
+          {
+            "name": "hrx2_stride_set_rows_dst_nb1",
+            "type": "i64",
+            "source": "tensor.dst.element_strides.1"
+          },
+          {
+            "name": "hrx2_stride_set_rows_dst_nb2",
+            "type": "i64",
+            "source": "tensor.dst.element_strides.2"
+          },
+          {
+            "name": "hrx2_stride_set_rows_dst_nb3",
+            "type": "i64",
+            "source": "tensor.dst.element_strides.3"
+          },
+          {
+            "name": "hrx2_tuning_set_rows_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "idx",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "work_items": [
+          "derived.total_size"
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

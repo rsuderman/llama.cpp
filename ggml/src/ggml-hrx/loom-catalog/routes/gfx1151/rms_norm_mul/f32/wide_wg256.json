@@ -1,0 +1,204 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "wide_rms_norm_mul_f32",
+  "format": "loom",
+  "priority": 300,
+  "tensors": {
+    "src": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "layout": "contiguous"
+    },
+    "weight": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        1,
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "rms_dst": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "layout": "contiguous"
+    },
+    "dst": {
+      "type": "F32",
+      "shape": [
+        "ncols",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "layout": "contiguous"
+    }
+  },
+  "match": {
+    "anchors": [
+      "rms"
+    ],
+    "ops": {
+      "rms": {
+        "op": "GGML_OP_RMS_NORM",
+        "tensors": {
+          "src0": "src",
+          "dst": "rms_dst"
+        },
+        "attributes": {
+          "eps": {
+            "type": "f32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "mul": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "rms_dst",
+          "src1": "weight",
+          "dst": "dst"
+        },
+        "attributes": {}
+      }
+    },
+    "predicates": [
+      {
+        "field": "shape.dst.ncols",
+        "min": 8
+      },
+      {
+        "field": "shape.dst.ncols",
+        "max": 65536
+      },
+      {
+        "field": "shape.dst.ncols",
+        "multiple_of": 8
+      },
+      {
+        "field": "derived.nrows",
+        "min": 1
+      },
+      {
+        "field": "derived.nrows",
+        "max": 1048576
+      },
+      {
+        "elided": [
+          "rms_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "src",
+          "weight"
+        ]
+      },
+      {
+        "no_overlap": [
+          "src",
+          "dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "weight",
+          "dst"
+        ]
+      }
+    ]
+  },
+  "derived": {
+    "nrows": {
+      "type": "i64",
+      "product": [
+        "shape.dst.d1",
+        "shape.dst.d2",
+        "shape.dst.d3"
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/rms_norm_mul/f32/wide_wg256.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_rms_norm_mul_ncols",
+            "type": "i64",
+            "source": "shape.dst.ncols"
+          },
+          {
+            "name": "hrx2_shape_rms_norm_mul_nrows",
+            "type": "i64",
+            "source": "derived.nrows"
+          },
+          {
+            "name": "hrx2_tuning_rms_norm_mul_workgroup_size",
+            "type": "i64",
+            "value": 256
+          },
+          {
+            "name": "hrx2_tuning_rms_norm_mul_vector_width",
+            "type": "i64",
+            "value": 16
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src",
+          "tensor": "src",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "weight",
+          "tensor": "weight",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "eps",
+          "type": "f32",
+          "position": 0,
+          "source": "attribute.rms.eps"
+        }
+      ],
+      "dispatch": {
+        "workgroups": [
+          "derived.nrows"
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

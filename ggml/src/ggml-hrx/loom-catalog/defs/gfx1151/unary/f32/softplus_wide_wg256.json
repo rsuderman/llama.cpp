@@ -1,0 +1,25 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "softplus_f32_wide_wg256",
+  "op": "GGML_OP_UNARY",
+  "source": "sources/gfx1151/unary/f32/production_pp512.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_softplus_f32",
+  "abi": {
+    "binding_count": 2,
+    "parameter_count": 2,
+    "constant_byte_length": 0
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [],
+  "bindings": [
+    {
+      "name": "src0",
+      "access": "read"
+    },
+    {
+      "name": "dst",
+      "access": "write"
+    }
+  ]
+}

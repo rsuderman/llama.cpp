@@ -1,0 +1,45 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "qact_mmid_router_snapshot_pp512",
+  "op": "GGML_OP_MUL_MAT_ID",
+  "source": "sources/gfx1151/graph/qact_mmid_router_snapshot_pp512.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_qact_mmid_router_snapshot_pp512",
+  "abi": {
+    "binding_count": 6,
+    "parameter_count": 6,
+    "constant_byte_length": 0
+  },
+  "workgroup_size": [
+    256,
+    1,
+    1
+  ],
+  "parameters": [],
+  "bindings": [
+    {
+      "name": "qa_src",
+      "access": "read"
+    },
+    {
+      "name": "qa_qs",
+      "access": "write"
+    },
+    {
+      "name": "qa_meta",
+      "access": "write"
+    },
+    {
+      "name": "mm_idx",
+      "access": "read"
+    },
+    {
+      "name": "prepass_mmid",
+      "access": "write"
+    },
+    {
+      "name": "ss_router_source",
+      "access": "read"
+    }
+  ]
+}

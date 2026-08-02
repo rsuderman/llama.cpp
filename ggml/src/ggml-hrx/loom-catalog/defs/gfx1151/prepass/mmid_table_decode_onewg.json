@@ -1,0 +1,19 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "mmid_table_decode_onewg",
+  "op": "GGML_OP_MUL_MAT_ID",
+  "source": "sources/gfx1151/prepass/mmid_table_decode_onewg.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_mmid_table_decode_onewg",
+  "abi": {
+    "binding_count": 2,
+    "parameter_count": 2,
+    "constant_byte_length": 0
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [],
+  "bindings": [
+    {"name": "idx", "access": "read"},
+    {"name": "table", "access": "write"}
+  ]
+}

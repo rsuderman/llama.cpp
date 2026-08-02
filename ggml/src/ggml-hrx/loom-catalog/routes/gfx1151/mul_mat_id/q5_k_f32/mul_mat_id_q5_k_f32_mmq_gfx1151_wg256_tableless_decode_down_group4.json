@@ -1,0 +1,241 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "mul_mat_id_q5_k_f32_mmq_gfx1151_wg256_tableless_decode_down_group4",
+  "format": "loom",
+  "priority": 114,
+  "match": {
+    "op": "GGML_OP_MUL_MAT_ID",
+    "tensors": {
+      "src0": {
+        "type": "Q5_K",
+        "storage": "q5_k_expert_down_group4",
+        "shape": [
+          "k",
+          "rows",
+          "nexperts",
+          "batch3"
+        ]
+      },
+      "src1": {
+        "type": "F32",
+        "shape": [
+          "k",
+          "selected_rows",
+          "ntokens",
+          "batch3"
+        ]
+      },
+      "src2": {
+        "type": "I32",
+        "shape": [
+          "nselected",
+          "ntokens",
+          "batch2",
+          "batch3"
+        ]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": [
+          "rows",
+          "nselected",
+          "ntokens",
+          "batch3"
+        ]
+      }
+    },
+    "attributes": {},
+    "predicates": [
+      {
+        "field": "shape.src0.nexperts",
+        "equals": 256
+      },
+      {
+        "field": "shape.src2.nselected",
+        "equals": 8
+      },
+      {
+        "field": "shape.src2.ntokens",
+        "equals": 1
+      },
+      {
+        "field": "shape.src0.k",
+        "equals": 512
+      },
+      {
+        "field": "shape.src0.rows",
+        "equals": 2048
+      },
+      {
+        "field": "shape.src1.k",
+        "equals": "shape.src0.k"
+      },
+      {
+        "field": "shape.src1.selected_rows",
+        "equals": "shape.src2.nselected"
+      },
+      {
+        "field": "shape.src1.ntokens",
+        "equals": "shape.src2.ntokens"
+      },
+      {
+        "field": "shape.dst.rows",
+        "equals": "shape.src0.rows"
+      },
+      {
+        "field": "shape.dst.nselected",
+        "equals": "shape.src2.nselected"
+      },
+      {
+        "field": "shape.dst.ntokens",
+        "equals": "shape.src2.ntokens"
+      },
+      {
+        "field": "shape.src0.batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.src2.batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.src2.batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.dst.batch3",
+        "equals": 1
+      },
+      {
+        "field": "tensor.src1.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.src1.element_strides.1",
+        "min": 1
+      },
+      {
+        "field": "tensor.src1.element_strides.1",
+        "max": 1048576
+      },
+      {
+        "field": "tensor.src1.element_strides.2",
+        "min": 1
+      },
+      {
+        "field": "tensor.src1.element_strides.2",
+        "max": 1048576
+      },
+      {
+        "field": "tensor.src2.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.src2.element_strides.1",
+        "min": 1
+      },
+      {
+        "field": "tensor.src2.element_strides.1",
+        "max": 1048576
+      },
+      {
+        "field": "tensor.dst.element_strides.2",
+        "min": 1
+      },
+      {
+        "field": "tensor.dst.element_strides.2",
+        "max": 1048576
+      },
+      {
+        "contiguous": "src0"
+      },
+      {
+        "contiguous": "src1"
+      },
+      {
+        "contiguous": "dst"
+      },
+      {
+        "no_overlap": ["src0", "src1"]
+      },
+      {
+        "no_overlap": ["src0", "src2"]
+      },
+      {
+        "no_overlap": ["src0", "dst"]
+      },
+      {
+        "no_overlap": ["src1", "src2"]
+      },
+      {
+        "no_overlap": ["src1", "dst"]
+      },
+      {
+        "no_overlap": ["src2", "dst"]
+      }
+    ]
+  },
+  "derived": {
+    "src1_selected_stride": {
+      "type": "i64",
+      "field": "tensor.src1.element_strides.1"
+    },
+    "src1_token_stride": {
+      "type": "i64",
+      "field": "tensor.src1.element_strides.2"
+    },
+    "idx_token_stride": {
+      "type": "i64",
+      "field": "tensor.src2.element_strides.1"
+    },
+    "dst_token_stride": {
+      "type": "i64",
+      "field": "tensor.dst.element_strides.2"
+    },
+    "row_workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.src0.rows",
+        128
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/mul_mat_id/q5_k_f32/mul_mat_id_q5_k_f32_mmq_gfx1151_wg256_tableless_decode_down_group4.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {"name": "hrx2_shape_mul_mat_id_k", "type": "i64", "source": "shape.src0.k"},
+          {"name": "hrx2_shape_mul_mat_id_rows", "type": "i64", "source": "shape.src0.rows"},
+          {"name": "hrx2_shape_mul_mat_id_nexperts", "type": "i64", "source": "shape.src0.nexperts"},
+          {"name": "hrx2_shape_mul_mat_id_nselected", "type": "i64", "source": "shape.src2.nselected"},
+          {"name": "hrx2_shape_mul_mat_id_ntokens", "type": "i64", "source": "shape.src2.ntokens"},
+          {"name": "hrx2_shape_mul_mat_id_src1_selected_stride", "type": "i64", "source": "derived.src1_selected_stride"},
+          {"name": "hrx2_shape_mul_mat_id_src1_token_stride", "type": "i64", "source": "derived.src1_token_stride"},
+          {"name": "hrx2_shape_mul_mat_id_idx_token_stride", "type": "i64", "source": "derived.idx_token_stride"},
+          {"name": "hrx2_shape_mul_mat_id_dst_token_stride", "type": "i64", "source": "derived.dst_token_stride"}
+        ]
+      },
+      "buffers": [
+        {"name": "src0", "tensor": "src0", "position": 0, "kind": "input"},
+        {"name": "src1", "tensor": "src1", "position": 1, "kind": "input"},
+        {"name": "idx", "tensor": "src2", "position": 2, "kind": "input"},
+        {"name": "dst", "tensor": "dst", "position": 3, "kind": "output"}
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": ["derived.row_workgroups", "shape.src0.nexperts", 1],
+        "workgroup_size": [256, 1, 1]
+      }
+    }
+  ]
+}

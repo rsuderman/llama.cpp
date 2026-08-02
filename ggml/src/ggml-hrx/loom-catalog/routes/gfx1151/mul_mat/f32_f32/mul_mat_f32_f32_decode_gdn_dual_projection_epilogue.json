@@ -1,0 +1,567 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "mul_mat_f32_f32_decode_gdn_dual_projection_epilogue",
+  "format": "loom",
+  "priority": 850,
+  "tensors": {
+    "alpha_weight": {
+      "type": "F32",
+      "shape": [
+        "k",
+        "heads",
+        "weight_batch2",
+        "weight_batch3"
+      ]
+    },
+    "beta_weight": {
+      "type": "F32",
+      "shape": [
+        "k",
+        "heads",
+        "weight_batch2",
+        "weight_batch3"
+      ]
+    },
+    "input": {
+      "type": "F32",
+      "shape": [
+        "k",
+        "cols",
+        "input_batch2",
+        "input_batch3"
+      ]
+    },
+    "alpha_raw": {
+      "type": "F32",
+      "shape": [
+        "heads",
+        "cols",
+        "output_batch2",
+        "output_batch3"
+      ]
+    },
+    "bias": {
+      "type": "F32",
+      "shape": [
+        "bias_heads",
+        "bias_cols",
+        "bias_batch2",
+        "bias_batch3"
+      ]
+    },
+    "alpha_biased": {
+      "type": "F32",
+      "shape": [
+        "heads",
+        "cols",
+        "output_batch2",
+        "output_batch3"
+      ]
+    },
+    "alpha_softplus": {
+      "type": "F32",
+      "shape": [
+        "heads",
+        "cols",
+        "output_batch2",
+        "output_batch3"
+      ]
+    },
+    "a_scale": {
+      "type": "F32",
+      "shape": [
+        "scale_heads",
+        "scale_cols",
+        "scale_batch2",
+        "scale_batch3"
+      ]
+    },
+    "gate_dst": {
+      "type": "F32",
+      "shape": [
+        "heads",
+        "cols",
+        "output_batch2",
+        "output_batch3"
+      ]
+    },
+    "beta_raw": {
+      "type": "F32",
+      "shape": [
+        "beta_raw_ne0",
+        "beta_raw_ne1",
+        "beta_raw_ne2",
+        "beta_raw_ne3"
+      ]
+    },
+    "beta_dst": {
+      "type": "F32",
+      "shape": [
+        "beta_width",
+        "beta_heads",
+        "beta_tokens",
+        "beta_sequences"
+      ]
+    },
+    "alpha_reshape_dst": {
+      "type": "F32",
+      "shape": [
+        "heads",
+        "cols",
+        "output_batch2",
+        "output_batch3"
+      ]
+    },
+    "gate_reshape_dst": {
+      "type": "F32",
+      "shape": [
+        "heads",
+        "cols",
+        "output_batch2",
+        "output_batch3"
+      ]
+    },
+    "beta_reshape_dst": {
+      "type": "F32",
+      "shape": [
+        "beta_raw_ne0",
+        "beta_raw_ne1",
+        "beta_raw_ne2",
+        "beta_raw_ne3"
+      ]
+    }
+  },
+  "match": {
+    "anchors": [
+      "alpha_projection"
+    ],
+    "ops": {
+      "alpha_projection": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {
+          "src0": "alpha_weight",
+          "src1": "input",
+          "dst": "alpha_raw"
+        },
+        "attributes": {}
+      },
+      "alpha_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "alpha_raw",
+          "dst": "alpha_reshape_dst"
+        },
+        "attributes": {}
+      },
+      "add_bias": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "alpha_reshape_dst",
+          "src1": "bias",
+          "dst": "alpha_biased"
+        },
+        "attributes": {}
+      },
+      "softplus": {
+        "op": "GGML_OP_UNARY",
+        "tensors": {
+          "src0": "alpha_biased",
+          "dst": "alpha_softplus"
+        },
+        "attributes": {
+          "unary_op": {
+            "type": "i32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "gate_mul": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "alpha_softplus",
+          "src1": "a_scale",
+          "dst": "gate_dst"
+        },
+        "attributes": {}
+      },
+      "gate_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "gate_dst",
+          "dst": "gate_reshape_dst"
+        },
+        "attributes": {}
+      },
+      "beta_projection": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {
+          "src0": "beta_weight",
+          "src1": "input",
+          "dst": "beta_raw"
+        },
+        "attributes": {}
+      },
+      "beta_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "beta_raw",
+          "dst": "beta_reshape_dst"
+        },
+        "attributes": {}
+      },
+      "sigmoid": {
+        "op": "GGML_OP_UNARY",
+        "tensors": {
+          "src0": "beta_reshape_dst",
+          "dst": "beta_dst"
+        },
+        "attributes": {
+          "unary_op": {
+            "type": "i32",
+            "source": "op_param.0"
+          }
+        }
+      }
+    },
+    "predicates": [
+      {
+        "field": "attribute.softplus.unary_op",
+        "equals": 15
+      },
+      {
+        "field": "attribute.sigmoid.unary_op",
+        "equals": 7
+      },
+      {
+        "field": "shape.alpha_weight.k",
+        "equals": 2048
+      },
+      {
+        "field": "shape.alpha_weight.heads",
+        "equals": 32
+      },
+      {
+        "field": "shape.alpha_weight.weight_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.alpha_weight.weight_batch3",
+        "equals": 1
+      },
+      {
+        "same_shape": [
+          "alpha_weight",
+          "beta_weight"
+        ]
+      },
+      {
+        "field": "shape.input.k",
+        "equals": "shape.alpha_weight.k"
+      },
+      {
+        "field": "shape.input.cols",
+        "equals": 1
+      },
+      {
+        "field": "shape.input.input_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.input.input_batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.alpha_raw.heads",
+        "equals": "shape.alpha_weight.heads"
+      },
+      {
+        "field": "shape.alpha_raw.cols",
+        "equals": "shape.input.cols"
+      },
+      {
+        "field": "shape.alpha_raw.output_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.alpha_raw.output_batch3",
+        "equals": 1
+      },
+      {
+        "same_shape": [
+          "alpha_raw",
+          "alpha_biased",
+          "alpha_softplus",
+          "gate_dst"
+        ]
+      },
+      {
+        "field": "tensor.bias.element_count",
+        "equals": "shape.alpha_weight.heads"
+      },
+      {
+        "field": "tensor.a_scale.element_count",
+        "equals": "shape.alpha_weight.heads"
+      },
+      {
+        "field": "tensor.beta_raw.element_count",
+        "equals": "derived.output_elements"
+      },
+      {
+        "field": "tensor.beta_dst.element_count",
+        "equals": "derived.output_elements"
+      },
+      {
+        "contiguous": "alpha_weight"
+      },
+      {
+        "contiguous": "beta_weight"
+      },
+      {
+        "contiguous": "input"
+      },
+      {
+        "contiguous": "bias"
+      },
+      {
+        "contiguous": "a_scale"
+      },
+      {
+        "contiguous": "gate_dst"
+      },
+      {
+        "contiguous": "beta_dst"
+      },
+      {
+        "elided": [
+          "alpha_raw",
+          "alpha_biased",
+          "alpha_softplus",
+          "beta_raw",
+          "alpha_reshape_dst",
+          "beta_reshape_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "alpha_weight",
+          "beta_weight"
+        ]
+      },
+      {
+        "no_overlap": [
+          "alpha_weight",
+          "input"
+        ]
+      },
+      {
+        "no_overlap": [
+          "alpha_weight",
+          "bias"
+        ]
+      },
+      {
+        "no_overlap": [
+          "alpha_weight",
+          "a_scale"
+        ]
+      },
+      {
+        "no_overlap": [
+          "alpha_weight",
+          "gate_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "alpha_weight",
+          "beta_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "beta_weight",
+          "input"
+        ]
+      },
+      {
+        "no_overlap": [
+          "beta_weight",
+          "bias"
+        ]
+      },
+      {
+        "no_overlap": [
+          "beta_weight",
+          "a_scale"
+        ]
+      },
+      {
+        "no_overlap": [
+          "beta_weight",
+          "gate_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "beta_weight",
+          "beta_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "input",
+          "bias"
+        ]
+      },
+      {
+        "no_overlap": [
+          "input",
+          "a_scale"
+        ]
+      },
+      {
+        "no_overlap": [
+          "input",
+          "gate_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "input",
+          "beta_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "bias",
+          "a_scale"
+        ]
+      },
+      {
+        "no_overlap": [
+          "bias",
+          "gate_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "bias",
+          "beta_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "a_scale",
+          "gate_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "a_scale",
+          "beta_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "gate_dst",
+          "beta_dst"
+        ]
+      }
+    ]
+  },
+  "derived": {
+    "output_elements": {
+      "type": "i64",
+      "product": [
+        "shape.alpha_weight.heads",
+        "shape.input.cols"
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/mul_mat/f32_f32/mul_mat_f32_f32_decode_gdn_dual_projection_epilogue.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_gdn_dual_projection_k",
+            "type": "i64",
+            "source": "shape.alpha_weight.k"
+          },
+          {
+            "name": "hrx2_gdn_dual_projection_heads",
+            "type": "i64",
+            "source": "shape.alpha_weight.heads"
+          },
+          {
+            "name": "hrx2_gdn_dual_projection_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "alpha_weight",
+          "tensor": "alpha_weight",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "beta_weight",
+          "tensor": "beta_weight",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "input",
+          "tensor": "input",
+          "position": 2,
+          "kind": "input"
+        },
+        {
+          "name": "bias",
+          "tensor": "bias",
+          "position": 3,
+          "kind": "input"
+        },
+        {
+          "name": "a_scale",
+          "tensor": "a_scale",
+          "position": 4,
+          "kind": "input"
+        },
+        {
+          "name": "gate_dst",
+          "tensor": "gate_dst",
+          "position": 5,
+          "kind": "output"
+        },
+        {
+          "name": "beta_dst",
+          "tensor": "beta_dst",
+          "position": 6,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "shape.alpha_weight.heads",
+          2,
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

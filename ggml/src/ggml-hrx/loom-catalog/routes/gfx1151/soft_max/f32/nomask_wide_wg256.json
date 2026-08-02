@@ -1,0 +1,161 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "soft_max_f32_nomask_wide_wg256",
+  "format": "loom",
+  "priority": 200,
+  "match": {
+    "op": "GGML_OP_SOFT_MAX",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": [
+          "ncols",
+          "ne1",
+          "ne2",
+          "ne3"
+        ]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": [
+          "ncols",
+          "ne1",
+          "ne2",
+          "ne3"
+        ]
+      }
+    },
+    "attributes": {
+      "scale": {
+        "type": "f32"
+      },
+      "max_bias": {
+        "type": "f32"
+      }
+    },
+    "predicates": [
+      {
+        "src_absent": "src1"
+      },
+      {
+        "src_absent": "src2"
+      },
+      {
+        "field": "attribute.max_bias",
+        "equals": 0.0
+      },
+      {
+        "field": "shape.src0.ncols",
+        "min": 1
+      },
+      {
+        "field": "shape.src0.ncols",
+        "max": 256
+      },
+      {
+        "field": "derived.nrows",
+        "min": 1
+      },
+      {
+        "field": "derived.nrows",
+        "max": 1048576
+      },
+      {
+        "field": "derived.total_size",
+        "max": 1073741824
+      },
+      {
+        "same_shape": [
+          "src0",
+          "dst"
+        ]
+      },
+      {
+        "contiguous": "src0"
+      },
+      {
+        "contiguous": "dst"
+      }
+    ]
+  },
+  "derived": {
+    "nrows": {
+      "type": "i64",
+      "product": [
+        "shape.src0.ne1",
+        "shape.src0.ne2",
+        "shape.src0.ne3"
+      ]
+    },
+    "total_size": {
+      "type": "i64",
+      "product": [
+        "shape.src0.ncols",
+        "derived.nrows"
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/soft_max/f32/nomask_wide_wg256.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_soft_max_ncols",
+            "type": "i64",
+            "source": "shape.src0.ncols"
+          },
+          {
+            "name": "hrx2_shape_soft_max_nrows",
+            "type": "i64",
+            "source": "derived.nrows"
+          },
+          {
+            "name": "hrx2_tuning_soft_max_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 1,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "scale",
+          "type": "f32",
+          "position": 0,
+          "source": "attribute.scale"
+        }
+      ],
+      "dispatch": {
+        "workgroups": [
+          "derived.nrows",
+          1,
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

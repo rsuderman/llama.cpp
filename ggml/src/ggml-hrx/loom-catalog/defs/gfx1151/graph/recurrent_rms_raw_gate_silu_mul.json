@@ -1,0 +1,23 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "recurrent_rms_raw_gate_silu_mul",
+  "op": "GGML_OP_RMS_NORM",
+  "source": "sources/gfx1151/graph/recurrent_rms_raw_gate_silu_mul.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_recurrent_rms_raw_gate_silu_mul_f32",
+  "abi": {
+    "binding_count": 4,
+    "parameter_count": 5,
+    "constant_byte_length": 4
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [
+    {"name": "eps", "type": "f32"}
+  ],
+  "bindings": [
+    {"name": "src", "access": "read"},
+    {"name": "weight", "access": "read"},
+    {"name": "raw_gate", "access": "read"},
+    {"name": "dst", "access": "write"}
+  ]
+}

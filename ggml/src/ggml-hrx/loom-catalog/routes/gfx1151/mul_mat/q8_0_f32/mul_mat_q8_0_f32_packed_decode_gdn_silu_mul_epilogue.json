@@ -1,0 +1,497 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "mul_mat_q8_0_f32_packed_decode_gdn_silu_mul_epilogue",
+  "format": "loom",
+  "priority": 415,
+  "tensors": {
+    "weight": {
+      "type": "Q8_0",
+      "shape": [
+        "k",
+        "rows",
+        "weight_batch2",
+        "weight_batch3"
+      ]
+    },
+    "input": {
+      "type": "F32",
+      "shape": [
+        "k",
+        "cols",
+        "input_batch2",
+        "input_batch3"
+      ]
+    },
+    "matmul_dst": {
+      "type": "F32",
+      "shape": [
+        "rows",
+        "cols",
+        "dst_batch2",
+        "dst_batch3"
+      ]
+    },
+    "silu_dst": {
+      "type": "F32",
+      "shape": [
+        "output_ne0",
+        "output_ne1",
+        "output_ne2",
+        "output_ne3"
+      ]
+    },
+    "side": {
+      "type": "F32",
+      "shape": [
+        "output_ne0",
+        "output_ne1",
+        "output_ne2",
+        "output_ne3"
+      ]
+    },
+    "dst": {
+      "type": "F32",
+      "shape": [
+        "output_ne0",
+        "output_ne1",
+        "output_ne2",
+        "output_ne3"
+      ]
+    },
+    "reshape_dst": {
+      "type": "F32",
+      "shape": [
+        "output_ne0",
+        "output_ne1",
+        "output_ne2",
+        "output_ne3"
+      ]
+    },
+    "output_weight": {
+      "type": "Q8_0",
+      "shape": [
+        "output_k",
+        "output_rows",
+        "output_weight_batch2",
+        "output_weight_batch3"
+      ]
+    },
+    "projection_input": {
+      "type": "F32",
+      "shape": [
+        "output_k",
+        "output_cols",
+        "output_input_batch2",
+        "output_input_batch3"
+      ]
+    },
+    "projection_dst": {
+      "type": "F32",
+      "shape": [
+        "output_rows",
+        "output_cols",
+        "output_dst_batch2",
+        "output_dst_batch3"
+      ]
+    }
+  },
+  "match": {
+    "anchors": [
+      "matmul"
+    ],
+    "ops": {
+      "matmul": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {
+          "src0": "weight",
+          "src1": "input",
+          "dst": "matmul_dst"
+        },
+        "attributes": {}
+      },
+      "reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "matmul_dst",
+          "dst": "reshape_dst"
+        },
+        "attributes": {}
+      },
+      "silu": {
+        "op": "GGML_OP_UNARY",
+        "tensors": {
+          "src0": "reshape_dst",
+          "dst": "silu_dst"
+        },
+        "attributes": {
+          "unary_op": {
+            "type": "i32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "terminal": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "side",
+          "src1": "silu_dst",
+          "dst": "dst"
+        },
+        "attributes": {}
+      },
+      "output_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "dst",
+          "dst": "projection_input"
+        },
+        "attributes": {}
+      },
+      "output_projection": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {
+          "src0": "output_weight",
+          "src1": "projection_input",
+          "dst": "projection_dst"
+        },
+        "attributes": {}
+      }
+    },
+    "predicates": [
+      {
+        "field": "attribute.silu.unary_op",
+        "equals": 10
+      },
+      {
+        "field": "shape.weight.k",
+        "equals": 2048
+      },
+      {
+        "field": "shape.weight.rows",
+        "equals": 4096
+      },
+      {
+        "field": "shape.weight.weight_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.weight.weight_batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.input.k",
+        "equals": "shape.weight.k"
+      },
+      {
+        "field": "shape.input.cols",
+        "equals": 1
+      },
+      {
+        "field": "shape.input.input_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.input.input_batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.matmul_dst.rows",
+        "equals": "shape.weight.rows"
+      },
+      {
+        "field": "shape.matmul_dst.cols",
+        "equals": "shape.input.cols"
+      },
+      {
+        "field": "shape.matmul_dst.dst_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.matmul_dst.dst_batch3",
+        "equals": 1
+      },
+      {
+        "field": "tensor.matmul_dst.element_count",
+        "equals": "tensor.silu_dst.element_count"
+      },
+      {
+        "same_shape": [
+          "silu_dst",
+          "side",
+          "dst"
+        ]
+      },
+      {
+        "contiguous": "weight"
+      },
+      {
+        "contiguous": "input"
+      },
+      {
+        "contiguous": "matmul_dst"
+      },
+      {
+        "contiguous": "silu_dst"
+      },
+      {
+        "contiguous": "side"
+      },
+      {
+        "contiguous": "dst"
+      },
+      {
+        "elided": [
+        "matmul_dst",
+        "silu_dst",
+        "reshape_dst",
+        "projection_input"
+        ]
+      },
+      {
+        "no_overlap": [
+          "weight",
+          "input"
+        ]
+      },
+      {
+        "no_overlap": [
+          "weight",
+          "side"
+        ]
+      },
+      {
+        "no_overlap": [
+          "input",
+          "side"
+        ]
+      },
+      {
+        "same_or_disjoint_storage": [
+          "side",
+          "dst"
+        ]
+      },
+      {
+        "field": "shape.output_weight.output_k",
+        "equals": 4096
+      },
+      {
+        "field": "shape.output_weight.output_rows",
+        "min": 1
+      },
+      {
+        "field": "shape.output_weight.output_rows",
+        "max": 262144
+      },
+      {
+        "field": "shape.output_weight.output_weight_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.output_weight.output_weight_batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.projection_input.output_k",
+        "equals": "shape.output_weight.output_k"
+      },
+      {
+        "field": "tensor.projection_input.element_count",
+        "equals": "tensor.dst.element_count"
+      },
+      {
+        "field": "shape.projection_input.output_cols",
+        "min": 1
+      },
+      {
+        "field": "shape.projection_input.output_cols",
+        "max": 16
+      },
+      {
+        "field": "shape.projection_input.output_input_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.projection_input.output_input_batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.projection_dst.output_rows",
+        "equals": "shape.output_weight.output_rows"
+      },
+      {
+        "field": "shape.projection_dst.output_cols",
+        "equals": "shape.projection_input.output_cols"
+      },
+      {
+        "field": "shape.projection_dst.output_dst_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.projection_dst.output_dst_batch3",
+        "equals": 1
+      },
+      {
+        "contiguous": "output_weight"
+      },
+      {
+        "contiguous": "projection_input"
+      },
+      {
+        "contiguous": "projection_dst"
+      },
+      {
+        "no_overlap": [
+          "output_weight",
+          "projection_dst"
+        ]
+      }
+    ]
+  },
+  "derived": {},
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/mul_mat/q8_0_f32/mul_mat_q8_0_f32_packed_decode_gdn_silu_mul_epilogue.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_k",
+            "type": "i64",
+            "source": "shape.weight.k"
+          },
+          {
+            "name": "hrx2_shape_rows",
+            "type": "i64",
+            "source": "shape.weight.rows"
+          },
+          {
+            "name": "hrx2_shape_cols",
+            "type": "i64",
+            "source": "shape.input.cols"
+          },
+          {
+            "name": "hrx2_tuning_workgroup_size",
+            "type": "i64",
+            "value": 256
+          },
+          {
+            "name": "hrx2_tuning_q8_0_f32_unroll_factor",
+            "type": "i64",
+            "value": 2
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "weight",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "src1",
+          "tensor": "input",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "side",
+          "tensor": "side",
+          "position": 2,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 3,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "shape.weight.rows",
+          "shape.input.cols",
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "output_projection",
+      "definition": "../../../../defs/gfx1151/mul_mat/q8_0_f32/mul_mat_q8_0_f32_packed_decode_k4096_wg256_scfunroll4.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_k",
+            "type": "i64",
+            "source": "shape.output_weight.output_k"
+          },
+          {
+            "name": "hrx2_shape_rows",
+            "type": "i64",
+            "source": "shape.output_weight.output_rows"
+          },
+          {
+            "name": "hrx2_shape_cols",
+            "type": "i64",
+            "source": "shape.projection_input.output_cols"
+          },
+          {
+            "name": "hrx2_tuning_workgroup_size",
+            "type": "i64",
+            "value": 256
+          },
+          {
+            "name": "hrx2_tuning_q8_0_f32_unroll_factor",
+            "type": "i64",
+            "value": 4
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "output_weight",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "src1",
+          "tensor": "dst",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "projection_dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "shape.output_weight.output_rows",
+          "shape.projection_input.output_cols",
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

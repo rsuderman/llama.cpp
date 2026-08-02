@@ -1,0 +1,160 @@
+// Decode GDN alpha/beta projections with their exact pointwise epilogues.
+//
+// One WG256 reduction owns each output head and projection. The two
+// projection reductions retain the accepted F32 arithmetic and reduction
+// trees. Lane zero writes the graph-proven final gate or beta span directly.
+
+config.decl @hrx2_gdn_dual_projection_k : %value: index where [range(%value, 1, 8192)]
+config.decl @hrx2_gdn_dual_projection_heads : %value: index where [range(%value, 1, 1024)]
+config.decl @hrx2_gdn_dual_projection_workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+
+kernel.def export("hrx2_mul_mat_f32_f32_decode_gdn_dual_projection_epilogue")
+    @hrx2_mul_mat_f32_f32_decode_gdn_dual_projection_epilogue() {
+  %one = index.constant 1 : index
+  %two = index.constant 2 : index
+  %heads = config.get @hrx2_gdn_dual_projection_heads : index
+  %workgroup_size =
+      config.get @hrx2_gdn_dual_projection_workgroup_size : index
+  kernel.launch.config workgroups(%heads, %two, %one)
+      workgroup_size(%workgroup_size, %one, %one) : index
+} launch(
+    %alpha_weight: buffer,
+    %beta_weight: buffer,
+    %input: buffer,
+    %bias: buffer,
+    %a_scale: buffer,
+    %gate_dst: buffer,
+    %beta_dst: buffer) {
+  %base = index.constant 0 : offset
+  %zero = index.constant 0 : index
+  %zero_f32 = scalar.constant 0.0 : f32
+  %one_f32 = scalar.constant 1.0 : f32
+
+  %k = config.get @hrx2_gdn_dual_projection_k : index
+  %heads = config.get @hrx2_gdn_dual_projection_heads : index
+  %workgroup_size =
+      config.get @hrx2_gdn_dual_projection_workgroup_size : index
+  %k_bounded = index.assume %k [range(%k, 1, 8192)] : index
+  %heads_bounded =
+      index.assume %heads [range(%heads, 1, 1024)] : index
+
+  %head0 = kernel.workgroup.id<x> : index
+  %head = index.assume %head0 [range(%head0, 0, 1023)] : index
+  %projection0 = kernel.workgroup.id<y> : index
+  %projection =
+      index.assume %projection0 [range(%projection0, 0, 1)] : index
+  %lane0 = kernel.workitem.id<x> : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
+  %is_alpha = index.cmp eq, %projection, %zero : index
+  %is_lane0 = index.cmp eq, %lane, %zero : index
+
+  %weight_count = index.mul %heads_bounded, %k_bounded : index
+  %alpha_weight_global =
+      buffer.assume.memory_space<global> %alpha_weight : buffer
+  %beta_weight_global =
+      buffer.assume.memory_space<global> %beta_weight : buffer
+  %input_global = buffer.assume.memory_space<global> %input : buffer
+  %bias_global = buffer.assume.memory_space<global> %bias : buffer
+  %a_scale_global = buffer.assume.memory_space<global> %a_scale : buffer
+  %gate_dst_global =
+      buffer.assume.memory_space<global> %gate_dst : buffer
+  %beta_dst_global =
+      buffer.assume.memory_space<global> %beta_dst : buffer
+  %alpha_weight_na, %beta_weight_na, %input_na, %bias_na, %a_scale_na,
+      %gate_dst_na, %beta_dst_na = buffer.assume.noalias
+      %alpha_weight_global, %beta_weight_global, %input_global, %bias_global,
+      %a_scale_global, %gate_dst_global, %beta_dst_global :
+      buffer, buffer, buffer, buffer, buffer, buffer, buffer
+
+  %alpha_weight_view =
+      buffer.view %alpha_weight_na[%base] :
+      buffer -> view<[%weight_count]xf32, #dense>
+  %beta_weight_view =
+      buffer.view %beta_weight_na[%base] :
+      buffer -> view<[%weight_count]xf32, #dense>
+  %input_view =
+      buffer.view %input_na[%base] :
+      buffer -> view<[%k_bounded]xf32, #dense>
+  %bias_view =
+      buffer.view %bias_na[%base] :
+      buffer -> view<[%heads_bounded]xf32, #dense>
+  %a_scale_view =
+      buffer.view %a_scale_na[%base] :
+      buffer -> view<[%heads_bounded]xf32, #dense>
+  %gate_dst_view =
+      buffer.view %gate_dst_na[%base] :
+      buffer -> view<[%heads_bounded]xf32, #dense>
+  %beta_dst_view =
+      buffer.view %beta_dst_na[%base] :
+      buffer -> view<[%heads_bounded]xf32, #dense>
+
+  %weight_row_base = index.mul %head, %k_bounded : index
+  %dot = scf.if %is_alpha -> (f32) {
+    %sum = scf.for %i = [%lane to %k_bounded step %workgroup_size](
+        %acc = %zero_f32 : f32) -> (f32) {
+      %weight_index = index.add %weight_row_base, %i : index
+      %weight =
+          view.load %alpha_weight_view[%weight_index] :
+          view<[%weight_count]xf32, #dense> -> f32
+      %x =
+          view.load %input_view[%i] :
+          view<[%k_bounded]xf32, #dense> -> f32
+      %product =
+          scalar.mulf<reassoc|nnan|ninf|nsz> %weight, %x : f32
+      %next =
+          scalar.addf<reassoc|nnan|ninf|nsz> %acc, %product : f32
+      scf.yield %next : f32
+    }
+    %reduced = kernel.workgroup.reduce<addf> %sum : f32
+    scf.yield %reduced : f32
+  } else {
+    %sum = scf.for %i = [%lane to %k_bounded step %workgroup_size](
+        %acc = %zero_f32 : f32) -> (f32) {
+      %weight_index = index.add %weight_row_base, %i : index
+      %weight =
+          view.load %beta_weight_view[%weight_index] :
+          view<[%weight_count]xf32, #dense> -> f32
+      %x =
+          view.load %input_view[%i] :
+          view<[%k_bounded]xf32, #dense> -> f32
+      %product =
+          scalar.mulf<reassoc|nnan|ninf|nsz> %weight, %x : f32
+      %next =
+          scalar.addf<reassoc|nnan|ninf|nsz> %acc, %product : f32
+      scf.yield %next : f32
+    }
+    %reduced = kernel.workgroup.reduce<addf> %sum : f32
+    scf.yield %reduced : f32
+  }
+
+  scf.if %is_lane0 {
+    scf.if %is_alpha {
+      %bias_value =
+          view.load %bias_view[%head] :
+          view<[%heads_bounded]xf32, #dense> -> f32
+      %biased =
+          scalar.addf<nnan|ninf|nsz> %dot, %bias_value : f32
+      %abs_x = scalar.absf %biased : f32
+      %neg_abs_x = scalar.negf %abs_x : f32
+      %exp_term = scalar.expf<afn> %neg_abs_x : f32
+      %one_plus =
+          scalar.addf<nnan|ninf|nsz> %one_f32, %exp_term : f32
+      %log_term = scalar.logf<afn> %one_plus : f32
+      %pos_part = scalar.maxnumf %biased, %zero_f32 : f32
+      %softplus =
+          scalar.addf<nnan|ninf|nsz> %pos_part, %log_term : f32
+      %a_value =
+          view.load %a_scale_view[%head] :
+          view<[%heads_bounded]xf32, #dense> -> f32
+      %gate =
+          scalar.mulf<nnan|ninf|nsz> %softplus, %a_value : f32
+      view.store %gate, %gate_dst_view[%head] :
+          f32, view<[%heads_bounded]xf32, #dense>
+    } else {
+      %beta = scalar.logisticf<afn> %dot : f32
+      view.store %beta, %beta_dst_view[%head] :
+          f32, view<[%heads_bounded]xf32, #dense>
+    }
+  }
+  kernel.return
+}

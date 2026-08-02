@@ -1,0 +1,501 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "mul_mat_id_q4_k_f32_mmq_gfx1151_wg256_pre_tbl_token",
+  "format": "loom",
+  "priority": 111,
+  "match": {
+    "op": "GGML_OP_MUL_MAT_ID",
+    "tensors": {
+      "src0": {
+        "type": "Q4_K",
+        "shape": [
+          "k",
+          "rows",
+          "nexperts",
+          "batch3"
+        ]
+      },
+      "src1": {
+        "type": "F32",
+        "shape": [
+          "k",
+          "ntokens",
+          "batch2",
+          "batch3"
+        ]
+      },
+      "src2": {
+        "type": "I32",
+        "shape": [
+          "nselected",
+          "ntokens",
+          "idx_batch2",
+          "idx_batch3"
+        ]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": [
+          "rows",
+          "nselected",
+          "ntokens",
+          "batch3"
+        ]
+      }
+    },
+    "attributes": {},
+    "predicates": [
+      {
+        "field": "shape.src0.k",
+        "min": 256
+      },
+      {
+        "field": "shape.src0.k",
+        "max": 32768
+      },
+      {
+        "field": "shape.src0.k",
+        "multiple_of": 256
+      },
+      {
+        "field": "shape.src0.rows",
+        "min": 1
+      },
+      {
+        "field": "shape.src0.rows",
+        "max": 32768
+      },
+      {
+        "field": "shape.src0.nexperts",
+        "min": 1
+      },
+      {
+        "field": "shape.src0.nexperts",
+        "max": 1024
+      },
+      {
+        "field": "shape.src2.nselected",
+        "min": 1
+      },
+      {
+        "field": "shape.src2.nselected",
+        "max": 128
+      },
+      {
+        "field": "shape.src2.ntokens",
+        "min": 1
+      },
+      {
+        "field": "shape.src2.ntokens",
+        "max": 16384
+      },
+      {
+        "field": "shape.src1.k",
+        "equals": "shape.src0.k"
+      },
+      {
+        "field": "shape.src1.ntokens",
+        "equals": "shape.src2.ntokens"
+      },
+      {
+        "field": "shape.src1.batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.dst.rows",
+        "equals": "shape.src0.rows"
+      },
+      {
+        "field": "shape.dst.nselected",
+        "equals": "shape.src2.nselected"
+      },
+      {
+        "field": "shape.dst.ntokens",
+        "equals": "shape.src2.ntokens"
+      },
+      {
+        "field": "shape.src0.batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.src2.idx_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.src2.idx_batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.dst.batch3",
+        "equals": 1
+      },
+      {
+        "field": "tensor.src1.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.src1.element_strides.1",
+        "min": 1
+      },
+      {
+        "field": "tensor.src1.element_strides.1",
+        "max": 1048576
+      },
+      {
+        "field": "tensor.src2.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.src2.element_strides.1",
+        "min": 1
+      },
+      {
+        "field": "tensor.src2.element_strides.1",
+        "max": 1048576
+      },
+      {
+        "field": "tensor.dst.element_strides.2",
+        "min": 1
+      },
+      {
+        "field": "tensor.dst.element_strides.2",
+        "max": 1048576
+      },
+      {
+        "field": "derived.mmid_bytes",
+        "max": 1073741824
+      },
+      {
+        "contiguous": "src0"
+      },
+      {
+        "contiguous": "src1"
+      },
+      {
+        "contiguous": "dst"
+      }
+    ]
+  },
+  "derived": {
+    "src1_token_stride": {
+      "type": "i64",
+      "field": "tensor.src1.element_strides.1"
+    },
+    "idx_token_stride": {
+      "type": "i64",
+      "field": "tensor.src2.element_strides.1"
+    },
+    "dst_token_stride": {
+      "type": "i64",
+      "field": "tensor.dst.element_strides.2"
+    },
+    "qact_elements": {
+      "type": "i64",
+      "product": [
+        "derived.src1_token_stride",
+        "shape.src2.ntokens"
+      ]
+    },
+    "qact_scale_bytes": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.qact_elements",
+        8
+      ]
+    },
+    "qact_sum_bytes": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.qact_elements",
+        4
+      ]
+    },
+    "mmid_elements": {
+      "type": "i64",
+      "product": [
+        "shape.src0.nexperts",
+        "shape.src2.ntokens",
+        "shape.src2.nselected"
+      ]
+    },
+    "mmid_bytes_per_element": {
+      "type": "i64",
+      "value": 8
+    },
+    "mmid_bytes": {
+      "type": "i64",
+      "product": [
+        "derived.mmid_elements",
+        "derived.mmid_bytes_per_element"
+      ]
+    },
+    "row_workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.src0.rows",
+        128
+      ]
+    },
+    "qact_workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.qact_elements",
+        8192
+      ]
+    }
+  },
+  "transient_buffers": {
+    "qact_qs": {
+      "size": "derived.qact_elements"
+    },
+    "qact_ds": {
+      "size": "derived.qact_scale_bytes"
+    },
+    "qact_sums": {
+      "size": "derived.qact_sum_bytes"
+    },
+    "mmid_table": {
+      "size": "derived.mmid_bytes"
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "quant_act_q8",
+      "definition": "../../../../defs/gfx1151/prepass/quant_act_q8.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_qact_k",
+            "type": "i64",
+            "source": "derived.src1_token_stride"
+          },
+          {
+            "name": "hrx2_shape_qact_cols",
+            "type": "i64",
+            "source": "shape.src2.ntokens"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src",
+          "tensor": "src1",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "qs",
+          "transient": "qact_qs",
+          "position": 1,
+          "kind": "output"
+        },
+        {
+          "name": "ds",
+          "transient": "qact_ds",
+          "position": 2,
+          "kind": "output"
+        },
+        {
+          "name": "sums",
+          "transient": "qact_sums",
+          "position": 3,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.qact_workgroups",
+          1,
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "mmid_table",
+      "definition": "../../../../defs/gfx1151/prepass/mmid_table.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_mul_mat_id_nexperts",
+            "type": "i64",
+            "source": "shape.src0.nexperts"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_nselected",
+            "type": "i64",
+            "source": "shape.src2.nselected"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_ntokens",
+            "type": "i64",
+            "source": "shape.src2.ntokens"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_idx_token_stride",
+            "type": "i64",
+            "source": "derived.idx_token_stride"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "idx",
+          "tensor": "src2",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "table",
+          "transient": "mmid_table",
+          "position": 1,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "shape.src0.nexperts",
+          1,
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/mul_mat_id/q4_k_f32/mul_mat_id_q4_k_f32_mmq_gfx1151_wg256_pre_tbl.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_mul_mat_id_k",
+            "type": "i64",
+            "source": "shape.src0.k"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_rows",
+            "type": "i64",
+            "source": "shape.src0.rows"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_nexperts",
+            "type": "i64",
+            "source": "shape.src0.nexperts"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_nselected",
+            "type": "i64",
+            "source": "shape.src2.nselected"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_ntokens",
+            "type": "i64",
+            "source": "shape.src2.ntokens"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_src1_selected_stride",
+            "type": "i64",
+            "value": 0
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_src1_token_stride",
+            "type": "i64",
+            "source": "derived.src1_token_stride"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_idx_token_stride",
+            "type": "i64",
+            "source": "derived.idx_token_stride"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_dst_token_stride",
+            "type": "i64",
+            "source": "derived.dst_token_stride"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "src1",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "idx",
+          "tensor": "src2",
+          "position": 2,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 3,
+          "kind": "output"
+        },
+        {
+          "name": "aq",
+          "transient": "qact_qs",
+          "position": 4,
+          "kind": "input"
+        },
+        {
+          "name": "as",
+          "transient": "qact_ds",
+          "position": 5,
+          "kind": "input"
+        },
+        {
+          "name": "asum",
+          "transient": "qact_sums",
+          "position": 6,
+          "kind": "input"
+        },
+        {
+          "name": "tbl",
+          "transient": "mmid_table",
+          "position": 7,
+          "kind": "input"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.row_workgroups",
+          "shape.src0.nexperts",
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

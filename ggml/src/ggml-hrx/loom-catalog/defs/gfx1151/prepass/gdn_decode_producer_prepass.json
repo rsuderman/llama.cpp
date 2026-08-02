@@ -1,0 +1,29 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "gdn_decode_producer_prepass",
+  "op": "GGML_OP_GET_ROWS",
+  "source": "sources/gfx1151/prepass/gdn_decode_producer_prepass.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_gdn_decode_producer_prepass",
+  "abi": {
+    "binding_count": 10,
+    "parameter_count": 11,
+    "constant_byte_length": 4
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [
+    {"name": "eps", "type": "f32"}
+  ],
+  "bindings": [
+    {"name": "raw_q", "access": "read"},
+    {"name": "raw_k", "access": "read"},
+    {"name": "alpha_weight", "access": "read"},
+    {"name": "beta_weight", "access": "read"},
+    {"name": "input", "access": "read"},
+    {"name": "bias", "access": "read"},
+    {"name": "a_scale", "access": "read"},
+    {"name": "qk_scales", "access": "write"},
+    {"name": "gate", "access": "write"},
+    {"name": "beta", "access": "write"}
+  ]
+}

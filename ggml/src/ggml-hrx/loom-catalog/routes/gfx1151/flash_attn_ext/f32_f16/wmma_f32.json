@@ -1,0 +1,573 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "flash_attn_ext_f32_f16_wmma",
+  "format": "loom",
+  "priority": 100,
+  "match": {
+    "op": "GGML_OP_FLASH_ATTN_EXT",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": [
+          "d",
+          "ntokens",
+          "nheads",
+          "batch"
+        ]
+      },
+      "src1": {
+        "type": "F16",
+        "shape": [
+          "k_d",
+          "nkv",
+          "nkvheads",
+          "k_batch"
+        ]
+      },
+      "src2": {
+        "type": "F16",
+        "shape": [
+          "v_d",
+          "v_nkv",
+          "v_nkvheads",
+          "v_batch"
+        ]
+      },
+      "src3": {
+        "type": "F16",
+        "shape": [
+          "mask_nkv",
+          "mask_ntokens",
+          "mask_d2",
+          "mask_d3"
+        ]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": [
+          "out_d",
+          "out_nheads",
+          "out_ntokens",
+          "out_batch"
+        ]
+      }
+    },
+    "attributes": {
+      "scale": {
+        "type": "f32"
+      },
+      "max_bias": {
+        "type": "f32"
+      },
+      "logit_softcap": {
+        "type": "f32"
+      }
+    },
+    "predicates": [
+      {
+        "src_absent": "src4"
+      },
+      {
+        "field": "attribute.max_bias",
+        "equals": 0.0
+      },
+      {
+        "field": "attribute.logit_softcap",
+        "equals": 0.0
+      },
+      {
+        "field": "shape.src0.d",
+        "equals": 256
+      },
+      {
+        "field": "shape.src0.ntokens",
+        "min": 1
+      },
+      {
+        "field": "shape.src0.ntokens",
+        "max": 1048576
+      },
+      {
+        "field": "shape.src0.ntokens",
+        "multiple_of": 32
+      },
+      {
+        "field": "shape.src0.nheads",
+        "min": 1
+      },
+      {
+        "field": "shape.src0.nheads",
+        "max": 1024
+      },
+      {
+        "field": "shape.src0.batch",
+        "equals": 1
+      },
+      {
+        "field": "shape.src1.k_d",
+        "equals": "shape.src0.d"
+      },
+      {
+        "field": "shape.src1.nkv",
+        "min": 16
+      },
+      {
+        "field": "shape.src1.nkv",
+        "max": 1048576
+      },
+      {
+        "field": "shape.src1.nkv",
+        "multiple_of": 16
+      },
+      {
+        "field": "shape.src1.nkvheads",
+        "min": 1
+      },
+      {
+        "field": "shape.src1.nkvheads",
+        "max": 1024
+      },
+      {
+        "field": "shape.src1.k_batch",
+        "equals": 1
+      },
+      {
+        "field": "shape.src0.nheads",
+        "divisible_by": "shape.src1.nkvheads"
+      },
+      {
+        "field": "derived.gqa",
+        "min": 1
+      },
+      {
+        "field": "derived.gqa",
+        "max": 1024
+      },
+      {
+        "field": "shape.src2.v_d",
+        "equals": "shape.src0.d"
+      },
+      {
+        "field": "shape.src2.v_nkv",
+        "equals": "shape.src1.nkv"
+      },
+      {
+        "field": "shape.src2.v_nkvheads",
+        "equals": "shape.src1.nkvheads"
+      },
+      {
+        "field": "shape.src2.v_batch",
+        "equals": 1
+      },
+      {
+        "field": "shape.src3.mask_nkv",
+        "min": "shape.src1.nkv"
+      },
+      {
+        "field": "shape.src3.mask_ntokens",
+        "min": "shape.src0.ntokens"
+      },
+      {
+        "field": "shape.dst.out_d",
+        "equals": "shape.src0.d"
+      },
+      {
+        "field": "shape.dst.out_nheads",
+        "equals": "shape.src0.nheads"
+      },
+      {
+        "field": "shape.dst.out_ntokens",
+        "equals": "shape.src0.ntokens"
+      },
+      {
+        "field": "shape.dst.out_batch",
+        "equals": 1
+      },
+      {
+        "field": "derived.nrows",
+        "min": 1
+      },
+      {
+        "field": "derived.nrows",
+        "max": 1048576
+      },
+      {
+        "field": "tensor.src0.strides.0",
+        "equals": 4
+      },
+      {
+        "field": "tensor.src0.strides.1",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.src0.strides.2",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.src1.strides.0",
+        "equals": 2
+      },
+      {
+        "field": "tensor.src1.strides.1",
+        "divisible_by": 2
+      },
+      {
+        "field": "tensor.src1.strides.2",
+        "divisible_by": 2
+      },
+      {
+        "field": "tensor.src2.strides.0",
+        "equals": 2
+      },
+      {
+        "field": "tensor.src2.strides.1",
+        "divisible_by": 2
+      },
+      {
+        "field": "tensor.src2.strides.2",
+        "divisible_by": 2
+      },
+      {
+        "field": "tensor.src3.strides.0",
+        "equals": 2
+      },
+      {
+        "field": "tensor.src3.strides.1",
+        "divisible_by": 2
+      },
+      {
+        "field": "tensor.dst.strides.0",
+        "equals": 4
+      },
+      {
+        "field": "tensor.dst.strides.1",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.dst.strides.2",
+        "divisible_by": 4
+      },
+      {
+        "field": "tensor.src0.element_strides.1",
+        "min": 1
+      },
+      {
+        "field": "tensor.src0.element_strides.1",
+        "max": 16777216
+      },
+      {
+        "field": "tensor.src0.element_strides.2",
+        "min": 1
+      },
+      {
+        "field": "tensor.src0.element_strides.2",
+        "max": 16777216
+      },
+      {
+        "field": "tensor.src1.element_strides.1",
+        "min": 1
+      },
+      {
+        "field": "tensor.src1.element_strides.1",
+        "max": 16777216
+      },
+      {
+        "field": "tensor.src1.element_strides.2",
+        "max": 16777216
+      },
+      {
+        "field": "tensor.src2.element_strides.1",
+        "min": 1
+      },
+      {
+        "field": "tensor.src2.element_strides.1",
+        "max": 16777216
+      },
+      {
+        "field": "tensor.src2.element_strides.2",
+        "max": 16777216
+      },
+      {
+        "field": "tensor.src3.element_strides.1",
+        "min": 1
+      },
+      {
+        "field": "tensor.src3.element_strides.1",
+        "max": 16777216
+      },
+      {
+        "field": "tensor.dst.element_strides.1",
+        "min": 1
+      },
+      {
+        "field": "tensor.dst.element_strides.1",
+        "max": 16777216
+      },
+      {
+        "field": "tensor.dst.element_strides.2",
+        "min": 1
+      },
+      {
+        "field": "tensor.dst.element_strides.2",
+        "max": 16777216
+      },
+      {
+        "field": "derived.q_token_extent",
+        "max": 134217600
+      },
+      {
+        "field": "derived.q_head_extent",
+        "max": 134217600
+      },
+      {
+        "field": "derived.k_pos_extent",
+        "max": 268435328
+      },
+      {
+        "field": "derived.k_head_extent",
+        "max": 268435328
+      },
+      {
+        "field": "derived.v_pos_extent",
+        "max": 268435328
+      },
+      {
+        "field": "derived.v_head_extent",
+        "max": 268435328
+      },
+      {
+        "field": "derived.mask_token_extent",
+        "max": 268435456
+      },
+      {
+        "field": "derived.out_head_extent",
+        "max": 134217600
+      },
+      {
+        "field": "derived.out_token_extent",
+        "max": 134217600
+      }
+    ]
+  },
+  "derived": {
+    "gqa": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.src0.nheads",
+        "shape.src1.nkvheads"
+      ]
+    },
+    "nrows": {
+      "type": "i64",
+      "product": [
+        "shape.src0.ntokens",
+        "shape.src0.nheads"
+      ]
+    },
+    "query_tiles": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.src0.ntokens",
+        32
+      ]
+    },
+    "q_token_extent": {
+      "type": "i64",
+      "product": [
+        "shape.src0.ntokens",
+        "tensor.src0.element_strides.1"
+      ]
+    },
+    "q_head_extent": {
+      "type": "i64",
+      "product": [
+        "shape.src0.nheads",
+        "tensor.src0.element_strides.2"
+      ]
+    },
+    "k_pos_extent": {
+      "type": "i64",
+      "product": [
+        "shape.src1.nkv",
+        "tensor.src1.element_strides.1"
+      ]
+    },
+    "k_head_extent": {
+      "type": "i64",
+      "product": [
+        "shape.src1.nkvheads",
+        "tensor.src1.element_strides.2"
+      ]
+    },
+    "v_pos_extent": {
+      "type": "i64",
+      "product": [
+        "shape.src2.v_nkv",
+        "tensor.src2.element_strides.1"
+      ]
+    },
+    "v_head_extent": {
+      "type": "i64",
+      "product": [
+        "shape.src2.v_nkvheads",
+        "tensor.src2.element_strides.2"
+      ]
+    },
+    "mask_token_extent": {
+      "type": "i64",
+      "product": [
+        "shape.src0.ntokens",
+        "tensor.src3.element_strides.1"
+      ]
+    },
+    "out_head_extent": {
+      "type": "i64",
+      "product": [
+        "shape.dst.out_nheads",
+        "tensor.dst.element_strides.1"
+      ]
+    },
+    "out_token_extent": {
+      "type": "i64",
+      "product": [
+        "shape.dst.out_ntokens",
+        "tensor.dst.element_strides.2"
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/flash_attn_ext/f32_f16/wmma_f32.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_fa_d",
+            "type": "i64",
+            "source": "shape.src0.d"
+          },
+          {
+            "name": "hrx2_shape_fa_ntokens",
+            "type": "i64",
+            "source": "shape.src0.ntokens"
+          },
+          {
+            "name": "hrx2_shape_fa_nheads",
+            "type": "i64",
+            "source": "shape.src0.nheads"
+          },
+          {
+            "name": "hrx2_shape_fa_nkv",
+            "type": "i64",
+            "source": "shape.src1.nkv"
+          },
+          {
+            "name": "hrx2_shape_fa_gqa",
+            "type": "i64",
+            "source": "derived.gqa"
+          },
+          {
+            "name": "hrx2_shape_fa_q_stride_token",
+            "type": "i64",
+            "source": "tensor.src0.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_fa_q_stride_head",
+            "type": "i64",
+            "source": "tensor.src0.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_fa_k_stride_pos",
+            "type": "i64",
+            "source": "tensor.src1.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_fa_k_stride_head",
+            "type": "i64",
+            "source": "tensor.src1.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_fa_v_stride_pos",
+            "type": "i64",
+            "source": "tensor.src2.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_fa_v_stride_head",
+            "type": "i64",
+            "source": "tensor.src2.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_fa_mask_stride_token",
+            "type": "i64",
+            "source": "tensor.src3.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_fa_dst_stride_head",
+            "type": "i64",
+            "source": "tensor.dst.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_fa_dst_stride_token",
+            "type": "i64",
+            "source": "tensor.dst.element_strides.2"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "q",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "k",
+          "tensor": "src1",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "v",
+          "tensor": "src2",
+          "position": 2,
+          "kind": "input"
+        },
+        {
+          "name": "mask",
+          "tensor": "src3",
+          "position": 3,
+          "kind": "input"
+        },
+        {
+          "name": "out",
+          "tensor": "dst",
+          "position": 4,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "scale",
+          "source": "attribute.scale",
+          "type": "f32",
+          "position": 0
+        }
+      ],
+      "dispatch": {
+        "workgroups": [
+          "derived.query_tiles",
+          "shape.src0.nheads"
+        ],
+        "workgroup_size": [
+          128,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

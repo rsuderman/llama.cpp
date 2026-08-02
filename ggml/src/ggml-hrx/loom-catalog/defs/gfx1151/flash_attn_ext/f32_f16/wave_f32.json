@@ -1,0 +1,42 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "flash_attn_ext_f32_f16_wave256",
+  "op": "GGML_OP_FLASH_ATTN_EXT",
+  "source": "sources/gfx1151/flash_attn_ext/f32_f16/wave_f32.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_flash_attn_ext_f32_f16_wave",
+  "abi": {
+    "binding_count": 5,
+    "parameter_count": 6,
+    "constant_byte_length": 4
+  },
+  "workgroup_size": [32, 1, 1],
+  "parameters": [
+    {
+      "name": "scale",
+      "type": "f32"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "q",
+      "access": "read"
+    },
+    {
+      "name": "k",
+      "access": "read"
+    },
+    {
+      "name": "v",
+      "access": "read"
+    },
+    {
+      "name": "mask",
+      "access": "read"
+    },
+    {
+      "name": "out",
+      "access": "write"
+    }
+  ]
+}

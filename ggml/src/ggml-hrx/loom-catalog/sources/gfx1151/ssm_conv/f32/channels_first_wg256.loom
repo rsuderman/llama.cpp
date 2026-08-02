@@ -1,0 +1,135 @@
+// Depthwise causal 1D convolution over the Gated-DeltaNet conv window, for the
+// channels-first input layout.
+//
+//   dst[i1, i2, i3] = sum_{i0 < d_conv} src0[i1, i2 + i0, i3] * src1[i0, i1]
+//
+//   src0  {d_inner, d_conv - 1 + n_t, n_s}   channels contiguous, tokens strided
+//   src1  {d_conv, d_inner}                  per-channel kernel
+//   dst   {d_inner, n_t, n_s}                channels contiguous
+//
+// The companion ssm_conv_f32_tiled.loom exists because the older graph handed
+// this op a *tokens*-contiguous window, where one-output-per-lane put every lane on a
+// different channel and therefore a different cache line; it stages a
+// [128 channels x 32 tokens] tile through LDS to fix that.
+//
+// Newer llama.cpp bases transpose the window, so channels are contiguous in
+// src0 *and* in dst. The LDS transpose is then not merely unnecessary but
+// inverted -- running the tiled kernel on this layout costs 1735 us per
+// dispatch against 246 us for the old one. Here consecutive lanes take
+// consecutive channels, so each of the d_conv taps is one coalesced burst, the
+// per-channel kernel is a single dwordx4 per lane, and the store coalesces:
+// no LDS, no barriers.
+//
+// Specialised for d_conv == 4; the route guards on it.
+
+config.decl @hrx2_shape_ssm_conv_d_conv : %value: index where [range(%value, 4, 4)]
+config.decl @hrx2_shape_ssm_conv_d_inner : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2_shape_ssm_conv_n_t : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2_shape_ssm_conv_n_s : %value: index where [range(%value, 1, 1024)]
+config.decl @hrx2_shape_ssm_conv_src0_row_stride : %value: index where [range(%value, 1, 16777216)]
+config.decl @hrx2_tuning_ssm_conv_workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+
+kernel.def export("hrx2_ssm_conv_f32_chan") @hrx2_ssm_conv_f32_chan() {
+  %unit = index.constant 1 : index
+  %minus_one = index.constant -1 : index
+  %d_inner = config.get @hrx2_shape_ssm_conv_d_inner : index
+  %n_t = config.get @hrx2_shape_ssm_conv_n_t : index
+  %n_s = config.get @hrx2_shape_ssm_conv_n_s : index
+  %wg = config.get @hrx2_tuning_ssm_conv_workgroup_size : index
+  %rows = index.mul %n_t, %n_s : index
+  %total = index.mul %rows, %d_inner : index
+  %rounding = index.add %wg, %minus_one : index
+  %rounded = index.add %total, %rounding : index
+  %groups = index.div %rounded, %wg : index
+  kernel.launch.config workgroups(%groups, %unit, %unit) workgroup_size(%wg, %unit, %unit) : index
+} launch(%src0: buffer, %src1: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %zero = index.constant 0 : index
+  %one = index.constant 1 : index
+  %two = index.constant 2 : index
+  %three = index.constant 3 : index
+  %four = index.constant 4 : index
+  %sixteen = index.constant 16 : index
+
+  %d_inner = config.get @hrx2_shape_ssm_conv_d_inner : index
+  %n_t = config.get @hrx2_shape_ssm_conv_n_t : index
+  %n_s = config.get @hrx2_shape_ssm_conv_n_s : index
+  %ts = config.get @hrx2_shape_ssm_conv_src0_row_stride : index
+  %wg = config.get @hrx2_tuning_ssm_conv_workgroup_size : index
+
+  %di = index.assume %d_inner [range(%d_inner, 1, 1048576)] : index
+  %nt = index.assume %n_t [range(%n_t, 1, 1048576)] : index
+  %ns = index.assume %n_s [range(%n_s, 1, 1024)] : index
+  %tsb = index.assume %ts [range(%ts, 1, 16777216)] : index
+
+  %rows0 = index.mul %nt, %ns : index
+  %total0 = index.mul %rows0, %di : index
+  %total = index.assume %total0 [range(%total0, 1, 1073741823)] : index
+
+  %group0 = kernel.workgroup.id<x> : index
+  %lane0 = kernel.workitem.id<x> : index
+  %group = index.assume %group0 [range(%group0, 0, 16777215)] : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
+  %off0 = index.mul %group, %wg : index
+  %idx0 = index.add %off0, %lane : index
+  %idx = index.assume %idx0 [range(%idx0, 0, 1073741823)] : index
+  %in_bounds = index.cmp ult, %idx, %total : index
+
+  %src0_g = buffer.assume.memory_space<global> %src0 : buffer
+  %src1_g = buffer.assume.memory_space<global> %src1 : buffer
+  %dst_g = buffer.assume.memory_space<global> %dst : buffer
+  %src0_na, %src1_na, %dst_na = buffer.assume.noalias %src0_g, %src1_g, %dst_g : buffer, buffer, buffer
+  %src0_view = buffer.view %src0_na[%base] : buffer -> view<1073741824xf32, #dense>
+  %dst_view = buffer.view %dst_na[%base] : buffer -> view<1073741824xf32, #dense>
+
+  scf.if %in_bounds {
+    // Consecutive lanes take consecutive channels, so every load below is one
+    // contiguous burst across the wave.
+    %chan = index.rem %idx, %di : index
+    %row = index.div %idx, %di : index
+    %tok = index.rem %row, %nt : index
+    %seq = index.div %row, %nt : index
+
+    // src0 origin for this (channel, sequence); taps step by the token stride.
+    %seq_span0 = index.add %nt, %three : index
+    %seq_span = index.mul %seq_span0, %tsb : index
+    %s_seq = index.mul %seq, %seq_span : index
+    %s_tok = index.mul %tok, %tsb : index
+    %s_base0 = index.add %s_seq, %s_tok : index
+    %s_base1 = index.add %s_base0, %chan : index
+    %s_base = index.assume %s_base1 [range(%s_base1, 0, 1073741823)] : index
+
+    %t1i = index.add %s_base, %tsb : index
+    %t1 = index.assume %t1i [range(%t1i, 0, 1073741823)] : index
+    %t2i = index.add %t1, %tsb : index
+    %t2 = index.assume %t2i [range(%t2i, 0, 1073741823)] : index
+    %t3i = index.add %t2, %tsb : index
+    %t3 = index.assume %t3i [range(%t3i, 0, 1073741823)] : index
+
+    %x0 = view.load %src0_view[%s_base] : view<1073741824xf32, #dense> -> f32
+    %x1 = view.load %src0_view[%t1] : view<1073741824xf32, #dense> -> f32
+    %x2 = view.load %src0_view[%t2] : view<1073741824xf32, #dense> -> f32
+    %x3 = view.load %src0_view[%t3] : view<1073741824xf32, #dense> -> f32
+
+    // src1 is {d_conv, d_inner} with d_conv == 4, so this channel's four taps
+    // are one aligned dwordx4 and the wave reads 512 contiguous bytes.
+    // buffer.view takes a byte offset: four taps of four bytes each, hence 16.
+    %w_e0 = index.mul %chan, %sixteen : index
+    %w_e = index.assume %w_e0 [range(%w_e0, 0, 1073741820)] : index
+    %w_o = index.cast %w_e : index to offset
+    %w_v = buffer.view %src1_na[%w_o] : buffer -> view<4xf32, #dense>
+    %w = vector.load %w_v[%zero] : view<4xf32, #dense> -> vector<4xf32>
+    %w0 = vector.extract %w[%zero] : vector<4xf32> -> f32
+    %w1 = vector.extract %w[%one] : vector<4xf32> -> f32
+    %w2 = vector.extract %w[%two] : vector<4xf32> -> f32
+    %w3 = vector.extract %w[%three] : vector<4xf32> -> f32
+
+    %p0 = scalar.mulf<nnan|ninf|nsz> %x0, %w0 : f32
+    %p1 = scalar.fmaf<nnan|ninf|nsz> %x1, %w1, %p0 : f32
+    %p2 = scalar.fmaf<nnan|ninf|nsz> %x2, %w2, %p1 : f32
+    %acc = scalar.fmaf<nnan|ninf|nsz> %x3, %w3, %p2 : f32
+
+    view.store %acc, %dst_view[%idx] : f32, view<1073741824xf32, #dense>
+  }
+  kernel.return
+}

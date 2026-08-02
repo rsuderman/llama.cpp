@@ -10,14 +10,23 @@ ATTRIBUTE_INDICES = {
         "minimum": 0,
         "maximum": 1,
     },
+    "GGML_OP_CONCAT": {
+        "dim": 0,
+    },
     "GGML_OP_FLASH_ATTN_EXT": {
         "scale": 0,
         "max_bias": 1,
         "logit_softcap": 2,
         "precision": 3,
     },
+    "GGML_OP_GATED_DELTA_NET": {
+        "K": 0,
+    },
     "GGML_OP_GLU": {
         "glu_op": 0,
+    },
+    "GGML_OP_L2_NORM": {
+        "eps": 0,
     },
     "GGML_OP_ROPE": {
         "n_dims": 1,
@@ -29,6 +38,10 @@ ATTRIBUTE_INDICES = {
         "attn_factor": 8,
         "beta_fast": 9,
         "beta_slow": 10,
+        "section0": 11,
+        "section1": 12,
+        "section2": 13,
+        "section3": 14,
     },
     "GGML_OP_RMS_NORM": {
         "eps": 0,
@@ -40,6 +53,9 @@ ATTRIBUTE_INDICES = {
     "GGML_OP_SOFT_MAX": {
         "scale": 0,
         "max_bias": 1,
+    },
+    "GGML_OP_UNARY": {
+        "unary_op": 0,
     },
 }
 
@@ -295,7 +311,11 @@ def emit_tensor_setup(lines, route, op_rule, schema, route_response, unsupported
     for role in tensors:
         lines.append(f"    const ggml_tensor * {role_var(role)} = {role_expr(role)};")
 
-    required = sorted(op_rule["required_tensors"] & set(tensors))
+    required = sorted(
+        role
+        for role, tensor in tensors.items()
+        if role in op_rule["required_tensors"] or not tensor.get("optional", False)
+    )
     if required:
         condition = " || ".join([f"!{role_var(role)}" for role in required])
         lines.extend([
@@ -326,6 +346,28 @@ def emit_dtype_checks(lines, route, schema, route_response, unsupported_dtype_re
         lines.extend([
             f"    if ({' || '.join(checks)}) {{",
             f"        {route_response(unsupported_dtype_reason)}",
+            "    }",
+        ])
+
+
+def emit_storage_checks(lines, route, schema, route_response, unsupported_layout_reason):
+    tensors = schema.route_tensors(route, "route")
+    checks = []
+    for role, tensor in tensors.items():
+        storage = tensor.get("storage")
+        if not storage:
+            continue
+        check = (
+            f"!ggml_backend_hrx_loom_storage_layout_matches("
+            f"request, {role_var(role)}, {cpp_string(storage)})"
+        )
+        if tensor.get("optional", False):
+            check = f"({role_var(role)} && {check})"
+        checks.append(check)
+    if checks:
+        lines.extend([
+            f"    if ({' || '.join(checks)}) {{",
+            f"        {route_response(unsupported_layout_reason)}",
             "    }",
         ])
 
@@ -616,14 +658,16 @@ def emit_field_predicate(predicate, context, schema):
 
 
 def emit_src_absent_predicate(predicate, context, schema):
-    del context
-    del schema
+    fusion_context_type = getattr(schema, "FusionRouteContext", ())
+    if isinstance(context, fusion_context_type):
+        return f"{role_var(predicate['src_absent'])} == nullptr"
     return f"{role_expr(predicate['src_absent'])} == nullptr"
 
 
 def emit_src_present_predicate(predicate, context, schema):
-    del context
-    del schema
+    fusion_context_type = getattr(schema, "FusionRouteContext", ())
+    if isinstance(context, fusion_context_type):
+        return f"{role_var(predicate['src_present'])} != nullptr"
     return f"{role_expr(predicate['src_present'])} != nullptr"
 
 
@@ -643,6 +687,20 @@ def emit_no_overlap_predicate(predicate, context, schema):
     return f"ggml_backend_hrx_loom_reorder_match(request, plan) || !ggml_backend_hrx_loom_tensors_overlap({role_var(lhs)}, {role_var(rhs)})"
 
 
+def emit_same_or_disjoint_storage_predicate(predicate, context, schema):
+    del context
+    del schema
+    tensors = predicate["same_or_disjoint_storage"]
+    conditions = []
+    for i, lhs in enumerate(tensors):
+        for rhs in tensors[i + 1:]:
+            conditions.append(
+                "ggml_backend_hrx_loom_tensors_are_same_or_disjoint("
+                f"{role_var(lhs)}, {role_var(rhs)})"
+            )
+    return " && ".join(conditions)
+
+
 PREDICATE_EMITTERS = {
     "contiguous": emit_contiguous_predicate,
     "same_shape": emit_same_shape_predicate,
@@ -654,6 +712,7 @@ PREDICATE_EMITTERS = {
     "src_present": emit_src_present_predicate,
     "elided": emit_elided_predicate,
     "no_overlap": emit_no_overlap_predicate,
+    "same_or_disjoint_storage": emit_same_or_disjoint_storage_predicate,
 }
 
 

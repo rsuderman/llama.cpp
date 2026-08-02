@@ -1,0 +1,143 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "silu_f32_wide_wg256",
+  "format": "loom",
+  "priority": 200,
+  "match": {
+    "op": "GGML_OP_UNARY",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      }
+    },
+    "attributes": {
+      "unary_op": {
+        "type": "i32"
+      }
+    },
+    "predicates": [
+      {
+        "field": "attribute.unary_op",
+        "equals": 10
+      },
+      {
+        "same_shape": [
+          "src0",
+          "dst"
+        ]
+      },
+      {
+        "contiguous": "src0"
+      },
+      {
+        "contiguous": "dst"
+      },
+      {
+        "field": "shape.dst.d0",
+        "min": 1
+      },
+      {
+        "field": "shape.dst.d0",
+        "max": 65536
+      },
+      {
+        "field": "derived.nrows",
+        "min": 1
+      },
+      {
+        "field": "derived.nrows",
+        "max": 1048576
+      },
+      {
+        "field": "derived.total_size",
+        "max": 1073741824
+      }
+    ]
+  },
+  "derived": {
+    "nrows": {
+      "type": "i64",
+      "product": [
+        "shape.dst.d1",
+        "shape.dst.d2",
+        "shape.dst.d3"
+      ]
+    },
+    "total_size": {
+      "type": "i64",
+      "product": [
+        "shape.dst.d0",
+        "derived.nrows"
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/unary/f32/silu_wide_wg256.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_pointwise_ncols",
+            "type": "i64",
+            "source": "shape.dst.d0"
+          },
+          {
+            "name": "hrx2_shape_pointwise_nrows",
+            "type": "i64",
+            "source": "derived.nrows"
+          },
+          {
+            "name": "hrx2_tuning_pointwise_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 1,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "work_items": [
+          "derived.total_size"
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,173 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "scale_f32_flat_large_wg256",
+  "format": "loom",
+  "priority": 201,
+  "match": {
+    "op": "GGML_OP_SCALE",
+    "tensors": {
+      "src0": {
+        "type": "F32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": [
+          "d0",
+          "d1",
+          "d2",
+          "d3"
+        ]
+      }
+    },
+    "attributes": {
+      "scale": {
+        "type": "f32"
+      },
+      "bias": {
+        "type": "f32"
+      }
+    },
+    "predicates": [
+      {
+        "same_shape": [
+          "src0",
+          "dst"
+        ]
+      },
+      {
+        "contiguous": "src0"
+      },
+      {
+        "contiguous": "dst"
+      },
+      {
+        "field": "shape.dst.d0",
+        "min": 65537
+      },
+      {
+        "field": "derived.total_size",
+        "divisible_by": 65536
+      },
+      {
+        "field": "derived.balanced_rows",
+        "min": 1
+      },
+      {
+        "field": "derived.balanced_rows",
+        "max": 1048576
+      }
+    ]
+  },
+  "derived": {
+    "outer_rows": {
+      "type": "i64",
+      "product": [
+        "shape.dst.d1",
+        "shape.dst.d2",
+        "shape.dst.d3"
+      ]
+    },
+    "total_size": {
+      "type": "i64",
+      "product": [
+        "shape.dst.d0",
+        "derived.outer_rows"
+      ]
+    },
+    "balanced_rows": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.total_size",
+        65536
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/scale/f32/generic_wg256.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_pointwise_ncols",
+            "type": "i64",
+            "value": 65536
+          },
+          {
+            "name": "hrx2_shape_pointwise_nrows",
+            "type": "i64",
+            "source": "derived.balanced_rows"
+          },
+          {
+            "name": "hrx2_shape_pointwise_src0_row_stride",
+            "type": "i64",
+            "value": 65536
+          },
+          {
+            "name": "hrx2_shape_pointwise_src1_row_stride",
+            "type": "i64",
+            "value": 0
+          },
+          {
+            "name": "hrx2_shape_pointwise_src1_ncols",
+            "type": "i64",
+            "value": 1
+          },
+          {
+            "name": "hrx2_tuning_pointwise_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "src0",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "dst",
+          "position": 1,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "scale",
+          "source": "attribute.scale",
+          "type": "f32",
+          "position": 0
+        },
+        {
+          "name": "bias",
+          "source": "attribute.bias",
+          "type": "f32",
+          "position": 1
+        }
+      ],
+      "dispatch": {
+        "work_items": [
+          "derived.total_size"
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

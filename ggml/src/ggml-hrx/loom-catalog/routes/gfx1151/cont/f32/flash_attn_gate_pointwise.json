@@ -1,0 +1,280 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "flash_attn_gate_pointwise_f32",
+  "format": "loom",
+  "priority": 290,
+  "tensors": {
+    "raw_gate": {
+      "type": "F32",
+      "shape": [
+        "d",
+        "nheads",
+        "ntokens",
+        "batch"
+      ]
+    },
+    "cont_dst": {
+      "type": "F32"
+    },
+    "sigmoid_dst": {
+      "type": "F32"
+    },
+    "fa_input": {
+      "type": "F32"
+    },
+    "terminal_dst": {
+      "type": "F32"
+    }
+  },
+  "match": {
+    "anchors": [
+      "cont"
+    ],
+    "ops": {
+      "cont": {
+        "op": "GGML_OP_CONT",
+        "tensors": {
+          "src0": "raw_gate",
+          "dst": "cont_dst"
+        },
+        "attributes": {}
+      },
+      "sigmoid": {
+        "op": "GGML_OP_UNARY",
+        "tensors": {
+          "src0": "cont_dst",
+          "dst": "sigmoid_dst"
+        },
+        "attributes": {
+          "unary_op": {
+            "type": "i32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "mul": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "fa_input",
+          "src1": "sigmoid_dst",
+          "dst": "terminal_dst"
+        },
+        "attributes": {}
+      }
+    },
+    "predicates": [
+      {
+        "field": "attribute.sigmoid.unary_op",
+        "equals": 7
+      },
+      {
+        "field": "shape.raw_gate.d",
+        "min": 8
+      },
+      {
+        "field": "shape.raw_gate.d",
+        "max": 65536
+      },
+      {
+        "field": "shape.raw_gate.d",
+        "multiple_of": 8
+      },
+      {
+        "field": "shape.raw_gate.nheads",
+        "min": 1
+      },
+      {
+        "field": "shape.raw_gate.nheads",
+        "max": 1024
+      },
+      {
+        "field": "shape.raw_gate.ntokens",
+        "min": 1
+      },
+      {
+        "field": "shape.raw_gate.ntokens",
+        "max": 16384
+      },
+      {
+        "field": "shape.raw_gate.batch",
+        "equals": 1
+      },
+      {
+        "field": "tensor.fa_input.element_count",
+        "multiple_of": 8
+      },
+      {
+        "field": "tensor.fa_input.element_count",
+        "max": 1073741824
+      },
+      {
+        "field": "tensor.raw_gate.element_count",
+        "equals": "tensor.fa_input.element_count"
+      },
+      {
+        "field": "tensor.terminal_dst.element_count",
+        "equals": "tensor.fa_input.element_count"
+      },
+      {
+        "same_shape": [
+          "cont_dst",
+          "sigmoid_dst",
+          "terminal_dst"
+        ]
+      },
+      {
+        "field": "tensor.raw_gate.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.raw_gate.element_strides.1",
+        "min": 1
+      },
+      {
+        "field": "tensor.raw_gate.element_strides.1",
+        "max": 65536
+      },
+      {
+        "field": "tensor.raw_gate.element_strides.2",
+        "min": 1
+      },
+      {
+        "field": "tensor.raw_gate.element_strides.2",
+        "max": 32768
+      },
+      {
+        "contiguous": "fa_input"
+      },
+      {
+        "contiguous": "cont_dst"
+      },
+      {
+        "contiguous": "sigmoid_dst"
+      },
+      {
+        "contiguous": "terminal_dst"
+      },
+      {
+        "elided": [
+          "cont_dst",
+          "sigmoid_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "fa_input",
+          "raw_gate"
+        ]
+      },
+      {
+        "no_overlap": [
+          "fa_input",
+          "terminal_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "raw_gate",
+          "terminal_dst"
+        ]
+      }
+    ]
+  },
+  "derived": {
+    "elements": {
+      "type": "i64",
+      "field": "tensor.fa_input.element_count"
+    },
+    "vectors": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.elements",
+        8
+      ]
+    },
+    "workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.vectors",
+        256
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "main",
+      "definition": "../../../../defs/gfx1151/cont/f32/flash_attn_gate_pointwise.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_fa_gate_pointwise_d",
+            "type": "i64",
+            "source": "shape.raw_gate.d"
+          },
+          {
+            "name": "hrx2_shape_fa_gate_pointwise_nheads",
+            "type": "i64",
+            "source": "shape.raw_gate.nheads"
+          },
+          {
+            "name": "hrx2_shape_fa_gate_pointwise_ntokens",
+            "type": "i64",
+            "source": "shape.raw_gate.ntokens"
+          },
+          {
+            "name": "hrx2_shape_fa_gate_pointwise_elements",
+            "type": "i64",
+            "source": "derived.elements"
+          },
+          {
+            "name": "hrx2_shape_fa_gate_pointwise_gate_stride_head",
+            "type": "i64",
+            "source": "tensor.raw_gate.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_fa_gate_pointwise_gate_stride_token",
+            "type": "i64",
+            "source": "tensor.raw_gate.element_strides.2"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "fa",
+          "tensor": "fa_input",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "gate",
+          "tensor": "raw_gate",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "out",
+          "tensor": "terminal_dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.workgroups",
+          1,
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

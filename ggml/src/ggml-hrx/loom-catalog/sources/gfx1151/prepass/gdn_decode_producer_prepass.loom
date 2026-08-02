@@ -1,0 +1,297 @@
+// Decode producer prepass for the GDN FusionRoute-v2 chain.
+//
+// One WG256 grid contains disjoint workgroup classes:
+//   [0, qk_rows)                 paired q+k reciprocal L2 scales
+//   [qk_rows, qk_rows+heads*tokens)
+//                                  alpha projection + bias + softplus + a_scale
+//   [qk_rows+heads*tokens, ...+2heads*tokens)
+//                                  beta projection + sigmoid
+//
+// No workgroup consumes another workgroup's output. The following direct-state
+// GDN dispatch is the grid synchronization and consumes scales/gate/beta.
+
+config.decl @hrx2_gdn_producer_qk_ncols : %value: index where [range(%value, 128, 128)]
+config.decl @hrx2_gdn_producer_qk_ne1 : %value: index where [range(%value, 1, 4096)]
+config.decl @hrx2_gdn_producer_qk_ne2 : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2_gdn_producer_qk_ne3 : %value: index where [range(%value, 1, 4096)]
+config.decl @hrx2_gdn_producer_qk_s1 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_gdn_producer_qk_s2 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_gdn_producer_qk_s3 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2_gdn_dual_projection_k : %value: index where [range(%value, 1, 8192)]
+config.decl @hrx2_gdn_dual_projection_heads : %value: index where [range(%value, 1, 1024)]
+config.decl @hrx2_gdn_dual_projection_tokens : %value: index where [range(%value, 1, 512)]
+config.decl @hrx2_gdn_dual_projection_input_token_stride : %value: index where [range(%value, 1, 1073741823)]
+config.decl @hrx2_gdn_dual_projection_workgroup_size : %value: index where [range(%value, 256, 256), mul(%value, 32)]
+
+kernel.def export("hrx2_gdn_decode_producer_prepass")
+    @hrx2_gdn_decode_producer_prepass() {
+  %one = index.constant 1 : index
+  %two = index.constant 2 : index
+  %ne1 = config.get @hrx2_gdn_producer_qk_ne1 : index
+  %ne2 = config.get @hrx2_gdn_producer_qk_ne2 : index
+  %ne3 = config.get @hrx2_gdn_producer_qk_ne3 : index
+  %heads = config.get @hrx2_gdn_dual_projection_heads : index
+  %tokens = config.get @hrx2_gdn_dual_projection_tokens : index
+  %workgroup_size =
+      config.get @hrx2_gdn_dual_projection_workgroup_size : index
+  %n12 = index.mul %ne1, %ne2 : index
+  %qk_rows = index.mul %n12, %ne3 : index
+  %projection_token_rows = index.mul %heads, %tokens : index
+  %projection_rows = index.mul %projection_token_rows, %two : index
+  %total_rows = index.add %qk_rows, %projection_rows : index
+  kernel.launch.config workgroups(%total_rows, %one, %one)
+      workgroup_size(%workgroup_size, %one, %one) : index
+} launch(
+    %eps: f32,
+    %raw_q: buffer,
+    %raw_k: buffer,
+    %alpha_weight: buffer,
+    %beta_weight: buffer,
+    %input: buffer,
+    %bias: buffer,
+    %a_scale: buffer,
+    %scales_dst: buffer,
+    %gate_dst: buffer,
+    %beta_dst: buffer) {
+  %base = index.constant 0 : offset
+  %zero = index.constant 0 : index
+  %one = index.constant 1 : index
+  %two = index.constant 2 : index
+  %zero_f32 = scalar.constant 0.0 : f32
+  %one_f32 = scalar.constant 1.0 : f32
+
+  %ncols0 = config.get @hrx2_gdn_producer_qk_ncols : index
+  %ne10 = config.get @hrx2_gdn_producer_qk_ne1 : index
+  %ne20 = config.get @hrx2_gdn_producer_qk_ne2 : index
+  %ne30 = config.get @hrx2_gdn_producer_qk_ne3 : index
+  %s1 = config.get @hrx2_gdn_producer_qk_s1 : index
+  %s2 = config.get @hrx2_gdn_producer_qk_s2 : index
+  %s3 = config.get @hrx2_gdn_producer_qk_s3 : index
+  %k0 = config.get @hrx2_gdn_dual_projection_k : index
+  %heads0 = config.get @hrx2_gdn_dual_projection_heads : index
+  %tokens0 = config.get @hrx2_gdn_dual_projection_tokens : index
+  %input_token_stride0 =
+      config.get @hrx2_gdn_dual_projection_input_token_stride : index
+  %workgroup_size =
+      config.get @hrx2_gdn_dual_projection_workgroup_size : index
+  %ncols = index.assume %ncols0 [range(%ncols0, 128, 128)] : index
+  %ne1 = index.assume %ne10 [range(%ne10, 1, 4096)] : index
+  %ne2 = index.assume %ne20 [range(%ne20, 1, 1048576)] : index
+  %ne3 = index.assume %ne30 [range(%ne30, 1, 4096)] : index
+  %k = index.assume %k0 [range(%k0, 1, 8192)] : index
+  %heads = index.assume %heads0 [range(%heads0, 1, 1024)] : index
+  %tokens = index.assume %tokens0 [range(%tokens0, 1, 512)] : index
+  %input_token_stride = index.assume %input_token_stride0
+      [range(%input_token_stride0, 1, 1073741823)] : index
+
+  %n12 = index.mul %ne1, %ne2 : index
+  %qk_rows = index.mul %n12, %ne3 : index
+  %projection_class_rows = index.mul %heads, %tokens : index
+  %alpha_end = index.add %qk_rows, %projection_class_rows : index
+  %wg0 = kernel.workgroup.id<x> : index
+  %wg = index.assume %wg0 [range(%wg0, 0, 1073741823)] : index
+  %lane0 = kernel.workitem.id<x> : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 255)] : index
+  %is_qk = index.cmp ult, %wg, %qk_rows : index
+  %is_lane0 = index.cmp eq, %lane, %zero : index
+
+  %raw_q_global = buffer.assume.memory_space<global> %raw_q : buffer
+  %raw_k_global = buffer.assume.memory_space<global> %raw_k : buffer
+  %alpha_weight_global =
+      buffer.assume.memory_space<global> %alpha_weight : buffer
+  %beta_weight_global =
+      buffer.assume.memory_space<global> %beta_weight : buffer
+  %input_global = buffer.assume.memory_space<global> %input : buffer
+  %bias_global = buffer.assume.memory_space<global> %bias : buffer
+  %a_scale_global = buffer.assume.memory_space<global> %a_scale : buffer
+  %scales_dst_global =
+      buffer.assume.memory_space<global> %scales_dst : buffer
+  %gate_dst_global =
+      buffer.assume.memory_space<global> %gate_dst : buffer
+  %beta_dst_global =
+      buffer.assume.memory_space<global> %beta_dst : buffer
+  %raw_q_na, %raw_k_na, %alpha_weight_na, %beta_weight_na, %input_na,
+      %bias_na, %a_scale_na, %scales_dst_na, %gate_dst_na, %beta_dst_na =
+      buffer.assume.noalias %raw_q_global, %raw_k_global,
+      %alpha_weight_global, %beta_weight_global, %input_global, %bias_global,
+      %a_scale_global, %scales_dst_global, %gate_dst_global, %beta_dst_global :
+      buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer,
+      buffer
+
+  %raw_q_view = buffer.view %raw_q_na[%base] :
+      buffer -> view<1073741824xf32, #dense>
+  %raw_k_view = buffer.view %raw_k_na[%base] :
+      buffer -> view<1073741824xf32, #dense>
+  %scales_dst_view = buffer.view %scales_dst_na[%base] :
+      buffer -> view<1073741824xf32, #dense>
+  %weight_count = index.mul %heads, %k : index
+  %alpha_weight_view = buffer.view %alpha_weight_na[%base] :
+      buffer -> view<[%weight_count]xf32, #dense>
+  %beta_weight_view = buffer.view %beta_weight_na[%base] :
+      buffer -> view<[%weight_count]xf32, #dense>
+  %input_view = buffer.view %input_na[%base] :
+      buffer -> view<1073741824xf32, #dense>
+  %bias_view = buffer.view %bias_na[%base] :
+      buffer -> view<[%heads]xf32, #dense>
+  %a_scale_view = buffer.view %a_scale_na[%base] :
+      buffer -> view<[%heads]xf32, #dense>
+  %projection_output_count = index.mul %heads, %tokens : index
+  %gate_dst_view = buffer.view %gate_dst_na[%base] :
+      buffer -> view<[%projection_output_count]xf32, #dense>
+  %beta_dst_view = buffer.view %beta_dst_na[%base] :
+      buffer -> view<[%projection_output_count]xf32, #dense>
+
+  scf.if %is_qk {
+    // This is the accepted WG256 L2 reduction body twice, in q then k order.
+    %row = index.assume %wg [range(%wg, 0, 1073741823)] : index
+    %i3 = index.div %row, %n12 : index
+    %r12 = index.rem %row, %n12 : index
+    %i2 = index.div %r12, %ne1 : index
+    %i1 = index.rem %r12, %ne1 : index
+    %o1 = index.mul %i1, %s1 : index
+    %o2 = index.mul %i2, %s2 : index
+    %o3 = index.mul %i3, %s3 : index
+    %o12 = index.add %o1, %o2 : index
+    %src_base0 = index.add %o12, %o3 : index
+    %src_base = index.assume %src_base0
+        [range(%src_base0, 0, 1073741823)] : index
+
+    %q_sum = scf.for %col = [%lane to %ncols step %workgroup_size](
+        %acc = %zero_f32 : f32) -> (f32) {
+      %si0 = index.add %src_base, %col : index
+      %si = index.assume %si0 [range(%si0, 0, 1073741823)] : index
+      %value = view.load %raw_q_view[%si] :
+          view<1073741824xf32, #dense> -> f32
+      %square = scalar.mulf<reassoc|nnan|ninf|nsz>
+          %value, %value : f32
+      %next = scalar.addf<reassoc|nnan|ninf|nsz>
+          %acc, %square : f32
+      scf.yield %next : f32
+    }
+    %q_row_sum = kernel.workgroup.reduce<addf> %q_sum : f32
+    %eps_sq_q = scalar.mulf<nnan|ninf|nsz> %eps, %eps : f32
+    %q_clamped = scalar.maxnumf %q_row_sum, %eps_sq_q : f32
+    %q_scale = scalar.rsqrtf<nnan|ninf|nsz|afn> %q_clamped : f32
+
+    %k_sum = scf.for %col = [%lane to %ncols step %workgroup_size](
+        %acc = %zero_f32 : f32) -> (f32) {
+      %si0 = index.add %src_base, %col : index
+      %si = index.assume %si0 [range(%si0, 0, 1073741823)] : index
+      %value = view.load %raw_k_view[%si] :
+          view<1073741824xf32, #dense> -> f32
+      %square = scalar.mulf<reassoc|nnan|ninf|nsz>
+          %value, %value : f32
+      %next = scalar.addf<reassoc|nnan|ninf|nsz>
+          %acc, %square : f32
+      scf.yield %next : f32
+    }
+    %k_row_sum = kernel.workgroup.reduce<addf> %k_sum : f32
+    %eps_sq_k = scalar.mulf<nnan|ninf|nsz> %eps, %eps : f32
+    %k_clamped = scalar.maxnumf %k_row_sum, %eps_sq_k : f32
+    %k_scale = scalar.rsqrtf<nnan|ninf|nsz|afn> %k_clamped : f32
+
+    scf.if %is_lane0 {
+      // Preserve the accepted token-1 physical-row specialization exactly.
+      // Multi-token PP stores densely in logical q/k row order so strided
+      // source views do not create holes in the private scale payload.
+      %physical_row = index.div %src_base, %ncols : index
+      %is_token1 = index.cmp eq, %ne2, %one : index
+      %payload_row = scf.select %is_token1, %physical_row, %row : index
+      %scale_row = index.mul %payload_row, %two : index
+      %q_scale_index = index.assume %scale_row
+          [range(%scale_row, 0, 1073741822)] : index
+      %k_scale_index0 = index.add %scale_row, %one : index
+      %k_scale_index = index.assume %k_scale_index0
+          [range(%k_scale_index0, 1, 1073741823)] : index
+      view.store %q_scale, %scales_dst_view[%q_scale_index] :
+          f32, view<1073741824xf32, #dense>
+      view.store %k_scale, %scales_dst_view[%k_scale_index] :
+          f32, view<1073741824xf32, #dense>
+    }
+  } else {
+    // Mapping only changes the workgroup id. The reduction and epilogues below
+    // are copied from the accepted dual-projection catalog source.
+    %is_alpha = index.cmp ult, %wg, %alpha_end : index
+    // Each projection class spans exactly heads*tokens consecutive
+    // workgroups. Modulo therefore remains a complete one-to-one permutation
+    // of token*heads+head, independent of the preceding q/k class size. For
+    // tokens=1 this specializes to the accepted decode mapping, wg % heads.
+    %class_wg0 = index.rem %wg, %projection_class_rows : index
+    %class_wg = index.assume %class_wg0
+        [range(%class_wg0, 0, 1073741823)] : index
+    %token0 = index.div %class_wg, %heads : index
+    %token = index.assume %token0 [range(%token0, 0, 511)] : index
+    %head0 = index.rem %class_wg, %heads : index
+    %head = index.assume %head0 [range(%head0, 0, 1023)] : index
+    %weight_row_base = index.mul %head, %k : index
+    %input_token_base = index.mul %token, %input_token_stride : index
+    %dot = scf.if %is_alpha -> (f32) {
+      %sum = scf.for %i = [%lane to %k step %workgroup_size](
+          %acc = %zero_f32 : f32) -> (f32) {
+        %weight_index = index.add %weight_row_base, %i : index
+        %weight = view.load %alpha_weight_view[%weight_index] :
+            view<[%weight_count]xf32, #dense> -> f32
+        %input_index0 = index.add %input_token_base, %i : index
+        %input_index = index.assume %input_index0
+            [range(%input_index0, 0, 1073741823)] : index
+        %x = view.load %input_view[%input_index] :
+            view<1073741824xf32, #dense> -> f32
+        %product = scalar.mulf<reassoc|nnan|ninf|nsz>
+            %weight, %x : f32
+        %next = scalar.addf<reassoc|nnan|ninf|nsz>
+            %acc, %product : f32
+        scf.yield %next : f32
+      }
+      %reduced = kernel.workgroup.reduce<addf> %sum : f32
+      scf.yield %reduced : f32
+    } else {
+      %sum = scf.for %i = [%lane to %k step %workgroup_size](
+          %acc = %zero_f32 : f32) -> (f32) {
+        %weight_index = index.add %weight_row_base, %i : index
+        %weight = view.load %beta_weight_view[%weight_index] :
+            view<[%weight_count]xf32, #dense> -> f32
+        %input_index0 = index.add %input_token_base, %i : index
+        %input_index = index.assume %input_index0
+            [range(%input_index0, 0, 1073741823)] : index
+        %x = view.load %input_view[%input_index] :
+            view<1073741824xf32, #dense> -> f32
+        %product = scalar.mulf<reassoc|nnan|ninf|nsz>
+            %weight, %x : f32
+        %next = scalar.addf<reassoc|nnan|ninf|nsz>
+            %acc, %product : f32
+        scf.yield %next : f32
+      }
+      %reduced = kernel.workgroup.reduce<addf> %sum : f32
+      scf.yield %reduced : f32
+    }
+
+    scf.if %is_lane0 {
+      scf.if %is_alpha {
+        %bias_value = view.load %bias_view[%head] :
+            view<[%heads]xf32, #dense> -> f32
+        %biased = scalar.addf<nnan|ninf|nsz>
+            %dot, %bias_value : f32
+        %abs_x = scalar.absf %biased : f32
+        %neg_abs_x = scalar.negf %abs_x : f32
+        %exp_term = scalar.expf<afn> %neg_abs_x : f32
+        %one_plus = scalar.addf<nnan|ninf|nsz>
+            %one_f32, %exp_term : f32
+        %log_term = scalar.logf<afn> %one_plus : f32
+        %pos_part = scalar.maxnumf %biased, %zero_f32 : f32
+        %softplus = scalar.addf<nnan|ninf|nsz>
+            %pos_part, %log_term : f32
+        %a_value = view.load %a_scale_view[%head] :
+            view<[%heads]xf32, #dense> -> f32
+        %gate = scalar.mulf<nnan|ninf|nsz>
+            %softplus, %a_value : f32
+        view.store %gate, %gate_dst_view[%class_wg] :
+            f32, view<[%projection_output_count]xf32, #dense>
+      } else {
+        %beta = scalar.logisticf<afn> %dot : f32
+        view.store %beta, %beta_dst_view[%class_wg] :
+            f32, view<[%projection_output_count]xf32, #dense>
+      }
+    }
+  }
+  kernel.return
+}

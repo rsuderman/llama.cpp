@@ -1,0 +1,1852 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "decode_q4_q4_q5_moe_transient_free_interval",
+  "format": "loom",
+  "priority": 540,
+  "tensors": {
+    "logits": {
+      "type": "F32",
+      "shape": [
+        "nexperts",
+        "ntokens",
+        "logits_batch2",
+        "logits_batch3"
+      ]
+    },
+    "softmax_mask": {
+      "type": "F32",
+      "optional": true
+    },
+    "softmax_bias": {
+      "type": "F32",
+      "optional": true
+    },
+    "softmax_dst": {
+      "type": "F32",
+      "shape": [
+        "nexperts",
+        "ntokens",
+        "softmax_batch2",
+        "softmax_batch3"
+      ]
+    },
+    "probs_reshape_dst": {
+      "type": "F32",
+      "shape": [
+        "probs_one",
+        "probs_experts",
+        "probs_tokens",
+        "probs_batch"
+      ]
+    },
+    "argsort_dst": {
+      "type": "I32",
+      "shape": [
+        "argsort_experts",
+        "argsort_tokens",
+        "argsort_batch2",
+        "argsort_batch3"
+      ]
+    },
+    "ids_view_dst": {
+      "type": "I32",
+      "shape": [
+        "nselected",
+        "ids_tokens",
+        "ids_batch2",
+        "ids_batch3"
+      ]
+    },
+    "get_rows_dst": {
+      "type": "F32",
+      "shape": [
+        "get_rows_one",
+        "get_rows_selected",
+        "get_rows_tokens",
+        "get_rows_batch"
+      ]
+    },
+    "weights_reshape_dst": {
+      "type": "F32",
+      "shape": [
+        "weights_selected",
+        "weights_tokens",
+        "weights_batch2",
+        "weights_batch3"
+      ]
+    },
+    "sum_rows_dst": {
+      "type": "F32",
+      "shape": [
+        "sum_one",
+        "sum_tokens",
+        "sum_batch2",
+        "sum_batch3"
+      ]
+    },
+    "clamp_dst": {
+      "type": "F32",
+      "shape": [
+        "clamp_one",
+        "clamp_tokens",
+        "clamp_batch2",
+        "clamp_batch3"
+      ]
+    },
+    "weights_dst": {
+      "type": "F32",
+      "shape": [
+        "weights_out_selected",
+        "weights_out_tokens",
+        "weights_out_batch2",
+        "weights_out_batch3"
+      ]
+    },
+    "main_weight": {
+      "type": "Q4_K",
+      "shape": [
+        "main_k",
+        "main_rows",
+        "main_nexperts",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "main_input": {
+      "type": "F32",
+      "shape": [
+        "main_k",
+        1,
+        "main_ntokens",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "main_dst": {
+      "type": "F32",
+      "shape": [
+        "main_rows",
+        "nselected",
+        "main_ntokens",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "main_partner_weight": {
+      "type": "Q4_K",
+      "shape": [
+        "main_k",
+        "main_rows",
+        "main_nexperts",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "main_partner_dst": {
+      "type": "F32",
+      "shape": [
+        "main_rows",
+        "nselected",
+        "main_ntokens",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "weights_final_reshape_dst": {
+      "type": "F32",
+      "shape": [
+        1,
+        "weights_out_selected",
+        "weights_out_tokens",
+        "weights_out_batch3"
+      ]
+    },
+    "main_input_source": {
+      "type": "F32",
+      "shape": [
+        "main_k",
+        1,
+        "main_ntokens",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "swiglu_dst": {
+      "type": "F32",
+      "shape": [
+        "main_rows",
+        "nselected",
+        "main_ntokens",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "down_weight": {
+      "type": "Q5_K",
+      "storage": "q5_k_expert_down_group4",
+      "shape": [
+        "down_k",
+        "down_rows",
+        "down_nexperts",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "down_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "nselected",
+        "main_ntokens",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "weighted": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "nselected",
+        "main_ntokens",
+        1
+      ]
+    },
+    "slice0_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ]
+    },
+    "slice1_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ]
+    },
+    "slice2_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ]
+    },
+    "slice3_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ]
+    },
+    "slice4_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ]
+    },
+    "slice5_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ]
+    },
+    "slice6_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ]
+    },
+    "slice7_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ]
+    },
+    "add1_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ]
+    },
+    "add2_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ]
+    },
+    "add3_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ]
+    },
+    "add4_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ]
+    },
+    "add5_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ]
+    },
+    "add6_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ]
+    },
+    "terminal_dst": {
+      "type": "F32",
+      "shape": [
+        "down_rows",
+        "main_ntokens",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    }
+  },
+  "match": {
+    "anchors": [
+      "softmax"
+    ],
+    "ops": {
+      "softmax": {
+        "op": "GGML_OP_SOFT_MAX",
+        "tensors": {
+          "src0": "logits",
+          "src1": "softmax_mask",
+          "src2": "softmax_bias",
+          "dst": "softmax_dst"
+        },
+        "attributes": {
+          "scale": {
+            "type": "f32",
+            "source": "op_param.0"
+          },
+          "max_bias": {
+            "type": "f32",
+            "source": "op_param.1"
+          }
+        }
+      },
+      "probs_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "softmax_dst",
+          "dst": "probs_reshape_dst"
+        },
+        "attributes": {}
+      },
+      "argsort": {
+        "op": "GGML_OP_ARGSORT",
+        "tensors": {
+          "src0": "softmax_dst",
+          "dst": "argsort_dst"
+        },
+        "attributes": {
+          "order": {
+            "type": "i32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "ids_view": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "argsort_dst",
+          "dst": "ids_view_dst"
+        },
+        "attributes": {}
+      },
+      "get_rows": {
+        "op": "GGML_OP_GET_ROWS",
+        "tensors": {
+          "src0": "probs_reshape_dst",
+          "src1": "ids_view_dst",
+          "dst": "get_rows_dst"
+        },
+        "attributes": {}
+      },
+      "weights_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "get_rows_dst",
+          "dst": "weights_reshape_dst"
+        },
+        "attributes": {}
+      },
+      "sum_rows": {
+        "op": "GGML_OP_SUM_ROWS",
+        "tensors": {
+          "src0": "weights_reshape_dst",
+          "dst": "sum_rows_dst"
+        },
+        "attributes": {}
+      },
+      "clamp": {
+        "op": "GGML_OP_CLAMP",
+        "tensors": {
+          "src0": "sum_rows_dst",
+          "dst": "clamp_dst"
+        },
+        "attributes": {
+          "minimum": {
+            "type": "f32",
+            "source": "op_param.0"
+          },
+          "maximum": {
+            "type": "f32",
+            "source": "op_param.1"
+          }
+        }
+      },
+      "div": {
+        "op": "GGML_OP_DIV",
+        "tensors": {
+          "src0": "weights_reshape_dst",
+          "src1": "clamp_dst",
+          "dst": "weights_dst"
+        },
+        "attributes": {}
+      },
+      "weights_final_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "weights_dst",
+          "dst": "weights_final_reshape_dst"
+        },
+        "attributes": {}
+      },
+      "input_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "main_input_source",
+          "dst": "main_input"
+        },
+        "attributes": {}
+      },
+      "main": {
+        "op": "GGML_OP_MUL_MAT_ID",
+        "tensors": {
+          "src0": "main_weight",
+          "src1": "main_input",
+          "src2": "ids_view_dst",
+          "dst": "main_dst"
+        },
+        "attributes": {}
+      },
+      "main_partner": {
+        "op": "GGML_OP_MUL_MAT_ID",
+        "tensors": {
+          "src0": "main_partner_weight",
+          "src1": "main_input",
+          "src2": "ids_view_dst",
+          "dst": "main_partner_dst"
+        },
+        "attributes": {}
+      },
+      "swiglu": {
+        "op": "GGML_OP_GLU",
+        "tensors": {
+          "src0": "main_dst",
+          "src1": "main_partner_dst",
+          "dst": "swiglu_dst"
+        },
+        "attributes": {
+          "glu_op": {
+            "type": "i32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "down": {
+        "op": "GGML_OP_MUL_MAT_ID",
+        "tensors": {
+          "src0": "down_weight",
+          "src1": "swiglu_dst",
+          "src2": "ids_view_dst",
+          "dst": "down_dst"
+        },
+        "attributes": {}
+      },
+      "mul": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "down_dst",
+          "src1": "weights_final_reshape_dst",
+          "dst": "weighted"
+        },
+        "attributes": {}
+      },
+      "slice0": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice0_dst"
+        },
+        "attributes": {}
+      },
+      "slice1": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice1_dst"
+        },
+        "attributes": {}
+      },
+      "slice2": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice2_dst"
+        },
+        "attributes": {}
+      },
+      "slice3": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice3_dst"
+        },
+        "attributes": {}
+      },
+      "slice4": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice4_dst"
+        },
+        "attributes": {}
+      },
+      "slice5": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice5_dst"
+        },
+        "attributes": {}
+      },
+      "slice6": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice6_dst"
+        },
+        "attributes": {}
+      },
+      "slice7": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted",
+          "dst": "slice7_dst"
+        },
+        "attributes": {}
+      },
+      "add1": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "slice0_dst",
+          "src1": "slice1_dst",
+          "dst": "add1_dst"
+        },
+        "attributes": {}
+      },
+      "add2": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "add1_dst",
+          "src1": "slice2_dst",
+          "dst": "add2_dst"
+        },
+        "attributes": {}
+      },
+      "add3": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "add2_dst",
+          "src1": "slice3_dst",
+          "dst": "add3_dst"
+        },
+        "attributes": {}
+      },
+      "add4": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "add3_dst",
+          "src1": "slice4_dst",
+          "dst": "add4_dst"
+        },
+        "attributes": {}
+      },
+      "add5": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "add4_dst",
+          "src1": "slice5_dst",
+          "dst": "add5_dst"
+        },
+        "attributes": {}
+      },
+      "add6": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "add5_dst",
+          "src1": "slice6_dst",
+          "dst": "add6_dst"
+        },
+        "attributes": {}
+      },
+      "add7": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "add6_dst",
+          "src1": "slice7_dst",
+          "dst": "terminal_dst"
+        },
+        "attributes": {}
+      }
+    },
+    "predicates": [
+      {
+        "src_absent": "softmax_mask"
+      },
+      {
+        "src_absent": "softmax_bias"
+      },
+      {
+        "field": "attribute.softmax.scale",
+        "equals": 1.0
+      },
+      {
+        "field": "attribute.softmax.max_bias",
+        "equals": 0.0
+      },
+      {
+        "field": "attribute.argsort.order",
+        "equals": 1
+      },
+      {
+        "field": "attribute.clamp.minimum",
+        "equals": 6.103515625e-05
+      },
+      {
+        "field": "attribute.clamp.maximum",
+        "min": 1.0
+      },
+      {
+        "field": "shape.logits.nexperts",
+        "equals": 256
+      },
+      {
+        "field": "shape.logits.ntokens",
+        "equals": 1
+      },
+      {
+        "field": "shape.logits.logits_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.logits.logits_batch3",
+        "equals": 1
+      },
+      {
+        "same_shape": [
+          "logits",
+          "softmax_dst"
+        ]
+      },
+      {
+        "field": "shape.probs_reshape_dst.probs_one",
+        "equals": 1
+      },
+      {
+        "field": "shape.probs_reshape_dst.probs_experts",
+        "equals": 256
+      },
+      {
+        "field": "shape.probs_reshape_dst.probs_tokens",
+        "equals": 1
+      },
+      {
+        "field": "shape.probs_reshape_dst.probs_batch",
+        "equals": 1
+      },
+      {
+        "field": "shape.argsort_dst.argsort_experts",
+        "equals": 256
+      },
+      {
+        "field": "shape.argsort_dst.argsort_tokens",
+        "equals": 1
+      },
+      {
+        "field": "shape.argsort_dst.argsort_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.argsort_dst.argsort_batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.ids_view_dst.nselected",
+        "equals": 8
+      },
+      {
+        "field": "shape.ids_view_dst.ids_tokens",
+        "equals": 1
+      },
+      {
+        "field": "shape.ids_view_dst.ids_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.ids_view_dst.ids_batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.get_rows_dst.get_rows_one",
+        "equals": 1
+      },
+      {
+        "field": "shape.get_rows_dst.get_rows_selected",
+        "equals": 8
+      },
+      {
+        "field": "shape.get_rows_dst.get_rows_tokens",
+        "equals": 1
+      },
+      {
+        "field": "shape.get_rows_dst.get_rows_batch",
+        "equals": 1
+      },
+      {
+        "field": "shape.weights_reshape_dst.weights_selected",
+        "equals": 8
+      },
+      {
+        "field": "shape.weights_reshape_dst.weights_tokens",
+        "equals": 1
+      },
+      {
+        "field": "shape.weights_reshape_dst.weights_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.weights_reshape_dst.weights_batch3",
+        "equals": 1
+      },
+      {
+        "field": "shape.sum_rows_dst.sum_one",
+        "equals": 1
+      },
+      {
+        "field": "shape.sum_rows_dst.sum_tokens",
+        "equals": 1
+      },
+      {
+        "field": "shape.sum_rows_dst.sum_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.sum_rows_dst.sum_batch3",
+        "equals": 1
+      },
+      {
+        "same_shape": [
+          "sum_rows_dst",
+          "clamp_dst"
+        ]
+      },
+      {
+        "field": "shape.weights_dst.weights_out_selected",
+        "equals": 8
+      },
+      {
+        "field": "shape.weights_dst.weights_out_tokens",
+        "equals": 1
+      },
+      {
+        "field": "shape.weights_dst.weights_out_batch2",
+        "equals": 1
+      },
+      {
+        "field": "shape.weights_dst.weights_out_batch3",
+        "equals": 1
+      },
+      {
+        "contiguous": "logits"
+      },
+      {
+        "contiguous": "softmax_dst"
+      },
+      {
+        "contiguous": "probs_reshape_dst"
+      },
+      {
+        "contiguous": "argsort_dst"
+      },
+      {
+        "contiguous": "get_rows_dst"
+      },
+      {
+        "contiguous": "weights_reshape_dst"
+      },
+      {
+        "contiguous": "sum_rows_dst"
+      },
+      {
+        "contiguous": "clamp_dst"
+      },
+      {
+        "contiguous": "weights_dst"
+      },
+      {
+        "field": "tensor.ids_view_dst.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.ids_view_dst.element_strides.1",
+        "equals": 256
+      },
+      {
+        "field": "tensor.ids_view_dst.view_offset_bytes",
+        "equals": 0
+      },
+      {
+        "elided": [
+          "softmax_dst",
+          "probs_reshape_dst",
+          "get_rows_dst",
+          "weights_reshape_dst",
+          "sum_rows_dst",
+          "clamp_dst",
+          "argsort_dst",
+          "main_dst",
+          "main_partner_dst",
+          "weighted",
+          "slice0_dst",
+          "slice1_dst",
+          "slice2_dst",
+          "slice3_dst",
+          "slice4_dst",
+          "slice5_dst",
+          "slice6_dst",
+          "slice7_dst",
+          "add1_dst",
+          "add2_dst",
+          "add3_dst",
+          "add4_dst",
+          "add5_dst",
+          "add6_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "logits",
+          "argsort_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "argsort_dst",
+          "weights_dst"
+        ]
+      },
+      {
+        "field": "shape.main_weight.main_k",
+        "equals": 2048
+      },
+      {
+        "field": "shape.main_weight.main_rows",
+        "equals": 512
+      },
+      {
+        "field": "shape.main_weight.main_nexperts",
+        "equals": 256
+      },
+      {
+        "field": "shape.main_partner_weight.main_k",
+        "equals": "shape.main_weight.main_k"
+      },
+      {
+        "field": "shape.main_partner_weight.main_rows",
+        "equals": "shape.main_weight.main_rows"
+      },
+      {
+        "field": "shape.main_partner_weight.main_nexperts",
+        "equals": "shape.main_weight.main_nexperts"
+      },
+      {
+        "field": "shape.main_input.main_ntokens",
+        "equals": 1
+      },
+      {
+        "field": "shape.main_input.main_k",
+        "equals": "shape.main_weight.main_k"
+      },
+      {
+        "field": "shape.main_dst.main_rows",
+        "equals": "shape.main_weight.main_rows"
+      },
+      {
+        "field": "shape.main_dst.nselected",
+        "equals": "shape.ids_view_dst.nselected"
+      },
+      {
+        "field": "shape.main_dst.main_ntokens",
+        "equals": "shape.main_input.main_ntokens"
+      },
+      {
+        "field": "shape.main_partner_dst.main_rows",
+        "equals": "shape.main_dst.main_rows"
+      },
+      {
+        "field": "shape.main_partner_dst.nselected",
+        "equals": "shape.main_dst.nselected"
+      },
+      {
+        "field": "shape.main_partner_dst.main_ntokens",
+        "equals": "shape.main_dst.main_ntokens"
+      },
+      {
+        "field": "tensor.main_input.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.main_input.element_strides.1",
+        "equals": 2048
+      },
+      {
+        "field": "tensor.main_input.element_strides.2",
+        "equals": 2048
+      },
+      {
+        "field": "tensor.main_dst.element_strides.2",
+        "min": 1
+      },
+      {
+        "field": "tensor.main_dst.element_strides.2",
+        "max": 1048576
+      },
+      {
+        "field": "tensor.main_partner_dst.element_strides.2",
+        "min": 1
+      },
+      {
+        "field": "tensor.main_partner_dst.element_strides.2",
+        "max": 1048576
+      },
+      {
+        "contiguous": "main_weight"
+      },
+      {
+        "contiguous": "main_partner_weight"
+      },
+      {
+        "contiguous": "main_input"
+      },
+      {
+        "contiguous": "main_dst"
+      },
+      {
+        "contiguous": "main_partner_dst"
+      },
+      {
+        "no_overlap": [
+          "main_weight",
+          "main_input"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_weight",
+          "argsort_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_weight",
+          "main_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_input",
+          "argsort_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_input",
+          "main_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "argsort_dst",
+          "main_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_input",
+          "logits"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_input",
+          "weights_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_partner_weight",
+          "main_input"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_partner_weight",
+          "argsort_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_partner_weight",
+          "main_partner_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_partner_weight",
+          "main_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_partner_weight",
+          "weights_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_weight",
+          "main_partner_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_weight",
+          "main_partner_weight"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_weight",
+          "swiglu_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_weight",
+          "weights_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_partner_dst",
+          "main_input"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_partner_dst",
+          "argsort_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_partner_dst",
+          "main_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_partner_dst",
+          "weights_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_dst",
+          "weights_dst"
+        ]
+      },
+      {
+        "field": "attribute.swiglu.glu_op",
+        "equals": 2
+      },
+      {
+        "same_shape": [
+          "main_dst",
+          "main_partner_dst",
+          "swiglu_dst"
+        ]
+      },
+      {
+        "field": "shape.down_weight.down_k",
+        "equals": 512
+      },
+      {
+        "field": "shape.down_weight.down_rows",
+        "equals": 2048
+      },
+      {
+        "field": "shape.down_weight.down_nexperts",
+        "equals": "shape.main_weight.main_nexperts"
+      },
+      {
+        "field": "shape.down_weight.down_k",
+        "equals": "shape.swiglu_dst.main_rows"
+      },
+      {
+        "field": "shape.down_dst.down_rows",
+        "equals": 2048
+      },
+      {
+        "field": "shape.down_dst.nselected",
+        "equals": "shape.ids_view_dst.nselected"
+      },
+      {
+        "field": "shape.down_dst.main_ntokens",
+        "equals": 1
+      },
+      {
+        "same_shape": [
+          "down_dst",
+          "weighted"
+        ]
+      },
+      {
+        "contiguous": "swiglu_dst"
+      },
+      {
+        "contiguous": "down_weight"
+      },
+      {
+        "contiguous": "down_dst"
+      },
+      {
+        "contiguous": "weighted"
+      },
+      {
+        "field": "tensor.swiglu_dst.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.swiglu_dst.element_strides.1",
+        "equals": 512
+      },
+      {
+        "field": "tensor.swiglu_dst.element_strides.2",
+        "equals": 4096
+      },
+      {
+        "field": "tensor.down_dst.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.down_dst.element_strides.1",
+        "equals": 2048
+      },
+      {
+        "field": "tensor.down_dst.element_strides.2",
+        "equals": 16384
+      },
+      {
+        "field": "shape.weights_final_reshape_dst.weights_out_selected",
+        "equals": 8
+      },
+      {
+        "field": "shape.weights_final_reshape_dst.weights_out_tokens",
+        "equals": 1
+      },
+      {
+        "field": "shape.weights_final_reshape_dst.weights_out_batch3",
+        "equals": 1
+      },
+      {
+        "contiguous": "weights_final_reshape_dst"
+      },
+      {
+        "field": "tensor.weights_final_reshape_dst.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.weights_final_reshape_dst.element_strides.1",
+        "equals": 1
+      },
+      {
+        "field": "tensor.weights_final_reshape_dst.element_strides.2",
+        "equals": 8
+      },
+      {
+        "field": "shape.terminal_dst.down_rows",
+        "equals": 2048
+      },
+      {
+        "field": "shape.terminal_dst.main_ntokens",
+        "equals": 1
+      },
+      {
+        "contiguous": "terminal_dst"
+      },
+      {
+        "field": "tensor.terminal_dst.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.terminal_dst.element_strides.1",
+        "equals": 2048
+      },
+      {
+        "same_shape": [
+          "slice0_dst",
+          "slice1_dst",
+          "slice2_dst",
+          "slice3_dst",
+          "slice4_dst",
+          "slice5_dst",
+          "slice6_dst",
+          "slice7_dst",
+          "add1_dst",
+          "add2_dst",
+          "add3_dst",
+          "add4_dst",
+          "add5_dst",
+          "add6_dst",
+          "terminal_dst"
+        ]
+      },
+      {
+        "field": "tensor.slice0_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice1_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice2_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice3_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice4_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice5_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice6_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice7_dst.element_strides.1",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice0_dst.view_offset_bytes",
+        "equals": 0
+      },
+      {
+        "field": "tensor.slice1_dst.view_offset_bytes",
+        "equals": 8192
+      },
+      {
+        "field": "tensor.slice2_dst.view_offset_bytes",
+        "equals": 16384
+      },
+      {
+        "field": "tensor.slice3_dst.view_offset_bytes",
+        "equals": 24576
+      },
+      {
+        "field": "tensor.slice4_dst.view_offset_bytes",
+        "equals": 32768
+      },
+      {
+        "field": "tensor.slice5_dst.view_offset_bytes",
+        "equals": 40960
+      },
+      {
+        "field": "tensor.slice6_dst.view_offset_bytes",
+        "equals": 49152
+      },
+      {
+        "field": "tensor.slice7_dst.view_offset_bytes",
+        "equals": 57344
+      },
+      {
+        "no_overlap": [
+          "argsort_dst",
+          "down_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "argsort_dst",
+          "down_weight"
+        ]
+      },
+      {
+        "no_overlap": [
+          "argsort_dst",
+          "swiglu_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "argsort_dst",
+          "weights_final_reshape_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "down_dst",
+          "down_weight"
+        ]
+      },
+      {
+        "no_overlap": [
+          "down_dst",
+          "logits"
+        ]
+      },
+      {
+        "no_overlap": [
+          "down_dst",
+          "main_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "down_dst",
+          "main_input"
+        ]
+      },
+      {
+        "no_overlap": [
+          "down_dst",
+          "main_partner_weight"
+        ]
+      },
+      {
+        "no_overlap": [
+          "down_dst",
+          "main_weight"
+        ]
+      },
+      {
+        "no_overlap": [
+          "down_dst",
+          "swiglu_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "down_dst",
+          "terminal_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "down_dst",
+          "weights_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "down_dst",
+          "weights_final_reshape_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "down_weight",
+          "swiglu_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "down_weight",
+          "weights_final_reshape_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_dst",
+          "swiglu_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_dst",
+          "weights_final_reshape_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_partner_weight",
+          "swiglu_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "main_partner_weight",
+          "weights_final_reshape_dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "swiglu_dst",
+          "weights_final_reshape_dst"
+        ]
+      }
+    ]
+  },
+  "derived": {
+    "src1_token_stride": {
+      "type": "i64",
+      "field": "tensor.main_input.element_strides.2"
+    },
+    "idx_token_stride": {
+      "type": "i64",
+      "field": "tensor.ids_view_dst.element_strides.1"
+    },
+    "main_dst_token_stride": {
+      "type": "i64",
+      "field": "tensor.main_dst.element_strides.2"
+    },
+    "main_partner_dst_token_stride": {
+      "type": "i64",
+      "field": "tensor.main_partner_dst.element_strides.2"
+    },
+    "down_dst_token_stride": {
+      "type": "i64",
+      "field": "tensor.down_dst.element_strides.2"
+    },
+    "row_workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.main_weight.main_rows",
+        128
+      ]
+    },
+    "down_row_workgroups": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.down_weight.down_rows",
+        128
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "topk_qact_packed_decode",
+      "definition": "../../../../defs/gfx1151/prepass/topk_qact_packed_decode.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_qact_k",
+            "type": "i64",
+            "source": "derived.src1_token_stride"
+          },
+          {
+            "name": "hrx2_shape_qact_cols",
+            "type": "i64",
+            "source": "shape.main_input.main_ntokens"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "tk_logits",
+          "tensor": "logits",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "tk_ids",
+          "tensor": "ids_view_dst",
+          "position": 1,
+          "kind": "output"
+        },
+        {
+          "name": "tk_weights",
+          "tensor": "weights_dst",
+          "position": 2,
+          "kind": "output"
+        },
+        {
+          "name": "qa_src",
+          "tensor": "main_input",
+          "position": 3,
+          "kind": "input"
+        },
+        {
+          "name": "qa_packed",
+          "tensor": "down_dst",
+          "position": 4,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          1,
+          1,
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "q4_dual_gate_up_swiglu_q5qact_tableless_packed_decode",
+      "definition": "../../../../defs/gfx1151/mul_mat_id/q4_k_f32/q4_dual_gate_up_swiglu_q5qact_tableless_packed_decode.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_mul_mat_id_k",
+            "type": "i64",
+            "source": "shape.main_partner_weight.main_k"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_rows",
+            "type": "i64",
+            "source": "shape.main_partner_weight.main_rows"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_nexperts",
+            "type": "i64",
+            "source": "shape.main_partner_weight.main_nexperts"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_nselected",
+            "type": "i64",
+            "source": "shape.ids_view_dst.nselected"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_ntokens",
+            "type": "i64",
+            "source": "shape.main_input.main_ntokens"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_src1_selected_stride",
+            "type": "i64",
+            "value": 0
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_src1_token_stride",
+            "type": "i64",
+            "source": "derived.src1_token_stride"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_idx_token_stride",
+            "type": "i64",
+            "source": "derived.idx_token_stride"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_dst_token_stride",
+            "type": "i64",
+            "source": "derived.main_partner_dst_token_stride"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "main_partner_weight",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "idx",
+          "tensor": "ids_view_dst",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "gatew",
+          "tensor": "main_weight",
+          "position": 2,
+          "kind": "input"
+        },
+        {
+          "name": "packed",
+          "tensor": "down_dst",
+          "position": 3,
+          "kind": "input"
+        },
+        {
+          "name": "down_qact",
+          "tensor": "swiglu_dst",
+          "position": 4,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.row_workgroups",
+          "shape.main_partner_weight.main_nexperts",
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "q5_down_tableless_compact_qact_decode",
+      "definition": "../../../../defs/gfx1151/mul_mat_id/q5_k_f32/q5_down_tableless_compact_qact_decode.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_mul_mat_id_k",
+            "type": "i64",
+            "source": "shape.down_weight.down_k"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_rows",
+            "type": "i64",
+            "source": "shape.down_weight.down_rows"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_nexperts",
+            "type": "i64",
+            "source": "shape.down_weight.down_nexperts"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_nselected",
+            "type": "i64",
+            "source": "shape.ids_view_dst.nselected"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_ntokens",
+            "type": "i64",
+            "source": "shape.main_input.main_ntokens"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_src1_selected_stride",
+            "type": "i64",
+            "source": "tensor.swiglu_dst.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_src1_token_stride",
+            "type": "i64",
+            "source": "tensor.swiglu_dst.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_idx_token_stride",
+            "type": "i64",
+            "source": "derived.idx_token_stride"
+          },
+          {
+            "name": "hrx2_shape_mul_mat_id_dst_token_stride",
+            "type": "i64",
+            "source": "derived.down_dst_token_stride"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "down_weight",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "idx",
+          "tensor": "ids_view_dst",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "down_dst",
+          "position": 2,
+          "kind": "output"
+        },
+        {
+          "name": "qact",
+          "tensor": "swiglu_dst",
+          "position": 3,
+          "kind": "input"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "derived.down_row_workgroups",
+          "shape.down_weight.down_nexperts",
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "sum_slices_restore_terminal",
+      "definition": "../../../../defs/gfx1151/mul/f32/sum_slices_decode_nosnapshot.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "hrx2_shape_sumslices_n",
+            "type": "i64",
+            "source": "shape.down_dst.down_rows"
+          },
+          {
+            "name": "hrx2_shape_sumslices_ntokens",
+            "type": "i64",
+            "source": "shape.main_input.main_ntokens"
+          },
+          {
+            "name": "hrx2_shape_sumslices_nslices",
+            "type": "i64",
+            "source": "shape.down_dst.nselected"
+          },
+          {
+            "name": "hrx2_shape_sumslices_src_slice_stride",
+            "type": "i64",
+            "source": "tensor.down_dst.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_sumslices_src_token_stride",
+            "type": "i64",
+            "source": "tensor.down_dst.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_sumslices_dst_token_stride",
+            "type": "i64",
+            "source": "tensor.terminal_dst.element_strides.1"
+          },
+          {
+            "name": "hrx2_shape_sumslices_router_source_stride",
+            "type": "i64",
+            "source": "tensor.weights_final_reshape_dst.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_sumslices_router_source_offset",
+            "type": "i64",
+            "value": 0
+          },
+          {
+            "name": "hrx2_tuning_sumslices_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "selected",
+          "tensor": "down_dst",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "terminal_dst",
+          "position": 1,
+          "kind": "output",
+          "storage": "graph_transient"
+        },
+        {
+          "name": "router_source",
+          "tensor": "weights_final_reshape_dst",
+          "position": 2,
+          "kind": "input"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          "shape.main_input.main_ntokens",
+          1,
+          1
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

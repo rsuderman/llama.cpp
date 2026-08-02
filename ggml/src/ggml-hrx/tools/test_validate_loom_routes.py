@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import copy
 import json
 import sys
 import tempfile
@@ -19,6 +20,67 @@ METADATA_PATH = Path("metadata.json")
 ROUTE_PATH = Path("routes/generic/add/f32/contiguous.json")
 SUM_ROWS_ROUTE_PATH = Path("routes/generic/sum_rows/f32/contiguous_4d.json")
 FUSION_ROUTE_PATH = Path("routes/generic/rms_norm_mul/f32/contiguous_4d.json")
+RECURRENT_ROUTE_PATH = Path(
+    "routes/gfx1151/gated_delta_net/f32/state_cache_decode_token1_compound.json"
+)
+RECURRENT_SHARED_EMPTY_INDEX_ROUTE_PATH = Path(
+    "routes/gfx1151/gated_delta_net/f32/"
+    "state_cache_decode_token1_compound_shared_empty_index.json"
+)
+RECURRENT_ZERO_SCALE_ROUTE_PATH = Path(
+    "routes/gfx1151/gated_delta_net/f32/"
+    "state_cache_decode_token1_compound_zero_scale.json"
+)
+RECURRENT_SHARED_EMPTY_INDEX_ZERO_SCALE_ROUTE_PATH = Path(
+    "routes/gfx1151/gated_delta_net/f32/"
+    "state_cache_decode_token1_compound_shared_empty_index_zero_scale.json"
+)
+CONCAT_WINDOW_TAIL_ROUTE_PATH = Path(
+    "routes/gfx1151/concat/f32/window_tail_ssm_silu_pp512.json"
+)
+CONCAT_WINDOW_TAIL_ZERO_SCALE_ROUTE_PATH = Path(
+    "routes/gfx1151/concat/f32/window_tail_ssm_silu_pp512_zero_scale.json"
+)
+PP_GDN_RMS_SIDE_ROUTE_PATH = Path(
+    "routes/gfx1151/gated_delta_net/f32/"
+    "sv128_qk_l2_full_head_rms_scale_fused.json"
+)
+Q5_DOWN_STORAGE_TRANSFORM_PATH = Path(
+    "storage-transforms/gfx1151/q5_k_expert_down_group4.json"
+)
+Q5_DOWN_STORAGE_CONSUMERS = {
+    Path(
+        "sources/gfx1151/mul_mat_id/q5_k_f32/"
+        "mul_mat_id_q5_k_f32_mmqt_down_group4.loom"
+    ): ("c0_0_k", "c0_1_k", "c1_0_k", "c1_1_k"),
+    Path(
+        "sources/gfx1151/mul_mat_id/q5_k_f32/"
+        "mul_mat_id_q5_k_f32_mmqt_down_group4_tableless_decode.loom"
+    ): ("c0_0_k", "c0_1_k", "c1_0_k", "c1_1_k"),
+    Path(
+        "sources/gfx1151/mul_mat_id/q5_k_f32/"
+        "mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact.loom"
+    ): ("rd_p0_q0_c", "rd_p0_q1_c", "rd_p1_q0_c", "rd_p1_q1_c"),
+    Path(
+        "sources/gfx1151/mul_mat_id/q5_k_f32/"
+        "q5_down_tableless_compact_qact_decode.loom"
+    ): ("rd_p0_q0_c", "rd_p0_q1_c", "rd_p1_q0_c", "rd_p1_q1_c"),
+    Path("sources/gfx1151/graph/q5_down_f16_pp512.loom"): (
+        "rd_p0_q0_c",
+        "rd_p0_q1_c",
+        "rd_p1_q0_c",
+        "rd_p1_q1_c",
+    ),
+}
+FA_VARIABLE_KV_ROUTE_PATHS = (
+    Path("routes/gfx1151/flash_attn_ext/f32_f16/wmma_gate_epilogue.json"),
+    Path("routes/gfx1151/flash_attn_ext/f32_f16/direct_kv64_f32acc_gate.json"),
+)
+FA_DIRECT_SOURCE_PATH = Path(
+    "sources/gfx1151/flash_attn_ext/f32_f16/direct_kv64_f32acc_gate.loom"
+)
+RUNTIME_PUBLIC_HEADER = CATALOG_ROOT / "ggml-hrx-loom-catalog-runtime.h"
+RUNTIME_INTERNAL_HEADER = CATALOG_ROOT / "ggml-hrx-loom-catalog-runtime-internal.h"
 TEST_TARGET_A = "__test_target_a"
 TEST_TARGET_B = "__test_target_b"
 TEST_TARGET_MISSING = "__test_missing_target"
@@ -572,6 +634,450 @@ def expect_transient_storage_invalid():
         raise AssertionError("graph-transient-invalid: validator accepted invalid route")
 
 
+def fusion_route_with_consumed_count(route, count):
+    result = copy.deepcopy(route)
+    for i in range(len(result["match"]["ops"]), count):
+        result["match"]["ops"][f"capacity_view_{i}"] = {
+            "op": "GGML_OP_VIEW",
+            "tensors": {"src0": "y", "dst": "y"},
+            "attributes": {},
+        }
+    return result
+
+
+def fusion_route_with_binding_count(route, definition, count):
+    result_route = copy.deepcopy(route)
+    result_definition = copy.deepcopy(definition)
+    dispatch = result_route["dispatches"][0]
+    for i in range(len(dispatch["buffers"]), count):
+        name = f"capacity_input_{i}"
+        dispatch["buffers"].append({
+            "name": name,
+            "tensor": "x",
+            "position": i,
+            "kind": "input",
+        })
+        result_definition["bindings"].append({"name": name, "access": "read"})
+    result_definition["abi"]["binding_count"] = count
+    result_definition["abi"]["parameter_count"] = (
+        count + len(result_definition["parameters"])
+    )
+    return result_route, result_definition
+
+
+def expect_native_fusion_capacity_boundaries():
+    if route_impl.MAX_CONSUMED_NODES != 40:
+        raise AssertionError("route generator consumed-node capacity must be exactly 40")
+    if route_impl.MAX_BINDINGS != 16:
+        raise AssertionError("route generator binding capacity must be exactly 16")
+
+    public_header = RUNTIME_PUBLIC_HEADER.read_text(encoding="utf-8")
+    if "GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES = 40;" not in public_header:
+        raise AssertionError("public runtime consumed-node capacity must be exactly 40")
+    internal_header = RUNTIME_INTERNAL_HEADER.read_text(encoding="utf-8")
+    if "GGML_BACKEND_HRX_LOOM_MAX_BINDINGS        = 16;" not in internal_header:
+        raise AssertionError("internal runtime binding capacity must be exactly 16")
+
+    route_path = CATALOG_ROOT / FUSION_ROUTE_PATH
+    base_route, base_definition = read_route_and_definition(
+        CATALOG_ROOT, FUSION_ROUTE_PATH
+    )
+    accepted_consumed = fusion_route_with_consumed_count(base_route, 40)
+    accepted_impl = route_impl.generate_route_impl(
+        route_path, accepted_consumed, base_definition
+    )
+    if "static constexpr int matched_node_count = 40;" not in accepted_impl:
+        raise AssertionError("generator did not accept exactly 40 matched nodes")
+    if "plan->consumed_node_count = 40;" not in accepted_impl:
+        raise AssertionError("generator did not materialize exactly 40 consumed nodes")
+
+    rejected_consumed = fusion_route_with_consumed_count(base_route, 41)
+    try:
+        route_impl.generate_route_impl(route_path, rejected_consumed, base_definition)
+    except ValueError as err:
+        if "route consumes too many graph nodes: 41" not in str(err):
+            raise AssertionError(f"unexpected 41-node rejection: {err}") from err
+    else:
+        raise AssertionError("generator accepted 41 consumed nodes")
+
+    definition_path = (
+        route_path.parent / base_route["dispatches"][0]["definition"]
+    ).resolve()
+    accepted_bindings, accepted_definition = fusion_route_with_binding_count(
+        base_route, base_definition, 16
+    )
+    loom.validate_definition(accepted_definition, definition_path, CATALOG_ROOT)
+    accepted_binding_impl = route_impl.generate_route_impl(
+        route_path, accepted_bindings, accepted_definition
+    )
+    if "plan->dispatches[0].binding_count = 16;" not in accepted_binding_impl:
+        raise AssertionError("generator did not accept exactly 16 bindings")
+
+    rejected_bindings, rejected_definition = fusion_route_with_binding_count(
+        base_route, base_definition, 17
+    )
+    loom.validate_definition(rejected_definition, definition_path, CATALOG_ROOT)
+    try:
+        route_impl.generate_route_impl(
+            route_path, rejected_bindings, rejected_definition
+        )
+    except ValueError as err:
+        if "route has too many bindings: 17" not in str(err):
+            raise AssertionError(f"unexpected 17-binding rejection: {err}") from err
+    else:
+        raise AssertionError("generator accepted 17 bindings")
+
+
+def expect_q5_down_storage_consumer_offsets():
+    transform = read_json(CATALOG_ROOT / Q5_DOWN_STORAGE_TRANSFORM_PATH)
+    layout = transform["transform"]
+    component_bytes = layout["row_group"] * layout["unit_bytes"]
+    expected_offsets = tuple(component_bytes * i for i in range(1, 5))
+    for source_path, names in Q5_DOWN_STORAGE_CONSUMERS.items():
+        source = (CATALOG_ROOT / source_path).read_text(encoding="utf-8")
+        for name, offset in zip(names, expected_offsets):
+            marker = f"%{name} = index.constant {offset} : index"
+            if marker not in source:
+                raise AssertionError(
+                    f"{source_path}: missing row-group component offset {marker}"
+                )
+
+
+def expect_variable_kv_fa_mask_extent_guards():
+    expected_extent = {
+        "type": "i64",
+        "product": [
+            "shape.q.ntokens",
+            "tensor.mask.element_strides.1",
+        ],
+    }
+    expected_guard = {
+        "field": "derived.mask_token_extent",
+        "max": 268435456,
+    }
+    expected_row_guard = {
+        "field": "shape.mask.ntokens",
+        "min": "shape.q.ntokens",
+    }
+    for route_path in FA_VARIABLE_KV_ROUTE_PATHS:
+        route = read_json(CATALOG_ROOT / route_path)
+        if route["derived"].get("mask_token_extent") != expected_extent:
+            raise AssertionError(f"{route_path}: missing mask token extent")
+        if expected_guard not in route["match"]["predicates"]:
+            raise AssertionError(f"{route_path}: missing mask token extent guard")
+        if expected_row_guard not in route["match"]["predicates"]:
+            raise AssertionError(f"{route_path}: missing mask row count guard")
+
+    direct_route = read_json(CATALOG_ROOT / FA_VARIABLE_KV_ROUTE_PATHS[1])
+    direct_dispatch = direct_route["dispatches"][0]
+    expected_runtime_scalars = {
+        "key_value_token_count": ("index", 0, "shape.k.nkv"),
+        "mask_stride_token": ("index", 1, "tensor.mask.element_strides.1"),
+        "scale": ("f32", 2, "attribute.fa.scale"),
+    }
+    runtime_scalars = {
+        scalar["name"]: (scalar["type"], scalar["position"], scalar["source"])
+        for scalar in direct_dispatch["scalars"]
+    }
+    for name, expected in expected_runtime_scalars.items():
+        if runtime_scalars.get(name) != expected:
+            raise AssertionError(f"direct FA route has invalid runtime scalar {name}")
+    compile_bindings = {
+        binding["name"] for binding in direct_dispatch["config"]["bindings"]
+    }
+    if {
+        "hrx2_shape_fa_nkv",
+        "hrx2_shape_fa_mask_stride_token",
+    } & compile_bindings:
+        raise AssertionError("direct FA route specializes variable KV extents")
+    expected_predicates = (
+        {"field": "shape.k.nkv", "min": 512},
+        {"field": "shape.k.nkv", "max": 32768},
+        {"field": "shape.k.nkv", "multiple_of": 64},
+        {"field": "shape.mask.nkv", "min": "shape.k.nkv"},
+        {
+            "field": "tensor.mask.element_strides.1",
+            "equals": "shape.mask.nkv",
+        },
+    )
+    for predicate in expected_predicates:
+        if predicate not in direct_route["match"]["predicates"]:
+            raise AssertionError(f"direct FA route is missing predicate {predicate}")
+
+    definition_path = (
+        CATALOG_ROOT
+        / FA_VARIABLE_KV_ROUTE_PATHS[1].parent
+        / direct_dispatch["definition"]
+    ).resolve()
+    definition = read_json(definition_path)
+    if definition["abi"] != {
+        "binding_count": 6,
+        "parameter_count": 9,
+        "constant_byte_length": 12,
+    }:
+        raise AssertionError("direct FA runtime ABI counts are invalid")
+    if definition["parameters"] != [
+        {"name": "key_value_token_count", "type": "index"},
+        {"name": "mask_stride_token", "type": "index"},
+        {"name": "scale", "type": "f32"},
+    ]:
+        raise AssertionError("direct FA runtime ABI parameter order is invalid")
+
+    source = (CATALOG_ROOT / FA_DIRECT_SOURCE_PATH).read_text(encoding="utf-8")
+    expected_view = (
+        "view<[%bounded_query_token_count]x[%bounded_mask_stride_token]xf16, #dense>"
+    )
+    expected_signature = (
+        "(%key_value_token_count: index, %mask_stride_token: index)"
+    )
+    if expected_signature not in source:
+        raise AssertionError("direct FA source does not accept runtime KV extents")
+    expected_bounds = (
+        "%bounded_key_value_token_count, %bounded_mask_stride_token = "
+        "index.assume %key_value_token_count, %mask_stride_token"
+    )
+    if expected_bounds not in source or "le(%key_value_token_count, %mask_stride_token)" not in source:
+        raise AssertionError("direct FA source does not relate the runtime KV extents")
+    if f"%mask_view = buffer.view %mask_aligned[%zero_offset] : buffer -> {expected_view}" not in source:
+        raise AssertionError("direct FA source does not use the runtime mask stride")
+    if source.count(f"view.load %mask_view[") != 5:
+        raise AssertionError("unexpected direct FA mask load count")
+    if source.count(f": {expected_view} -> f16") != 5:
+        raise AssertionError("direct FA mask loads do not use the runtime mask stride")
+
+
+def expect_native_recurrent_op_schema_and_generation():
+    expected_rules = {
+        "GGML_OP_RESHAPE": ({"src0", "dst"}, set()),
+        "GGML_OP_CONCAT": ({"src0", "src1", "dst"}, set()),
+        "GGML_OP_CONT": ({"src0", "dst"}, set()),
+        "GGML_OP_SSM_CONV": ({"src0", "src1", "dst"}, set()),
+        "GGML_OP_UNARY": ({"src0", "dst"}, set()),
+        "GGML_OP_L2_NORM": ({"src0", "dst"}, set()),
+        "GGML_OP_GATED_DELTA_NET": (
+            {"src0", "src1", "src2", "src3", "src4", "src5", "dst"},
+            set(),
+        ),
+        "GGML_OP_CPY": ({"src0", "dst"}, {"src1"}),
+    }
+    for op, (required, optional) in expected_rules.items():
+        rule = loom.route_schema.OP_RULES.get(op)
+        if rule is None:
+            raise AssertionError(f"missing native fusion op schema for {op}")
+        if rule["required_tensors"] != required:
+            raise AssertionError(f"wrong required tensor schema for {op}")
+        if rule["optional_tensors"] != optional:
+            raise AssertionError(f"wrong optional tensor schema for {op}")
+
+    expected_attribute_indices = {
+        "GGML_OP_CONCAT": {"dim": 0},
+        "GGML_OP_UNARY": {"unary_op": 0},
+        "GGML_OP_L2_NORM": {"eps": 0},
+        "GGML_OP_GATED_DELTA_NET": {"K": 0},
+    }
+    for op, indices in expected_attribute_indices.items():
+        if route_impl.ATTRIBUTE_INDICES.get(op) != indices:
+            raise AssertionError(f"wrong native fusion attribute indices for {op}")
+
+    zero_extra_ops = {
+        "empty_index_view",
+        "conv_empty_get",
+        "conv_empty_target",
+        "conv_empty_write",
+        "gdn_empty_get",
+        "gdn_empty_target",
+        "gdn_empty_write",
+    }
+    for recurrent_path in (
+        RECURRENT_ROUTE_PATH,
+        RECURRENT_SHARED_EMPTY_INDEX_ROUTE_PATH,
+        RECURRENT_ZERO_SCALE_ROUTE_PATH,
+        RECURRENT_SHARED_EMPTY_INDEX_ZERO_SCALE_ROUTE_PATH,
+    ):
+        recurrent_route = read_json(CATALOG_ROOT / recurrent_path)
+        retained_zero_extra_ops = zero_extra_ops.intersection(
+            recurrent_route["match"]["ops"]
+        )
+        if retained_zero_extra_ops:
+            raise AssertionError(
+                f"native recurrent route retains zero-row extra-state ops: "
+                f"{sorted(retained_zero_extra_ops)}"
+            )
+
+    removed_concat_ops = {"extra_get", "extra_dst_view", "extra_copy"}
+    removed_concat_tensors = {
+        "zero_indices",
+        "zero_get_dst",
+        "zero_copy_base",
+        "zero_copy_target",
+        "zero_copy_dst",
+    }
+    for concat_path in (
+        CONCAT_WINDOW_TAIL_ROUTE_PATH,
+        CONCAT_WINDOW_TAIL_ZERO_SCALE_ROUTE_PATH,
+    ):
+        concat_route = read_json(CATALOG_ROOT / concat_path)
+        retained_concat_ops = removed_concat_ops.intersection(
+            concat_route["match"]["ops"]
+        )
+        if retained_concat_ops:
+            raise AssertionError(
+                f"native concat route retains zero-row extra-state ops: "
+                f"{sorted(retained_concat_ops)}"
+            )
+        retained_concat_tensors = removed_concat_tensors.intersection(
+            concat_route["tensors"]
+        )
+        if retained_concat_tensors:
+            raise AssertionError(
+                f"native concat route retains zero-row extra-state tensors: "
+                f"{sorted(retained_concat_tensors)}"
+            )
+        if len(concat_route["match"]["ops"]) != 10:
+            raise AssertionError("native concat route must match exactly 10 graph ops")
+
+    concat_zero_scale_route = read_json(
+        CATALOG_ROOT / CONCAT_WINDOW_TAIL_ZERO_SCALE_ROUTE_PATH
+    )
+    if [dispatch["name"] for dispatch in concat_zero_scale_route["dispatches"]] != [
+        "concat_window_tail_ssm_prepass",
+        "gdn_state_get",
+        "main",
+    ]:
+        raise AssertionError("zero-scale concat route must elide only the empty scale dispatch")
+
+    route_path = CATALOG_ROOT / RECURRENT_ROUTE_PATH
+    definitions = loom.load_definitions(CATALOG_ROOT)
+    loom.validate_route(route_path, definitions, {"gfx1151"})
+    route = read_json(route_path)
+    dispatch_definitions = loom.resolve_dispatch_definitions(
+        route, route_path, definitions
+    )
+    impl = route_impl.generate_route_impl(
+        route_path, route, dispatch_definitions
+    )
+    for fragment in (
+        "static constexpr int matched_node_count = 40;",
+        "plan->consumed_node_count = 40;",
+        "plan->dispatch_count = 5;",
+        "plan->dispatches[0].binding_count = 6;",
+        "plan->dispatches[2].binding_count = 12;",
+        "plan->dispatches[3].binding_count = 8;",
+        "plan->dispatches[4].binding_count = 4;",
+        "plan->transient_count = 1;",
+    ):
+        if fragment not in impl:
+            raise AssertionError(
+                f"native recurrent generator missing {fragment!r}"
+            )
+
+    shared_route_path = CATALOG_ROOT / RECURRENT_SHARED_EMPTY_INDEX_ROUTE_PATH
+    loom.validate_route(shared_route_path, definitions, {"gfx1151"})
+    shared_route = read_json(shared_route_path)
+    shared_dispatch_definitions = loom.resolve_dispatch_definitions(
+        shared_route, shared_route_path, definitions
+    )
+    shared_impl = route_impl.generate_route_impl(
+        shared_route_path, shared_route, shared_dispatch_definitions
+    )
+    for fragment in (
+        "static constexpr int matched_node_count = 40;",
+        "plan->consumed_node_count = 40;",
+        "plan->dispatch_count = 5;",
+        "plan->dispatches[0].binding_count = 6;",
+        "plan->dispatches[2].binding_count = 12;",
+        "plan->dispatches[3].binding_count = 8;",
+        "plan->dispatches[4].binding_count = 4;",
+        "plan->transient_count = 1;",
+    ):
+        if fragment not in shared_impl:
+            raise AssertionError(
+                f"native shared-empty-index recurrent generator missing {fragment!r}"
+            )
+
+    zero_scale_route_path = CATALOG_ROOT / RECURRENT_ZERO_SCALE_ROUTE_PATH
+    loom.validate_route(zero_scale_route_path, definitions, {"gfx1151"})
+    zero_scale_route = read_json(zero_scale_route_path)
+    zero_scale_dispatch_definitions = loom.resolve_dispatch_definitions(
+        zero_scale_route, zero_scale_route_path, definitions
+    )
+    zero_scale_impl = route_impl.generate_route_impl(
+        zero_scale_route_path, zero_scale_route, zero_scale_dispatch_definitions
+    )
+    for fragment in (
+        "static constexpr int matched_node_count = 40;",
+        "plan->consumed_node_count = 40;",
+        "plan->dispatch_count = 4;",
+        "plan->dispatches[0].binding_count = 6;",
+        "plan->dispatches[1].binding_count = 12;",
+        "plan->dispatches[2].binding_count = 8;",
+        "plan->dispatches[3].binding_count = 4;",
+        "ggml_backend_hrx_loom_bind_tensor(request, gdn_cache_read, &plan->dispatches[2].bindings[5])",
+        "plan->transient_count = 1;",
+    ):
+        if fragment not in zero_scale_impl:
+            raise AssertionError(
+                f"native zero-scale recurrent generator missing {fragment!r}"
+            )
+
+    shared_zero_scale_route_path = (
+        CATALOG_ROOT / RECURRENT_SHARED_EMPTY_INDEX_ZERO_SCALE_ROUTE_PATH
+    )
+    loom.validate_route(shared_zero_scale_route_path, definitions, {"gfx1151"})
+    shared_zero_scale_route = read_json(shared_zero_scale_route_path)
+    shared_zero_scale_dispatch_definitions = loom.resolve_dispatch_definitions(
+        shared_zero_scale_route, shared_zero_scale_route_path, definitions
+    )
+    shared_zero_scale_impl = route_impl.generate_route_impl(
+        shared_zero_scale_route_path,
+        shared_zero_scale_route,
+        shared_zero_scale_dispatch_definitions,
+    )
+    for fragment in (
+        "static constexpr int matched_node_count = 40;",
+        "plan->consumed_node_count = 40;",
+        "plan->dispatch_count = 4;",
+        "plan->dispatches[0].binding_count = 6;",
+        "plan->dispatches[1].binding_count = 12;",
+        "plan->dispatches[2].binding_count = 8;",
+        "plan->dispatches[3].binding_count = 4;",
+        "ggml_backend_hrx_loom_bind_tensor(request, gdn_cache_read, &plan->dispatches[2].bindings[5])",
+        "plan->transient_count = 1;",
+    ):
+        if fragment not in shared_zero_scale_impl:
+            raise AssertionError(
+                f"native shared-empty-index zero-scale recurrent generator missing {fragment!r}"
+            )
+
+
+def expect_native_pp_gdn_rms_side_generation():
+    route_path = CATALOG_ROOT / PP_GDN_RMS_SIDE_ROUTE_PATH
+    definitions = loom.load_definitions(CATALOG_ROOT)
+    loom.validate_route(route_path, definitions, {"gfx1151"})
+    route = read_json(route_path)
+    dispatch_definitions = loom.resolve_dispatch_definitions(
+        route, route_path, definitions
+    )
+    impl = route_impl.generate_route_impl(
+        route_path, route, dispatch_definitions
+    )
+    for fragment in (
+        "static constexpr int matched_node_count = 25;",
+        "plan->consumed_node_count = 25;",
+        "plan->dispatch_count = 5;",
+        "plan->dispatches[0].binding_count = 7;",
+        "plan->dispatches[1].binding_count = 8;",
+        "plan->dispatches[2].binding_count = 2;",
+        "plan->dispatches[3].binding_count = 4;",
+        "plan->dispatches[4].binding_count = 9;",
+        "plan->transient_count = 4;",
+    ):
+        if fragment not in impl:
+            raise AssertionError(
+                f"native PP GDN/RMS-side generator missing {fragment!r}"
+            )
+
+
 def main():
     expect_valid(CATALOG_ROOT)
     sum_rows_route, sum_rows_definition = read_route_and_definition(CATALOG_ROOT, SUM_ROWS_ROUTE_PATH)
@@ -602,6 +1108,11 @@ def main():
     expect_undeclared_transient_invalid()
     expect_graph_transient_generation_valid()
     expect_transient_storage_invalid()
+    expect_native_fusion_capacity_boundaries()
+    expect_q5_down_storage_consumer_offsets()
+    expect_variable_kv_fa_mask_extent_guards()
+    expect_native_recurrent_op_schema_and_generation()
+    expect_native_pp_gdn_rms_side_generation()
 
     cases = [
         (
@@ -721,6 +1232,14 @@ def main():
         FUSION_ROUTE_PATH,
         lambda route: route["match"]["predicates"][3].update({"no_overlap": ["x"]}),
         "expected two tensor names",
+    )
+    expect_invalid_full_catalog_mutation(
+        "fusion-same-or-disjoint-storage-arity",
+        FUSION_ROUTE_PATH,
+        lambda route: route["match"]["predicates"].append(
+            {"same_or_disjoint_storage": ["x"]}
+        ),
+        "expected at least two tensors",
     )
 
     expect_invalid_catalog_mutation(

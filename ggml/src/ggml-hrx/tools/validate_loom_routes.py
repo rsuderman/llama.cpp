@@ -20,7 +20,7 @@ ARCHITECTURE_ANY = "*"
 SOURCE_FORMATS = {"loom-text", "loom-bytecode", "amdgpu-hsaco"}
 DEPENDENCY_SOURCE_FORMATS = {"loom-text"}
 
-METADATA_FIELDS = {"schema", "version", "targets", "routes"}
+METADATA_FIELDS = {"schema", "version", "targets", "routes", "storage_transforms"}
 DEFINITION_FIELDS = {
     "schema",
     "id",
@@ -136,6 +136,25 @@ def load_definitions(source_root):
 
 def metadata_targets(metadata_path, metadata):
     return set(route_schema.require_list(metadata, "targets", metadata_path))
+
+
+def load_storage_transform_ids(source_root):
+    metadata_path, metadata = validate_metadata(source_root)
+    result = {"canonical"}
+    for name in metadata.get("storage_transforms", []):
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"{metadata_path}: storage_transforms must contain non-empty strings")
+        path = (source_root / name).resolve()
+        if not path.is_file():
+            raise ValueError(f"{metadata_path}: missing storage transform {path}")
+        value = route_schema.read_json(path)
+        if value.get("schema") != "ggml-hrx-loom-storage-transform-v1":
+            raise ValueError(f"{path}: unsupported storage transform schema")
+        transform_id = route_schema.require_string(value, "id", path)
+        if transform_id in result:
+            raise ValueError(f"{path}: duplicate storage transform id {transform_id}")
+        result.add(transform_id)
+    return result
 
 
 def load_metadata_targets(source_root):
@@ -273,7 +292,7 @@ def validate_architectures(route, route_path, metadata_targets):
     return set(names)
 
 
-def validate_route(route_path, definitions, metadata_targets):
+def validate_route(route_path, definitions, metadata_targets, storage_transform_ids=None):
     route = route_schema.read_json(route_path)
     route_schema.unknown_fields(route, TOP_LEVEL_FIELDS, route_path)
     schema = route_schema.require_string(route, "schema", route_path)
@@ -302,6 +321,12 @@ def validate_route(route_path, definitions, metadata_targets):
     else:
         op_rule, tensors, attributes, predicates = route_schema.validate_match(route, route_path, definition)
         context = route_schema.RouteContext(route_path, op_rule, tensors, attributes, derived)
+    if storage_transform_ids is not None:
+        for name, tensor in tensors.items():
+            storage = tensor.get("storage")
+            if storage is not None and storage not in storage_transform_ids:
+                raise ValueError(
+                    f"{route_path}: tensors.{name}.storage: unknown storage layout {storage}")
     route_schema.validate_derived(route, route_path, context)
     route_schema.validate_predicates(predicates, route_path, context)
     transient_buffers = route_schema.validate_transient_buffers(route.get("transient_buffers"), route_path, context)
@@ -318,6 +343,7 @@ def validate_route(route_path, definitions, metadata_targets):
 def validate_catalog(source_root):
     metadata_path, metadata = validate_metadata(source_root)
     targets = metadata_targets(metadata_path, metadata)
+    storage_transform_ids = load_storage_transform_ids(source_root)
     definitions = load_definitions(source_root)
     route_names = route_schema.require_list(metadata, "routes", metadata_path)
     covered_targets = set()
@@ -327,7 +353,8 @@ def validate_catalog(source_root):
         route_path = source_root / route_name
         if not route_path.is_file():
             raise ValueError(f"{metadata_path}: missing route {route_path}")
-        covered_targets.update(validate_route(route_path, definitions, targets))
+        covered_targets.update(validate_route(
+            route_path, definitions, targets, storage_transform_ids))
     for target in sorted(targets - covered_targets):
         raise ValueError(f"{metadata_path}: metadata target {target} is not covered by any route architecture")
 

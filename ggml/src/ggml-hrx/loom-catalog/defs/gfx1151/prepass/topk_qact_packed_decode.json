@@ -1,0 +1,41 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "topk_qact_packed_decode",
+  "op": "GGML_OP_MUL_MAT_ID",
+  "source": "sources/gfx1151/prepass/topk_qact_packed_decode.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_topk_qact_packed_decode",
+  "abi": {
+    "binding_count": 5,
+    "parameter_count": 5,
+    "constant_byte_length": 0
+  },
+  "workgroup_size": [
+    256,
+    1,
+    1
+  ],
+  "parameters": [],
+  "bindings": [
+    {
+      "name": "tk_logits",
+      "access": "read"
+    },
+    {
+      "name": "tk_ids",
+      "access": "write"
+    },
+    {
+      "name": "tk_weights",
+      "access": "write"
+    },
+    {
+      "name": "qa_src",
+      "access": "read"
+    },
+    {
+      "name": "qa_packed",
+      "access": "write"
+    }
+  ]
+}

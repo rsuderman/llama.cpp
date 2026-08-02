@@ -1,0 +1,50 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "gated_delta_net_f32_sv128_wg128",
+  "op": "GGML_OP_GATED_DELTA_NET",
+  "source": "sources/gfx1151/gated_delta_net/f32/sv128_scalar_gate.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_gated_delta_net_f32_sv128",
+  "abi": {
+    "binding_count": 7,
+    "parameter_count": 8,
+    "constant_byte_length": 4
+  },
+  "workgroup_size": [64, 1, 1],
+  "parameters": [
+    {
+      "name": "scale",
+      "type": "f32"
+    }
+  ],
+  "bindings": [
+    {
+      "name": "q",
+      "access": "read"
+    },
+    {
+      "name": "k",
+      "access": "read"
+    },
+    {
+      "name": "v",
+      "access": "read"
+    },
+    {
+      "name": "g",
+      "access": "read"
+    },
+    {
+      "name": "beta",
+      "access": "read"
+    },
+    {
+      "name": "state_in",
+      "access": "read"
+    },
+    {
+      "name": "dst",
+      "access": "write"
+    }
+  ]
+}

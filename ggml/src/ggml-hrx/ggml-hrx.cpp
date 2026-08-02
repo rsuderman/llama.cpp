@@ -4,6 +4,7 @@
 #include "ggml-impl.h"
 #include "hrx_runtime.h"
 #include "loom-catalog/ggml-hrx-loom-catalog-runtime-internal.h"
+#include "loom-catalog/ggml-hrx-loom-storage.h"
 
 #include <algorithm>
 #include <array>
@@ -86,12 +87,12 @@ struct ggml_backend_hrx_buffer_context {
     ggml_backend_hrx_device_context * device_context = nullptr;
     hrx_buffer_t                      buffer         = nullptr;
     uint8_t *                         base           = nullptr;
-};
-
-struct ggml_backend_hrx_context {
-    ggml_backend_hrx_device_context * device_context = nullptr;
-    hrx_stream_t                      stream         = nullptr;
-    std::string                       name;
+    struct storage_range {
+        size_t offset = 0;
+        size_t length = 0;
+        const ggml_backend_hrx_loom_storage_transform_entry * transform = nullptr;
+    };
+    std::vector<storage_range> storage_ranges;
 };
 
 struct ggml_backend_hrx_loom_graph_dispatch {
@@ -100,14 +101,54 @@ struct ggml_backend_hrx_loom_graph_dispatch {
     ggml_backend_hrx_loom_execution_plan plan     = {};
 };
 
-struct ggml_backend_hrx_buffer_guard {
-    hrx_buffer_t buffer = nullptr;
+struct ggml_backend_hrx_loom_graph_cache {
+    const ggml_cgraph *                                cgraph            = nullptr;
+    uint64_t                                           uid               = 0;
+    int                                                n_nodes           = 0;
+    ggml_tensor **                                     nodes             = nullptr;
+    int32_t *                                          use_counts        = nullptr;
+    ggml_tensor **                                     visited_keys      = nullptr;
+    ggml_bitset_t *                                    visited_used      = nullptr;
+    size_t                                             visited_hash_size = 0;
+    const ggml_tensor *                                first_node        = nullptr;
+    const ggml_tensor *                                last_node         = nullptr;
+    std::vector<ggml_backend_hrx_loom_graph_dispatch> dispatches;
+    size_t                                             transient_buffer_size = 0;
 
-    ~ggml_backend_hrx_buffer_guard() {
-        if (buffer) {
-            hrx_buffer_release(buffer);
-        }
+    bool matches(const ggml_cgraph * candidate) const {
+        return candidate && candidate->uid != 0 && candidate == cgraph && candidate->uid == uid &&
+               candidate->n_nodes == n_nodes && candidate->nodes == nodes && candidate->use_counts == use_counts &&
+               candidate->visited_hash_set.keys == visited_keys &&
+               candidate->visited_hash_set.used == visited_used &&
+               candidate->visited_hash_set.size == visited_hash_size && n_nodes > 0 && !dispatches.empty() &&
+               candidate->nodes[0] == first_node && candidate->nodes[n_nodes - 1] == last_node;
     }
+
+    void publish(const ggml_cgraph * candidate,
+                 std::vector<ggml_backend_hrx_loom_graph_dispatch> && prepared_dispatches,
+                 size_t prepared_transient_buffer_size) {
+        cgraph                = candidate;
+        uid                   = candidate->uid;
+        n_nodes               = candidate->n_nodes;
+        nodes                 = candidate->nodes;
+        use_counts            = candidate->use_counts;
+        visited_keys          = candidate->visited_hash_set.keys;
+        visited_used          = candidate->visited_hash_set.used;
+        visited_hash_size     = candidate->visited_hash_set.size;
+        first_node            = candidate->nodes[0];
+        last_node             = candidate->nodes[candidate->n_nodes - 1];
+        dispatches            = std::move(prepared_dispatches);
+        transient_buffer_size = prepared_transient_buffer_size;
+    }
+};
+
+struct ggml_backend_hrx_context {
+    ggml_backend_hrx_device_context *   device_context = nullptr;
+    hrx_stream_t                        stream         = nullptr;
+    std::string                         name;
+    ggml_backend_hrx_loom_graph_cache loom_graph_cache;
+    hrx_buffer_t                        loom_transient_buffer          = nullptr;
+    size_t                              loom_transient_buffer_capacity = 0;
 };
 
 static bool ggml_backend_hrx_log_status(hrx_status_t status, const char * expr, const char * file, int line) {
@@ -158,6 +199,7 @@ static ggml_backend_hrx_buffer_context * ggml_backend_hrx_get_buffer_context(ggm
 }
 
 static void * ggml_backend_hrx_buffer_get_base(ggml_backend_buffer_t buffer);
+static const char * ggml_backend_hrx_buffer_type_get_name(ggml_backend_buffer_type_t buft);
 
 static const char * ggml_backend_hrx_getenv_once(const char * name) {
     return std::getenv(name);
@@ -248,6 +290,144 @@ static void ggml_backend_hrx_trace_event(ggml_backend_hrx_reg_context * reg_cont
 static size_t ggml_backend_hrx_tensor_offset(const ggml_backend_hrx_buffer_context * context,
                                              const ggml_tensor *                     tensor) {
     return static_cast<size_t>(static_cast<const uint8_t *>(tensor->data) - context->base);
+}
+
+enum ggml_backend_hrx_storage_range_state {
+    GGML_BACKEND_HRX_STORAGE_RANGE_NONE,
+    GGML_BACKEND_HRX_STORAGE_RANGE_EXACT,
+    GGML_BACKEND_HRX_STORAGE_RANGE_OVERLAP,
+};
+
+static bool ggml_backend_hrx_ranges_overlap(
+        size_t left_offset,
+        size_t left_length,
+        size_t right_offset,
+        size_t right_length) {
+    return left_length != 0 && right_length != 0 &&
+           left_offset < right_offset + right_length &&
+           right_offset < left_offset + left_length;
+}
+
+static ggml_backend_hrx_storage_range_state
+ggml_backend_hrx_get_storage_range_state(
+        const ggml_backend_hrx_buffer_context * context,
+        size_t offset,
+        size_t length,
+        const ggml_backend_hrx_loom_storage_transform_entry ** transform) {
+    if (transform) {
+        *transform = nullptr;
+    }
+    if (!context || length == 0 ||
+        offset > std::numeric_limits<size_t>::max() - length) {
+        return GGML_BACKEND_HRX_STORAGE_RANGE_NONE;
+    }
+    for (const auto & range : context->storage_ranges) {
+        if (range.offset == offset && range.length == length) {
+            if (transform) {
+                *transform = range.transform;
+            }
+            return GGML_BACKEND_HRX_STORAGE_RANGE_EXACT;
+        }
+        if (ggml_backend_hrx_ranges_overlap(
+                offset, length, range.offset, range.length)) {
+            return GGML_BACKEND_HRX_STORAGE_RANGE_OVERLAP;
+        }
+    }
+    return GGML_BACKEND_HRX_STORAGE_RANGE_NONE;
+}
+
+static bool ggml_backend_hrx_register_storage_range(
+        ggml_backend_hrx_buffer_context * context,
+        size_t offset,
+        size_t length,
+        const ggml_backend_hrx_loom_storage_transform_entry * transform) {
+    if (!context || !transform || length == 0 ||
+        offset > std::numeric_limits<size_t>::max() - length) {
+        return false;
+    }
+    for (auto & range : context->storage_ranges) {
+        if (range.offset == offset && range.length == length) {
+            return range.transform == transform;
+        }
+        if (ggml_backend_hrx_ranges_overlap(
+                offset, length, range.offset, range.length)) {
+            return false;
+        }
+    }
+    context->storage_ranges.push_back({offset, length, transform});
+    return true;
+}
+
+static bool ggml_backend_hrx_is_zero_size_capability_probe(
+        const ggml_tensor * tensor) {
+    if (!tensor || tensor->view_src || tensor->data) {
+        return false;
+    }
+    ggml_backend_buffer_t buffer = tensor->buffer;
+    return buffer && buffer->size == 0 && buffer->buft &&
+           buffer->buft->iface.get_name == ggml_backend_hrx_buffer_type_get_name &&
+           buffer->context == nullptr &&
+           buffer->iface.free_buffer == nullptr &&
+           buffer->iface.get_base == nullptr &&
+           buffer->iface.set_tensor == nullptr;
+}
+
+static ggml_backend_hrx_storage_range_state
+ggml_backend_hrx_tensor_storage_range_state(
+        const ggml_tensor * tensor,
+        const ggml_backend_hrx_loom_storage_transform_entry ** transform) {
+    if (transform) {
+        *transform = nullptr;
+    }
+    if (!tensor) {
+        return GGML_BACKEND_HRX_STORAGE_RANGE_NONE;
+    }
+    ggml_backend_buffer_t buffer =
+        tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+    if (!buffer || buffer->iface.get_base != ggml_backend_hrx_buffer_get_base ||
+        buffer->size == 0 || !tensor->data) {
+        return GGML_BACKEND_HRX_STORAGE_RANGE_NONE;
+    }
+    auto * context = ggml_backend_hrx_get_buffer_context(buffer);
+    const uintptr_t base = reinterpret_cast<uintptr_t>(context->base);
+    const uintptr_t data = reinterpret_cast<uintptr_t>(tensor->data);
+    const size_t length = ggml_nbytes(tensor);
+    if (data < base) {
+        return GGML_BACKEND_HRX_STORAGE_RANGE_NONE;
+    }
+    const size_t offset = static_cast<size_t>(data - base);
+    if (offset > buffer->size || length > buffer->size - offset) {
+        return GGML_BACKEND_HRX_STORAGE_RANGE_NONE;
+    }
+    return ggml_backend_hrx_get_storage_range_state(
+        context, offset, length, transform);
+}
+
+static const char * ggml_backend_hrx_tensor_storage_layout(
+        void * user_data,
+        const ggml_tensor * tensor) {
+    auto * device_context =
+        static_cast<ggml_backend_hrx_device_context *>(user_data);
+    if (!device_context || !tensor) {
+        return nullptr;
+    }
+    const auto * candidate = ggml_backend_hrx_loom_storage_transform_match(
+        device_context->architecture.c_str(), tensor);
+    const ggml_backend_hrx_loom_storage_transform_entry * registered = nullptr;
+    const auto state =
+        ggml_backend_hrx_tensor_storage_range_state(tensor, &registered);
+    if (state == GGML_BACKEND_HRX_STORAGE_RANGE_OVERLAP) {
+        return nullptr;
+    }
+    if (state == GGML_BACKEND_HRX_STORAGE_RANGE_EXACT) {
+        return candidate && candidate == registered ? registered->id : nullptr;
+    }
+    if (candidate) {
+        return ggml_backend_hrx_is_zero_size_capability_probe(tensor)
+            ? candidate->id
+            : nullptr;
+    }
+    return "canonical";
 }
 
 static ggml_backend_hrx_buffer_context * ggml_backend_hrx_tensor_buffer_context(const ggml_tensor * tensor) {
@@ -695,6 +875,126 @@ static bool ggml_backend_hrx_copy_tensor_to_staging(ggml_backend_hrx_buffer_cont
     return ok;
 }
 
+static bool ggml_backend_hrx_write_storage_canonical(
+        ggml_backend_hrx_buffer_context * context,
+        const ggml_tensor * tensor,
+        const ggml_backend_hrx_loom_storage_transform_entry * transform,
+        const void * canonical,
+        size_t canonical_size,
+        size_t buffer_offset,
+        size_t buffer_size) {
+    try {
+        std::vector<uint8_t> packed(canonical_size);
+        return ggml_backend_hrx_loom_storage_transform_pack(
+                   transform, canonical, canonical_size,
+                   packed.data(), packed.size()) &&
+               ggml_backend_hrx_stage_and_copy_tensor(
+                   context, tensor, packed.data(), buffer_offset,
+                   buffer_size, packed.size());
+    } catch (const std::bad_alloc &) {
+        GGML_LOG_ERROR(
+            "%s: transient storage-transform allocation failed for %s\n",
+            __func__, tensor ? tensor->name : "<unknown>");
+        return false;
+    }
+}
+
+static bool ggml_backend_hrx_read_storage_canonical(
+        ggml_backend_hrx_buffer_context * context,
+        const ggml_tensor * tensor,
+        const ggml_backend_hrx_loom_storage_transform_entry * transform,
+        size_t buffer_offset,
+        size_t buffer_size,
+        void * canonical,
+        size_t canonical_size) {
+    try {
+        std::vector<uint8_t> packed(canonical_size);
+        return ggml_backend_hrx_copy_tensor_to_staging(
+                   context, tensor, buffer_offset, buffer_size,
+                   packed.data(), packed.size()) &&
+               ggml_backend_hrx_loom_storage_transform_unpack(
+                   transform, packed.data(), packed.size(),
+                   canonical, canonical_size);
+    } catch (const std::bad_alloc &) {
+        GGML_LOG_ERROR(
+            "%s: transient storage-transform allocation failed for %s\n",
+            __func__, tensor ? tensor->name : "<unknown>");
+        return false;
+    }
+}
+
+static bool ggml_backend_hrx_set_storage_semantic(
+        ggml_backend_hrx_buffer_context * context,
+        const ggml_tensor * tensor,
+        const ggml_backend_hrx_loom_storage_transform_entry * transform,
+        const void * data,
+        size_t offset,
+        size_t size,
+        size_t buffer_offset,
+        size_t buffer_size,
+        bool initialized) {
+    const size_t tensor_size =
+        ggml_backend_hrx_loom_storage_transform_size(transform);
+    if (tensor_size == 0 || offset > tensor_size ||
+        size > tensor_size - offset) {
+        return false;
+    }
+    if (offset == 0 && size == tensor_size) {
+        return ggml_backend_hrx_write_storage_canonical(
+            context, tensor, transform, data, size,
+            buffer_offset, buffer_size);
+    }
+    try {
+        std::vector<uint8_t> canonical(tensor_size);
+        if (initialized &&
+            !ggml_backend_hrx_read_storage_canonical(
+                context, tensor, transform, buffer_offset, buffer_size,
+                canonical.data(), canonical.size())) {
+            return false;
+        }
+        std::memcpy(canonical.data() + offset, data, size);
+        return ggml_backend_hrx_write_storage_canonical(
+            context, tensor, transform, canonical.data(), canonical.size(),
+            buffer_offset, buffer_size);
+    } catch (const std::bad_alloc &) {
+        return false;
+    }
+}
+
+static bool ggml_backend_hrx_get_storage_semantic(
+        ggml_backend_hrx_buffer_context * context,
+        const ggml_tensor * tensor,
+        const ggml_backend_hrx_loom_storage_transform_entry * transform,
+        void * data,
+        size_t offset,
+        size_t size,
+        size_t buffer_offset,
+        size_t buffer_size) {
+    const size_t tensor_size =
+        ggml_backend_hrx_loom_storage_transform_size(transform);
+    if (tensor_size == 0 || offset > tensor_size ||
+        size > tensor_size - offset) {
+        return false;
+    }
+    if (offset == 0 && size == tensor_size) {
+        return ggml_backend_hrx_read_storage_canonical(
+            context, tensor, transform, buffer_offset, buffer_size,
+            data, size);
+    }
+    try {
+        std::vector<uint8_t> canonical(tensor_size);
+        if (!ggml_backend_hrx_read_storage_canonical(
+                context, tensor, transform, buffer_offset, buffer_size,
+                canonical.data(), canonical.size())) {
+            return false;
+        }
+        std::memcpy(data, canonical.data() + offset, size);
+        return true;
+    } catch (const std::bad_alloc &) {
+        return false;
+    }
+}
+
 static size_t ggml_backend_hrx_total_memory(hrx_device_t device) {
     uint64_t memory_total = 0;
     if (!GGML_HRX_CHECK(
@@ -761,13 +1061,64 @@ static void ggml_backend_hrx_buffer_memset_tensor(ggml_backend_buffer_t buffer,
         return;
     }
 
+    const size_t tensor_size = ggml_nbytes(tensor);
+    if (offset > tensor_size || size > tensor_size - offset) {
+        GGML_LOG_ERROR("%s: tensor range is out of bounds for %s\n", __func__, tensor->name);
+        return;
+    }
+    const size_t tensor_buffer_offset =
+        ggml_backend_hrx_tensor_offset(context, tensor);
+    const auto * candidate =
+        ggml_backend_hrx_loom_storage_transform_match(
+            context->device_context->architecture.c_str(), tensor);
+    const ggml_backend_hrx_loom_storage_transform_entry * registered = nullptr;
+    const auto range_state = ggml_backend_hrx_get_storage_range_state(
+        context, tensor_buffer_offset, tensor_size, &registered);
+    if (range_state == GGML_BACKEND_HRX_STORAGE_RANGE_OVERLAP ||
+        (range_state == GGML_BACKEND_HRX_STORAGE_RANGE_EXACT &&
+         (!candidate || candidate != registered)) ||
+        (!candidate && range_state != GGML_BACKEND_HRX_STORAGE_RANGE_NONE)) {
+        GGML_LOG_ERROR("%s: refusing aliased transformed storage for %s\n", __func__, tensor->name);
+        return;
+    }
+    if (candidate && !(offset == 0 && size == tensor_size)) {
+        try {
+            std::vector<uint8_t> canonical(tensor_size);
+            if (range_state == GGML_BACKEND_HRX_STORAGE_RANGE_EXACT &&
+                !ggml_backend_hrx_read_storage_canonical(
+                    context, tensor, candidate, tensor_buffer_offset,
+                    buffer->size, canonical.data(), canonical.size())) {
+                GGML_LOG_ERROR("%s: failed to read transformed tensor %s\n", __func__, tensor->name);
+                return;
+            }
+            std::memset(canonical.data() + offset, value, size);
+            if (!ggml_backend_hrx_write_storage_canonical(
+                    context, tensor, candidate, canonical.data(),
+                    canonical.size(), tensor_buffer_offset, buffer->size)) {
+                GGML_LOG_ERROR("%s: failed to write transformed tensor %s\n", __func__, tensor->name);
+            } else if (!ggml_backend_hrx_register_storage_range(
+                           context, tensor_buffer_offset, tensor_size,
+                           candidate)) {
+                GGML_LOG_ERROR("%s: transformed range registration failed for %s\n", __func__, tensor->name);
+            }
+        } catch (const std::bad_alloc &) {
+            GGML_LOG_ERROR("%s: transient transformed memset allocation failed for %s\n", __func__, tensor->name);
+        }
+        return;
+    }
+
     if (!ggml_backend_hrx_sync_streams(context->device_context)) {
         return;
     }
 
-    const size_t buffer_offset = ggml_backend_hrx_tensor_offset(context, tensor) + offset;
-    (void) ggml_backend_hrx_queue_fill_stream_sync(context->device_context, context->buffer, buffer_offset, size,
-                                                   &value, sizeof(value));
+    const bool ok = ggml_backend_hrx_queue_fill_stream_sync(
+        context->device_context, context->buffer,
+        tensor_buffer_offset + offset, size, &value, sizeof(value));
+    if (ok && candidate &&
+        !ggml_backend_hrx_register_storage_range(
+            context, tensor_buffer_offset, tensor_size, candidate)) {
+        GGML_LOG_ERROR("%s: transformed range registration failed for %s\n", __func__, tensor->name);
+    }
 }
 
 static void ggml_backend_hrx_buffer_set_tensor(ggml_backend_buffer_t buffer,
@@ -780,9 +1131,41 @@ static void ggml_backend_hrx_buffer_set_tensor(ggml_backend_buffer_t buffer,
         return;
     }
 
-    const size_t buffer_offset = ggml_backend_hrx_tensor_offset(context, tensor) + offset;
-    if (!ggml_backend_hrx_stage_and_copy_tensor(context, tensor, data, buffer_offset, buffer->size, size)) {
+    const size_t tensor_size = ggml_nbytes(tensor);
+    if (offset > tensor_size || size > tensor_size - offset) {
+        GGML_LOG_ERROR("%s: tensor range is out of bounds for %s\n", __func__, tensor->name);
+        return;
+    }
+    const size_t tensor_buffer_offset =
+        ggml_backend_hrx_tensor_offset(context, tensor);
+    bool ok = false;
+    const auto * candidate =
+        ggml_backend_hrx_loom_storage_transform_match(
+            context->device_context->architecture.c_str(), tensor);
+    const ggml_backend_hrx_loom_storage_transform_entry * registered = nullptr;
+    const auto range_state = ggml_backend_hrx_get_storage_range_state(
+        context, tensor_buffer_offset, tensor_size, &registered);
+    if (range_state == GGML_BACKEND_HRX_STORAGE_RANGE_OVERLAP ||
+        (range_state == GGML_BACKEND_HRX_STORAGE_RANGE_EXACT &&
+         (!candidate || candidate != registered)) ||
+        (!candidate && range_state != GGML_BACKEND_HRX_STORAGE_RANGE_NONE)) {
+        GGML_LOG_ERROR("%s: refusing aliased transformed storage for %s\n", __func__, tensor->name);
+        return;
+    }
+    ok = candidate
+        ? ggml_backend_hrx_set_storage_semantic(
+              context, tensor, candidate, data, offset, size,
+              tensor_buffer_offset, buffer->size,
+              range_state == GGML_BACKEND_HRX_STORAGE_RANGE_EXACT)
+        : ggml_backend_hrx_stage_and_copy_tensor(
+              context, tensor, data, tensor_buffer_offset + offset,
+              buffer->size, size);
+    if (!ok) {
         GGML_LOG_ERROR("%s: failed to upload tensor %s through HRX staging\n", __func__, tensor->name);
+    } else if (candidate &&
+               !ggml_backend_hrx_register_storage_range(
+                   context, tensor_buffer_offset, tensor_size, candidate)) {
+        GGML_LOG_ERROR("%s: transformed range registration failed for %s\n", __func__, tensor->name);
     }
 }
 
@@ -796,8 +1179,36 @@ static void ggml_backend_hrx_buffer_get_tensor(ggml_backend_buffer_t buffer,
         return;
     }
 
-    const size_t buffer_offset = ggml_backend_hrx_tensor_offset(context, tensor) + offset;
-    if (!ggml_backend_hrx_copy_tensor_to_staging(context, tensor, buffer_offset, buffer->size, data, size)) {
+    const size_t tensor_size = ggml_nbytes(tensor);
+    if (offset > tensor_size || size > tensor_size - offset) {
+        GGML_LOG_ERROR("%s: tensor range is out of bounds for %s\n", __func__, tensor->name);
+        return;
+    }
+    const size_t tensor_buffer_offset =
+        ggml_backend_hrx_tensor_offset(context, tensor);
+    bool ok = false;
+    const auto * candidate =
+        ggml_backend_hrx_loom_storage_transform_match(
+            context->device_context->architecture.c_str(), tensor);
+    const ggml_backend_hrx_loom_storage_transform_entry * registered = nullptr;
+    const auto range_state = ggml_backend_hrx_get_storage_range_state(
+        context, tensor_buffer_offset, tensor_size, &registered);
+    if (range_state == GGML_BACKEND_HRX_STORAGE_RANGE_OVERLAP ||
+        (range_state == GGML_BACKEND_HRX_STORAGE_RANGE_EXACT &&
+         (!candidate || candidate != registered)) ||
+        (candidate && range_state != GGML_BACKEND_HRX_STORAGE_RANGE_EXACT) ||
+        (!candidate && range_state != GGML_BACKEND_HRX_STORAGE_RANGE_NONE)) {
+        GGML_LOG_ERROR("%s: refusing unregistered or aliased transformed storage for %s\n", __func__, tensor->name);
+        return;
+    }
+    ok = candidate
+        ? ggml_backend_hrx_get_storage_semantic(
+              context, tensor, candidate, data, offset, size,
+              tensor_buffer_offset, buffer->size)
+        : ggml_backend_hrx_copy_tensor_to_staging(
+              context, tensor, tensor_buffer_offset + offset,
+              buffer->size, data, size);
+    if (!ok) {
         GGML_LOG_ERROR("%s: failed to read tensor %s through HRX staging\n", __func__, tensor->name);
     }
 }
@@ -822,9 +1233,81 @@ static bool ggml_backend_hrx_buffer_cpy_tensor(ggml_backend_buffer_t buffer,
 
     const size_t src_offset = ggml_backend_hrx_tensor_offset(src_context, src);
     const size_t dst_offset = ggml_backend_hrx_tensor_offset(dst_context, dst);
-    const size_t size       = ggml_nbytes(src);
-    return ggml_backend_hrx_queue_copy_stream_sync(dst_context->device_context, src_context->buffer, src_offset,
-                                                   dst_context->buffer, dst_offset, size);
+    const size_t size = ggml_nbytes(src);
+    const size_t dst_size = ggml_nbytes(dst);
+    if (size != dst_size) {
+        return false;
+    }
+    const auto * src_candidate =
+        ggml_backend_hrx_loom_storage_transform_match(
+            src_context->device_context->architecture.c_str(), src);
+    const auto * dst_candidate =
+        ggml_backend_hrx_loom_storage_transform_match(
+            dst_context->device_context->architecture.c_str(), dst);
+    const ggml_backend_hrx_loom_storage_transform_entry * src_registered = nullptr;
+    const ggml_backend_hrx_loom_storage_transform_entry * dst_registered = nullptr;
+    const auto src_state = ggml_backend_hrx_get_storage_range_state(
+        src_context, src_offset, size, &src_registered);
+    const auto dst_state = ggml_backend_hrx_get_storage_range_state(
+        dst_context, dst_offset, dst_size, &dst_registered);
+    const bool src_valid =
+        src_candidate
+            ? src_state == GGML_BACKEND_HRX_STORAGE_RANGE_EXACT &&
+                  src_registered == src_candidate
+            : src_state == GGML_BACKEND_HRX_STORAGE_RANGE_NONE;
+    const bool dst_valid =
+        dst_candidate
+            ? dst_state != GGML_BACKEND_HRX_STORAGE_RANGE_OVERLAP &&
+                  (dst_state != GGML_BACKEND_HRX_STORAGE_RANGE_EXACT ||
+                   dst_registered == dst_candidate)
+            : dst_state == GGML_BACKEND_HRX_STORAGE_RANGE_NONE;
+    if (!src_valid || !dst_valid) {
+        GGML_LOG_ERROR(
+            "%s: refusing unregistered or aliased transformed copy (%s -> %s)\n",
+            __func__, src->name, dst->name);
+        return false;
+    }
+    if (src_candidate != dst_candidate) {
+        try {
+            std::vector<uint8_t> canonical(size);
+            const bool read_ok = src_candidate
+                ? ggml_backend_hrx_read_storage_canonical(
+                      src_context, src, src_candidate, src_offset,
+                      src_buffer->size, canonical.data(), canonical.size())
+                : ggml_backend_hrx_copy_tensor_to_staging(
+                      src_context, src, src_offset, src_buffer->size,
+                      canonical.data(), canonical.size());
+            if (!read_ok) {
+                return false;
+            }
+            const bool write_ok = dst_candidate
+                ? ggml_backend_hrx_write_storage_canonical(
+                      dst_context, dst, dst_candidate, canonical.data(),
+                      canonical.size(), dst_offset, buffer->size)
+                : ggml_backend_hrx_stage_and_copy_tensor(
+                      dst_context, dst, canonical.data(), dst_offset,
+                      buffer->size, canonical.size());
+            if (write_ok && dst_candidate &&
+                !ggml_backend_hrx_register_storage_range(
+                    dst_context, dst_offset, dst_size, dst_candidate)) {
+                return false;
+            }
+            return write_ok;
+        } catch (const std::bad_alloc &) {
+            return false;
+        }
+    }
+    const bool ok = ggml_backend_hrx_queue_copy_stream_sync(
+        dst_context->device_context,
+        src_context->buffer, src_offset,
+        dst_context->buffer, dst_offset,
+        size);
+    if (ok && dst_candidate &&
+        !ggml_backend_hrx_register_storage_range(
+            dst_context, dst_offset, dst_size, dst_candidate)) {
+        return false;
+    }
+    return ok;
 }
 
 static void ggml_backend_hrx_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
@@ -869,6 +1352,7 @@ static ggml_backend_buffer_t ggml_backend_hrx_buffer_type_alloc_buffer(ggml_back
         /* .device_context = */ buft_context->device_context,
         /* .buffer         = */ hrx_buffer,
         /* .base           = */ reinterpret_cast<uint8_t *>(GGML_HRX_FAKE_PTR_BASE),
+        /* .storage_ranges = */ {},
     };
     if (!context) {
         if (hrx_buffer) {
@@ -950,6 +1434,11 @@ static void ggml_backend_hrx_free(ggml_backend_t backend) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
     if (context->stream) {
         GGML_HRX_CHECK(hrx_stream_synchronize(context->stream));
+        if (context->loom_transient_buffer) {
+            hrx_buffer_release(context->loom_transient_buffer);
+            context->loom_transient_buffer          = nullptr;
+            context->loom_transient_buffer_capacity = 0;
+        }
         ggml_backend_hrx_unregister_stream(context->device_context, context->stream);
         hrx_stream_release(context->stream);
     }
@@ -1005,7 +1494,9 @@ static bool ggml_backend_hrx_bind_tensor_for_catalog(void *              user_da
 static bool ggml_backend_hrx_supports_op_loom(ggml_backend_hrx_device_context * device_context,
                                               const ggml_tensor *               op) {
     const ggml_backend_hrx_loom_op_response response =
-        ggml_backend_hrx_loom_supports_op(ggml_backend_hrx_get_loom_catalog(device_context), op);
+        ggml_backend_hrx_loom_supports_op(
+            ggml_backend_hrx_get_loom_catalog(device_context), op,
+            ggml_backend_hrx_tensor_storage_layout, device_context);
     return response.result == GGML_BACKEND_HRX_LOOM_INVOKED;
 }
 
@@ -1023,16 +1514,16 @@ static enum ggml_status ggml_backend_hrx_prepare_loom(ggml_backend_hrx_context *
         /* .stream                = */ context->stream,
         /* .bind_tensor           = */ ggml_backend_hrx_bind_tensor_for_catalog,
         /* .bind_tensor_user_data = */ context->device_context,
+        /* .storage_layout        = */ ggml_backend_hrx_tensor_storage_layout,
+        /* .storage_layout_user_data = */ context->device_context,
     };
-    ggml_backend_hrx_loom_graph_dispatch prepared = {};
-    prepared.node                                 = node;
-    prepared.response = ggml_backend_hrx_loom_prepare_plan(ggml_backend_hrx_get_loom_catalog(context->device_context),
-                                                           &request, &prepared.plan);
-    if (prepared.response.result == GGML_BACKEND_HRX_LOOM_INVOKED) {
-        *dispatch = prepared;
+    dispatch->node     = node;
+    dispatch->response = ggml_backend_hrx_loom_prepare_plan(ggml_backend_hrx_get_loom_catalog(context->device_context),
+                                                            &request, &dispatch->plan);
+    if (dispatch->response.result == GGML_BACKEND_HRX_LOOM_INVOKED) {
         return GGML_STATUS_SUCCESS;
     }
-    if (prepared.response.result == GGML_BACKEND_HRX_LOOM_FAILED) {
+    if (dispatch->response.result == GGML_BACKEND_HRX_LOOM_FAILED) {
         return GGML_STATUS_FAILED;
     }
     *unsupported = true;
@@ -1065,6 +1556,22 @@ static ggml_backend_hrx_loom_consumed_nodes ggml_backend_hrx_consumed_nodes_from
     return consumed_nodes;
 }
 
+static int ggml_backend_hrx_graph_node_index(const ggml_cgraph *      cgraph,
+                                             const ggml_tensor *      tensor,
+                                             const std::vector<int> & node_indices) {
+    if (!cgraph || !tensor || node_indices.size() != cgraph->visited_hash_set.size) {
+        return -1;
+    }
+    const size_t hash_pos = ggml_hash_find(&cgraph->visited_hash_set, tensor);
+    if (hash_pos == GGML_HASHSET_FULL || hash_pos >= node_indices.size() ||
+        !ggml_bitset_get(cgraph->visited_hash_set.used, hash_pos) ||
+        cgraph->visited_hash_set.keys[hash_pos] != tensor) {
+        return -1;
+    }
+    const int node_index = node_indices[hash_pos];
+    return node_index >= 0 && node_index < cgraph->n_nodes && cgraph->nodes[node_index] == tensor ? node_index : -1;
+}
+
 static int ggml_backend_hrx_graph_node_index(const ggml_cgraph * cgraph, const ggml_tensor * tensor) {
     if (!cgraph || !tensor) {
         return -1;
@@ -1080,7 +1587,8 @@ static int ggml_backend_hrx_graph_node_index(const ggml_cgraph * cgraph, const g
 static bool ggml_backend_hrx_validate_consumed_nodes(const ggml_cgraph *                          cgraph,
                                                      int                                          node_index,
                                                      const ggml_backend_hrx_loom_consumed_nodes * consumed_nodes,
-                                                     const std::vector<bool> &                    visited_nodes) {
+                                                     const std::vector<bool> &                    visited_nodes,
+                                                     const std::vector<int> &                     node_indices) {
     if (!cgraph || !consumed_nodes || node_index < 0 || node_index >= cgraph->n_nodes || consumed_nodes->count < 1 ||
         consumed_nodes->count > GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES) {
         return false;
@@ -1109,7 +1617,8 @@ static bool ggml_backend_hrx_validate_consumed_nodes(const ggml_cgraph *        
     for (int i = 0; i < consumed_nodes->count; ++i) {
         const ggml_tensor * consumed_node = cgraph->nodes[consumed_nodes->indices[i]];
         for (int j = 0; j < GGML_MAX_SRC; ++j) {
-            const int producer_index = ggml_backend_hrx_graph_node_index(cgraph, consumed_node->src[j]);
+            const int producer_index =
+                ggml_backend_hrx_graph_node_index(cgraph, consumed_node->src[j], node_indices);
             if (producer_index >= node_index && !visited_nodes[producer_index] &&
                 !ggml_backend_hrx_consumed_nodes_contains(consumed_nodes, producer_index)) {
                 return false;
@@ -1282,6 +1791,47 @@ static void ggml_backend_hrx_graph_optimize(ggml_backend_t backend, ggml_cgraph 
             --i;
         }
     }
+}
+
+static bool ggml_backend_hrx_make_local_graph_facts(const ggml_cgraph *   cgraph,
+                                                    std::vector<int32_t> & local_use_counts,
+                                                    std::vector<int> &     node_indices,
+                                                    ggml_cgraph *          local_cgraph) {
+    if (!cgraph || !local_cgraph || cgraph->visited_hash_set.size == 0) {
+        return false;
+    }
+
+    local_use_counts.assign(cgraph->visited_hash_set.size, 0);
+    node_indices.assign(cgraph->visited_hash_set.size, -1);
+    for (int i = 0; i < cgraph->n_nodes; ++i) {
+        const ggml_tensor * node = cgraph->nodes[i];
+        if (!node) {
+            continue;
+        }
+        const size_t node_hash = ggml_hash_find(&cgraph->visited_hash_set, node);
+        if (node_hash == GGML_HASHSET_FULL || node_hash >= node_indices.size() ||
+            !ggml_bitset_get(cgraph->visited_hash_set.used, node_hash) ||
+            cgraph->visited_hash_set.keys[node_hash] != node) {
+            return false;
+        }
+        node_indices[node_hash] = i;
+        for (int j = 0; j < GGML_MAX_SRC; ++j) {
+            const ggml_tensor * src = node->src[j];
+            if (!src) {
+                continue;
+            }
+            const size_t src_hash = ggml_hash_find(&cgraph->visited_hash_set, src);
+            if (src_hash == GGML_HASHSET_FULL ||
+                !ggml_bitset_get(cgraph->visited_hash_set.used, src_hash)) {
+                continue;
+            }
+            ++local_use_counts[src_hash];
+        }
+    }
+
+    *local_cgraph             = *cgraph;
+    local_cgraph->use_counts = local_use_counts.data();
+    return true;
 }
 
 struct ggml_backend_hrx_loom_transient_assignment {
@@ -1478,35 +2028,11 @@ static std::vector<bool> ggml_backend_hrx_covered_loom_nodes(
     return covered_nodes;
 }
 
-static bool ggml_backend_hrx_graph_transient_consumers_are_covered(const ggml_cgraph *       cgraph,
-                                                                   const ggml_tensor *       graph_tensor,
-                                                                   const std::vector<bool> & covered_nodes,
-                                                                   bool *                    out_has_consumer) {
-    if (!cgraph || !graph_tensor || !out_has_consumer) {
-        return false;
-    }
-    *out_has_consumer = false;
-    for (int i = 0; i < cgraph->n_nodes; ++i) {
-        const ggml_tensor * node = cgraph->nodes[i];
-        if (!node) {
-            continue;
-        }
-        for (int j = 0; j < GGML_MAX_SRC; ++j) {
-            if (node->src[j] != graph_tensor) {
-                continue;
-            }
-            *out_has_consumer = true;
-            if (i >= static_cast<int>(covered_nodes.size()) || !covered_nodes[i]) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
 static bool ggml_backend_hrx_validate_graph_transient_interval(
     const ggml_cgraph *                              cgraph,
     const std::vector<bool> &                        covered_nodes,
+    const std::vector<int> &                         node_indices,
+    const std::vector<int32_t> &                     covered_use_counts,
     const ggml_backend_hrx_loom_transient_interval & interval) {
     if (!interval.graph_tensor) {
         return true;
@@ -1516,27 +2042,49 @@ static bool ggml_backend_hrx_validate_graph_transient_interval(
         return false;
     }
 
-    const int producer_index = ggml_backend_hrx_graph_node_index(cgraph, interval.graph_tensor);
+    const int producer_index = ggml_backend_hrx_graph_node_index(cgraph, interval.graph_tensor, node_indices);
     if (producer_index < 0 || producer_index >= static_cast<int>(covered_nodes.size()) ||
         !covered_nodes[producer_index]) {
         return false;
     }
 
-    bool has_consumer = false;
-    if (!ggml_backend_hrx_graph_transient_consumers_are_covered(cgraph, interval.graph_tensor, covered_nodes,
-                                                                &has_consumer)) {
+    const size_t tensor_hash = ggml_hash_find(&cgraph->visited_hash_set, interval.graph_tensor);
+    if (tensor_hash == GGML_HASHSET_FULL || tensor_hash >= covered_use_counts.size() ||
+        !ggml_bitset_get(cgraph->visited_hash_set.used, tensor_hash) ||
+        cgraph->visited_hash_set.keys[tensor_hash] != interval.graph_tensor) {
         return false;
     }
-    return has_consumer;
+    const int32_t total_use_count = cgraph->use_counts[tensor_hash];
+    return total_use_count > 0 && covered_use_counts[tensor_hash] == total_use_count;
 }
 
 static bool ggml_backend_hrx_validate_graph_transient_intervals(
     const ggml_cgraph *                                           cgraph,
     const std::vector<ggml_backend_hrx_loom_graph_dispatch> &     dispatches,
+    const std::vector<int> &                                      node_indices,
     const std::vector<ggml_backend_hrx_loom_transient_interval> & intervals) {
     const std::vector<bool> covered_nodes = ggml_backend_hrx_covered_loom_nodes(cgraph, dispatches);
+    std::vector<int32_t> covered_use_counts(cgraph ? cgraph->visited_hash_set.size : 0, 0);
+    for (int i = 0; cgraph && i < cgraph->n_nodes; ++i) {
+        if (i >= static_cast<int>(covered_nodes.size()) || !covered_nodes[i] || !cgraph->nodes[i]) {
+            continue;
+        }
+        for (int j = 0; j < GGML_MAX_SRC; ++j) {
+            const ggml_tensor * src = cgraph->nodes[i]->src[j];
+            if (!src) {
+                continue;
+            }
+            const size_t src_hash = ggml_hash_find(&cgraph->visited_hash_set, src);
+            if (src_hash != GGML_HASHSET_FULL && src_hash < covered_use_counts.size() &&
+                ggml_bitset_get(cgraph->visited_hash_set.used, src_hash) &&
+                cgraph->visited_hash_set.keys[src_hash] == src) {
+                ++covered_use_counts[src_hash];
+            }
+        }
+    }
     for (const ggml_backend_hrx_loom_transient_interval & interval : intervals) {
-        if (!ggml_backend_hrx_validate_graph_transient_interval(cgraph, covered_nodes, interval)) {
+        if (!ggml_backend_hrx_validate_graph_transient_interval(
+                cgraph, covered_nodes, node_indices, covered_use_counts, interval)) {
             return false;
         }
     }
@@ -1546,6 +2094,7 @@ static bool ggml_backend_hrx_validate_graph_transient_intervals(
 static bool ggml_backend_hrx_collect_graph_transient_intervals(
     const ggml_cgraph *                                     cgraph,
     std::vector<ggml_backend_hrx_loom_graph_dispatch> &     dispatches,
+    const std::vector<int> &                                node_indices,
     std::vector<ggml_backend_hrx_loom_transient_interval> & intervals) {
     intervals.clear();
     // Transient reuse assumes these flattened dispatches execute serially on one HRX stream.
@@ -1558,7 +2107,7 @@ static bool ggml_backend_hrx_collect_graph_transient_intervals(
             return false;
         }
     }
-    return ggml_backend_hrx_validate_graph_transient_intervals(cgraph, dispatches, intervals);
+    return ggml_backend_hrx_validate_graph_transient_intervals(cgraph, dispatches, node_indices, intervals);
 }
 
 static bool ggml_backend_hrx_pack_graph_transient_intervals(
@@ -1623,12 +2172,13 @@ static bool ggml_backend_hrx_pack_graph_transient_intervals(
 static bool ggml_backend_hrx_assign_graph_transient_offsets(
     const ggml_cgraph *                                 cgraph,
     std::vector<ggml_backend_hrx_loom_graph_dispatch> & dispatches,
+    const std::vector<int> &                            node_indices,
     size_t *                                            graph_transient_byte_length) {
     if (!graph_transient_byte_length) {
         return false;
     }
     std::vector<ggml_backend_hrx_loom_transient_interval> intervals;
-    if (!ggml_backend_hrx_collect_graph_transient_intervals(cgraph, dispatches, intervals) ||
+    if (!ggml_backend_hrx_collect_graph_transient_intervals(cgraph, dispatches, node_indices, intervals) ||
         !ggml_backend_hrx_pack_graph_transient_intervals(intervals, graph_transient_byte_length)) {
         return false;
     }
@@ -1640,6 +2190,96 @@ static bool ggml_backend_hrx_assign_graph_transient_offsets(
             plan.transient_byte_length = *graph_transient_byte_length;
         }
     }
+    return true;
+}
+
+static enum ggml_status ggml_backend_hrx_prepare_loom_graph(
+    ggml_backend_hrx_context *                           context,
+    ggml_cgraph *                                        cgraph,
+    std::vector<ggml_backend_hrx_loom_graph_dispatch> * dispatches,
+    size_t *                                             transient_buffer_size) {
+    if (!context || !cgraph || !dispatches || !transient_buffer_size) {
+        return GGML_STATUS_FAILED;
+    }
+    dispatches->clear();
+    dispatches->reserve(cgraph->n_nodes);
+    *transient_buffer_size = 0;
+
+    std::vector<int32_t> local_use_counts;
+    std::vector<int>     node_indices;
+    ggml_cgraph          local_cgraph = {};
+    if (!ggml_backend_hrx_make_local_graph_facts(cgraph, local_use_counts, node_indices, &local_cgraph)) {
+        return GGML_STATUS_FAILED;
+    }
+
+    std::vector<bool> visited_nodes(cgraph ? cgraph->n_nodes : 0, false);
+    for (int i = 0; cgraph && i < cgraph->n_nodes; ++i) {
+        if (visited_nodes[i]) {
+            continue;
+        }
+        const ggml_tensor * node = cgraph->nodes[i];
+        if (ggml_backend_hrx_is_metadata_op(node) || ggml_nelements(node) == 0) {
+            continue;
+        }
+        bool unsupported = true;
+        dispatches->emplace_back();
+        ggml_backend_hrx_loom_graph_dispatch & dispatch = dispatches->back();
+        enum ggml_status status =
+            ggml_backend_hrx_prepare_loom(context, &local_cgraph, i, node, &unsupported, &dispatch);
+        if (status != GGML_STATUS_SUCCESS) {
+            return status;
+        }
+        if (!unsupported) {
+            const ggml_backend_hrx_loom_consumed_nodes consumed_nodes =
+                ggml_backend_hrx_consumed_nodes_from_plan(&dispatch.plan);
+            if (!ggml_backend_hrx_validate_consumed_nodes(
+                    &local_cgraph, i, &consumed_nodes, visited_nodes, node_indices)) {
+                return GGML_STATUS_FAILED;
+            }
+            ggml_backend_hrx_mark_consumed_nodes(&consumed_nodes, visited_nodes);
+            continue;
+        }
+        dispatches->pop_back();
+
+        if (context->device_context->options && context->device_context->options->trace_graph) {
+            ggml_backend_hrx_trace_event(context->device_context->reg_context,
+                                         {
+                                             { "event",  "unsupported_compute_node"    },
+                                             { "device", context->device_context->name },
+                                             { "op",     ggml_op_desc(node)            },
+                                             { "node",   ggml_get_name(node)           },
+            });
+        }
+        GGML_LOG_ERROR("%s: HRX backend has no compute implementation for op %s node=%s\n", __func__,
+                       ggml_op_desc(node), ggml_get_name(node));
+        return GGML_STATUS_FAILED;
+    }
+
+    if (!ggml_backend_hrx_assign_graph_transient_offsets(
+            &local_cgraph, *dispatches, node_indices, transient_buffer_size)) {
+        return GGML_STATUS_FAILED;
+    }
+    return GGML_STATUS_SUCCESS;
+}
+
+static bool ggml_backend_hrx_ensure_loom_transient_buffer(
+    ggml_backend_hrx_context * context,
+    size_t                     required_capacity) {
+    if (required_capacity == 0 ||
+        (context->loom_transient_buffer && context->loom_transient_buffer_capacity >= required_capacity)) {
+        return true;
+    }
+
+    hrx_buffer_t replacement = nullptr;
+    if (!GGML_HRX_CHECK(hrx_buffer_allocate(context->stream, required_capacity, HRX_MEMORY_TYPE_DEVICE_LOCAL,
+                                            HRX_BUFFER_USAGE_DEFAULT, &replacement))) {
+        return false;
+    }
+    if (context->loom_transient_buffer) {
+        hrx_buffer_release(context->loom_transient_buffer);
+    }
+    context->loom_transient_buffer          = replacement;
+    context->loom_transient_buffer_capacity = required_capacity;
     return true;
 }
 
@@ -1661,86 +2301,60 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
         context->device_context->active_stream = context->stream;
     }
 
-    std::vector<ggml_backend_hrx_loom_graph_dispatch> dispatches;
-    dispatches.reserve(cgraph ? cgraph->n_nodes : 0);
+    std::vector<ggml_backend_hrx_loom_graph_dispatch> uncached_dispatches;
+    std::vector<ggml_backend_hrx_loom_graph_dispatch> * dispatches = nullptr;
     size_t transient_buffer_size = 0;
-
-    std::vector<bool> visited_nodes(cgraph ? cgraph->n_nodes : 0, false);
-    for (int i = 0; cgraph && i < cgraph->n_nodes; ++i) {
-        if (visited_nodes[i]) {
-            continue;
-        }
-        const ggml_tensor * node = cgraph->nodes[i];
-        if (ggml_backend_hrx_is_metadata_op(node)) {
-            continue;
-        }
-        bool                                 unsupported = true;
-        ggml_backend_hrx_loom_graph_dispatch dispatch    = {};
-        enum ggml_status status = ggml_backend_hrx_prepare_loom(context, cgraph, i, node, &unsupported, &dispatch);
+    if (context->loom_graph_cache.matches(cgraph)) {
+        dispatches           = &context->loom_graph_cache.dispatches;
+        transient_buffer_size = context->loom_graph_cache.transient_buffer_size;
+    } else {
+        const enum ggml_status status = ggml_backend_hrx_prepare_loom_graph(
+            context, cgraph, &uncached_dispatches, &transient_buffer_size);
         if (status != GGML_STATUS_SUCCESS) {
             return status;
         }
-        if (!unsupported) {
-            const ggml_backend_hrx_loom_consumed_nodes consumed_nodes =
-                ggml_backend_hrx_consumed_nodes_from_plan(&dispatch.plan);
-            if (!ggml_backend_hrx_validate_consumed_nodes(cgraph, i, &consumed_nodes, visited_nodes)) {
-                return GGML_STATUS_FAILED;
-            }
-            ggml_backend_hrx_mark_consumed_nodes(&consumed_nodes, visited_nodes);
-            dispatches.push_back(dispatch);
-            continue;
+        if (cgraph->uid != 0 && cgraph->n_nodes > 0 && !uncached_dispatches.empty()) {
+            context->loom_graph_cache.publish(cgraph, std::move(uncached_dispatches), transient_buffer_size);
+            dispatches = &context->loom_graph_cache.dispatches;
+        } else {
+            dispatches = &uncached_dispatches;
         }
-
-        if (context->device_context->options && context->device_context->options->trace_graph) {
-            ggml_backend_hrx_trace_event(context->device_context->reg_context,
-                                         {
-                                             { "event",  "unsupported_compute_node"    },
-                                             { "device", context->device_context->name },
-                                             { "op",     ggml_op_desc(node)            },
-                                             { "node",   ggml_get_name(node)           },
-            });
-        }
-        GGML_LOG_ERROR("%s: HRX backend has no compute implementation for op %s node=%s\n", __func__,
-                       ggml_op_desc(node), ggml_get_name(node));
-        return GGML_STATUS_FAILED;
     }
 
-    if (!ggml_backend_hrx_assign_graph_transient_offsets(cgraph, dispatches, &transient_buffer_size)) {
-        return GGML_STATUS_FAILED;
-    }
     if (context->device_context->options && context->device_context->options->trace_graph) {
         ggml_backend_hrx_trace_event(context->device_context->reg_context,
                                      {
                                          { "event",                 "loom_transient_plan"         },
                                          { "device",                context->device_context->name },
-                                         { "dispatch_count",        dispatches.size()             },
+                                         { "dispatch_count",        dispatches->size()            },
                                          { "transient_buffer_size", transient_buffer_size         },
         });
     }
 
-    ggml_backend_hrx_buffer_guard transient_buffer;
-    if (transient_buffer_size > 0 &&
-        !GGML_HRX_CHECK(hrx_buffer_allocate(context->stream, transient_buffer_size, HRX_MEMORY_TYPE_DEVICE_LOCAL,
-                                            HRX_BUFFER_USAGE_DEFAULT, &transient_buffer.buffer))) {
+    if (!ggml_backend_hrx_ensure_loom_transient_buffer(context, transient_buffer_size)) {
         return GGML_STATUS_FAILED;
     }
 
-    for (ggml_backend_hrx_loom_graph_dispatch & dispatch : dispatches) {
+    const bool trace_routes = context->device_context->reg_context &&
+                              context->device_context->reg_context->trace_jsonl.is_open();
+    for (ggml_backend_hrx_loom_graph_dispatch & dispatch : *dispatches) {
         if (!ggml_backend_hrx_loom_dispatch_prepared(ggml_backend_hrx_get_loom_catalog(context->device_context),
-                                                     context->stream, &dispatch.plan, transient_buffer.buffer,
+                                                     context->stream, &dispatch.plan, context->loom_transient_buffer,
                                                      transient_buffer_size)) {
             ggml_backend_hrx_synchronize(backend);
             return GGML_STATUS_FAILED;
         }
-        ggml_backend_hrx_trace_event(context->device_context->reg_context,
-                                     {
-                                         { "event",               "loom_route_dispatch"                                        },
-                                         { "device",              context->device_context->name                                },
-                                         { "route_id",            dispatch.response.route_id ? dispatch.response.route_id : "" },
-                                         { "op",                  ggml_op_desc(dispatch.node)                                  },
-                                         { "nelements",           ggml_nelements(dispatch.node)                                },
-                                         { "consumed_node_count", dispatch.plan.consumed_node_count                            },
-        });
+        if (trace_routes) {
+            ggml_backend_hrx_trace_event(context->device_context->reg_context,
+                                         {
+                                             { "event",               "loom_route_dispatch"                                        },
+                                             { "device",              context->device_context->name                                },
+                                             { "route_id",            dispatch.response.route_id ? dispatch.response.route_id : "" },
+                                             { "op",                  ggml_op_desc(dispatch.node)                                  },
+                                             { "nelements",           ggml_nelements(dispatch.node)                                },
+                                             { "consumed_node_count", dispatch.plan.consumed_node_count                            },
+            });
+        }
     }
 
     ggml_backend_hrx_synchronize(backend);
@@ -1812,6 +2426,9 @@ static ggml_backend_t ggml_backend_hrx_device_init_backend(ggml_backend_dev_t de
         /* .device_context = */ device_context,
         /* .stream         = */ stream,
         /* .name           = */ device_context->name,
+        /* .loom_graph_cache = */ {},
+        /* .loom_transient_buffer = */ nullptr,
+        /* .loom_transient_buffer_capacity = */ 0,
     };
     if (!context) {
         hrx_stream_release(stream);
@@ -1835,7 +2452,7 @@ static ggml_backend_t ggml_backend_hrx_device_init_backend(ggml_backend_dev_t de
 }
 
 static bool ggml_backend_hrx_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
-    if (ggml_backend_hrx_is_metadata_op(op)) {
+    if (ggml_backend_hrx_is_metadata_op(op) || ggml_nelements(op) == 0) {
         return true;
     }
     auto * device_context = ggml_backend_hrx_get_device_context(dev);
