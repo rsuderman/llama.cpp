@@ -304,6 +304,19 @@ extern "C" {
 
     typedef struct ggml_backend_sched * ggml_backend_sched_t;
 
+    // A graph owner sees the complete logical graph before ordinary per-operation placement.
+    // Accepting ownership assigns the entire graph to that backend as one scheduler split.
+    enum ggml_backend_graph_claim_mode {
+        GGML_BACKEND_GRAPH_CLAIM_MODE_MEASURE = 0,
+        GGML_BACKEND_GRAPH_CLAIM_MODE_EXECUTE = 1,
+    };
+
+    enum ggml_backend_graph_claim_result {
+        GGML_BACKEND_GRAPH_CLAIM_DECLINED = 0,
+        GGML_BACKEND_GRAPH_CLAIM_ACCEPTED = 1,
+        GGML_BACKEND_GRAPH_CLAIM_ERROR    = 2,
+    };
+
     // Evaluation callback for each node in the graph (set with ggml_backend_sched_set_eval_callback)
     // when ask == true, the scheduler wants to know if the user wants to observe this node
     // this allows the scheduler to batch nodes together in order to evaluate them in a single call
@@ -333,6 +346,10 @@ extern "C" {
 
     GGML_API void                 ggml_backend_sched_set_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node, ggml_backend_t backend);
     GGML_API ggml_backend_t       ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node);
+
+    // Override automatic graph-owner selection. The backend must belong to the scheduler and
+    // implement graph_claim. Passing NULL explicitly disables graph ownership for this scheduler.
+    GGML_API void                 ggml_backend_sched_set_graph_owner(ggml_backend_sched_t sched, ggml_backend_t backend);
 
     // Split graph without allocating it
     GGML_API void                 ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph);

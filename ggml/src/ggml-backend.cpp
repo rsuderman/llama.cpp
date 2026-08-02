@@ -769,6 +769,8 @@ struct ggml_backend_sched_split {
     int n_inputs;
     // graph view of this split
     struct ggml_cgraph graph;
+    bool graph_owned;
+    ggml_backend_graph_plan_t plan;
 };
 
 struct ggml_backend_sched {
@@ -817,6 +819,8 @@ struct ggml_backend_sched {
     size_t context_buffer_size;
 
     bool op_offload;
+
+    int graph_owner_backend_id;
 
     int debug;
 
@@ -1019,9 +1023,22 @@ static void ggml_backend_sched_set_if_supported(ggml_backend_sched_t sched, stru
     }
 }
 
+static void ggml_backend_sched_free_plans(ggml_backend_sched_t sched) {
+    for (int i = 0; i < sched->n_splits; ++i) {
+        struct ggml_backend_sched_split * split = &sched->splits[i];
+        if (split->plan != NULL) {
+            ggml_backend_t backend = sched->backends[split->backend_id];
+            GGML_ASSERT(backend->iface.graph_plan_free != NULL);
+            backend->iface.graph_plan_free(backend, split->plan);
+            split->plan = NULL;
+        }
+    }
+}
+
 // assigns backends to ops and splits the graph into subgraphs that can be computed on the same backend
-void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
+static bool ggml_backend_sched_split_graph_impl(ggml_backend_sched_t sched, struct ggml_cgraph * graph, enum ggml_backend_graph_claim_mode claim_mode) {
     // reset splits
+    ggml_backend_sched_free_plans(sched);
     sched->n_splits = 0;
     sched->n_graph_inputs = 0;
     sched->is_reset = false;
@@ -1041,7 +1058,45 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
 
     graph->uid = ggml_graph_next_uid();
 
+    bool graph_owned = false;
+    if (sched->callback_eval == NULL && sched->graph_owner_backend_id >= 0) {
+        ggml_backend_t owner = sched->backends[sched->graph_owner_backend_id];
+        GGML_ASSERT(owner->iface.graph_claim != NULL);
+        const enum ggml_backend_graph_claim_result result = owner->iface.graph_claim(owner, graph, claim_mode);
+        if (result == GGML_BACKEND_GRAPH_CLAIM_ERROR) {
+            GGML_LOG_ERROR("%s: graph owner %s failed to analyze graph\n", __func__, ggml_backend_name(owner));
+            return false;
+        }
+        if (result == GGML_BACKEND_GRAPH_CLAIM_ACCEPTED) {
+            graph_owned = true;
+            for (int i = 0; i < graph->n_leafs; ++i) {
+                struct ggml_tensor * leaf = graph->leafs[i];
+                ggml_backend_buffer_t buffer = leaf->view_src != NULL ? leaf->view_src->buffer : leaf->buffer;
+                int backend_id = sched->n_backends - 1;
+                if (buffer != NULL) {
+                    backend_id = -1;
+                    for (int b = 0; b < sched->n_backends; ++b) {
+                        if (ggml_backend_supports_buft(sched->backends[b], buffer->buft)) {
+                            backend_id = b;
+                            break;
+                        }
+                    }
+                    if (backend_id < 0) {
+                        GGML_LOG_ERROR("%s: no scheduler backend can access leaf %s buffer type %s\n", __func__, leaf->name,
+                            ggml_backend_buffer_name(buffer));
+                        return false;
+                    }
+                }
+                tensor_backend_id(leaf) = backend_id;
+            }
+            for (int i = 0; i < graph->n_nodes; ++i) {
+                tensor_backend_id(graph->nodes[i]) = sched->graph_owner_backend_id;
+            }
+        }
+    }
+
     // pass 1: assign backends to ops with pre-allocated inputs
+    if (!graph_owned) {
     for (int i = 0; i < graph->n_leafs; i++) {
         struct ggml_tensor * leaf = graph->leafs[i];
         int * leaf_backend_id = &tensor_backend_id(leaf);
@@ -1250,6 +1305,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
         }
         GGML_ASSERT(*cur_backend_id != -1);
     }
+    }
 
     // pass 5: split graph, find tensors that need to be copied
     {
@@ -1266,6 +1322,8 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
         }
         split->i_start = 0;
         split->n_inputs = 0;
+        split->graph_owned = graph_owned;
+        split->plan = NULL;
         int cur_backend_id = split->backend_id;
         for (; i < graph->n_nodes; i++) {
             struct ggml_tensor * node = graph->nodes[i];
@@ -1322,6 +1380,8 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                 split->backend_id = node_backend_id;
                 split->i_start = i;
                 split->n_inputs = 0;
+                split->graph_owned = graph_owned;
+                split->plan = NULL;
                 cur_backend_id = node_backend_id;
             }
 
@@ -1493,6 +1553,12 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
     for (int i = 0; i < sched->n_splits; ++i) {
         sched->splits[i].graph.uid = ggml_graph_next_uid();
     }
+
+    return true;
+}
+
+void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
+    GGML_ASSERT(ggml_backend_sched_split_graph_impl(sched, graph, GGML_BACKEND_GRAPH_CLAIM_MODE_MEASURE));
 }
 
 static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
@@ -1540,6 +1606,25 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
         ggml_gallocr_reserve_n(sched->galloc, &sched->graph, sched->node_backend_ids, sched->leaf_backend_ids);
         if (!ggml_gallocr_alloc_graph(sched->galloc, &sched->graph)) {
             GGML_LOG_ERROR("%s: failed to allocate graph\n", __func__);
+            return false;
+        }
+    }
+
+    for (int i = 0; i < sched->n_splits; ++i) {
+        struct ggml_backend_sched_split * split = &sched->splits[i];
+        if (!split->graph_owned) {
+            continue;
+        }
+        ggml_backend_t backend = sched->backends[split->backend_id];
+        if (backend->iface.graph_plan_create == NULL || backend->iface.graph_plan_compute == NULL || backend->iface.graph_plan_free == NULL) {
+            GGML_LOG_ERROR("%s: graph owner %s does not implement graph plans\n", __func__, ggml_backend_name(backend));
+            ggml_backend_sched_free_plans(sched);
+            return false;
+        }
+        split->plan = backend->iface.graph_plan_create(backend, &split->graph);
+        if (split->plan == NULL) {
+            GGML_LOG_ERROR("%s: graph owner %s failed to create a graph plan\n", __func__, ggml_backend_name(backend));
+            ggml_backend_sched_free_plans(sched);
             return false;
         }
     }
@@ -1684,7 +1769,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
 
         if (!sched->callback_eval) {
-            enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
+            enum ggml_status ec = split->plan != NULL
+                ? split_backend->iface.graph_plan_compute(split_backend, split->plan)
+                : ggml_backend_graph_compute_async(split_backend, &split->graph);
             if (ec != GGML_STATUS_SUCCESS) {
                 return ec;
             }
@@ -1758,6 +1845,7 @@ ggml_backend_sched_t ggml_backend_sched_new(
 
     sched->n_backends = n_backends;
     sched->n_copies = parallel ? GGML_SCHED_MAX_COPIES : 1;
+    sched->graph_owner_backend_id = -1;
 
     // initialize hash table
     // FIXME: needs to be size*2 to account for leafs (do it in graph_split instead)
@@ -1792,6 +1880,10 @@ ggml_backend_sched_t ggml_backend_sched_new(
                 sched->events[b][c] = ggml_backend_event_new(backends[b]->device);
             }
         }
+
+        if (sched->graph_owner_backend_id < 0 && backends[b]->iface.graph_claim != NULL) {
+            sched->graph_owner_backend_id = b;
+        }
     }
 
     sched->galloc = ggml_gallocr_new_n(sched->bufts, n_backends);
@@ -1806,6 +1898,8 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
     if (sched == NULL) {
         return;
     }
+    ggml_backend_sched_synchronize(sched);
+    ggml_backend_sched_free_plans(sched);
     for (int b = 0; b < sched->n_backends; b++) {
         for (int c = 0; c < sched->n_copies; c++) {
             ggml_backend_event_free(sched->events[b][c]);
@@ -1831,6 +1925,9 @@ void ggml_backend_sched_reset(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
     // reset state for the next run
     if (!sched->is_reset) {
+        ggml_backend_sched_synchronize(sched);
+        ggml_backend_sched_free_plans(sched);
+        sched->n_splits = 0;
         ggml_hash_set_reset(&sched->hash_set);
         memset(sched->hv_tensor_backend_ids, -1, sched->hash_set.size * sizeof(sched->hv_tensor_backend_ids[0]));
         memset(sched->hv_tensor_copies,       0, sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
@@ -1848,7 +1945,7 @@ void ggml_backend_sched_reserve_size(ggml_backend_sched_t sched, struct ggml_cgr
 
     ggml_backend_sched_synchronize(sched);
 
-    ggml_backend_sched_split_graph(sched, measure_graph);
+    GGML_ASSERT(ggml_backend_sched_split_graph_impl(sched, measure_graph, GGML_BACKEND_GRAPH_CLAIM_MODE_MEASURE));
 
     ggml_gallocr_reserve_n_size(sched->galloc, &sched->graph, sched->node_backend_ids, sched->leaf_backend_ids, sizes);
 }
@@ -1859,7 +1956,9 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
 
     ggml_backend_sched_synchronize(sched);
 
-    ggml_backend_sched_split_graph(sched, measure_graph);
+    if (!ggml_backend_sched_split_graph_impl(sched, measure_graph, GGML_BACKEND_GRAPH_CLAIM_MODE_MEASURE)) {
+        return false;
+    }
 
     if (!ggml_gallocr_reserve_n(sched->galloc, &sched->graph, sched->node_backend_ids, sched->leaf_backend_ids)) {
         return false;
@@ -1878,7 +1977,9 @@ bool ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched, struct ggml_cgra
     sched->cur_copy = sched->next_copy;
     sched->next_copy = (sched->next_copy + 1) % sched->n_copies;
 
-    ggml_backend_sched_split_graph(sched, graph);
+    if (!ggml_backend_sched_split_graph_impl(sched, graph, GGML_BACKEND_GRAPH_CLAIM_MODE_EXECUTE)) {
+        return false;
+    }
 
     if (!ggml_backend_sched_alloc_splits(sched)) {
         return false;
@@ -1973,6 +2074,21 @@ void ggml_backend_sched_set_tensor_backend(ggml_backend_sched_t sched, struct gg
     tensor_backend_id(node) = backend_index;
     SET_CAUSE(node, "usr");
     sched->is_reset = false;
+}
+
+void ggml_backend_sched_set_graph_owner(ggml_backend_sched_t sched, ggml_backend_t backend) {
+    GGML_ASSERT(sched);
+    GGML_ASSERT(sched->is_reset);
+
+    if (backend == NULL) {
+        sched->graph_owner_backend_id = -1;
+        return;
+    }
+
+    const int backend_index = ggml_backend_sched_backend_id(sched, backend);
+    GGML_ASSERT(backend_index >= 0 && backend_index < sched->n_backends);
+    GGML_ASSERT(backend->iface.graph_claim != NULL);
+    sched->graph_owner_backend_id = backend_index;
 }
 
 ggml_backend_t ggml_backend_sched_get_tensor_backend(ggml_backend_sched_t sched, struct ggml_tensor * node) {
