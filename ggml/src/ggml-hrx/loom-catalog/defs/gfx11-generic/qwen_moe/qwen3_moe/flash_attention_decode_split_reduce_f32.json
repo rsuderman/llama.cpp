@@ -1,0 +1,17 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "qwen3_moe_flash_attention_decode_split_reduce_f32",
+  "op": "GGML_OP_FLASH_ATTN_EXT",
+  "source": "sources/gfx11-generic/qwen_moe/qwen3_moe/flash_attention_decode_split_f32_f16_wmma.loom",
+  "source_format": "loom-text",
+  "symbol": "qwen3_moe_flash_attention_decode_split_reduce_f32",
+  "abi": {"binding_count": 4, "parameter_count": 4, "constant_byte_length": 0},
+  "workgroup_size": [128, 1, 1],
+  "parameters": [],
+  "bindings": [
+    {"name": "partial_max", "access": "read_write"},
+    {"name": "partial_sum", "access": "read"},
+    {"name": "partial_output", "access": "read"},
+    {"name": "output", "access": "write"}
+  ]
+}

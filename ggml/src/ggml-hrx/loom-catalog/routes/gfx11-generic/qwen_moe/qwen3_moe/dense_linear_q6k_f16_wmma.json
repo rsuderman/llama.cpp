@@ -1,0 +1,202 @@
+{
+  "schema": "ggml-hrx-loom-route-v1",
+  "id": "qwen3_moe_dense_linear_q6k_f16_wmma",
+  "format": "loom",
+  "priority": 800016,
+  "match": {
+    "op": "GGML_OP_MUL_MAT",
+    "tensors": {
+      "src0": {
+        "type": "Q6_K",
+        "shape": [
+          "input_size",
+          "output_size",
+          1,
+          1
+        ]
+      },
+      "src1": {
+        "type": "F32",
+        "shape": [
+          "input_size",
+          "token_count",
+          1,
+          1
+        ]
+      },
+      "dst": {
+        "type": "F32",
+        "shape": [
+          "output_size",
+          "token_count",
+          1,
+          1
+        ]
+      }
+    },
+    "attributes": {},
+    "predicates": [
+      {
+        "field": "shape.src0.input_size",
+        "min": 2048
+      },
+      {
+        "field": "shape.src0.input_size",
+        "max": 4096
+      },
+      {
+        "field": "shape.src0.input_size",
+        "multiple_of": 2048
+      },
+      {
+        "field": "shape.src0.output_size",
+        "min": 512
+      },
+      {
+        "field": "shape.src0.output_size",
+        "max": 4096
+      },
+      {
+        "field": "shape.src0.output_size",
+        "multiple_of": 512
+      },
+      {
+        "field": "shape.src1.token_count",
+        "min": 1
+      },
+      {
+        "field": "shape.src1.token_count",
+        "max": 2048
+      },
+      {
+        "field": "shape.src0.input_size",
+        "equals": "shape.src1.input_size"
+      },
+      {
+        "field": "shape.src0.output_size",
+        "equals": "shape.dst.output_size"
+      },
+      {
+        "field": "shape.src1.token_count",
+        "equals": "shape.dst.token_count"
+      },
+      {
+        "contiguous": "src0"
+      },
+      {
+        "contiguous": "src1"
+      },
+      {
+        "contiguous": "dst"
+      },
+      {
+        "no_overlap": [
+          "src0",
+          "dst"
+        ]
+      },
+      {
+        "no_overlap": [
+          "src1",
+          "dst"
+        ]
+      }
+    ]
+  },
+  "derived": {
+    "input_size": {
+      "type": "i64",
+      "field": "shape.src0.input_size"
+    },
+    "output_size": {
+      "type": "i64",
+      "field": "shape.src0.output_size"
+    },
+    "token_count": {
+      "type": "i64",
+      "field": "shape.src1.token_count"
+    },
+    "output_tiles": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.output_size",
+        64
+      ]
+    },
+    "token_tiles": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.token_count",
+        32
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1100",
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "definition": "../../../../defs/gfx11-generic/qwen_moe/qwen3_moe/dense_linear_q6k_f16_wmma.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "qwen3_moe_dense_quantized_input_size",
+            "type": "i64",
+            "source": "derived.input_size"
+          },
+          {
+            "name": "qwen3_moe_dense_quantized_output_size",
+            "type": "i64",
+            "source": "derived.output_size"
+          },
+          {
+            "name": "qwen3_moe_dense_quantized_output_accumulation",
+            "type": "i64",
+            "value": 0
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "input",
+          "tensor": "src1",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "weight",
+          "tensor": "src0",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "output",
+          "tensor": "dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "token_count",
+          "type": "index",
+          "position": 0,
+          "source": "derived.token_count"
+        }
+      ],
+      "dispatch": {
+        "workgroups": [
+          "derived.output_tiles",
+          "derived.token_tiles"
+        ],
+        "workgroup_size": [
+          128,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

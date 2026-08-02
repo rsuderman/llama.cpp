@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "mul_mat_id_q6_k_f32_expert_planes_src1_broadcast_4d",
   "format": "loom",
-  "priority": 103,
+  "priority": 600026,
   "match": {
     "op": "GGML_OP_MUL_MAT_ID",
     "tensors": {

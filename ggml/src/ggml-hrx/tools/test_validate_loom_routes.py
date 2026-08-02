@@ -9,7 +9,9 @@ from shutil import copytree
 
 import generate_loom_catalog as catalog
 import generate_loom_route_impl as route_impl
+import update_loom_route_priorities as priority_update
 import validate_loom_routes as loom
+from utils import hrx_route_priority
 
 
 TOOLS_DIR = Path(__file__).resolve().parent
@@ -332,6 +334,104 @@ def expect_derived_math_valid():
             "std::max(static_cast<int64_t>(derived_total_size), static_cast<int64_t>(32));"
         ) not in impl:
             raise AssertionError("derived-math: expected maximum expression")
+
+
+def route_for_priority(schema, route_id, ops=None):
+    route = {
+        "schema": schema,
+        "id": route_id,
+        "format": "loom",
+        "priority": 1,
+        "derived": {},
+        "architectures": ["gfx1100"],
+        "dispatches": [{"name": "dispatch"}],
+    }
+    if ops is None:
+        route["match"] = {"op": "GGML_OP_MUL", "tensors": {}, "attributes": {}}
+    else:
+        route["match"] = {
+            "ops": {f"op{i}": {"op": op, "tensors": {}, "attributes": {}} for i, op in enumerate(ops)},
+            "anchors": ["op0"],
+            "predicates": [{"field": "derived.n", "equals": 1}],
+        }
+    return route
+
+
+def expect_route_priority_order():
+    model_fusion = hrx_route_priority.route_priority(
+        "routes/gfx1100/test_family/test_model/big.json",
+        route_for_priority(
+            "ggml-hrx-loom-fusion-route-v2",
+            "test_model_big",
+            ["GGML_OP_MUL"] * 10,
+        ),
+    )
+    gfx_specific = hrx_route_priority.route_priority(
+        "routes/gfx1100/mul_mat/f32_f32/tiled_gfx1100.json",
+        route_for_priority("ggml-hrx-loom-route-v1", "mul_mat_tiled_gfx1100"),
+    )
+    gfx_generic = hrx_route_priority.route_priority(
+        "routes/gfx1100/flash_attn_ext/f32_f16/tiled_decode.json",
+        route_for_priority("ggml-hrx-loom-route-v1", "flash_attn_ext_tiled_decode"),
+    )
+    generic_fusion = hrx_route_priority.route_priority(
+        "routes/generic/mul/f32/mul_add.json",
+        route_for_priority(
+            "ggml-hrx-loom-fusion-route-v2",
+            "mul_add",
+            ["GGML_OP_MUL", "GGML_OP_ADD"],
+        ),
+    )
+
+    if not model_fusion.priority > gfx_specific.priority > gfx_generic.priority > generic_fusion.priority:
+        raise AssertionError("route-priority: expected model fusion > gfx specific > gfx generic > generic")
+
+
+def expect_terminal_output_transients_raise_priority():
+    base = route_for_priority(
+        "ggml-hrx-loom-fusion-route-v2",
+        "test_route_a",
+        ["GGML_OP_MUL", "GGML_OP_ADD", "GGML_OP_MUL"],
+    )
+    terminal = route_for_priority(
+        "ggml-hrx-loom-fusion-route-v2",
+        "test_route_b",
+        ["GGML_OP_MUL", "GGML_OP_ADD", "GGML_OP_MUL"],
+    )
+    terminal["dispatches"] = [
+        {
+            "name": "dispatch",
+            "buffers": [
+                {"name": "internal", "kind": "output", "transient": "tmp0"},
+            ],
+        },
+        {
+            "name": "dispatch",
+            "buffers": [
+                {"name": "internal", "kind": "input", "transient": "tmp0"},
+                {"name": "published", "kind": "output", "transient": "tmp1"},
+            ],
+        },
+    ]
+
+    base_priority = hrx_route_priority.route_priority("routes/gfx1100/test_family/test_model/a.json", base)
+    terminal_priority = hrx_route_priority.route_priority("routes/gfx1100/test_family/test_model/b.json", terminal)
+
+    if terminal_priority.priority <= base_priority.priority:
+        raise AssertionError("route-priority: expected terminal output transient to raise priority")
+    if "terminal output transients: 1" not in terminal_priority.reasons:
+        raise AssertionError("route-priority: expected terminal output transient reason")
+
+
+def expect_priority_replacement_preserves_route_text():
+    with tempfile.TemporaryDirectory(prefix="priority-replace-") as tmpdir:
+        route_path = Path(tmpdir) / "route.json"
+        route_path.write_text('{\n  "id": "test",\n  "priority": 7,\n  "other": 1\n}\n', encoding="utf-8")
+        if not priority_update.replace_priority_text(route_path, 42):
+            raise AssertionError("priority-replace: expected priority update")
+        text = route_path.read_text(encoding="utf-8")
+        if text != '{\n  "id": "test",\n  "priority": 42,\n  "other": 1\n}\n':
+            raise AssertionError("priority-replace: unexpected text rewrite")
 
 
 def expect_view_field_predicates_valid():
@@ -999,6 +1099,9 @@ def main():
     expect_dependency_generation_valid()
     expect_index_scalar_valid()
     expect_derived_math_valid()
+    expect_route_priority_order()
+    expect_terminal_output_transients_raise_priority()
+    expect_priority_replacement_preserves_route_text()
     expect_view_field_predicates_valid()
     expect_fusion_reshape_valid()
     expect_multi_step_generation_valid()

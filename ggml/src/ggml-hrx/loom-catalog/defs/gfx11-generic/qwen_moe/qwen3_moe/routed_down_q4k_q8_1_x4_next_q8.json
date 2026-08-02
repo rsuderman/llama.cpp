@@ -1,0 +1,39 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "qwen3_moe_routed_down_q4k_q8_1_x4_next_q8",
+  "op": "GGML_OP_MUL_MAT_ID",
+  "source": "sources/gfx11-generic/qwen_moe/qwen3_moe/routed_down_q4k.loom",
+  "source_format": "loom-text",
+  "symbol": "qwen3_moe_routed_down_q4k_q8_1_x4_next_q8",
+  "dependencies": [
+    {
+      "source": "sources/gfx11-generic/qwen_moe/qwen3_moe/q4k_q8_1_x4_row_lane.loom",
+      "source_format": "loom-text"
+    },
+    {
+      "source": "sources/gfx11-generic/qwen_moe/qwen3_moe/attention_prepare_quantized.loom",
+      "source_format": "loom-text"
+    }
+  ],
+  "abi": {"binding_count": 9, "parameter_count": 15, "constant_byte_length": 24},
+  "workgroup_size": [256, 1, 1],
+  "parameters": [
+    {"name": "token_count", "type": "index"},
+    {"name": "input_size", "type": "index"},
+    {"name": "route_count", "type": "index"},
+    {"name": "route_id_stride", "type": "index"},
+    {"name": "expert_count", "type": "index"},
+    {"name": "output_size", "type": "index"}
+  ],
+  "bindings": [
+    {"name": "q8_input", "access": "read"},
+    {"name": "route_ids", "access": "read"},
+    {"name": "route_weights", "access": "read"},
+    {"name": "weight", "access": "read"},
+    {"name": "output", "access": "read_write"},
+    {"name": "norm_weight", "access": "read"},
+    {"name": "normalized_output", "access": "write"},
+    {"name": "completion_counter", "access": "read_write"},
+    {"name": "next_q8_output", "access": "write"}
+  ]
+}

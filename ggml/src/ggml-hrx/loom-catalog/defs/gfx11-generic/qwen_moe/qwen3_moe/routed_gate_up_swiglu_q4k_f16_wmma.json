@@ -1,0 +1,31 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma",
+  "op": "GGML_OP_MUL_MAT_ID",
+  "source": "sources/gfx11-generic/qwen_moe/qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+  "source_format": "loom-text",
+  "symbol": "qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma",
+  "dependencies": [
+    {
+      "source": "sources/gfx11-generic/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+      "source_format": "loom-text"
+    },
+    {
+      "source": "sources/gfx11-generic/qwen_moe/ggml/quantize_q8_1_x4.loom",
+      "source_format": "loom-text"
+    }
+  ],
+  "abi": {"binding_count": 6, "parameter_count": 7, "constant_byte_length": 4},
+  "workgroup_size": [256, 1, 1],
+  "parameters": [
+    {"name": "token_count", "type": "index"}
+  ],
+  "bindings": [
+    {"name": "input", "access": "read"},
+    {"name": "expert_table", "access": "read"},
+    {"name": "partition_table", "access": "read"},
+    {"name": "gate_weight", "access": "read"},
+    {"name": "up_weight", "access": "read"},
+    {"name": "output", "access": "write"}
+  ]
+}

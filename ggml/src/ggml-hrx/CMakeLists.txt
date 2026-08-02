@@ -248,28 +248,28 @@ set(GGML_HRX_LOOM_ROUTE_FILES
         routes/generic/get_rows/q4_k_f32/contiguous_rows_4d.json
         routes/generic/set_rows/f32_f16/cont.json
         routes/generic/swiglu/f32/split_strided_4d.json
-        routes/gfx1100/swiglu/f32/qwen3_moe_routed_swiglu_f32.json
-        routes/gfx1100/qwen_moe/qwen3_moe/router_projection_top8_fused_decode_f32.json
-        routes/gfx1100/qwen_moe/qwen3_moe/router_projection_f32_four_row_wave32_bringup_workaround.json
-        routes/gfx1100/qwen_moe/qwen3_moe/router_top8_f32_stride_bringup_workaround.json
-        routes/gfx1100/qwen_moe/qwen3_moe/dense_linear_q4k_q8_1_x4_next_q8.json
-        routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q4k_q8_1_x4_next_q8.json
-        routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q6k_q8_1_x4_next_q8.json
-        routes/gfx1100/qwen_moe/qwen3_moe/dense_linear_q4k_f16_wmma.json
-        routes/gfx1100/qwen_moe/qwen3_moe/dense_linear_q6k_f16_wmma.json
-        routes/gfx1100/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k_q8_1_x4_next_q8.json
-        routes/gfx1100/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k_f16_wmma_prefill_512_partition_fused.json
-        routes/gfx1100/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k_f16_wmma.json
-        routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q4k_f16_wmma_next_rmsnorm.json
-        routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q6k_f16_wmma_next_rmsnorm.json
-        routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q4k_f16_wmma_residual.json
-        routes/gfx1100/qwen_moe/qwen3_moe/routed_down_q6k_f16_wmma_residual.json
-        routes/gfx1100/qwen_moe/qwen3_moe/attention_qkv_postprocess_fused_decode_q4.json
-        routes/gfx1100/qwen_moe/qwen3_moe/attention_qkv_postprocess_fused_decode_q6.json
-        routes/gfx1100/qwen_moe/qwen3_moe/attention_postprocess_f32_f16.json
-        routes/gfx1100/qwen_moe/qwen3_moe/flash_attention_f32_f16_wmma.json
-        routes/gfx1100/qwen_moe/qwen3_moe/flash_attention_decode_split_f32_f16_wmma_short.json
-        routes/gfx1100/qwen_moe/qwen3_moe/flash_attention_decode_split_f32_f16_wmma_long.json
+        routes/gfx11-generic/swiglu/f32/qwen3_moe_routed_swiglu_f32.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/router_projection_top8_fused_decode_f32.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/router_projection_f32_four_row_wave32_bringup_workaround.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/router_top8_f32_stride_bringup_workaround.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/dense_linear_q4k_q8_1_x4_next_q8.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/routed_down_q4k_q8_1_x4_next_q8.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/routed_down_q6k_q8_1_x4_next_q8.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/dense_linear_q4k_f16_wmma.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/dense_linear_q6k_f16_wmma.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k_q8_1_x4_next_q8.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k_f16_wmma_prefill_512_partition_fused.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k_f16_wmma.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/routed_down_q4k_f16_wmma_next_rmsnorm.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/routed_down_q6k_f16_wmma_next_rmsnorm.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/routed_down_q4k_f16_wmma_residual.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/routed_down_q6k_f16_wmma_residual.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/attention_qkv_postprocess_fused_decode_q4.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/attention_qkv_postprocess_fused_decode_q6.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/attention_postprocess_f32_f16.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/flash_attention_f32_f16_wmma.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/flash_attention_decode_split_f32_f16_wmma_short.json
+        routes/gfx11-generic/qwen_moe/qwen3_moe/flash_attention_decode_split_f32_f16_wmma_long.json
         routes/gfx1100/flash_attn_ext/f32_f16/tiled_decode_d128_h32_hkv4_kv512_40960_t1.json
         routes/gfx1100/flash_attn_ext/f32_f16/tiled_decode_d128_h32_hkv8_kv512_8192_t1.json
         routes/gfx1100/flash_attn_ext/f32_f16/fallback_decode_plain_mask_t1.json

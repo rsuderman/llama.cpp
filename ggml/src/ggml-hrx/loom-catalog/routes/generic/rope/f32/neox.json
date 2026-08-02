@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "rope_f32_neox",
   "format": "loom",
-  "priority": 101,
+  "priority": 600036,
   "match": {
     "op": "GGML_OP_ROPE",
     "tensors": {

@@ -1,0 +1,27 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "qwen3_moe_attention_postprocess_f32_f16",
+  "op": "GGML_OP_RMS_NORM",
+  "source": "sources/gfx11-generic/qwen_moe/qwen3_moe/attention_postprocess_f32_f16.loom",
+  "source_format": "loom-text",
+  "symbol": "qwen3_moe_attention_postprocess_f32_f16",
+  "abi": {"binding_count": 11, "parameter_count": 13, "constant_byte_length": 8},
+  "workgroup_size": [32, 1, 1],
+  "parameters": [
+    {"name": "token_count", "type": "index"},
+    {"name": "cache_row_count", "type": "index"}
+  ],
+  "bindings": [
+    {"name": "positions", "access": "read"},
+    {"name": "key_cache_indices", "access": "read"},
+    {"name": "value_cache_indices", "access": "read"},
+    {"name": "query_input", "access": "read"},
+    {"name": "key_input", "access": "read"},
+    {"name": "value_input", "access": "read"},
+    {"name": "query_norm_weight", "access": "read"},
+    {"name": "key_norm_weight", "access": "read"},
+    {"name": "query_output", "access": "write"},
+    {"name": "key_cache", "access": "read_write"},
+    {"name": "value_cache", "access": "read_write"}
+  ]
+}

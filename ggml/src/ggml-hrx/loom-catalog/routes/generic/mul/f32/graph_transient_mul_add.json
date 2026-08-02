@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "mul_add_f32_graph_transient_demo",
   "format": "loom",
-  "priority": 1000,
+  "priority": 601035,
   "tensors": {
     "x": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"], "layout": "contiguous"},
     "scale": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"], "layout": "contiguous"},

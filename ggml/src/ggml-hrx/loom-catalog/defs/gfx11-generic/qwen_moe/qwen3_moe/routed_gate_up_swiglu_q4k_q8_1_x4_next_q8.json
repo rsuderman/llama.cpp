@@ -1,0 +1,32 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8",
+  "op": "GGML_OP_MUL_MAT_ID",
+  "source": "sources/gfx11-generic/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+  "source_format": "loom-text",
+  "symbol": "qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8",
+  "dependencies": [
+    {
+      "source": "sources/gfx11-generic/qwen_moe/ggml/quantize_q8_1_x4.loom",
+      "source_format": "loom-text"
+    }
+  ],
+  "abi": {"binding_count": 7, "parameter_count": 12, "constant_byte_length": 20},
+  "workgroup_size": [32, 1, 1],
+  "parameters": [
+    {"name": "token_count", "type": "index"},
+    {"name": "route_count", "type": "index"},
+    {"name": "route_stride", "type": "index"},
+    {"name": "expert_count", "type": "index"},
+    {"name": "output_size", "type": "index"}
+  ],
+  "bindings": [
+    {"name": "q8_input", "access": "read"},
+    {"name": "route_ids", "access": "read"},
+    {"name": "gate_weight", "access": "read"},
+    {"name": "up_weight", "access": "read"},
+    {"name": "output", "access": "write"},
+    {"name": "completion_counters", "access": "read_write"},
+    {"name": "next_q8_output", "access": "write"}
+  ]
+}

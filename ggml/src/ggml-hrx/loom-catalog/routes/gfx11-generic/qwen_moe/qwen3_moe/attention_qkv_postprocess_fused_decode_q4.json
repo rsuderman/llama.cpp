@@ -1,0 +1,1149 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "qwen3_moe_attention_qkv_postprocess_fused_decode_q4",
+  "format": "loom",
+  "priority": 903303,
+  "tensors": {
+    "attention_input": {
+      "type": "F32",
+      "shape": [
+        "hidden_size",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "attention_rms": {
+      "type": "F32",
+      "shape": [
+        "hidden_size",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "attention_norm_weight": {
+      "type": "F32",
+      "shape": [
+        "hidden_size",
+        1,
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "attention_normalized": {
+      "type": "F32",
+      "shape": [
+        "hidden_size",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "query_weight": {
+      "type": "Q4_K",
+      "shape": [
+        "hidden_size",
+        "query_size",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "query_raw": {
+      "type": "F32",
+      "shape": [
+        "query_size",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "query_input": {
+      "type": "F32",
+      "shape": [
+        "head_size",
+        "query_head_count",
+        "token_count",
+        1
+      ]
+    },
+    "query_rms": {
+      "type": "F32",
+      "shape": [
+        "head_size",
+        "query_head_count",
+        "token_count",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "query_norm_weight": {
+      "type": "F32",
+      "shape": [
+        "head_size",
+        1,
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "query_weighted": {
+      "type": "F32",
+      "shape": [
+        "head_size",
+        "query_head_count",
+        "token_count",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "positions": {
+      "type": "I32",
+      "shape": [
+        "token_count",
+        1,
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "query_output": {
+      "type": "F32",
+      "shape": [
+        "head_size",
+        "query_head_count",
+        "token_count",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "key_weight": {
+      "type": "Q4_K",
+      "shape": [
+        "hidden_size",
+        "key_value_size",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "key_raw": {
+      "type": "F32",
+      "shape": [
+        "key_value_size",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "key_input": {
+      "type": "F32",
+      "shape": [
+        "head_size",
+        "key_value_head_count",
+        "token_count",
+        1
+      ]
+    },
+    "key_rms": {
+      "type": "F32",
+      "shape": [
+        "head_size",
+        "key_value_head_count",
+        "token_count",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "key_norm_weight": {
+      "type": "F32",
+      "shape": [
+        "head_size",
+        1,
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "key_weighted": {
+      "type": "F32",
+      "shape": [
+        "head_size",
+        "key_value_head_count",
+        "token_count",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "key_output": {
+      "type": "F32",
+      "shape": [
+        "head_size",
+        "key_value_head_count",
+        "token_count",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "key_rows": {
+      "type": "F32",
+      "shape": [
+        "key_value_size",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "key_cache_indices": {
+      "type": "I64",
+      "shape": [
+        "token_count",
+        1,
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "key_cache": {
+      "type": "F16",
+      "shape": [
+        "key_value_size",
+        "cache_row_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "key_cache_output": {
+      "type": "F16",
+      "shape": [
+        "key_value_size",
+        "cache_row_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "value_weight": {
+      "type": "Q4_K",
+      "shape": [
+        "hidden_size",
+        "key_value_size",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "value_raw": {
+      "type": "F32",
+      "shape": [
+        "key_value_size",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "value_input": {
+      "type": "F32",
+      "shape": [
+        "head_size",
+        "key_value_head_count",
+        "token_count",
+        1
+      ]
+    },
+    "value_rows": {
+      "type": "F32",
+      "shape": [
+        "key_value_size",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "value_cache_indices": {
+      "type": "I64",
+      "shape": [
+        "token_count",
+        1,
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "value_cache": {
+      "type": "F16",
+      "shape": [
+        "key_value_size",
+        "cache_row_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "value_cache_output": {
+      "type": "F16",
+      "shape": [
+        "key_value_size",
+        "cache_row_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    }
+  },
+  "match": {
+    "reorder": true,
+    "anchors": [
+      "attention_norm"
+    ],
+    "ops": {
+      "attention_norm": {
+        "op": "GGML_OP_RMS_NORM",
+        "tensors": {
+          "src0": "attention_input",
+          "dst": "attention_rms"
+        },
+        "attributes": {
+          "eps": {
+            "type": "f32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "attention_mul": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "attention_rms",
+          "src1": "attention_norm_weight",
+          "dst": "attention_normalized"
+        },
+        "attributes": {}
+      },
+      "query_projection": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {
+          "src0": "query_weight",
+          "src1": "attention_normalized",
+          "dst": "query_raw"
+        },
+        "attributes": {}
+      },
+      "query_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "query_raw",
+          "dst": "query_input"
+        },
+        "attributes": {}
+      },
+      "query_norm": {
+        "op": "GGML_OP_RMS_NORM",
+        "tensors": {
+          "src0": "query_input",
+          "dst": "query_rms"
+        },
+        "attributes": {
+          "eps": {
+            "type": "f32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "query_mul": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "query_rms",
+          "src1": "query_norm_weight",
+          "dst": "query_weighted"
+        },
+        "attributes": {}
+      },
+      "query_rope": {
+        "op": "GGML_OP_ROPE",
+        "tensors": {
+          "src0": "query_weighted",
+          "src1": "positions",
+          "dst": "query_output"
+        },
+        "attributes": {
+          "attn_factor": {
+            "type": "f32",
+            "source": "op_param.8"
+          },
+          "beta_fast": {
+            "type": "f32",
+            "source": "op_param.9"
+          },
+          "beta_slow": {
+            "type": "f32",
+            "source": "op_param.10"
+          },
+          "ext_factor": {
+            "type": "f32",
+            "source": "op_param.7"
+          },
+          "freq_base": {
+            "type": "f32",
+            "source": "op_param.5"
+          },
+          "freq_scale": {
+            "type": "f32",
+            "source": "op_param.6"
+          },
+          "mode": {
+            "type": "i32",
+            "source": "op_param.2"
+          },
+          "n_ctx_orig": {
+            "type": "i32",
+            "source": "op_param.4"
+          },
+          "n_dims": {
+            "type": "i32",
+            "source": "op_param.1"
+          }
+        }
+      },
+      "value_projection": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {
+          "src0": "value_weight",
+          "src1": "attention_normalized",
+          "dst": "value_raw"
+        },
+        "attributes": {}
+      },
+      "value_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "value_raw",
+          "dst": "value_input"
+        },
+        "attributes": {}
+      },
+      "key_projection": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {
+          "src0": "key_weight",
+          "src1": "attention_normalized",
+          "dst": "key_raw"
+        },
+        "attributes": {}
+      },
+      "key_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "key_raw",
+          "dst": "key_input"
+        },
+        "attributes": {}
+      },
+      "key_norm": {
+        "op": "GGML_OP_RMS_NORM",
+        "tensors": {
+          "src0": "key_input",
+          "dst": "key_rms"
+        },
+        "attributes": {
+          "eps": {
+            "type": "f32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "key_mul": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "key_rms",
+          "src1": "key_norm_weight",
+          "dst": "key_weighted"
+        },
+        "attributes": {}
+      },
+      "key_rope": {
+        "op": "GGML_OP_ROPE",
+        "tensors": {
+          "src0": "key_weighted",
+          "src1": "positions",
+          "dst": "key_output"
+        },
+        "attributes": {
+          "attn_factor": {
+            "type": "f32",
+            "source": "op_param.8"
+          },
+          "beta_fast": {
+            "type": "f32",
+            "source": "op_param.9"
+          },
+          "beta_slow": {
+            "type": "f32",
+            "source": "op_param.10"
+          },
+          "ext_factor": {
+            "type": "f32",
+            "source": "op_param.7"
+          },
+          "freq_base": {
+            "type": "f32",
+            "source": "op_param.5"
+          },
+          "freq_scale": {
+            "type": "f32",
+            "source": "op_param.6"
+          },
+          "mode": {
+            "type": "i32",
+            "source": "op_param.2"
+          },
+          "n_ctx_orig": {
+            "type": "i32",
+            "source": "op_param.4"
+          },
+          "n_dims": {
+            "type": "i32",
+            "source": "op_param.1"
+          }
+        }
+      },
+      "key_view": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "key_output",
+          "dst": "key_rows"
+        },
+        "attributes": {}
+      },
+      "key_set_rows": {
+        "op": "GGML_OP_SET_ROWS",
+        "tensors": {
+          "src0": "key_rows",
+          "src1": "key_cache_indices",
+          "src2": "key_cache",
+          "dst": "key_cache_output"
+        },
+        "attributes": {}
+      },
+      "value_view": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "value_input",
+          "dst": "value_rows"
+        },
+        "attributes": {}
+      },
+      "value_set_rows": {
+        "op": "GGML_OP_SET_ROWS",
+        "tensors": {
+          "src0": "value_rows",
+          "src1": "value_cache_indices",
+          "src2": "value_cache",
+          "dst": "value_cache_output"
+        },
+        "attributes": {}
+      }
+    },
+    "predicates": [
+      {
+        "field": "shape.attention_input.hidden_size",
+        "equals": 2048
+      },
+      {
+        "field": "shape.attention_input.token_count",
+        "equals": -1
+      },
+      {
+        "field": "shape.query_input.head_size",
+        "equals": 128
+      },
+      {
+        "field": "shape.query_input.query_head_count",
+        "equals": 32
+      },
+      {
+        "field": "shape.key_input.key_value_head_count",
+        "equals": 4
+      },
+      {
+        "field": "shape.key_cache.cache_row_count",
+        "min": 1
+      },
+      {
+        "field": "shape.key_cache.cache_row_count",
+        "max": 1048576
+      },
+      {
+        "field": "shape.query_weight.hidden_size",
+        "equals": "shape.attention_input.hidden_size"
+      },
+      {
+        "field": "shape.key_weight.hidden_size",
+        "equals": "shape.attention_input.hidden_size"
+      },
+      {
+        "field": "shape.value_weight.hidden_size",
+        "equals": "shape.attention_input.hidden_size"
+      },
+      {
+        "field": "shape.query_weight.query_size",
+        "equals": "derived.query_size"
+      },
+      {
+        "field": "shape.key_weight.key_value_size",
+        "equals": "derived.key_value_size"
+      },
+      {
+        "field": "shape.value_weight.key_value_size",
+        "equals": "derived.key_value_size"
+      },
+      {
+        "field": "shape.query_raw.query_size",
+        "equals": "derived.query_size"
+      },
+      {
+        "field": "shape.key_raw.key_value_size",
+        "equals": "derived.key_value_size"
+      },
+      {
+        "field": "shape.value_raw.key_value_size",
+        "equals": "derived.key_value_size"
+      },
+      {
+        "field": "shape.key_rows.key_value_size",
+        "equals": "derived.key_value_size"
+      },
+      {
+        "field": "shape.value_rows.key_value_size",
+        "equals": "derived.key_value_size"
+      },
+      {
+        "field": "shape.key_cache.key_value_size",
+        "equals": "derived.key_value_size"
+      },
+      {
+        "field": "shape.value_cache.key_value_size",
+        "equals": "derived.key_value_size"
+      },
+      {
+        "field": "attribute.attention_norm.eps",
+        "min": 9e-07
+      },
+      {
+        "field": "attribute.attention_norm.eps",
+        "max": 1.1e-06
+      },
+      {
+        "field": "attribute.query_norm.eps",
+        "equals": "attribute.attention_norm.eps"
+      },
+      {
+        "field": "attribute.key_norm.eps",
+        "equals": "attribute.attention_norm.eps"
+      },
+      {
+        "field": "attribute.query_rope.mode",
+        "equals": 2
+      },
+      {
+        "field": "attribute.key_rope.mode",
+        "equals": "attribute.query_rope.mode"
+      },
+      {
+        "field": "attribute.query_rope.n_dims",
+        "equals": "shape.query_input.head_size"
+      },
+      {
+        "field": "attribute.key_rope.n_dims",
+        "equals": "attribute.query_rope.n_dims"
+      },
+      {
+        "field": "attribute.key_rope.freq_base",
+        "equals": "attribute.query_rope.freq_base"
+      },
+      {
+        "field": "attribute.key_rope.freq_scale",
+        "equals": "attribute.query_rope.freq_scale"
+      },
+      {
+        "field": "attribute.query_rope.ext_factor",
+        "equals": 0.0
+      },
+      {
+        "field": "attribute.key_rope.ext_factor",
+        "equals": 0.0
+      },
+      {
+        "field": "attribute.query_rope.attn_factor",
+        "equals": 1.0
+      },
+      {
+        "field": "attribute.key_rope.attn_factor",
+        "equals": 1.0
+      },
+      {
+        "field": "tensor.query_input.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.query_input.element_strides.1",
+        "equals": "shape.query_input.head_size"
+      },
+      {
+        "field": "tensor.query_input.element_strides.2",
+        "equals": "derived.query_size"
+      },
+      {
+        "field": "tensor.key_input.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.key_input.element_strides.1",
+        "equals": "shape.key_input.head_size"
+      },
+      {
+        "field": "tensor.key_input.element_strides.2",
+        "equals": "derived.key_value_size"
+      },
+      {
+        "field": "tensor.value_input.element_strides.0",
+        "equals": 1
+      },
+      {
+        "field": "tensor.value_input.element_strides.1",
+        "equals": "shape.value_input.head_size"
+      },
+      {
+        "field": "tensor.value_input.element_strides.2",
+        "equals": "derived.key_value_size"
+      },
+      {
+        "field": "tensor.query_input.view_source",
+        "equals": "tensor.query_raw"
+      },
+      {
+        "field": "tensor.key_input.view_source",
+        "equals": "tensor.key_raw"
+      },
+      {
+        "field": "tensor.value_input.view_source",
+        "equals": "tensor.value_raw"
+      },
+      {
+        "field": "tensor.key_rows.view_source",
+        "equals": "tensor.key_output"
+      },
+      {
+        "field": "tensor.value_rows.view_source",
+        "equals": "tensor.value_raw"
+      },
+      {
+        "field": "tensor.key_cache_output.view_source",
+        "equals": "tensor.key_cache"
+      },
+      {
+        "field": "tensor.value_cache_output.view_source",
+        "equals": "tensor.value_cache"
+      },
+      {
+        "elided": [
+          "attention_rms",
+          "attention_normalized",
+          "query_input",
+          "query_rms",
+          "query_weighted",
+          "key_input",
+          "key_rms",
+          "key_weighted",
+          "key_output",
+          "key_rows",
+          "value_input",
+          "value_rows"
+        ]
+      },
+      {
+        "no_overlap": [
+          "attention_input",
+          "query_raw"
+        ]
+      },
+      {
+        "no_overlap": [
+          "attention_input",
+          "key_raw"
+        ]
+      },
+      {
+        "no_overlap": [
+          "attention_input",
+          "value_raw"
+        ]
+      },
+      {
+        "no_overlap": [
+          "query_weight",
+          "query_raw"
+        ]
+      },
+      {
+        "no_overlap": [
+          "key_weight",
+          "key_raw"
+        ]
+      },
+      {
+        "no_overlap": [
+          "value_weight",
+          "value_raw"
+        ]
+      },
+      {
+        "no_overlap": [
+          "query_raw",
+          "query_output"
+        ]
+      },
+      {
+        "no_overlap": [
+          "key_raw",
+          "key_cache_output"
+        ]
+      },
+      {
+        "no_overlap": [
+          "value_raw",
+          "value_cache_output"
+        ]
+      }
+    ]
+  },
+  "derived": {
+    "token_count": {
+      "type": "i64",
+      "field": "shape.attention_input.token_count"
+    },
+    "query_size": {
+      "type": "i64",
+      "product": [
+        "shape.query_input.head_size",
+        "shape.query_input.query_head_count"
+      ]
+    },
+    "key_value_size": {
+      "type": "i64",
+      "product": [
+        "shape.key_input.head_size",
+        "shape.key_input.key_value_head_count"
+      ]
+    },
+    "key_value_domain_count": {
+      "type": "i64",
+      "product": [
+        "shape.key_input.key_value_head_count",
+        2
+      ]
+    },
+    "head_domain_count": {
+      "type": "i64",
+      "sum": [
+        "shape.query_input.query_head_count",
+        "derived.key_value_domain_count"
+      ]
+    },
+    "q8_group_count": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.attention_input.hidden_size",
+        128
+      ]
+    },
+    "q8_bytes_per_token": {
+      "type": "i64",
+      "product": [
+        "derived.q8_group_count",
+        144
+      ]
+    },
+    "q8_bytes": {
+      "type": "i64",
+      "product": [
+        "derived.q8_bytes_per_token",
+        "derived.token_count"
+      ]
+    },
+    "completion_counter_bytes": {
+      "type": "i64",
+      "product": [
+        "derived.head_domain_count",
+        4
+      ]
+    },
+    "qkv_output_size": {
+      "type": "i64",
+      "sum": [
+        "derived.query_size",
+        "derived.key_value_size",
+        "derived.key_value_size"
+      ]
+    },
+    "output_tiles": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.qkv_output_size",
+        8
+      ]
+    }
+  },
+  "transient_buffers": {
+    "q8_input": {
+      "size": "derived.q8_bytes"
+    },
+    "completion_counters": {
+      "size": "derived.completion_counter_bytes"
+    }
+  },
+  "architectures": [
+    "gfx1100",
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "prepare_q8",
+      "definition": "../../../../defs/gfx11-generic/qwen_moe/qwen3_moe/attention_rmsnorm_quantize_q8_1_x4.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "qwen3_moe_model_hidden_size",
+            "type": "i64",
+            "source": "shape.attention_input.hidden_size"
+          },
+          {
+            "name": "qwen3_moe_model_rms_epsilon",
+            "type": "f32",
+            "source": "attribute.attention_norm.eps"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "input",
+          "tensor": "attention_input",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "weight",
+          "tensor": "attention_norm_weight",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "output",
+          "transient": "q8_input",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "token_count",
+          "type": "index",
+          "position": 0,
+          "source": "derived.token_count"
+        }
+      ],
+      "dispatch": {
+        "workgroups": [
+          "derived.token_count"
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "qkv_postprocess",
+      "definition": "../../../../defs/gfx11-generic/qwen_moe/qwen3_moe/attention_qkv_postprocess_fused_decode.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "qwen3_moe_model_hidden_size",
+            "type": "i64",
+            "source": "shape.attention_input.hidden_size"
+          },
+          {
+            "name": "qwen3_moe_attention_query_size",
+            "type": "i64",
+            "source": "derived.query_size"
+          },
+          {
+            "name": "qwen3_moe_attention_key_value_size",
+            "type": "i64",
+            "source": "derived.key_value_size"
+          },
+          {
+            "name": "qwen3_moe_attention_value_uses_q6",
+            "type": "i64",
+            "value": 0
+          },
+          {
+            "name": "qwen3_moe_attention_head_size",
+            "type": "i64",
+            "source": "shape.query_input.head_size"
+          },
+          {
+            "name": "qwen3_moe_attention_freq_base",
+            "type": "f32",
+            "source": "attribute.query_rope.freq_base"
+          },
+          {
+            "name": "qwen3_moe_attention_freq_scale",
+            "type": "f32",
+            "source": "attribute.query_rope.freq_scale"
+          },
+          {
+            "name": "qwen3_moe_model_rms_epsilon",
+            "type": "f32",
+            "source": "attribute.query_norm.eps"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "q8_input",
+          "transient": "q8_input",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "query_weight",
+          "tensor": "query_weight",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "key_weight",
+          "tensor": "key_weight",
+          "position": 2,
+          "kind": "input"
+        },
+        {
+          "name": "value_weight",
+          "tensor": "value_weight",
+          "position": 3,
+          "kind": "input"
+        },
+        {
+          "name": "positions",
+          "tensor": "positions",
+          "position": 4,
+          "kind": "input"
+        },
+        {
+          "name": "key_cache_indices",
+          "tensor": "key_cache_indices",
+          "position": 5,
+          "kind": "input"
+        },
+        {
+          "name": "value_cache_indices",
+          "tensor": "value_cache_indices",
+          "position": 6,
+          "kind": "input"
+        },
+        {
+          "name": "query_output_raw",
+          "tensor": "query_raw",
+          "position": 7,
+          "kind": "output"
+        },
+        {
+          "name": "key_output_raw",
+          "tensor": "key_raw",
+          "position": 8,
+          "kind": "output"
+        },
+        {
+          "name": "value_output_raw",
+          "tensor": "value_raw",
+          "position": 9,
+          "kind": "output"
+        },
+        {
+          "name": "query_norm_weight",
+          "tensor": "query_norm_weight",
+          "position": 10,
+          "kind": "input"
+        },
+        {
+          "name": "key_norm_weight",
+          "tensor": "key_norm_weight",
+          "position": 11,
+          "kind": "input"
+        },
+        {
+          "name": "query_output",
+          "tensor": "query_output",
+          "position": 12,
+          "kind": "output"
+        },
+        {
+          "name": "key_cache",
+          "tensor": "key_cache_output",
+          "position": 13,
+          "kind": "inout"
+        },
+        {
+          "name": "value_cache",
+          "tensor": "value_cache_output",
+          "position": 14,
+          "kind": "inout"
+        },
+        {
+          "name": "completion_counters",
+          "transient": "completion_counters",
+          "position": 15,
+          "kind": "inout"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "token_count",
+          "type": "index",
+          "position": 0,
+          "source": "derived.token_count"
+        },
+        {
+          "name": "cache_row_count",
+          "type": "index",
+          "position": 1,
+          "source": "shape.key_cache.cache_row_count"
+        }
+      ],
+      "dispatch": {
+        "workgroups": [
+          "derived.output_tiles"
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

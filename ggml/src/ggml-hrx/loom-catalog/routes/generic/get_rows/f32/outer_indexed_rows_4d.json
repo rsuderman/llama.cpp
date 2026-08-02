@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "get_rows_f32_outer_indexed_rows_4d",
   "format": "loom",
-  "priority": 101,
+  "priority": 600022,
   "match": {
     "op": "GGML_OP_GET_ROWS",
     "tensors": {

@@ -1,0 +1,926 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "qwen3_moe_routed_down_q6k_f16_wmma_residual",
+  "format": "loom",
+  "priority": 903239,
+  "tensors": {
+    "down_weight": {
+      "type": "Q6_K",
+      "shape": [
+        "input_size",
+        "output_size",
+        "expert_count",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "input": {
+      "type": "F32",
+      "shape": [
+        "input_size",
+        "route_count",
+        "token_count",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "route_ids": {
+      "type": "I32",
+      "shape": [
+        "route_count",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "down": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "route_count",
+        "token_count",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "route_weights": {
+      "type": "F32",
+      "shape": [
+        1,
+        "route_count",
+        "token_count",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "weighted_down": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "route_count",
+        "token_count",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "route_0": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "route_1": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "route_2": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "route_3": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "route_4": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "route_5": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "route_6": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "route_7": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "sum_1": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "sum_2": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "sum_3": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "sum_4": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "sum_5": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "sum_6": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "moe_out": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "residual": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "output": {
+      "type": "F32",
+      "shape": [
+        "output_size",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    }
+  },
+  "match": {
+    "anchors": [
+      "down"
+    ],
+    "ops": {
+      "down": {
+        "op": "GGML_OP_MUL_MAT_ID",
+        "tensors": {
+          "src0": "down_weight",
+          "src1": "input",
+          "src2": "route_ids",
+          "dst": "down"
+        },
+        "attributes": {}
+      },
+      "weight_routes": {
+        "op": "GGML_OP_MUL",
+        "tensors": {
+          "src0": "down",
+          "src1": "route_weights",
+          "dst": "weighted_down"
+        },
+        "attributes": {}
+      },
+      "view_0": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted_down",
+          "dst": "route_0"
+        },
+        "attributes": {}
+      },
+      "view_1": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted_down",
+          "dst": "route_1"
+        },
+        "attributes": {}
+      },
+      "view_2": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted_down",
+          "dst": "route_2"
+        },
+        "attributes": {}
+      },
+      "view_3": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted_down",
+          "dst": "route_3"
+        },
+        "attributes": {}
+      },
+      "view_4": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted_down",
+          "dst": "route_4"
+        },
+        "attributes": {}
+      },
+      "view_5": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted_down",
+          "dst": "route_5"
+        },
+        "attributes": {}
+      },
+      "view_6": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted_down",
+          "dst": "route_6"
+        },
+        "attributes": {}
+      },
+      "view_7": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "weighted_down",
+          "dst": "route_7"
+        },
+        "attributes": {}
+      },
+      "sum_1": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "route_0",
+          "src1": "route_1",
+          "dst": "sum_1"
+        },
+        "attributes": {}
+      },
+      "sum_2": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "sum_1",
+          "src1": "route_2",
+          "dst": "sum_2"
+        },
+        "attributes": {}
+      },
+      "sum_3": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "sum_2",
+          "src1": "route_3",
+          "dst": "sum_3"
+        },
+        "attributes": {}
+      },
+      "sum_4": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "sum_3",
+          "src1": "route_4",
+          "dst": "sum_4"
+        },
+        "attributes": {}
+      },
+      "sum_5": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "sum_4",
+          "src1": "route_5",
+          "dst": "sum_5"
+        },
+        "attributes": {}
+      },
+      "sum_6": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "sum_5",
+          "src1": "route_6",
+          "dst": "sum_6"
+        },
+        "attributes": {}
+      },
+      "sum_7": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "sum_6",
+          "src1": "route_7",
+          "dst": "moe_out"
+        },
+        "attributes": {}
+      },
+      "residual_add": {
+        "op": "GGML_OP_ADD",
+        "tensors": {
+          "src0": "moe_out",
+          "src1": "residual",
+          "dst": "output"
+        },
+        "attributes": {}
+      }
+    },
+    "predicates": [
+      {
+        "field": "shape.input.input_size",
+        "equals": 768
+      },
+      {
+        "field": "shape.output.output_size",
+        "equals": 2048
+      },
+      {
+        "field": "shape.input.route_count",
+        "equals": 8
+      },
+      {
+        "field": "shape.down_weight.expert_count",
+        "equals": 128
+      },
+      {
+        "field": "shape.output.token_count",
+        "min": 17
+      },
+      {
+        "field": "shape.output.token_count",
+        "max": 512
+      },
+      {
+        "field": "tensor.route_ids.element_strides.1",
+        "min": 8
+      },
+      {
+        "field": "tensor.route_ids.element_strides.1",
+        "max": 128
+      },
+      {
+        "field": "tensor.route_weights.element_strides.2",
+        "equals": 8
+      },
+      {
+        "field": "tensor.route_0.view_source",
+        "equals": "tensor.weighted_down"
+      },
+      {
+        "field": "tensor.route_0.view_offset_bytes",
+        "equals": 0
+      },
+      {
+        "field": "tensor.route_1.view_source",
+        "equals": "tensor.weighted_down"
+      },
+      {
+        "field": "tensor.route_1.view_offset_bytes",
+        "equals": "derived.route_1_offset"
+      },
+      {
+        "field": "tensor.route_2.view_source",
+        "equals": "tensor.weighted_down"
+      },
+      {
+        "field": "tensor.route_2.view_offset_bytes",
+        "equals": "derived.route_2_offset"
+      },
+      {
+        "field": "tensor.route_3.view_source",
+        "equals": "tensor.weighted_down"
+      },
+      {
+        "field": "tensor.route_3.view_offset_bytes",
+        "equals": "derived.route_3_offset"
+      },
+      {
+        "field": "tensor.route_4.view_source",
+        "equals": "tensor.weighted_down"
+      },
+      {
+        "field": "tensor.route_4.view_offset_bytes",
+        "equals": "derived.route_4_offset"
+      },
+      {
+        "field": "tensor.route_5.view_source",
+        "equals": "tensor.weighted_down"
+      },
+      {
+        "field": "tensor.route_5.view_offset_bytes",
+        "equals": "derived.route_5_offset"
+      },
+      {
+        "field": "tensor.route_6.view_source",
+        "equals": "tensor.weighted_down"
+      },
+      {
+        "field": "tensor.route_6.view_offset_bytes",
+        "equals": "derived.route_6_offset"
+      },
+      {
+        "field": "tensor.route_7.view_source",
+        "equals": "tensor.weighted_down"
+      },
+      {
+        "field": "tensor.route_7.view_offset_bytes",
+        "equals": "derived.route_7_offset"
+      },
+      {
+        "elided": [
+          "down",
+          "weighted_down",
+          "route_0",
+          "route_1",
+          "route_2",
+          "route_3",
+          "route_4",
+          "route_5",
+          "route_6",
+          "route_7",
+          "sum_1",
+          "sum_2",
+          "sum_3",
+          "sum_4",
+          "sum_5",
+          "sum_6",
+          "moe_out"
+        ]
+      },
+      {
+        "no_overlap": [
+          "input",
+          "output"
+        ]
+      },
+      {
+        "no_overlap": [
+          "down_weight",
+          "output"
+        ]
+      },
+      {
+        "no_overlap": [
+          "route_weights",
+          "output"
+        ]
+      },
+      {
+        "no_overlap": [
+          "residual",
+          "output"
+        ]
+      }
+    ]
+  },
+  "derived": {
+    "token_count": {
+      "type": "i64",
+      "field": "shape.output.token_count"
+    },
+    "route_count": {
+      "type": "i64",
+      "field": "shape.input.route_count"
+    },
+    "route_stride": {
+      "type": "i64",
+      "field": "tensor.route_ids.element_strides.1"
+    },
+    "expert_count": {
+      "type": "i64",
+      "field": "shape.down_weight.expert_count"
+    },
+    "token_plus_one": {
+      "type": "i64",
+      "sum": [
+        "derived.token_count",
+        1
+      ]
+    },
+    "expert_table_i32_count": {
+      "type": "i64",
+      "product": [
+        "derived.expert_count",
+        "derived.token_plus_one"
+      ]
+    },
+    "expert_table_bytes": {
+      "type": "i64",
+      "product": [
+        "derived.expert_table_i32_count",
+        4
+      ]
+    },
+    "routed_output_elements": {
+      "type": "i64",
+      "product": [
+        "derived.token_count",
+        "derived.route_count",
+        "shape.output.output_size"
+      ]
+    },
+    "routed_output_bytes": {
+      "type": "i64",
+      "product": [
+        "derived.routed_output_elements",
+        2
+      ]
+    },
+    "output_elements": {
+      "type": "i64",
+      "product": [
+        "shape.output.output_size",
+        "derived.token_count"
+      ]
+    },
+    "output_tiles": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.output.output_size",
+        64
+      ]
+    },
+    "route_tiles": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.token_count",
+        64
+      ]
+    },
+    "reduce_output_tiles": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.output.output_size",
+        256
+      ]
+    },
+    "view_stride_bytes": {
+      "type": "i64",
+      "field": "tensor.weighted_down.strides.1"
+    },
+    "route_1_offset": {
+      "type": "i64",
+      "product": [
+        "derived.view_stride_bytes",
+        1
+      ]
+    },
+    "route_2_offset": {
+      "type": "i64",
+      "product": [
+        "derived.view_stride_bytes",
+        2
+      ]
+    },
+    "route_3_offset": {
+      "type": "i64",
+      "product": [
+        "derived.view_stride_bytes",
+        3
+      ]
+    },
+    "route_4_offset": {
+      "type": "i64",
+      "product": [
+        "derived.view_stride_bytes",
+        4
+      ]
+    },
+    "route_5_offset": {
+      "type": "i64",
+      "product": [
+        "derived.view_stride_bytes",
+        5
+      ]
+    },
+    "route_6_offset": {
+      "type": "i64",
+      "product": [
+        "derived.view_stride_bytes",
+        6
+      ]
+    },
+    "route_7_offset": {
+      "type": "i64",
+      "product": [
+        "derived.view_stride_bytes",
+        7
+      ]
+    }
+  },
+  "transient_buffers": {
+    "expert_table": {
+      "size": "derived.expert_table_bytes"
+    },
+    "routed_output": {
+      "size": "derived.routed_output_bytes"
+    }
+  },
+  "architectures": [
+    "gfx1100",
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "build_expert_table",
+      "definition": "../../../../defs/gfx11-generic/qwen_moe/qwen3_moe/build_expert_table.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "qwen3_moe_routed_gate_up_route_count",
+            "type": "i64",
+            "source": "derived.route_count"
+          },
+          {
+            "name": "qwen3_moe_routed_gate_up_expert_count",
+            "type": "i64",
+            "source": "derived.expert_count"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "route_ids",
+          "tensor": "route_ids",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "expert_table",
+          "transient": "expert_table",
+          "position": 1,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "token_count",
+          "type": "index",
+          "position": 0,
+          "source": "derived.token_count"
+        },
+        {
+          "name": "route_count",
+          "type": "index",
+          "position": 1,
+          "source": "derived.route_count"
+        },
+        {
+          "name": "route_stride",
+          "type": "index",
+          "position": 2,
+          "source": "derived.route_stride"
+        },
+        {
+          "name": "expert_count",
+          "type": "index",
+          "position": 3,
+          "source": "derived.expert_count"
+        }
+      ],
+      "dispatch": {
+        "workgroups": [
+          "derived.expert_count"
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "grouped_down",
+      "definition": "../../../../defs/gfx11-generic/qwen_moe/qwen3_moe/routed_down_q6k_f16_wmma_grouped.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "qwen3_moe_routed_down_input_size",
+            "type": "i64",
+            "source": "shape.input.input_size"
+          },
+          {
+            "name": "qwen3_moe_routed_down_route_count",
+            "type": "i64",
+            "source": "derived.route_count"
+          },
+          {
+            "name": "qwen3_moe_routed_down_expert_count",
+            "type": "i64",
+            "source": "derived.expert_count"
+          },
+          {
+            "name": "qwen3_moe_routed_down_output_size",
+            "type": "i64",
+            "source": "shape.output.output_size"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "input",
+          "tensor": "input",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "expert_table",
+          "transient": "expert_table",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "weight",
+          "tensor": "down_weight",
+          "position": 2,
+          "kind": "input"
+        },
+        {
+          "name": "output",
+          "transient": "routed_output",
+          "position": 3,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "token_count",
+          "type": "index",
+          "position": 0,
+          "source": "derived.token_count"
+        }
+      ],
+      "dispatch": {
+        "workgroups": [
+          "derived.output_tiles",
+          "derived.route_tiles",
+          "derived.expert_count"
+        ],
+        "workgroup_size": [
+          128,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "copy_residual",
+      "definition": "../../../../defs/generic/copy/f32_f32/contiguous_1d.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "shape_copy_n",
+            "type": "i64",
+            "source": "derived.output_elements"
+          },
+          {
+            "name": "tuning_copy_workgroup_size",
+            "type": "i64",
+            "value": 256
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "src0",
+          "tensor": "residual",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "dst",
+          "tensor": "output",
+          "position": 1,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "work_items": [
+          "derived.output_elements"
+        ],
+        "workgroup_size": [
+          256,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "weighted_reduce",
+      "definition": "../../../../defs/gfx11-generic/qwen_moe/qwen3_moe/routed_down_weighted_reduce_f16_f32.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "qwen3_moe_routed_down_route_count",
+            "type": "i64",
+            "source": "derived.route_count"
+          },
+          {
+            "name": "qwen3_moe_routed_down_output_size",
+            "type": "i64",
+            "source": "shape.output.output_size"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "route_weights",
+          "tensor": "route_weights",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "routed_output",
+          "transient": "routed_output",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "output",
+          "tensor": "output",
+          "position": 2,
+          "kind": "inout"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "token_count",
+          "type": "index",
+          "position": 0,
+          "source": "derived.token_count"
+        }
+      ],
+      "dispatch": {
+        "workgroups": [
+          "derived.reduce_output_tiles",
+          "derived.token_count"
+        ],
+        "workgroup_size": [
+          64,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

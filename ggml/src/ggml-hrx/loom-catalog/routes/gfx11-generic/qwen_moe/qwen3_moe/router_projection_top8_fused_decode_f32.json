@@ -1,0 +1,516 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "qwen3_moe_router_projection_top8_fused_decode_f32",
+  "format": "loom",
+  "priority": 903137,
+  "tensors": {
+    "input": {
+      "type": "F32",
+      "shape": [
+        "hidden_size",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "weight": {
+      "type": "F32",
+      "shape": [
+        "hidden_size",
+        "expert_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "logits": {
+      "type": "F32",
+      "shape": [
+        "expert_count",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "probabilities": {
+      "type": "F32",
+      "shape": [
+        "expert_count",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "sorted_ids": {
+      "type": "I32",
+      "shape": [
+        "expert_count",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "probabilities_view": {
+      "type": "F32",
+      "shape": [
+        1,
+        "expert_count",
+        "token_count",
+        1
+      ]
+    },
+    "route_ids": {
+      "type": "I32",
+      "shape": [
+        "route_count",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "top_probabilities_3d": {
+      "type": "F32",
+      "shape": [
+        1,
+        "route_count",
+        "token_count",
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "top_probabilities": {
+      "type": "F32",
+      "shape": [
+        "route_count",
+        "token_count",
+        1,
+        1
+      ]
+    },
+    "row_sum": {
+      "type": "F32",
+      "shape": [
+        1,
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "clamped_row_sum": {
+      "type": "F32",
+      "shape": [
+        1,
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "route_weights": {
+      "type": "F32",
+      "shape": [
+        "route_count",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    }
+  },
+  "match": {
+    "anchors": [
+      "projection"
+    ],
+    "ops": {
+      "projection": {
+        "op": "GGML_OP_MUL_MAT",
+        "tensors": {
+          "src0": "weight",
+          "src1": "input",
+          "dst": "logits"
+        },
+        "attributes": {}
+      },
+      "softmax": {
+        "op": "GGML_OP_SOFT_MAX",
+        "tensors": {
+          "src0": "logits",
+          "dst": "probabilities"
+        },
+        "attributes": {
+          "scale": {
+            "type": "f32",
+            "source": "op_param.0"
+          },
+          "max_bias": {
+            "type": "f32",
+            "source": "op_param.1"
+          }
+        }
+      },
+      "probabilities_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "probabilities",
+          "dst": "probabilities_view"
+        },
+        "attributes": {}
+      },
+      "argsort": {
+        "op": "GGML_OP_ARGSORT",
+        "tensors": {
+          "src0": "probabilities",
+          "dst": "sorted_ids"
+        },
+        "attributes": {
+          "order": {
+            "type": "i32",
+            "source": "op_param.0"
+          }
+        }
+      },
+      "route_ids_view": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "sorted_ids",
+          "dst": "route_ids"
+        },
+        "attributes": {}
+      },
+      "get_rows": {
+        "op": "GGML_OP_GET_ROWS",
+        "tensors": {
+          "src0": "probabilities_view",
+          "src1": "route_ids",
+          "dst": "top_probabilities_3d"
+        },
+        "attributes": {}
+      },
+      "top_probabilities_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "top_probabilities_3d",
+          "dst": "top_probabilities"
+        },
+        "attributes": {}
+      },
+      "sum_rows": {
+        "op": "GGML_OP_SUM_ROWS",
+        "tensors": {
+          "src0": "top_probabilities",
+          "dst": "row_sum"
+        },
+        "attributes": {}
+      },
+      "clamp": {
+        "op": "GGML_OP_CLAMP",
+        "tensors": {
+          "src0": "row_sum",
+          "dst": "clamped_row_sum"
+        },
+        "attributes": {
+          "minimum": {
+            "type": "f32",
+            "source": "op_param.0"
+          },
+          "maximum": {
+            "type": "f32",
+            "source": "op_param.1"
+          }
+        }
+      },
+      "div": {
+        "op": "GGML_OP_DIV",
+        "tensors": {
+          "src0": "top_probabilities",
+          "src1": "clamped_row_sum",
+          "dst": "route_weights"
+        },
+        "attributes": {}
+      }
+    },
+    "predicates": [
+      {
+        "field": "shape.input.hidden_size",
+        "equals": 2048
+      },
+      {
+        "field": "shape.weight.hidden_size",
+        "equals": "shape.input.hidden_size"
+      },
+      {
+        "field": "shape.weight.expert_count",
+        "equals": 128
+      },
+      {
+        "field": "shape.logits.expert_count",
+        "equals": "shape.weight.expert_count"
+      },
+      {
+        "field": "shape.logits.token_count",
+        "equals": -1
+      },
+      {
+        "field": "shape.route_ids.route_count",
+        "equals": 8
+      },
+      {
+        "field": "shape.route_weights.route_count",
+        "equals": "shape.route_ids.route_count"
+      },
+      {
+        "field": "attribute.softmax.scale",
+        "equals": 1.0
+      },
+      {
+        "field": "attribute.softmax.max_bias",
+        "equals": 0.0
+      },
+      {
+        "field": "attribute.argsort.order",
+        "equals": 1
+      },
+      {
+        "field": "attribute.clamp.minimum",
+        "equals": 6.103515625e-05
+      },
+      {
+        "field": "tensor.route_ids.element_strides.1",
+        "min": 8
+      },
+      {
+        "field": "tensor.route_ids.element_strides.1",
+        "max": 128
+      },
+      {
+        "field": "tensor.probabilities_view.view_source",
+        "equals": "tensor.probabilities"
+      },
+      {
+        "field": "tensor.probabilities_view.view_offset_bytes",
+        "equals": 0
+      },
+      {
+        "field": "tensor.route_ids.view_source",
+        "equals": "tensor.sorted_ids"
+      },
+      {
+        "field": "tensor.route_ids.view_offset_bytes",
+        "equals": 0
+      },
+      {
+        "field": "tensor.top_probabilities.view_source",
+        "equals": "tensor.top_probabilities_3d"
+      },
+      {
+        "field": "tensor.top_probabilities.view_offset_bytes",
+        "equals": 0
+      },
+      {
+        "elided": [
+          "probabilities",
+          "row_sum",
+          "clamped_row_sum"
+        ]
+      },
+      {
+        "no_overlap": [
+          "input",
+          "logits"
+        ]
+      },
+      {
+        "no_overlap": [
+          "weight",
+          "logits"
+        ]
+      },
+      {
+        "no_overlap": [
+          "logits",
+          "route_ids"
+        ]
+      },
+      {
+        "no_overlap": [
+          "logits",
+          "route_weights"
+        ]
+      }
+    ]
+  },
+  "derived": {
+    "token_count": {
+      "type": "i64",
+      "field": "shape.logits.token_count"
+    },
+    "expert_count": {
+      "type": "i64",
+      "field": "shape.logits.expert_count"
+    },
+    "route_count": {
+      "type": "i64",
+      "field": "shape.route_ids.route_count"
+    },
+    "route_id_stride": {
+      "type": "i64",
+      "field": "tensor.route_ids.element_strides.1"
+    },
+    "expert_tiles": {
+      "type": "i64",
+      "ceil_div": [
+        "derived.expert_count",
+        4
+      ]
+    },
+    "completion_counter_bytes": {
+      "type": "i64",
+      "value": 4
+    }
+  },
+  "transient_buffers": {
+    "completion_counter": {
+      "size": "derived.completion_counter_bytes"
+    }
+  },
+  "architectures": [
+    "gfx1100",
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "init_counter",
+      "definition": "../../../../defs/gfx11-generic/qwen_moe/qwen3_moe/router_zero_i32.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "qwen3_moe_model_hidden_size",
+            "type": "i64",
+            "source": "shape.input.hidden_size"
+          },
+          {
+            "name": "qwen3_moe_router_expert_count",
+            "type": "i64",
+            "source": "derived.expert_count"
+          },
+          {
+            "name": "qwen3_moe_router_route_count",
+            "type": "i64",
+            "source": "derived.route_count"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "dst",
+          "transient": "completion_counter",
+          "position": 0,
+          "kind": "output"
+        }
+      ],
+      "scalars": [],
+      "dispatch": {
+        "workgroups": [
+          1
+        ],
+        "workgroup_size": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "router_projection_top8",
+      "definition": "../../../../defs/gfx11-generic/qwen_moe/qwen3_moe/router_projection_top8_fused_decode_f32.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "qwen3_moe_model_hidden_size",
+            "type": "i64",
+            "source": "shape.input.hidden_size"
+          },
+          {
+            "name": "qwen3_moe_router_expert_count",
+            "type": "i64",
+            "source": "derived.expert_count"
+          },
+          {
+            "name": "qwen3_moe_router_route_count",
+            "type": "i64",
+            "source": "derived.route_count"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "input",
+          "tensor": "input",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "weight",
+          "tensor": "weight",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "logits",
+          "tensor": "logits",
+          "position": 2,
+          "kind": "output"
+        },
+        {
+          "name": "completion_counter",
+          "transient": "completion_counter",
+          "position": 3,
+          "kind": "inout"
+        },
+        {
+          "name": "route_ids",
+          "tensor": "route_ids",
+          "position": 4,
+          "kind": "output"
+        },
+        {
+          "name": "route_weights",
+          "tensor": "route_weights",
+          "position": 5,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "token_count",
+          "type": "index",
+          "position": 0,
+          "source": "derived.token_count"
+        },
+        {
+          "name": "route_id_stride",
+          "type": "index",
+          "position": 1,
+          "source": "derived.route_id_stride"
+        }
+      ],
+      "dispatch": {
+        "workgroups": [
+          "derived.expert_tiles"
+        ],
+        "workgroup_size": [
+          32,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}
