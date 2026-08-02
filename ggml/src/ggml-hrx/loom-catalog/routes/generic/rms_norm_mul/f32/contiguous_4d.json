@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "rms_norm_mul_f32_contiguous_4d",
   "format": "loom",
-  "priority": 200,
+  "priority": 601025,
   "tensors": {
     "x": {"type": "F32", "shape": ["d0", "d1", "d2", "d3"], "layout": "contiguous"},
     "weight": {"type": "F32", "shape": ["d0", 1, 1, 1], "layout": "contiguous"},

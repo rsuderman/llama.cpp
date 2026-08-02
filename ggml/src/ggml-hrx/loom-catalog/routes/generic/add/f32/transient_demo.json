@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "add_f32_transient_demo",
   "format": "loom",
-  "priority": 1,
+  "priority": 600017,
   "match": {
     "op": "GGML_OP_ADD",
     "tensors": {

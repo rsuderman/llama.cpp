@@ -1,0 +1,24 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "qwen3_moe_dense_linear_q6k_f16_wmma",
+  "op": "GGML_OP_MUL_MAT",
+  "source": "sources/gfx11-generic/qwen_moe/qwen3_moe/dense_linear_quantized_f16_wmma.loom",
+  "source_format": "loom-text",
+  "symbol": "qwen3_moe_dense_linear_q6k_f16_wmma",
+  "dependencies": [
+    {
+      "source": "sources/gfx11-generic/qwen_moe/ggml/linear_q6k_q8_1_x4.loom",
+      "source_format": "loom-text"
+    }
+  ],
+  "abi": {"binding_count": 3, "parameter_count": 4, "constant_byte_length": 4},
+  "workgroup_size": [128, 1, 1],
+  "parameters": [
+    {"name": "token_count", "type": "index"}
+  ],
+  "bindings": [
+    {"name": "input", "access": "read"},
+    {"name": "weight", "access": "read"},
+    {"name": "output", "access": "write"}
+  ]
+}

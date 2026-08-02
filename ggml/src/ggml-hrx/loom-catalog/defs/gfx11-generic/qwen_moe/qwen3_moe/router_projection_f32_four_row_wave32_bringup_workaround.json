@@ -1,0 +1,22 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "qwen3_moe_router_projection_f32_four_row_wave32_bringup_workaround",
+  "op": "GGML_OP_MUL_MAT",
+  "source": "sources/gfx11-generic/qwen_moe/qwen3_moe/router_projection_f32_bringup_workaround.loom",
+  "source_format": "loom-text",
+  "symbol": "qwen3_moe_router_projection_f32_four_row_wave32",
+  "abi": {
+    "binding_count": 3,
+    "parameter_count": 4,
+    "constant_byte_length": 4
+  },
+  "workgroup_size": [32, 1, 1],
+  "parameters": [
+    {"name": "token_count", "type": "index"}
+  ],
+  "bindings": [
+    {"name": "input", "access": "read"},
+    {"name": "weight", "access": "read"},
+    {"name": "output", "access": "write"}
+  ]
+}

@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "flash_attn_ext_f32_f16_fallback_decode_plain_mask_t1",
   "format": "loom",
-  "priority": 105,
+  "priority": 700050,
   "match": {
     "op": "GGML_OP_FLASH_ATTN_EXT",
     "tensors": {

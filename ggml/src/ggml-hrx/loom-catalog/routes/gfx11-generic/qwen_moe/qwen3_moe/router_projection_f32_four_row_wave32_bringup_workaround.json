@@ -1,0 +1,137 @@
+{
+  "schema": "ggml-hrx-loom-route-v2",
+  "id": "qwen3_moe_router_projection_f32_four_row_wave32_bringup_workaround",
+  "format": "loom",
+  "priority": 800008,
+  "tensors": {
+    "src0": {
+      "type": "F32",
+      "shape": [
+        "hidden_size",
+        "expert_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "src1": {
+      "type": "F32",
+      "shape": [
+        "hidden_size",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    },
+    "dst": {
+      "type": "F32",
+      "shape": [
+        "expert_count",
+        "token_count",
+        1,
+        1
+      ],
+      "layout": "contiguous"
+    }
+  },
+  "match": {
+    "op": "GGML_OP_MUL_MAT",
+    "attributes": {},
+    "predicates": [
+      {
+        "field": "shape.src0.hidden_size",
+        "equals": 2048
+      },
+      {
+        "field": "shape.src0.expert_count",
+        "equals": 128
+      },
+      {
+        "field": "shape.dst.token_count",
+        "min": 1
+      },
+      {
+        "field": "shape.dst.token_count",
+        "max": 2048
+      }
+    ]
+  },
+  "derived": {
+    "token_count": {
+      "type": "i64",
+      "field": "shape.dst.token_count"
+    },
+    "expert_tiles": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.src0.expert_count",
+        4
+      ]
+    }
+  },
+  "architectures": [
+    "gfx1100",
+    "gfx1151"
+  ],
+  "dispatches": [
+    {
+      "name": "router_projection",
+      "definition": "../../../../defs/gfx11-generic/qwen_moe/qwen3_moe/router_projection_f32_four_row_wave32_bringup_workaround.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "qwen3_moe_model_hidden_size",
+            "type": "i64",
+            "source": "shape.src0.hidden_size"
+          },
+          {
+            "name": "qwen3_moe_router_expert_count",
+            "type": "i64",
+            "source": "shape.src0.expert_count"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "input",
+          "tensor": "src1",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "weight",
+          "tensor": "src0",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "output",
+          "tensor": "dst",
+          "position": 2,
+          "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "token_count",
+          "type": "index",
+          "position": 0,
+          "source": "derived.token_count"
+        }
+      ],
+      "dispatch": {
+        "workgroups": [
+          "derived.expert_tiles",
+          "derived.token_count"
+        ],
+        "workgroup_size": [
+          32,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

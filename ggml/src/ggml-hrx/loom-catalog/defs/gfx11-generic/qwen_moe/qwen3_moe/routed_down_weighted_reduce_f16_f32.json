@@ -1,0 +1,24 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "qwen3_moe_routed_down_weighted_reduce_f16_f32",
+  "op": "GGML_OP_ADD",
+  "source": "sources/gfx11-generic/qwen_moe/qwen3_moe/routed_down_quantized_f16_wmma.loom",
+  "source_format": "loom-text",
+  "symbol": "qwen3_moe_routed_down_weighted_reduce_f16_f32",
+  "dependencies": [
+    {
+      "source": "sources/gfx11-generic/qwen_moe/qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+      "source_format": "loom-text"
+    }
+  ],
+  "abi": {"binding_count": 3, "parameter_count": 4, "constant_byte_length": 4},
+  "workgroup_size": [64, 1, 1],
+  "parameters": [
+    {"name": "token_count", "type": "index"}
+  ],
+  "bindings": [
+    {"name": "route_weights", "access": "read"},
+    {"name": "routed_output", "access": "read"},
+    {"name": "output", "access": "read_write"}
+  ]
+}

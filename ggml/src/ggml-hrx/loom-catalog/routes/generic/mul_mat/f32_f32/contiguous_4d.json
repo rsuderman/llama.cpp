@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "mul_mat_f32_f32_contiguous_4d",
   "format": "loom",
-  "priority": 118,
+  "priority": 600021,
   "match": {
     "op": "GGML_OP_MUL_MAT",
     "tensors": {
