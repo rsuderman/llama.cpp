@@ -21,7 +21,6 @@ amdgpu.target<gfx11-generic> @hrx2_fa_direct_kv64_f32acc_gate_gfx11_wave64 {subg
 config.decl @hrx2_shape_fa_d : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
 config.decl @hrx2_shape_fa_ntokens : %value: index where [range(%value, 1, 1048576)]
 config.decl @hrx2_shape_fa_nheads : %value: index where [range(%value, 1, 1024)]
-config.decl @hrx2_shape_fa_nkv : %value: index where [range(%value, 1, 1048576)]
 config.decl @hrx2_shape_fa_gqa : %value: index where [range(%value, 1, 1024)]
 config.decl @hrx2_shape_fa_q_stride_token : %value: index where [range(%value, 1, 16777216)]
 config.decl @hrx2_shape_fa_q_stride_head : %value: index where [range(%value, 1, 16777216)]
@@ -29,13 +28,12 @@ config.decl @hrx2_shape_fa_k_stride_pos : %value: index where [range(%value, 1, 
 config.decl @hrx2_shape_fa_k_stride_head : %value: index where [range(%value, 0, 16777216)]
 config.decl @hrx2_shape_fa_v_stride_pos : %value: index where [range(%value, 1, 16777216)]
 config.decl @hrx2_shape_fa_v_stride_head : %value: index where [range(%value, 0, 16777216)]
-config.decl @hrx2_shape_fa_mask_stride_token : %value: index where [range(%value, 1, 16777216)]
 config.decl @hrx2_shape_fa_dst_stride_head : %value: index where [range(%value, 1, 16777216)]
 config.decl @hrx2_shape_fa_dst_stride_token : %value: index where [range(%value, 1, 16777216)]
 config.decl @hrx2_shape_fa_gate_stride_head : %value: index where [range(%value, 1, 16777216)]
 config.decl @hrx2_shape_fa_gate_stride_token : %value: index where [range(%value, 1, 16777216)]
 
-kernel.def target(@hrx2_fa_direct_kv64_f32acc_gate_gfx11_wave64) export("hrx2_flash_attn_ext_f32_f16_direct_kv64_f32acc_gate") @hrx2_flash_attn_ext_f32_f16_direct_kv64_f32acc_gate() {
+kernel.def target(@hrx2_fa_direct_kv64_f32acc_gate_gfx11_wave64) export("hrx2_flash_attn_ext_f32_f16_direct_kv64_f32acc_gate") @hrx2_flash_attn_ext_f32_f16_direct_kv64_f32acc_gate(%key_value_token_count: index, %mask_stride_token: index) {
   %query_token_count = config.get @hrx2_shape_fa_ntokens : index
   %query_head_count = config.get @hrx2_shape_fa_nheads : index
   %one = index.constant 1 : index
@@ -46,22 +44,19 @@ kernel.def target(@hrx2_fa_direct_kv64_f32acc_gate_gfx11_wave64) export("hrx2_fl
   %query_tile_count = index.div %padded_query_token_count, %sixteen : index
   %bounded_query_head_count = index.assume %query_head_count [range(%query_head_count, 1, 64)] : index
   kernel.launch.config workgroups(%query_tile_count, %bounded_query_head_count, %one) workgroup_size(%twofiftysix, %one, %one) : index
-} launch(%scale: f32, %query: buffer, %key: buffer, %value: buffer, %mask: buffer, %gate: buffer, %output: buffer) {
+} launch(%key_value_token_count: index, %mask_stride_token: index, %scale: f32, %query: buffer, %key: buffer, %value: buffer, %mask: buffer, %gate: buffer, %output: buffer) {
   %query_token_count0 = config.get @hrx2_shape_fa_ntokens : index
-  %key_value_token_count0 = config.get @hrx2_shape_fa_nkv : index
   %query_head_count0 = config.get @hrx2_shape_fa_nheads : index
   %gqa0 = config.get @hrx2_shape_fa_gqa : index
   %out_stride_head = config.get @hrx2_shape_fa_dst_stride_head : index
   %out_stride_token = config.get @hrx2_shape_fa_dst_stride_token : index
   %gate_stride_head = config.get @hrx2_shape_fa_gate_stride_head : index
   %gate_stride_token = config.get @hrx2_shape_fa_gate_stride_token : index
-  %mask_stride_token0 = config.get @hrx2_shape_fa_mask_stride_token : index
   %key_value_head_count0 = index.div %query_head_count0, %gqa0 : index
   %bounded_query_token_count = index.assume %query_token_count0 [range(%query_token_count0, 1, 2048)] : index
-  %bounded_key_value_token_count = index.assume %key_value_token_count0 [range(%key_value_token_count0, 64, 32768), mul(%key_value_token_count0, 64)] : index
+  %bounded_key_value_token_count, %bounded_mask_stride_token = index.assume %key_value_token_count, %mask_stride_token [range(%key_value_token_count, 64, 32768), mul(%key_value_token_count, 64), range(%mask_stride_token, 1, 16777216), le(%key_value_token_count, %mask_stride_token)] : index, index
   %query_head_count = index.assume %query_head_count0 [range(%query_head_count0, 1, 64)] : index
   %key_value_head_count = index.assume %key_value_head_count0 [range(%key_value_head_count0, 1, 64)] : index
-  %mask_stride_token = index.assume %mask_stride_token0 [range(%mask_stride_token0, 1, 16777216)] : index
   %query_tile = kernel.workgroup.id<x> : index
   %query_head0 = kernel.workgroup.id<y> : index
   %query_head, %launch_query_head_count = index.assume %query_head0, %query_head_count [lt(%query_head0, %query_head_count)] : index, index
@@ -155,7 +150,7 @@ kernel.def target(@hrx2_fa_direct_kv64_f32acc_gate_gfx11_wave64) export("hrx2_fl
   %query_view = buffer.view %query_aligned[%zero_offset] : buffer -> view<[%bounded_query_token_count]x[%query_head_count]x256xf32, #dense>
   %key_view = buffer.view %key_aligned[%zero_offset] : buffer -> view<[%bounded_key_value_token_count]x[%key_value_width]xf16, #dense>
   %value_view = buffer.view %value_aligned[%zero_offset] : buffer -> view<[%bounded_key_value_token_count]x[%key_value_width]xf16, #dense>
-  %mask_view = buffer.view %mask_aligned[%zero_offset] : buffer -> view<[%bounded_query_token_count]x[%mask_stride_token]xf16, #dense>
+  %mask_view = buffer.view %mask_aligned[%zero_offset] : buffer -> view<[%bounded_query_token_count]x[%bounded_mask_stride_token]xf16, #dense>
   %gate_view = buffer.view %gate_aligned[%zero_offset] : buffer -> view<268435456xf32, #dense>
   %output_view = buffer.view %output_aligned[%zero_offset] : buffer -> view<268435456xf32, #dense>
   %query_stage = buffer.alloca %query_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
@@ -197,9 +192,10 @@ kernel.def target(@hrx2_fa_direct_kv64_f32acc_gate_gfx11_wave64) export("hrx2_fl
       %mask_key_column = index.rem %mask_linear, %sixtyfour : index
       %mask_query_token = index.add %query_origin, %mask_query_row : index
       %mask_query_valid = index.cmp ult, %mask_query_token, %bounded_query_token_count : index
-      %mask_key_token = index.add %key_origin, %mask_key_column : index
+      %mask_key_token0 = index.add %key_origin, %mask_key_column : index
+      %mask_key_token = index.assume %mask_key_token0 [lt(%mask_key_token0, %bounded_mask_stride_token)] : index
       %mask_value = scf.if %mask_query_valid -> (f32) {
-        %loaded_mask_f16 = view.load %mask_view[%mask_query_token, %mask_key_token] : view<[%bounded_query_token_count]x[%mask_stride_token]xf16, #dense> -> f16
+        %loaded_mask_f16 = view.load %mask_view[%mask_query_token, %mask_key_token] : view<[%bounded_query_token_count]x[%bounded_mask_stride_token]xf16, #dense> -> f16
         %loaded_mask_f32 = scalar.extf %loaded_mask_f16 : f16 to f32
         %finite_mask = scalar.maxnumf %loaded_mask_f32, %negative_large : f32
         scf.yield %finite_mask : f32
@@ -233,12 +229,13 @@ kernel.def target(@hrx2_fa_direct_kv64_f32acc_gate_gfx11_wave64) export("hrx2_fl
     // column to each of those rows.
     %key_token0 = index.add %key_origin, %lane : index
     %key_token = index.assume %key_token0 [lt(%key_token0, %bounded_key_value_token_count)] : index
+    %mask_key_token = index.assume %key_token [lt(%key_token, %bounded_mask_stride_token)] : index
     %raw_score0 = view.load %score_stage_view[%lane, %query_row0] : view<64x24xf32, #dense> -> f32
     %raw_score1 = view.load %score_stage_view[%lane, %query_row1] : view<64x24xf32, #dense> -> f32
     %raw_score2 = view.load %score_stage_view[%lane, %query_row2] : view<64x24xf32, #dense> -> f32
     %raw_score3 = view.load %score_stage_view[%lane, %query_row3] : view<64x24xf32, #dense> -> f32
     %masked_score0 = scf.if %query_valid0 -> (f32) {
-      %mask_f16 = view.load %mask_view[%query_token0, %key_token] : view<[%bounded_query_token_count]x[%mask_stride_token]xf16, #dense> -> f16
+      %mask_f16 = view.load %mask_view[%query_token0, %mask_key_token] : view<[%bounded_query_token_count]x[%bounded_mask_stride_token]xf16, #dense> -> f16
       %mask_f32 = scalar.extf %mask_f16 : f16 to f32
       %mask_finite = scalar.maxnumf %mask_f32, %negative_large : f32
       %scaled_score = scalar.mulf<reassoc|nnan|nsz> %raw_score0, %scale : f32
@@ -248,7 +245,7 @@ kernel.def target(@hrx2_fa_direct_kv64_f32acc_gate_gfx11_wave64) export("hrx2_fl
       scf.yield %negative_large : f32
     }
     %masked_score1 = scf.if %query_valid1 -> (f32) {
-      %mask_f16 = view.load %mask_view[%query_token1, %key_token] : view<[%bounded_query_token_count]x[%mask_stride_token]xf16, #dense> -> f16
+      %mask_f16 = view.load %mask_view[%query_token1, %mask_key_token] : view<[%bounded_query_token_count]x[%bounded_mask_stride_token]xf16, #dense> -> f16
       %mask_f32 = scalar.extf %mask_f16 : f16 to f32
       %mask_finite = scalar.maxnumf %mask_f32, %negative_large : f32
       %scaled_score = scalar.mulf<reassoc|nnan|nsz> %raw_score1, %scale : f32
@@ -258,7 +255,7 @@ kernel.def target(@hrx2_fa_direct_kv64_f32acc_gate_gfx11_wave64) export("hrx2_fl
       scf.yield %negative_large : f32
     }
     %masked_score2 = scf.if %query_valid2 -> (f32) {
-      %mask_f16 = view.load %mask_view[%query_token2, %key_token] : view<[%bounded_query_token_count]x[%mask_stride_token]xf16, #dense> -> f16
+      %mask_f16 = view.load %mask_view[%query_token2, %mask_key_token] : view<[%bounded_query_token_count]x[%bounded_mask_stride_token]xf16, #dense> -> f16
       %mask_f32 = scalar.extf %mask_f16 : f16 to f32
       %mask_finite = scalar.maxnumf %mask_f32, %negative_large : f32
       %scaled_score = scalar.mulf<reassoc|nnan|nsz> %raw_score2, %scale : f32
@@ -268,7 +265,7 @@ kernel.def target(@hrx2_fa_direct_kv64_f32acc_gate_gfx11_wave64) export("hrx2_fl
       scf.yield %negative_large : f32
     }
     %masked_score3 = scf.if %query_valid3 -> (f32) {
-      %mask_f16 = view.load %mask_view[%query_token3, %key_token] : view<[%bounded_query_token_count]x[%mask_stride_token]xf16, #dense> -> f16
+      %mask_f16 = view.load %mask_view[%query_token3, %mask_key_token] : view<[%bounded_query_token_count]x[%bounded_mask_stride_token]xf16, #dense> -> f16
       %mask_f32 = scalar.extf %mask_f16 : f16 to f32
       %mask_finite = scalar.maxnumf %mask_f32, %negative_large : f32
       %scaled_score = scalar.mulf<reassoc|nnan|nsz> %raw_score3, %scale : f32

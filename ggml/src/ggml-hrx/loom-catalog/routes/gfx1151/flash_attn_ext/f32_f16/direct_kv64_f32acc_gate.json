@@ -728,11 +728,6 @@
             "source": "shape.q.nheads"
           },
           {
-            "name": "hrx2_shape_fa_nkv",
-            "type": "i64",
-            "source": "shape.k.nkv"
-          },
-          {
             "name": "hrx2_shape_fa_gqa",
             "type": "i64",
             "source": "derived.gqa"
@@ -766,11 +761,6 @@
             "name": "hrx2_shape_fa_v_stride_head",
             "type": "i64",
             "source": "tensor.v.element_strides.2"
-          },
-          {
-            "name": "hrx2_shape_fa_mask_stride_token",
-            "type": "i64",
-            "source": "tensor.mask.element_strides.1"
           },
           {
             "name": "hrx2_shape_fa_dst_stride_head",
@@ -835,9 +825,21 @@
       ],
       "scalars": [
         {
+          "name": "key_value_token_count",
+          "type": "index",
+          "position": 0,
+          "source": "shape.k.nkv"
+        },
+        {
+          "name": "mask_stride_token",
+          "type": "index",
+          "position": 1,
+          "source": "tensor.mask.element_strides.1"
+        },
+        {
           "name": "scale",
           "type": "f32",
-          "position": 0,
+          "position": 2,
           "source": "attribute.fa.scale"
         }
       ],
