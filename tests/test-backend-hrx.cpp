@@ -932,6 +932,80 @@ static void run_qwen3_moe_router_top8_case(ggml_backend_t backend) {
     }
 }
 
+static void run_qwen3_moe_router_projection_top8_fused_case(ggml_backend_t backend) {
+    const char *      previous = std::getenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    const std::string saved    = previous ? previous : "";
+    setenv("GGML_HRX_LOOM_FORCE_ROUTE", "qwen3_moe_router_projection_top8_fused_decode_f32", 1);
+
+    const int64_t hidden_size  = 2048;
+    const int64_t expert_count = 128;
+    const int64_t route_count  = 8;
+    const int64_t token_count  = 1;
+
+    ggml_context_ptr ctx        = make_context();
+    ggml_tensor *    weight     = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, hidden_size, expert_count);
+    ggml_tensor *    input      = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, hidden_size, token_count);
+    ggml_tensor *    logits     = ggml_mul_mat(ctx.get(), weight, input);
+    ggml_tensor *    probs      = ggml_soft_max(ctx.get(), logits);
+    ggml_tensor *    route_ids  = ggml_argsort_top_k(ctx.get(), probs, route_count);
+    ggml_tensor *    probs_3d   = ggml_reshape_3d(ctx.get(), probs, 1, expert_count, token_count);
+    ggml_tensor *    weights_3d = ggml_get_rows(ctx.get(), probs_3d, route_ids);
+    ggml_tensor *    weights    = ggml_reshape_2d(ctx.get(), weights_3d, route_count, token_count);
+    ggml_tensor *    sum        = ggml_sum_rows(ctx.get(), weights);
+    sum                         = ggml_clamp(ctx.get(), sum, 6.103515625e-5f, INFINITY);
+    weights                     = ggml_div(ctx.get(), weights, sum);
+
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx.get(), 32, false);
+    ggml_build_forward_expand(graph, weights);
+
+    ggml_backend_buffer_ptr buffer(ggml_backend_alloc_ctx_tensors(ctx.get(), backend));
+    GGML_ASSERT(buffer != nullptr);
+
+    std::vector<float> weight_data(hidden_size * expert_count);
+    std::vector<float> input_data(hidden_size * token_count, 1.0f);
+    std::vector<float> expected_logits(expert_count * token_count);
+    for (int64_t expert = 0; expert < expert_count; ++expert) {
+        const float logit = static_cast<float>(expert % route_count);
+        expected_logits[expert] = logit;
+        for (int64_t channel = 0; channel < hidden_size; ++channel) {
+            weight_data[expert * hidden_size + channel] = logit / static_cast<float>(hidden_size);
+        }
+    }
+
+    std::vector<int32_t> expected_ids(route_count * token_count);
+    std::vector<float>   expected_weights(route_count * token_count, 0.125f);
+    for (int64_t route = 0; route < route_count; ++route) {
+        expected_ids[route] = static_cast<int32_t>(7 + 8 * route);
+    }
+
+    ggml_backend_tensor_set(weight, weight_data.data(), 0, weight_data.size() * sizeof(float));
+    ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    std::vector<float> actual_logits(expected_logits.size(), -1.0f);
+    ggml_backend_tensor_get(logits, actual_logits.data(), 0, actual_logits.size() * sizeof(float));
+    expect_near(actual_logits, expected_logits, 1e-4f, "qwen3_moe_router_projection_top8_fused_logits");
+
+    std::vector<int32_t> actual_ids(expected_ids.size(), -1);
+    std::vector<float>   actual_weights(expected_weights.size(), -1.0f);
+    const int64_t        route_id_stride = route_ids->nb[1] / ggml_type_size(route_ids->type);
+    std::vector<int32_t> actual_id_storage(route_id_stride * token_count, -1);
+    ggml_backend_tensor_get(route_ids->view_src, actual_id_storage.data(), route_ids->view_offs,
+                            actual_id_storage.size() * sizeof(int32_t));
+    for (int64_t route = 0; route < route_count; ++route) {
+        actual_ids[route] = actual_id_storage[route];
+    }
+    ggml_backend_tensor_get(weights, actual_weights.data(), 0, actual_weights.size() * sizeof(float));
+    expect_eq_i32(actual_ids, expected_ids, "qwen3_moe_router_projection_top8_fused_ids");
+    expect_near(actual_weights, expected_weights, 1e-5f, "qwen3_moe_router_projection_top8_fused_weights");
+
+    if (previous) {
+        setenv("GGML_HRX_LOOM_FORCE_ROUTE", saved.c_str(), 1);
+    } else {
+        unsetenv("GGML_HRX_LOOM_FORCE_ROUTE");
+    }
+}
+
 static void run_qwen3_moe_gate_up_case(ggml_backend_t backend,
                                        const char *   route_id,
                                        int64_t        token_count,
@@ -1703,6 +1777,12 @@ int main() {
         if (std::string(test_only) == "qwen3_moe_router") {
             run_qwen3_moe_router_projection_case(backend.get());
             run_qwen3_moe_router_top8_case(backend.get());
+            run_qwen3_moe_router_projection_top8_fused_case(backend.get());
+            ggml_backend_synchronize(backend.get());
+            return 0;
+        }
+        if (std::string(test_only) == "qwen3_moe_router_projection_top8_fused") {
+            run_qwen3_moe_router_projection_top8_fused_case(backend.get());
             ggml_backend_synchronize(backend.get());
             return 0;
         }
