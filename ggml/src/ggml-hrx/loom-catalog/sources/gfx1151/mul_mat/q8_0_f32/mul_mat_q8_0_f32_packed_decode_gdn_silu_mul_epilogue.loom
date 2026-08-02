@@ -125,7 +125,13 @@ kernel.def export("hrx2_mul_mat_q8_0_f32_static_packed_scf_unroll_decode_gdn_sil
   %four = index.constant 4 : index
   %eight = index.constant 8 : index
   %row0 = kernel.workgroup.id<x> : index
-  %row = index.assume %row0 [range(%row0, 0, 262143)] : index
+  %three = index.constant 3 : index
+  %rows_mod3 = index.rem %rows_bounded, %three : index
+  %unsafe_affine3 = index.cmp eq, %rows_mod3, %zero_index : index
+  %row_product = index.mul %row0, %three : index
+  %row_affine3 = index.rem %row_product, %rows_bounded : index
+  %row_raw = scf.select %unsafe_affine3, %row0, %row_affine3 : index
+  %row = index.assume %row_raw [range(%row_raw, 0, 262143)] : index
   %col0 = kernel.workgroup.id<y> : index
   %col = index.assume %col0 [range(%col0, 0, 4095)] : index
   %lane0 = kernel.workitem.id<x> : index

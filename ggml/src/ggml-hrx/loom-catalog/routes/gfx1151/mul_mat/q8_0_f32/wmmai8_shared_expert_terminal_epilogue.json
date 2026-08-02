@@ -77,7 +77,7 @@
       ]
     },
     "raw_gate_weight": {
-      "type": "Q8_0",
+      "type": "F32",
       "shape": [
         "raw_gate_k",
         "raw_gate_rows",
@@ -425,27 +425,27 @@
   "dispatches": [
     {
       "name": "raw_gate_projection",
-      "definition": "../../../../defs/generic/mul_mat/q8_0_f32/contiguous_4d.json",
+      "definition": "../../../../defs/gfx1151/mul_mat/f32_f32/wide_mul_mat_f32_f32.json",
       "config": {
         "mode": "compile",
         "bindings": [
           {
-            "name": "shape_mul_mat_q8_0_f32_contiguous_k",
+            "name": "hrx2_shape_k",
             "type": "i64",
             "source": "shape.raw_gate_weight.raw_gate_k"
           },
           {
-            "name": "shape_mul_mat_q8_0_f32_contiguous_rows",
+            "name": "hrx2_shape_rows",
             "type": "i64",
             "source": "shape.raw_gate_weight.raw_gate_rows"
           },
           {
-            "name": "shape_mul_mat_q8_0_f32_contiguous_cols",
+            "name": "hrx2_shape_cols",
             "type": "i64",
             "source": "shape.raw_gate_input.raw_gate_cols"
           },
           {
-            "name": "tuning_mul_mat_q8_0_f32_contiguous_workgroup_size",
+            "name": "hrx2_tuning_workgroup_size",
             "type": "i64",
             "value": 256
           }

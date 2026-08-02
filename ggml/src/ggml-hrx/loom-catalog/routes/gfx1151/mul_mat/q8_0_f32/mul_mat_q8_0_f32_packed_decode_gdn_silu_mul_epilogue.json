@@ -266,6 +266,12 @@
         ]
       },
       {
+        "same_or_disjoint_storage": [
+          "side",
+          "dst"
+        ]
+      },
+      {
         "field": "shape.output_weight.output_k",
         "equals": 4096
       },
@@ -403,8 +409,7 @@
           "name": "dst",
           "tensor": "dst",
           "position": 3,
-          "kind": "output",
-          "storage": "graph_transient"
+          "kind": "output"
         }
       ],
       "scalars": [],
@@ -464,7 +469,6 @@
         {
           "name": "src1",
           "tensor": "dst",
-          "storage": "graph_transient",
           "position": 1,
           "kind": "input"
         },

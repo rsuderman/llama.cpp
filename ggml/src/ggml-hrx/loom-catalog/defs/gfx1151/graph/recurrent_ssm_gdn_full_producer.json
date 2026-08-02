@@ -1,0 +1,31 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "recurrent_ssm_gdn_full_producer",
+  "op": "GGML_OP_GET_ROWS",
+  "source": "sources/gfx1151/graph/recurrent_ssm_gdn_full_producer.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_ssm_conv_f32_state_cache_decode_full_producer",
+  "abi": {
+    "binding_count": 12,
+    "parameter_count": 13,
+    "constant_byte_length": 4
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [
+    {"name": "eps", "type": "f32"}
+  ],
+  "bindings": [
+    {"name": "state_io", "access": "read_write"},
+    {"name": "x", "access": "read"},
+    {"name": "filt", "access": "read"},
+    {"name": "dst", "access": "write"},
+    {"name": "qk_scales", "access": "write"},
+    {"name": "alpha_weight", "access": "read"},
+    {"name": "beta_weight", "access": "read"},
+    {"name": "projection_input", "access": "read"},
+    {"name": "bias", "access": "read"},
+    {"name": "a_scale", "access": "read"},
+    {"name": "gate", "access": "write"},
+    {"name": "beta", "access": "write"}
+  ]
+}

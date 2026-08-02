@@ -4,10 +4,10 @@
   "op": "GGML_OP_MUL_MAT",
   "source": "sources/gfx1151/mul_mat/q8_0_f32/mul_mat_q8_0_f32_packed_decode_k2048_wg256_scfunroll2.loom",
   "source_format": "loom-text",
-  "symbol": "hrx2_mul_mat_q8_0_f32_static_packed_scf_unroll",
+  "symbol": "hrx2_mul_mat_q8_0_f32_static_packed_2trip",
   "abi": {
-    "binding_count": 3,
-    "parameter_count": 3,
+    "binding_count": 4,
+    "parameter_count": 4,
     "constant_byte_length": 0
   },
   "workgroup_size": [
@@ -23,6 +23,10 @@
     },
     {
       "name": "src1",
+      "access": "read"
+    },
+    {
+      "name": "src1_hi",
       "access": "read"
     },
     {

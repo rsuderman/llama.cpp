@@ -123,21 +123,6 @@
         "get_d2",
         "get_d3"
       ]
-    },
-    "zero_indices": {
-      "type": "I32"
-    },
-    "zero_get_dst": {
-      "type": "F32"
-    },
-    "zero_copy_base": {
-      "type": "F32"
-    },
-    "zero_copy_target": {
-      "type": "F32"
-    },
-    "zero_copy_dst": {
-      "type": "F32"
     }
   },
   "match": {
@@ -226,32 +211,6 @@
         },
         "attributes": {}
       },
-      "extra_get": {
-        "op": "GGML_OP_GET_ROWS",
-        "tensors": {
-          "src0": "gdn_cache_read",
-          "src1": "zero_indices",
-          "dst": "zero_get_dst"
-        },
-        "attributes": {}
-      },
-      "extra_dst_view": {
-        "op": "GGML_OP_VIEW",
-        "tensors": {
-          "src0": "zero_copy_base",
-          "dst": "zero_copy_target"
-        },
-        "attributes": {}
-      },
-      "extra_copy": {
-        "op": "GGML_OP_CPY",
-        "tensors": {
-          "src0": "zero_get_dst",
-          "src1": "zero_copy_target",
-          "dst": "zero_copy_dst"
-        },
-        "attributes": {}
-      },
       "ssm": {
         "op": "GGML_OP_SSM_CONV",
         "tensors": {
@@ -283,22 +242,6 @@
       {
         "field": "attribute.silu.unary_op",
         "equals": 10
-      },
-      {
-        "field": "tensor.zero_indices.element_count",
-        "equals": 0
-      },
-      {
-        "field": "tensor.zero_get_dst.element_count",
-        "equals": 0
-      },
-      {
-        "field": "tensor.zero_copy_target.element_count",
-        "equals": 0
-      },
-      {
-        "field": "tensor.zero_copy_dst.element_count",
-        "equals": 0
       },
       {
         "same_shape": [
@@ -621,15 +564,7 @@
         "elided": [
           "state_tail",
           "ssm_dst",
-          "cache_target",
-        "zero_get_dst",
-        "zero_copy_target"
-        ]
-      },
-      {
-        "no_overlap": [
-          "x",
-          "dst"
+          "cache_target"
         ]
       },
       {
@@ -683,6 +618,18 @@
       {
         "no_overlap": [
           "window",
+          "dst"
+        ]
+      },
+      {
+        "same_or_disjoint_storage": [
+          "ssm_dst",
+          "dst"
+        ]
+      },
+      {
+        "same_or_disjoint_storage": [
+          "x",
           "dst"
         ]
       },

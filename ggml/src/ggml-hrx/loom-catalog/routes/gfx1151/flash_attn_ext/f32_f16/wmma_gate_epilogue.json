@@ -558,6 +558,12 @@
         ]
       },
       {
+        "same_or_disjoint_storage": [
+          "q",
+          "terminal_dst"
+        ]
+      },
+      {
         "no_overlap": [
           "k",
           "v"
@@ -957,7 +963,7 @@
           1
         ],
         "workgroup_size": [
-          128,
+          64,
           1,
           1
         ]

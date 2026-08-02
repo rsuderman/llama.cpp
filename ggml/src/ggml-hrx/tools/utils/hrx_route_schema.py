@@ -7,7 +7,7 @@ FUSION_MATCH_FIELDS = {"anchors", "ops", "predicates", "reorder"}
 FUSION_OP_FIELDS = {"op", "tensors", "attributes"}
 TENSOR_FIELDS = {"type", "optional", "shape", "layout", "storage"}
 ATTRIBUTE_FIELDS = {"type", "source", "default"}
-PREDICATE_FIELDS = {"contiguous", "same_shape", "same_layout", "same_storage_span", "rank", "field", "equals", "in", "min", "max", "multiple_of", "divisible_by", "src_absent", "src_present", "elided", "no_overlap"}
+PREDICATE_FIELDS = {"contiguous", "same_shape", "same_layout", "same_storage_span", "rank", "field", "equals", "in", "min", "max", "multiple_of", "divisible_by", "src_absent", "src_present", "elided", "no_overlap", "same_or_disjoint_storage"}
 DERIVED_FIELDS = {"type", "field", "value", "sum", "difference", "product", "ceil_div", "maximum", "next_power_of_2"}
 TRANSIENT_BUFFER_FIELDS = {"size"}
 ROUTE_DISPATCH_FIELDS = {"name", "definition", "config", "buffers", "scalars", "dispatch"}
@@ -917,6 +917,7 @@ def validate_predicates(predicates, route_path, context):
                 "src_present",
                 "elided",
                 "no_overlap",
+                "same_or_disjoint_storage",
             ) if key in keys
         ]
         if len(forms) != 1:
@@ -958,6 +959,21 @@ def validate_predicates(predicates, route_path, context):
             validate_tensor_pair_predicate(predicate["no_overlap"], source, context, "no_overlap")
             if len(keys) != 1:
                 raise ValueError(f"{source}: no_overlap predicate does not accept extra fields")
+        elif form == "same_or_disjoint_storage":
+            validate_tensor_list_predicate(
+                predicate["same_or_disjoint_storage"],
+                source,
+                context,
+                "same_or_disjoint_storage",
+            )
+            if len(predicate["same_or_disjoint_storage"]) < 2:
+                raise ValueError(
+                    f"{source}.same_or_disjoint_storage: expected at least two tensors"
+                )
+            if len(keys) != 1:
+                raise ValueError(
+                    f"{source}: same_or_disjoint_storage predicate does not accept extra fields"
+                )
 
 
 def validate_same_shape_predicate(value, source, context):

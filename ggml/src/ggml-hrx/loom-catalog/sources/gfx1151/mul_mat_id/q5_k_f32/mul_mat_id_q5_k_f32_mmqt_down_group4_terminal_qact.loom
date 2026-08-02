@@ -145,8 +145,11 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
   %src1_view = buffer.view %src1_na[%base] : buffer -> view<1073741824xf32, #dense>
   %idx_view = buffer.view %idx_na[%base] : buffer -> view<1073741824xi32, #dense>
   %tbl_g = buffer.assume.memory_space<global> %tbl : buffer
-  %tbl_view = buffer.view %tbl_g[%base] : buffer -> view<268435456xi32, #dense>
-  %tbl_f32_view = buffer.view %tbl_g[%base] : buffer -> view<268435456xf32, #dense>
+  // This route's native private transient is exactly 11,026,432 bytes. Keep
+  // the authored view at that ABI capacity so address proofs cannot widen
+  // beyond the 32-bit flat-address range accepted by the gfx1151 backend.
+  %tbl_view = buffer.view %tbl_g[%base] : buffer -> view<2756608xi32, #dense>
+  %tbl_f32_view = buffer.view %tbl_g[%base] : buffer -> view<2756608xf32, #dense>
   %dst_view = buffer.view %dst_na[%base] : buffer -> view<1073741824xf32, #dense>
 
 
@@ -223,8 +226,8 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
   %tbl_stride0 = index.mul %ntokens_bounded, %nselected_bounded : index
   %tbl_stride = index.mul %tbl_stride0, %two : index
   %tbl_base0 = index.mul %expert, %tbl_stride : index
-  %tbl_base = index.assume %tbl_base0 [range(%tbl_base0, 0, 268435455)] : index
-  %total_raw = view.load %tbl_view[%tbl_base] : view<268435456xi32, #dense> -> i32
+  %tbl_base = index.assume %tbl_base0 [range(%tbl_base0, 0, 2756607)] : index
+  %total_raw = view.load %tbl_view[%tbl_base] : view<2756608xi32, #dense> -> i32
   // Broadcast through LDS: the value is workgroup-uniform by construction, but
   // a global load carries no such proof and the barriers downstream need one.
   %is_l0 = index.cmp eq, %lane, %zero : index
@@ -277,8 +280,8 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
      scf.if %fi_ok {
        %fs0 = index.add %tbl_base, %one : index
        %fs1 = index.add %fs0, %fi : index
-       %fs = index.assume %fs1 [range(%fs1, 0, 268435455)] : index
-       %pk = view.load %tbl_view[%fs] : view<268435456xi32, #dense> -> i32
+       %fs = index.assume %fs1 [range(%fs1, 0, 2756607)] : index
+       %pk = view.load %tbl_view[%fs] : view<2756608xi32, #dense> -> i32
        %pk_i0 = index.cast %pk : i32 to index
        %pk_i = index.assume %pk_i0 [range(%pk_i0, 0, 134217727)] : index
        %ptok = index.div %pk_i, %onetwentyeight : index
@@ -306,9 +309,12 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
     %pre_tok_i32 = view.load %match_tok_view[%m_pre_c] : view<128xi32, #dense> -> i32
     %pre_sel_i32 = view.load %match_sel_view[%m_pre_c] : view<128xi32, #dense> -> i32
     %pre_tok0 = index.cast %pre_tok_i32 : i32 to index
-    %pre_tok = index.assume %pre_tok0 [range(%pre_tok0, 0, 1048575)] : index
+    // The only route using this source requires exactly 512 tokens and eight
+    // selected experts. These are proof-only refinements of the MMID table
+    // encoding; they emit no masking or clamping instructions.
+    %pre_tok = index.assume %pre_tok0 [range(%pre_tok0, 0, 511)] : index
     %pre_sel0 = index.cast %pre_sel_i32 : i32 to index
-    %pre_sel = index.assume %pre_sel0 [range(%pre_sel0, 0, 127)] : index
+    %pre_sel = index.assume %pre_sel0 [range(%pre_sel0, 0, 7)] : index
     %pre_tok_base = index.mul %pre_tok, %src1_token_stride_b : index
     %pre_sel_base = index.mul %pre_sel, %src1_selected_stride_b : index
     %pre_col_base = index.add %pre_tok_base, %pre_sel_base : index
@@ -363,11 +369,11 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
         %psb_base = index.add %qrecord, %onehundredfortyfour : index
         %psb0 = index.add %psb_base, %qgroup : index
         %psb = index.assume %psb0 [range(%psb0, 2101392, 2756607)] : index
-        %a_scale = view.load %tbl_f32_view[%pgs] : view<268435456xf32, #dense> -> f32
+        %a_scale = view.load %tbl_f32_view[%pgs] : view<2756608xf32, #dense> -> f32
         view.store %a_scale, %act_scale_view[%pre_scale_idx] : f32, view<256xf32, #dense>
         %pgl0_0 = index.add %pgw, %zero : index
-        %pgl0 = index.assume %pgl0_0 [range(%pgl0_0, 0, 268435452)] : index
-        %pv0 = vector.load %tbl_view[%pgl0] : view<268435456xi32, #dense> -> vector<4xi32>
+        %pgl0 = index.assume %pgl0_0 [range(%pgl0_0, 0, 2756604)] : index
+        %pv0 = vector.load %tbl_view[%pgl0] : view<2756608xi32, #dense> -> vector<4xi32>
         %pw0 = vector.extract %pv0[0] : vector<4xi32> -> i32
         %pwi0_0 = index.add %pre_word_base, %zero : index
         %pwi0 = index.assume %pwi0_0 [range(%pwi0_0, 0, 2175)] : index
@@ -385,8 +391,8 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
         %pwi3 = index.assume %pwi3_0 [range(%pwi3_0, 0, 2175)] : index
         view.store %pw3, %act_packed_view[%pwi3] : i32, view<2176xi32, #dense>
         %pgl1_0 = index.add %pgw, %k_s4 : index
-        %pgl1 = index.assume %pgl1_0 [range(%pgl1_0, 0, 268435452)] : index
-        %pv1 = vector.load %tbl_view[%pgl1] : view<268435456xi32, #dense> -> vector<4xi32>
+        %pgl1 = index.assume %pgl1_0 [range(%pgl1_0, 0, 2756604)] : index
+        %pv1 = vector.load %tbl_view[%pgl1] : view<2756608xi32, #dense> -> vector<4xi32>
         %pw4 = vector.extract %pv1[0] : vector<4xi32> -> i32
         %pwi4_0 = index.add %pre_word_base, %k_s4 : index
         %pwi4 = index.assume %pwi4_0 [range(%pwi4_0, 0, 2175)] : index
@@ -403,7 +409,7 @@ kernel.def export("hrx2_mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact") @hr
         %pwi7_0 = index.add %pre_word_base, %k_s7 : index
         %pwi7 = index.assume %pwi7_0 [range(%pwi7_0, 0, 2175)] : index
         view.store %pw7, %act_packed_view[%pwi7] : i32, view<2176xi32, #dense>
-        %ssum = view.load %tbl_view[%psb] : view<268435456xi32, #dense> -> i32
+        %ssum = view.load %tbl_view[%psb] : view<2756608xi32, #dense> -> i32
         view.store %ssum, %act_sum_view[%pre_scale_idx] : i32, view<256xi32, #dense>
       }
       }

@@ -210,7 +210,8 @@
       {"no_overlap": ["up_weight", "scalar_gate_weight"]},
       {"no_overlap": ["up_weight", "producer_input"]},
       {"no_overlap": ["scalar_gate_weight", "producer_input"]},
-      {"no_overlap": ["down_weight", "dst"]}
+      {"no_overlap": ["down_weight", "dst"]},
+      {"same_or_disjoint_storage": ["addend", "dst"]}
     ]
   },
   "derived": {

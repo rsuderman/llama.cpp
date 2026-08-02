@@ -129,32 +129,10 @@
         ]
       },
       {
-        "no_overlap": [
+        "same_or_disjoint_storage": [
           "src0",
-          "src1"
-        ]
-      },
-      {
-        "no_overlap": [
-          "src0",
-          "add_dst"
-        ]
-      },
-      {
-        "no_overlap": [
-          "src0",
-          "dst"
-        ]
-      },
-      {
-        "no_overlap": [
           "src1",
-          "add_dst"
-        ]
-      },
-      {
-        "no_overlap": [
-          "src1",
+          "add_dst",
           "dst"
         ]
       },

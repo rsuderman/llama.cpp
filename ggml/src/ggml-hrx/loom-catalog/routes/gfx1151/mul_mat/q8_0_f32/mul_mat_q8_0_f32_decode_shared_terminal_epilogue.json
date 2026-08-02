@@ -303,7 +303,7 @@
         ]
       },
       {
-        "no_overlap": [
+        "same_or_disjoint_storage": [
           "addend",
           "dst"
         ]
@@ -416,9 +416,15 @@
           "kind": "input"
         },
         {
+          "name": "src1_hi",
+          "tensor": "raw_gate_input",
+          "position": 2,
+          "kind": "input"
+        },
+        {
           "name": "dst",
           "tensor": "raw_gate_dst",
-          "position": 2,
+          "position": 3,
           "kind": "output",
           "storage": "graph_transient"
         }

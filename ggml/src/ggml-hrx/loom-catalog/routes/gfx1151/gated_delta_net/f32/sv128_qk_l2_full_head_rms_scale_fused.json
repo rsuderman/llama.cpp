@@ -233,8 +233,6 @@
       {"field": "shape.q8_weight.attention_row_width", "equals": "derived.attention_row_width"},
       {"field": "tensor.q8_dst.element_count", "equals": "derived.attention_elements"},
       {"field": "derived.nrows", "equals": 16384},
-      {"field": "derived.qk_scale_bytes", "equals": "derived.rms_scale_bytes"},
-
       {"field": "tensor.raw_q.strides.0", "equals": 4},
       {"field": "tensor.raw_q.strides.1", "equals": "tensor.raw_k.strides.1"},
       {"field": "tensor.raw_q.strides.2", "equals": "tensor.raw_k.strides.2"},
@@ -286,7 +284,6 @@
         "reshape_dst", "silu_dst"
       ]},
 
-      {"no_overlap": ["raw_q", "raw_k"]},
       {"no_overlap": ["raw_q", "alpha_weight"]},
       {"no_overlap": ["raw_q", "beta_weight"]},
       {"no_overlap": ["raw_q", "projection_input"]},
@@ -323,10 +320,8 @@
       {"no_overlap": ["a_scale", "beta"]},
       {"no_overlap": ["gate", "beta"]},
 
-      {"no_overlap": ["raw_q", "v"]},
       {"no_overlap": ["raw_q", "gdn_state_input"]},
       {"no_overlap": ["raw_q", "gdn_dst"]},
-      {"no_overlap": ["raw_k", "v"]},
       {"no_overlap": ["raw_k", "gdn_state_input"]},
       {"no_overlap": ["raw_k", "gdn_dst"]},
       {"no_overlap": ["v", "gate"]},
@@ -353,7 +348,6 @@
     ]
   },
   "derived": {
-    "two": {"type": "i64", "value": 2},
     "f32_bytes": {"type": "i64", "value": 4},
     "attention_row_width": {"type": "i64", "product": ["shape.v.width", "shape.v.heads"]},
     "attention_elements": {"type": "i64", "product": ["shape.v.width", "shape.v.heads", "shape.v.tokens", "shape.v.sequences"]},
@@ -364,11 +358,8 @@
     "rq3": {"type": "i64", "ceil_div": ["shape.v.sequences", "shape.raw_q.sequences"]},
     "nrows": {"type": "i64", "product": ["shape.v.heads", "shape.v.tokens", "shape.v.sequences"]},
     "col_blocks": {"type": "i64", "ceil_div": ["shape.v.width", 128]},
-    "qk_rows": {"type": "i64", "product": ["shape.raw_q.q_heads", "shape.raw_q.tokens", "shape.raw_q.sequences"]},
-    "qk_scale_elements": {"type": "i64", "product": ["derived.qk_rows", "derived.two"]},
-    "qk_scale_bytes": {"type": "i64", "product": ["derived.qk_scale_elements", "derived.f32_bytes"]},
-    "projection_workgroups": {"type": "i64", "product": ["shape.v.heads", "shape.v.tokens", "derived.two"]},
-    "producer_workgroups": {"type": "i64", "sum": ["derived.qk_rows", "derived.projection_workgroups"]},
+    "projection_col_tiles": {"type": "i64", "ceil_div": ["shape.projection_input.projection_cols", 16]},
+    "projection_row_tiles": {"type": "i64", "ceil_div": ["shape.v.heads", 32]},
     "rms_scale_bytes": {"type": "i64", "product": ["derived.nrows", "derived.f32_bytes"]},
     "qact_elements": {"type": "i64", "product": ["shape.projection_input.projection_k", "shape.projection_input.projection_cols"]},
     "qact_scale_bytes": {"type": "i64", "ceil_div": ["derived.qact_elements", 8]},
@@ -386,41 +377,27 @@
   "architectures": ["gfx1151"],
   "dispatches": [
     {
-      "name": "gdn_producer",
-      "definition": "../../../../defs/gfx1151/prepass/gdn_decode_producer_prepass.json",
+      "name": "gdn_tiled_producer",
+      "definition": "../../../../defs/gfx1151/mul_mat/f32_f32/mul_mat_f32_f32_pp_gdn_dual_projection_epilogue.json",
       "config": {
         "mode": "compile",
         "bindings": [
-          {"name": "hrx2_gdn_producer_qk_ncols", "type": "i64", "source": "shape.raw_q.width"},
-          {"name": "hrx2_gdn_producer_qk_ne1", "type": "i64", "source": "shape.raw_q.q_heads"},
-          {"name": "hrx2_gdn_producer_qk_ne2", "type": "i64", "source": "shape.raw_q.tokens"},
-          {"name": "hrx2_gdn_producer_qk_ne3", "type": "i64", "source": "shape.raw_q.sequences"},
-          {"name": "hrx2_gdn_producer_qk_s1", "type": "i64", "source": "tensor.raw_q.element_strides.1"},
-          {"name": "hrx2_gdn_producer_qk_s2", "type": "i64", "source": "tensor.raw_q.element_strides.2"},
-          {"name": "hrx2_gdn_producer_qk_s3", "type": "i64", "source": "tensor.raw_q.element_strides.3"},
-          {"name": "hrx2_gdn_dual_projection_k", "type": "i64", "source": "shape.alpha_weight.projection_k"},
-          {"name": "hrx2_gdn_dual_projection_heads", "type": "i64", "source": "shape.v.heads"},
-          {"name": "hrx2_gdn_dual_projection_tokens", "type": "i64", "source": "shape.v.tokens"},
-          {"name": "hrx2_gdn_dual_projection_input_token_stride", "type": "i64", "source": "tensor.projection_input.element_strides.1"},
-          {"name": "hrx2_gdn_dual_projection_workgroup_size", "type": "i64", "value": 256}
+          {"name": "hrx2_gdn_pp_dual_projection_k", "type": "i64", "source": "shape.alpha_weight.projection_k"},
+          {"name": "hrx2_gdn_pp_dual_projection_rows", "type": "i64", "source": "shape.v.heads"},
+          {"name": "hrx2_gdn_pp_dual_projection_cols", "type": "i64", "source": "shape.projection_input.projection_cols"}
         ]
       },
       "buffers": [
-        {"name": "raw_q", "tensor": "raw_q", "position": 0, "kind": "input"},
-        {"name": "raw_k", "tensor": "raw_k", "position": 1, "kind": "input"},
-        {"name": "alpha_weight", "tensor": "alpha_weight", "position": 2, "kind": "input"},
-        {"name": "beta_weight", "tensor": "beta_weight", "position": 3, "kind": "input"},
-        {"name": "input", "tensor": "projection_input", "position": 4, "kind": "input"},
-        {"name": "bias", "tensor": "bias", "position": 5, "kind": "input"},
-        {"name": "a_scale", "tensor": "a_scale", "position": 6, "kind": "input"},
-        {"name": "qk_scales", "transient": "rms_side_scale", "position": 7, "kind": "output"},
-        {"name": "gate", "tensor": "gate", "position": 8, "kind": "output"},
-        {"name": "beta", "tensor": "beta", "position": 9, "kind": "output"}
+        {"name": "alpha_weight", "tensor": "alpha_weight", "position": 0, "kind": "input"},
+        {"name": "beta_weight", "tensor": "beta_weight", "position": 1, "kind": "input"},
+        {"name": "input", "tensor": "projection_input", "position": 2, "kind": "input"},
+        {"name": "bias", "tensor": "bias", "position": 3, "kind": "input"},
+        {"name": "a_scale", "tensor": "a_scale", "position": 4, "kind": "input"},
+        {"name": "gate_dst", "tensor": "gate", "position": 5, "kind": "output"},
+        {"name": "beta_dst", "tensor": "beta", "position": 6, "kind": "output"}
       ],
-      "scalars": [
-        {"name": "eps", "type": "f32", "position": 0, "source": "attribute.q_norm.eps"}
-      ],
-      "dispatch": {"workgroups": ["derived.producer_workgroups", 1, 1], "workgroup_size": [256, 1, 1]}
+      "scalars": [],
+      "dispatch": {"workgroups": ["derived.projection_col_tiles", "derived.projection_row_tiles", 1], "workgroup_size": [1024, 1, 1]}
     },
     {
       "name": "gdn_rms_main",
@@ -520,7 +497,7 @@
         {"name": "asum", "transient": "qact_sums", "position": 8, "kind": "input"}
       ],
       "scalars": [],
-      "dispatch": {"workgroups": ["derived.q8_col_workgroups", "derived.q8_row_workgroups", 1], "workgroup_size": [128, 1, 1]}
+      "dispatch": {"workgroups": ["derived.q8_col_workgroups", "derived.q8_row_workgroups", 1], "workgroup_size": [64, 1, 1]}
     }
   ]
 }

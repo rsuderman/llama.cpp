@@ -159,9 +159,15 @@
           "kind": "input"
         },
         {
+          "name": "src1_hi",
+          "tensor": "src1",
+          "position": 2,
+          "kind": "input"
+        },
+        {
           "name": "dst",
           "tensor": "dst",
-          "position": 2,
+          "position": 3,
           "kind": "output"
         }
       ],

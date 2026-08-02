@@ -1,0 +1,61 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "topk_qact_shared_producer_decode",
+  "op": "GGML_OP_MUL_MAT_ID",
+  "source": "sources/gfx1151/graph/topk_qact_shared_producer_decode.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_topk_qact_shared_producer_decode",
+  "abi": {
+    "binding_count": 10,
+    "parameter_count": 10,
+    "constant_byte_length": 0
+  },
+  "workgroup_size": [
+    256,
+    1,
+    1
+  ],
+  "parameters": [],
+  "bindings": [
+    {
+      "name": "tk_logits",
+      "access": "read"
+    },
+    {
+      "name": "tk_ids",
+      "access": "write"
+    },
+    {
+      "name": "tk_weights",
+      "access": "write"
+    },
+    {
+      "name": "src1",
+      "access": "read"
+    },
+    {
+      "name": "qa_packed",
+      "access": "write"
+    },
+    {
+      "name": "gate_weights",
+      "access": "read"
+    },
+    {
+      "name": "up_weights",
+      "access": "read"
+    },
+    {
+      "name": "shared_gate_weight",
+      "access": "read"
+    },
+    {
+      "name": "shared_dst",
+      "access": "write"
+    },
+    {
+      "name": "raw_gate",
+      "access": "write"
+    }
+  ]
+}

@@ -99,8 +99,14 @@ kernel.def export("hrx2_mul_mat_q8_0_f32_decode_dual_swiglu_shared_gate_producer
     }
   } else {
     // This branch is operation-for-operation identical to the accepted dual
-    // Q8 producer, including its workgroup-to-row map.
-    %row = index.assume %wg [range(%wg, 0, 262143)] : index
+    // Q8 producer; only the logical row issue order differs.
+    %three = index.constant 3 : index
+    %rows_mod3 = index.rem %rows_bounded, %three : index
+    %unsafe_affine3 = index.cmp eq, %rows_mod3, %zero : index
+    %row_product = index.mul %wg, %three : index
+    %row_affine3 = index.rem %row_product, %rows_bounded : index
+    %row_raw = scf.select %unsafe_affine3, %wg, %row_affine3 : index
+    %row = index.assume %row_raw [range(%row_raw, 0, 262143)] : index
     %blocks_per_row = index.div %k_bounded, %qk : index
     %total_blocks = index.mul %rows_bounded, %blocks_per_row : index
     %weight_i8_count = index.mul %total_blocks, %block_bytes : index

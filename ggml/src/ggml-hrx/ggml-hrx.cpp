@@ -95,26 +95,60 @@ struct ggml_backend_hrx_buffer_context {
     std::vector<storage_range> storage_ranges;
 };
 
-struct ggml_backend_hrx_context {
-    ggml_backend_hrx_device_context * device_context = nullptr;
-    hrx_stream_t                      stream         = nullptr;
-    std::string                       name;
-};
-
 struct ggml_backend_hrx_loom_graph_dispatch {
     const ggml_tensor *                  node     = nullptr;
     ggml_backend_hrx_loom_op_response    response = {};
     ggml_backend_hrx_loom_execution_plan plan     = {};
 };
 
-struct ggml_backend_hrx_buffer_guard {
-    hrx_buffer_t buffer = nullptr;
+struct ggml_backend_hrx_loom_graph_cache {
+    const ggml_cgraph *                                cgraph            = nullptr;
+    uint64_t                                           uid               = 0;
+    int                                                n_nodes           = 0;
+    ggml_tensor **                                     nodes             = nullptr;
+    int32_t *                                          use_counts        = nullptr;
+    ggml_tensor **                                     visited_keys      = nullptr;
+    ggml_bitset_t *                                    visited_used      = nullptr;
+    size_t                                             visited_hash_size = 0;
+    const ggml_tensor *                                first_node        = nullptr;
+    const ggml_tensor *                                last_node         = nullptr;
+    std::vector<ggml_backend_hrx_loom_graph_dispatch> dispatches;
+    size_t                                             transient_buffer_size = 0;
 
-    ~ggml_backend_hrx_buffer_guard() {
-        if (buffer) {
-            hrx_buffer_release(buffer);
-        }
+    bool matches(const ggml_cgraph * candidate) const {
+        return candidate && candidate->uid != 0 && candidate == cgraph && candidate->uid == uid &&
+               candidate->n_nodes == n_nodes && candidate->nodes == nodes && candidate->use_counts == use_counts &&
+               candidate->visited_hash_set.keys == visited_keys &&
+               candidate->visited_hash_set.used == visited_used &&
+               candidate->visited_hash_set.size == visited_hash_size && n_nodes > 0 && !dispatches.empty() &&
+               candidate->nodes[0] == first_node && candidate->nodes[n_nodes - 1] == last_node;
     }
+
+    void publish(const ggml_cgraph * candidate,
+                 std::vector<ggml_backend_hrx_loom_graph_dispatch> && prepared_dispatches,
+                 size_t prepared_transient_buffer_size) {
+        cgraph                = candidate;
+        uid                   = candidate->uid;
+        n_nodes               = candidate->n_nodes;
+        nodes                 = candidate->nodes;
+        use_counts            = candidate->use_counts;
+        visited_keys          = candidate->visited_hash_set.keys;
+        visited_used          = candidate->visited_hash_set.used;
+        visited_hash_size     = candidate->visited_hash_set.size;
+        first_node            = candidate->nodes[0];
+        last_node             = candidate->nodes[candidate->n_nodes - 1];
+        dispatches            = std::move(prepared_dispatches);
+        transient_buffer_size = prepared_transient_buffer_size;
+    }
+};
+
+struct ggml_backend_hrx_context {
+    ggml_backend_hrx_device_context *   device_context = nullptr;
+    hrx_stream_t                        stream         = nullptr;
+    std::string                         name;
+    ggml_backend_hrx_loom_graph_cache loom_graph_cache;
+    hrx_buffer_t                        loom_transient_buffer          = nullptr;
+    size_t                              loom_transient_buffer_capacity = 0;
 };
 
 static bool ggml_backend_hrx_log_status(hrx_status_t status, const char * expr, const char * file, int line) {
@@ -1400,6 +1434,11 @@ static void ggml_backend_hrx_free(ggml_backend_t backend) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
     if (context->stream) {
         GGML_HRX_CHECK(hrx_stream_synchronize(context->stream));
+        if (context->loom_transient_buffer) {
+            hrx_buffer_release(context->loom_transient_buffer);
+            context->loom_transient_buffer          = nullptr;
+            context->loom_transient_buffer_capacity = 0;
+        }
         ggml_backend_hrx_unregister_stream(context->device_context, context->stream);
         hrx_stream_release(context->stream);
     }
@@ -1478,15 +1517,13 @@ static enum ggml_status ggml_backend_hrx_prepare_loom(ggml_backend_hrx_context *
         /* .storage_layout        = */ ggml_backend_hrx_tensor_storage_layout,
         /* .storage_layout_user_data = */ context->device_context,
     };
-    ggml_backend_hrx_loom_graph_dispatch prepared = {};
-    prepared.node                                 = node;
-    prepared.response = ggml_backend_hrx_loom_prepare_plan(ggml_backend_hrx_get_loom_catalog(context->device_context),
-                                                           &request, &prepared.plan);
-    if (prepared.response.result == GGML_BACKEND_HRX_LOOM_INVOKED) {
-        *dispatch = prepared;
+    dispatch->node     = node;
+    dispatch->response = ggml_backend_hrx_loom_prepare_plan(ggml_backend_hrx_get_loom_catalog(context->device_context),
+                                                            &request, &dispatch->plan);
+    if (dispatch->response.result == GGML_BACKEND_HRX_LOOM_INVOKED) {
         return GGML_STATUS_SUCCESS;
     }
-    if (prepared.response.result == GGML_BACKEND_HRX_LOOM_FAILED) {
+    if (dispatch->response.result == GGML_BACKEND_HRX_LOOM_FAILED) {
         return GGML_STATUS_FAILED;
     }
     *unsupported = true;
@@ -1519,6 +1556,22 @@ static ggml_backend_hrx_loom_consumed_nodes ggml_backend_hrx_consumed_nodes_from
     return consumed_nodes;
 }
 
+static int ggml_backend_hrx_graph_node_index(const ggml_cgraph *      cgraph,
+                                             const ggml_tensor *      tensor,
+                                             const std::vector<int> & node_indices) {
+    if (!cgraph || !tensor || node_indices.size() != cgraph->visited_hash_set.size) {
+        return -1;
+    }
+    const size_t hash_pos = ggml_hash_find(&cgraph->visited_hash_set, tensor);
+    if (hash_pos == GGML_HASHSET_FULL || hash_pos >= node_indices.size() ||
+        !ggml_bitset_get(cgraph->visited_hash_set.used, hash_pos) ||
+        cgraph->visited_hash_set.keys[hash_pos] != tensor) {
+        return -1;
+    }
+    const int node_index = node_indices[hash_pos];
+    return node_index >= 0 && node_index < cgraph->n_nodes && cgraph->nodes[node_index] == tensor ? node_index : -1;
+}
+
 static int ggml_backend_hrx_graph_node_index(const ggml_cgraph * cgraph, const ggml_tensor * tensor) {
     if (!cgraph || !tensor) {
         return -1;
@@ -1534,7 +1587,8 @@ static int ggml_backend_hrx_graph_node_index(const ggml_cgraph * cgraph, const g
 static bool ggml_backend_hrx_validate_consumed_nodes(const ggml_cgraph *                          cgraph,
                                                      int                                          node_index,
                                                      const ggml_backend_hrx_loom_consumed_nodes * consumed_nodes,
-                                                     const std::vector<bool> &                    visited_nodes) {
+                                                     const std::vector<bool> &                    visited_nodes,
+                                                     const std::vector<int> &                     node_indices) {
     if (!cgraph || !consumed_nodes || node_index < 0 || node_index >= cgraph->n_nodes || consumed_nodes->count < 1 ||
         consumed_nodes->count > GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES) {
         return false;
@@ -1563,7 +1617,8 @@ static bool ggml_backend_hrx_validate_consumed_nodes(const ggml_cgraph *        
     for (int i = 0; i < consumed_nodes->count; ++i) {
         const ggml_tensor * consumed_node = cgraph->nodes[consumed_nodes->indices[i]];
         for (int j = 0; j < GGML_MAX_SRC; ++j) {
-            const int producer_index = ggml_backend_hrx_graph_node_index(cgraph, consumed_node->src[j]);
+            const int producer_index =
+                ggml_backend_hrx_graph_node_index(cgraph, consumed_node->src[j], node_indices);
             if (producer_index >= node_index && !visited_nodes[producer_index] &&
                 !ggml_backend_hrx_consumed_nodes_contains(consumed_nodes, producer_index)) {
                 return false;
@@ -1736,6 +1791,47 @@ static void ggml_backend_hrx_graph_optimize(ggml_backend_t backend, ggml_cgraph 
             --i;
         }
     }
+}
+
+static bool ggml_backend_hrx_make_local_graph_facts(const ggml_cgraph *   cgraph,
+                                                    std::vector<int32_t> & local_use_counts,
+                                                    std::vector<int> &     node_indices,
+                                                    ggml_cgraph *          local_cgraph) {
+    if (!cgraph || !local_cgraph || cgraph->visited_hash_set.size == 0) {
+        return false;
+    }
+
+    local_use_counts.assign(cgraph->visited_hash_set.size, 0);
+    node_indices.assign(cgraph->visited_hash_set.size, -1);
+    for (int i = 0; i < cgraph->n_nodes; ++i) {
+        const ggml_tensor * node = cgraph->nodes[i];
+        if (!node) {
+            continue;
+        }
+        const size_t node_hash = ggml_hash_find(&cgraph->visited_hash_set, node);
+        if (node_hash == GGML_HASHSET_FULL || node_hash >= node_indices.size() ||
+            !ggml_bitset_get(cgraph->visited_hash_set.used, node_hash) ||
+            cgraph->visited_hash_set.keys[node_hash] != node) {
+            return false;
+        }
+        node_indices[node_hash] = i;
+        for (int j = 0; j < GGML_MAX_SRC; ++j) {
+            const ggml_tensor * src = node->src[j];
+            if (!src) {
+                continue;
+            }
+            const size_t src_hash = ggml_hash_find(&cgraph->visited_hash_set, src);
+            if (src_hash == GGML_HASHSET_FULL ||
+                !ggml_bitset_get(cgraph->visited_hash_set.used, src_hash)) {
+                continue;
+            }
+            ++local_use_counts[src_hash];
+        }
+    }
+
+    *local_cgraph             = *cgraph;
+    local_cgraph->use_counts = local_use_counts.data();
+    return true;
 }
 
 struct ggml_backend_hrx_loom_transient_assignment {
@@ -1932,35 +2028,11 @@ static std::vector<bool> ggml_backend_hrx_covered_loom_nodes(
     return covered_nodes;
 }
 
-static bool ggml_backend_hrx_graph_transient_consumers_are_covered(const ggml_cgraph *       cgraph,
-                                                                   const ggml_tensor *       graph_tensor,
-                                                                   const std::vector<bool> & covered_nodes,
-                                                                   bool *                    out_has_consumer) {
-    if (!cgraph || !graph_tensor || !out_has_consumer) {
-        return false;
-    }
-    *out_has_consumer = false;
-    for (int i = 0; i < cgraph->n_nodes; ++i) {
-        const ggml_tensor * node = cgraph->nodes[i];
-        if (!node) {
-            continue;
-        }
-        for (int j = 0; j < GGML_MAX_SRC; ++j) {
-            if (node->src[j] != graph_tensor) {
-                continue;
-            }
-            *out_has_consumer = true;
-            if (i >= static_cast<int>(covered_nodes.size()) || !covered_nodes[i]) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
 static bool ggml_backend_hrx_validate_graph_transient_interval(
     const ggml_cgraph *                              cgraph,
     const std::vector<bool> &                        covered_nodes,
+    const std::vector<int> &                         node_indices,
+    const std::vector<int32_t> &                     covered_use_counts,
     const ggml_backend_hrx_loom_transient_interval & interval) {
     if (!interval.graph_tensor) {
         return true;
@@ -1970,27 +2042,49 @@ static bool ggml_backend_hrx_validate_graph_transient_interval(
         return false;
     }
 
-    const int producer_index = ggml_backend_hrx_graph_node_index(cgraph, interval.graph_tensor);
+    const int producer_index = ggml_backend_hrx_graph_node_index(cgraph, interval.graph_tensor, node_indices);
     if (producer_index < 0 || producer_index >= static_cast<int>(covered_nodes.size()) ||
         !covered_nodes[producer_index]) {
         return false;
     }
 
-    bool has_consumer = false;
-    if (!ggml_backend_hrx_graph_transient_consumers_are_covered(cgraph, interval.graph_tensor, covered_nodes,
-                                                                &has_consumer)) {
+    const size_t tensor_hash = ggml_hash_find(&cgraph->visited_hash_set, interval.graph_tensor);
+    if (tensor_hash == GGML_HASHSET_FULL || tensor_hash >= covered_use_counts.size() ||
+        !ggml_bitset_get(cgraph->visited_hash_set.used, tensor_hash) ||
+        cgraph->visited_hash_set.keys[tensor_hash] != interval.graph_tensor) {
         return false;
     }
-    return has_consumer;
+    const int32_t total_use_count = cgraph->use_counts[tensor_hash];
+    return total_use_count > 0 && covered_use_counts[tensor_hash] == total_use_count;
 }
 
 static bool ggml_backend_hrx_validate_graph_transient_intervals(
     const ggml_cgraph *                                           cgraph,
     const std::vector<ggml_backend_hrx_loom_graph_dispatch> &     dispatches,
+    const std::vector<int> &                                      node_indices,
     const std::vector<ggml_backend_hrx_loom_transient_interval> & intervals) {
     const std::vector<bool> covered_nodes = ggml_backend_hrx_covered_loom_nodes(cgraph, dispatches);
+    std::vector<int32_t> covered_use_counts(cgraph ? cgraph->visited_hash_set.size : 0, 0);
+    for (int i = 0; cgraph && i < cgraph->n_nodes; ++i) {
+        if (i >= static_cast<int>(covered_nodes.size()) || !covered_nodes[i] || !cgraph->nodes[i]) {
+            continue;
+        }
+        for (int j = 0; j < GGML_MAX_SRC; ++j) {
+            const ggml_tensor * src = cgraph->nodes[i]->src[j];
+            if (!src) {
+                continue;
+            }
+            const size_t src_hash = ggml_hash_find(&cgraph->visited_hash_set, src);
+            if (src_hash != GGML_HASHSET_FULL && src_hash < covered_use_counts.size() &&
+                ggml_bitset_get(cgraph->visited_hash_set.used, src_hash) &&
+                cgraph->visited_hash_set.keys[src_hash] == src) {
+                ++covered_use_counts[src_hash];
+            }
+        }
+    }
     for (const ggml_backend_hrx_loom_transient_interval & interval : intervals) {
-        if (!ggml_backend_hrx_validate_graph_transient_interval(cgraph, covered_nodes, interval)) {
+        if (!ggml_backend_hrx_validate_graph_transient_interval(
+                cgraph, covered_nodes, node_indices, covered_use_counts, interval)) {
             return false;
         }
     }
@@ -2000,6 +2094,7 @@ static bool ggml_backend_hrx_validate_graph_transient_intervals(
 static bool ggml_backend_hrx_collect_graph_transient_intervals(
     const ggml_cgraph *                                     cgraph,
     std::vector<ggml_backend_hrx_loom_graph_dispatch> &     dispatches,
+    const std::vector<int> &                                node_indices,
     std::vector<ggml_backend_hrx_loom_transient_interval> & intervals) {
     intervals.clear();
     // Transient reuse assumes these flattened dispatches execute serially on one HRX stream.
@@ -2012,7 +2107,7 @@ static bool ggml_backend_hrx_collect_graph_transient_intervals(
             return false;
         }
     }
-    return ggml_backend_hrx_validate_graph_transient_intervals(cgraph, dispatches, intervals);
+    return ggml_backend_hrx_validate_graph_transient_intervals(cgraph, dispatches, node_indices, intervals);
 }
 
 static bool ggml_backend_hrx_pack_graph_transient_intervals(
@@ -2077,12 +2172,13 @@ static bool ggml_backend_hrx_pack_graph_transient_intervals(
 static bool ggml_backend_hrx_assign_graph_transient_offsets(
     const ggml_cgraph *                                 cgraph,
     std::vector<ggml_backend_hrx_loom_graph_dispatch> & dispatches,
+    const std::vector<int> &                            node_indices,
     size_t *                                            graph_transient_byte_length) {
     if (!graph_transient_byte_length) {
         return false;
     }
     std::vector<ggml_backend_hrx_loom_transient_interval> intervals;
-    if (!ggml_backend_hrx_collect_graph_transient_intervals(cgraph, dispatches, intervals) ||
+    if (!ggml_backend_hrx_collect_graph_transient_intervals(cgraph, dispatches, node_indices, intervals) ||
         !ggml_backend_hrx_pack_graph_transient_intervals(intervals, graph_transient_byte_length)) {
         return false;
     }
@@ -2094,6 +2190,96 @@ static bool ggml_backend_hrx_assign_graph_transient_offsets(
             plan.transient_byte_length = *graph_transient_byte_length;
         }
     }
+    return true;
+}
+
+static enum ggml_status ggml_backend_hrx_prepare_loom_graph(
+    ggml_backend_hrx_context *                           context,
+    ggml_cgraph *                                        cgraph,
+    std::vector<ggml_backend_hrx_loom_graph_dispatch> * dispatches,
+    size_t *                                             transient_buffer_size) {
+    if (!context || !cgraph || !dispatches || !transient_buffer_size) {
+        return GGML_STATUS_FAILED;
+    }
+    dispatches->clear();
+    dispatches->reserve(cgraph->n_nodes);
+    *transient_buffer_size = 0;
+
+    std::vector<int32_t> local_use_counts;
+    std::vector<int>     node_indices;
+    ggml_cgraph          local_cgraph = {};
+    if (!ggml_backend_hrx_make_local_graph_facts(cgraph, local_use_counts, node_indices, &local_cgraph)) {
+        return GGML_STATUS_FAILED;
+    }
+
+    std::vector<bool> visited_nodes(cgraph ? cgraph->n_nodes : 0, false);
+    for (int i = 0; cgraph && i < cgraph->n_nodes; ++i) {
+        if (visited_nodes[i]) {
+            continue;
+        }
+        const ggml_tensor * node = cgraph->nodes[i];
+        if (ggml_backend_hrx_is_metadata_op(node) || ggml_nelements(node) == 0) {
+            continue;
+        }
+        bool unsupported = true;
+        dispatches->emplace_back();
+        ggml_backend_hrx_loom_graph_dispatch & dispatch = dispatches->back();
+        enum ggml_status status =
+            ggml_backend_hrx_prepare_loom(context, &local_cgraph, i, node, &unsupported, &dispatch);
+        if (status != GGML_STATUS_SUCCESS) {
+            return status;
+        }
+        if (!unsupported) {
+            const ggml_backend_hrx_loom_consumed_nodes consumed_nodes =
+                ggml_backend_hrx_consumed_nodes_from_plan(&dispatch.plan);
+            if (!ggml_backend_hrx_validate_consumed_nodes(
+                    &local_cgraph, i, &consumed_nodes, visited_nodes, node_indices)) {
+                return GGML_STATUS_FAILED;
+            }
+            ggml_backend_hrx_mark_consumed_nodes(&consumed_nodes, visited_nodes);
+            continue;
+        }
+        dispatches->pop_back();
+
+        if (context->device_context->options && context->device_context->options->trace_graph) {
+            ggml_backend_hrx_trace_event(context->device_context->reg_context,
+                                         {
+                                             { "event",  "unsupported_compute_node"    },
+                                             { "device", context->device_context->name },
+                                             { "op",     ggml_op_desc(node)            },
+                                             { "node",   ggml_get_name(node)           },
+            });
+        }
+        GGML_LOG_ERROR("%s: HRX backend has no compute implementation for op %s node=%s\n", __func__,
+                       ggml_op_desc(node), ggml_get_name(node));
+        return GGML_STATUS_FAILED;
+    }
+
+    if (!ggml_backend_hrx_assign_graph_transient_offsets(
+            &local_cgraph, *dispatches, node_indices, transient_buffer_size)) {
+        return GGML_STATUS_FAILED;
+    }
+    return GGML_STATUS_SUCCESS;
+}
+
+static bool ggml_backend_hrx_ensure_loom_transient_buffer(
+    ggml_backend_hrx_context * context,
+    size_t                     required_capacity) {
+    if (required_capacity == 0 ||
+        (context->loom_transient_buffer && context->loom_transient_buffer_capacity >= required_capacity)) {
+        return true;
+    }
+
+    hrx_buffer_t replacement = nullptr;
+    if (!GGML_HRX_CHECK(hrx_buffer_allocate(context->stream, required_capacity, HRX_MEMORY_TYPE_DEVICE_LOCAL,
+                                            HRX_BUFFER_USAGE_DEFAULT, &replacement))) {
+        return false;
+    }
+    if (context->loom_transient_buffer) {
+        hrx_buffer_release(context->loom_transient_buffer);
+    }
+    context->loom_transient_buffer          = replacement;
+    context->loom_transient_buffer_capacity = required_capacity;
     return true;
 }
 
@@ -2115,86 +2301,60 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
         context->device_context->active_stream = context->stream;
     }
 
-    std::vector<ggml_backend_hrx_loom_graph_dispatch> dispatches;
-    dispatches.reserve(cgraph ? cgraph->n_nodes : 0);
+    std::vector<ggml_backend_hrx_loom_graph_dispatch> uncached_dispatches;
+    std::vector<ggml_backend_hrx_loom_graph_dispatch> * dispatches = nullptr;
     size_t transient_buffer_size = 0;
-
-    std::vector<bool> visited_nodes(cgraph ? cgraph->n_nodes : 0, false);
-    for (int i = 0; cgraph && i < cgraph->n_nodes; ++i) {
-        if (visited_nodes[i]) {
-            continue;
-        }
-        const ggml_tensor * node = cgraph->nodes[i];
-        if (ggml_backend_hrx_is_metadata_op(node) || ggml_nelements(node) == 0) {
-            continue;
-        }
-        bool                                 unsupported = true;
-        ggml_backend_hrx_loom_graph_dispatch dispatch    = {};
-        enum ggml_status status = ggml_backend_hrx_prepare_loom(context, cgraph, i, node, &unsupported, &dispatch);
+    if (context->loom_graph_cache.matches(cgraph)) {
+        dispatches           = &context->loom_graph_cache.dispatches;
+        transient_buffer_size = context->loom_graph_cache.transient_buffer_size;
+    } else {
+        const enum ggml_status status = ggml_backend_hrx_prepare_loom_graph(
+            context, cgraph, &uncached_dispatches, &transient_buffer_size);
         if (status != GGML_STATUS_SUCCESS) {
             return status;
         }
-        if (!unsupported) {
-            const ggml_backend_hrx_loom_consumed_nodes consumed_nodes =
-                ggml_backend_hrx_consumed_nodes_from_plan(&dispatch.plan);
-            if (!ggml_backend_hrx_validate_consumed_nodes(cgraph, i, &consumed_nodes, visited_nodes)) {
-                return GGML_STATUS_FAILED;
-            }
-            ggml_backend_hrx_mark_consumed_nodes(&consumed_nodes, visited_nodes);
-            dispatches.push_back(dispatch);
-            continue;
+        if (cgraph->uid != 0 && cgraph->n_nodes > 0 && !uncached_dispatches.empty()) {
+            context->loom_graph_cache.publish(cgraph, std::move(uncached_dispatches), transient_buffer_size);
+            dispatches = &context->loom_graph_cache.dispatches;
+        } else {
+            dispatches = &uncached_dispatches;
         }
-
-        if (context->device_context->options && context->device_context->options->trace_graph) {
-            ggml_backend_hrx_trace_event(context->device_context->reg_context,
-                                         {
-                                             { "event",  "unsupported_compute_node"    },
-                                             { "device", context->device_context->name },
-                                             { "op",     ggml_op_desc(node)            },
-                                             { "node",   ggml_get_name(node)           },
-            });
-        }
-        GGML_LOG_ERROR("%s: HRX backend has no compute implementation for op %s node=%s\n", __func__,
-                       ggml_op_desc(node), ggml_get_name(node));
-        return GGML_STATUS_FAILED;
     }
 
-    if (!ggml_backend_hrx_assign_graph_transient_offsets(cgraph, dispatches, &transient_buffer_size)) {
-        return GGML_STATUS_FAILED;
-    }
     if (context->device_context->options && context->device_context->options->trace_graph) {
         ggml_backend_hrx_trace_event(context->device_context->reg_context,
                                      {
                                          { "event",                 "loom_transient_plan"         },
                                          { "device",                context->device_context->name },
-                                         { "dispatch_count",        dispatches.size()             },
+                                         { "dispatch_count",        dispatches->size()            },
                                          { "transient_buffer_size", transient_buffer_size         },
         });
     }
 
-    ggml_backend_hrx_buffer_guard transient_buffer;
-    if (transient_buffer_size > 0 &&
-        !GGML_HRX_CHECK(hrx_buffer_allocate(context->stream, transient_buffer_size, HRX_MEMORY_TYPE_DEVICE_LOCAL,
-                                            HRX_BUFFER_USAGE_DEFAULT, &transient_buffer.buffer))) {
+    if (!ggml_backend_hrx_ensure_loom_transient_buffer(context, transient_buffer_size)) {
         return GGML_STATUS_FAILED;
     }
 
-    for (ggml_backend_hrx_loom_graph_dispatch & dispatch : dispatches) {
+    const bool trace_routes = context->device_context->reg_context &&
+                              context->device_context->reg_context->trace_jsonl.is_open();
+    for (ggml_backend_hrx_loom_graph_dispatch & dispatch : *dispatches) {
         if (!ggml_backend_hrx_loom_dispatch_prepared(ggml_backend_hrx_get_loom_catalog(context->device_context),
-                                                     context->stream, &dispatch.plan, transient_buffer.buffer,
+                                                     context->stream, &dispatch.plan, context->loom_transient_buffer,
                                                      transient_buffer_size)) {
             ggml_backend_hrx_synchronize(backend);
             return GGML_STATUS_FAILED;
         }
-        ggml_backend_hrx_trace_event(context->device_context->reg_context,
-                                     {
-                                         { "event",               "loom_route_dispatch"                                        },
-                                         { "device",              context->device_context->name                                },
-                                         { "route_id",            dispatch.response.route_id ? dispatch.response.route_id : "" },
-                                         { "op",                  ggml_op_desc(dispatch.node)                                  },
-                                         { "nelements",           ggml_nelements(dispatch.node)                                },
-                                         { "consumed_node_count", dispatch.plan.consumed_node_count                            },
-        });
+        if (trace_routes) {
+            ggml_backend_hrx_trace_event(context->device_context->reg_context,
+                                         {
+                                             { "event",               "loom_route_dispatch"                                        },
+                                             { "device",              context->device_context->name                                },
+                                             { "route_id",            dispatch.response.route_id ? dispatch.response.route_id : "" },
+                                             { "op",                  ggml_op_desc(dispatch.node)                                  },
+                                             { "nelements",           ggml_nelements(dispatch.node)                                },
+                                             { "consumed_node_count", dispatch.plan.consumed_node_count                            },
+            });
+        }
     }
 
     ggml_backend_hrx_synchronize(backend);
@@ -2266,6 +2426,9 @@ static ggml_backend_t ggml_backend_hrx_device_init_backend(ggml_backend_dev_t de
         /* .device_context = */ device_context,
         /* .stream         = */ stream,
         /* .name           = */ device_context->name,
+        /* .loom_graph_cache = */ {},
+        /* .loom_transient_buffer = */ nullptr,
+        /* .loom_transient_buffer_capacity = */ 0,
     };
     if (!context) {
         hrx_stream_release(stream);

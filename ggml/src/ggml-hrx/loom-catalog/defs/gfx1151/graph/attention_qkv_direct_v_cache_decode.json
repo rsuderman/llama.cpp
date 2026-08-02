@@ -1,0 +1,26 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "attention_qkv_direct_v_cache_decode",
+  "op": "GGML_OP_MUL_MAT",
+  "source": "sources/gfx1151/graph/attention_qkv_direct_v_cache_decode.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_attention_qkv_direct_v_cache_decode",
+  "abi": {
+    "binding_count": 9,
+    "parameter_count": 9,
+    "constant_byte_length": 0
+  },
+  "workgroup_size": [256, 1, 1],
+  "parameters": [],
+  "bindings": [
+    {"name": "q_weight", "access": "read"},
+    {"name": "k_weight", "access": "read"},
+    {"name": "v_weight", "access": "read"},
+    {"name": "input", "access": "read"},
+    {"name": "input_hi", "access": "read"},
+    {"name": "v_index", "access": "read"},
+    {"name": "q_dst", "access": "write"},
+    {"name": "k_dst", "access": "write"},
+    {"name": "v_cache", "access": "write"}
+  ]
+}

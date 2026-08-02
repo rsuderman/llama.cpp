@@ -687,6 +687,20 @@ def emit_no_overlap_predicate(predicate, context, schema):
     return f"ggml_backend_hrx_loom_reorder_match(request, plan) || !ggml_backend_hrx_loom_tensors_overlap({role_var(lhs)}, {role_var(rhs)})"
 
 
+def emit_same_or_disjoint_storage_predicate(predicate, context, schema):
+    del context
+    del schema
+    tensors = predicate["same_or_disjoint_storage"]
+    conditions = []
+    for i, lhs in enumerate(tensors):
+        for rhs in tensors[i + 1:]:
+            conditions.append(
+                "ggml_backend_hrx_loom_tensors_are_same_or_disjoint("
+                f"{role_var(lhs)}, {role_var(rhs)})"
+            )
+    return " && ".join(conditions)
+
+
 PREDICATE_EMITTERS = {
     "contiguous": emit_contiguous_predicate,
     "same_shape": emit_same_shape_predicate,
@@ -698,6 +712,7 @@ PREDICATE_EMITTERS = {
     "src_present": emit_src_present_predicate,
     "elided": emit_elided_predicate,
     "no_overlap": emit_no_overlap_predicate,
+    "same_or_disjoint_storage": emit_same_or_disjoint_storage_predicate,
 }
 
 

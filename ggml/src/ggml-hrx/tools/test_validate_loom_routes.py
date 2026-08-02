@@ -21,6 +21,21 @@ FUSION_ROUTE_PATH = Path("routes/generic/rms_norm_mul/f32/contiguous_4d.json")
 RECURRENT_ROUTE_PATH = Path(
     "routes/gfx1151/gated_delta_net/f32/state_cache_decode_token1_compound.json"
 )
+RECURRENT_SHARED_EMPTY_INDEX_ROUTE_PATH = Path(
+    "routes/gfx1151/gated_delta_net/f32/"
+    "state_cache_decode_token1_compound_shared_empty_index.json"
+)
+RECURRENT_ZERO_SCALE_ROUTE_PATH = Path(
+    "routes/gfx1151/gated_delta_net/f32/"
+    "state_cache_decode_token1_compound_zero_scale.json"
+)
+RECURRENT_SHARED_EMPTY_INDEX_ZERO_SCALE_ROUTE_PATH = Path(
+    "routes/gfx1151/gated_delta_net/f32/"
+    "state_cache_decode_token1_compound_shared_empty_index_zero_scale.json"
+)
+CONCAT_WINDOW_TAIL_ROUTE_PATH = Path(
+    "routes/gfx1151/concat/f32/window_tail_ssm_silu_pp512.json"
+)
 PP_GDN_RMS_SIDE_ROUTE_PATH = Path(
     "routes/gfx1151/gated_delta_net/f32/"
     "sv128_qk_l2_full_head_rms_scale_fused.json"
@@ -516,15 +531,15 @@ def fusion_route_with_binding_count(route, definition, count):
 def expect_native_fusion_capacity_boundaries():
     if route_impl.MAX_CONSUMED_NODES != 40:
         raise AssertionError("route generator consumed-node capacity must be exactly 40")
-    if route_impl.MAX_BINDINGS != 10:
-        raise AssertionError("route generator binding capacity must be exactly 10")
+    if route_impl.MAX_BINDINGS != 16:
+        raise AssertionError("route generator binding capacity must be exactly 16")
 
     public_header = RUNTIME_PUBLIC_HEADER.read_text(encoding="utf-8")
     if "GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES = 40;" not in public_header:
         raise AssertionError("public runtime consumed-node capacity must be exactly 40")
     internal_header = RUNTIME_INTERNAL_HEADER.read_text(encoding="utf-8")
-    if "GGML_BACKEND_HRX_LOOM_MAX_BINDINGS        = 10;" not in internal_header:
-        raise AssertionError("internal runtime binding capacity must be exactly 10")
+    if "GGML_BACKEND_HRX_LOOM_MAX_BINDINGS        = 16;" not in internal_header:
+        raise AssertionError("internal runtime binding capacity must be exactly 16")
 
     route_path = CATALOG_ROOT / FUSION_ROUTE_PATH
     base_route, base_definition = read_route_and_definition(
@@ -552,17 +567,17 @@ def expect_native_fusion_capacity_boundaries():
         route_path.parent / base_route["dispatches"][0]["definition"]
     ).resolve()
     accepted_bindings, accepted_definition = fusion_route_with_binding_count(
-        base_route, base_definition, 10
+        base_route, base_definition, 16
     )
     loom.validate_definition(accepted_definition, definition_path, CATALOG_ROOT)
     accepted_binding_impl = route_impl.generate_route_impl(
         route_path, accepted_bindings, accepted_definition
     )
-    if "plan->dispatches[0].binding_count = 10;" not in accepted_binding_impl:
-        raise AssertionError("generator did not accept exactly 10 bindings")
+    if "plan->dispatches[0].binding_count = 16;" not in accepted_binding_impl:
+        raise AssertionError("generator did not accept exactly 16 bindings")
 
     rejected_bindings, rejected_definition = fusion_route_with_binding_count(
-        base_route, base_definition, 11
+        base_route, base_definition, 17
     )
     loom.validate_definition(rejected_definition, definition_path, CATALOG_ROOT)
     try:
@@ -570,10 +585,10 @@ def expect_native_fusion_capacity_boundaries():
             route_path, rejected_bindings, rejected_definition
         )
     except ValueError as err:
-        if "route has too many bindings: 11" not in str(err):
-            raise AssertionError(f"unexpected 11-binding rejection: {err}") from err
+        if "route has too many bindings: 17" not in str(err):
+            raise AssertionError(f"unexpected 17-binding rejection: {err}") from err
     else:
-        raise AssertionError("generator accepted 11 bindings")
+        raise AssertionError("generator accepted 17 bindings")
 
 
 def expect_native_recurrent_op_schema_and_generation():
@@ -609,6 +624,59 @@ def expect_native_recurrent_op_schema_and_generation():
         if route_impl.ATTRIBUTE_INDICES.get(op) != indices:
             raise AssertionError(f"wrong native fusion attribute indices for {op}")
 
+    zero_extra_ops = {
+        "empty_index_view",
+        "conv_empty_get",
+        "conv_empty_target",
+        "conv_empty_write",
+        "gdn_empty_get",
+        "gdn_empty_target",
+        "gdn_empty_write",
+    }
+    for recurrent_path in (
+        RECURRENT_ROUTE_PATH,
+        RECURRENT_SHARED_EMPTY_INDEX_ROUTE_PATH,
+        RECURRENT_ZERO_SCALE_ROUTE_PATH,
+        RECURRENT_SHARED_EMPTY_INDEX_ZERO_SCALE_ROUTE_PATH,
+    ):
+        recurrent_route = read_json(CATALOG_ROOT / recurrent_path)
+        retained_zero_extra_ops = zero_extra_ops.intersection(
+            recurrent_route["match"]["ops"]
+        )
+        if retained_zero_extra_ops:
+            raise AssertionError(
+                f"native recurrent route retains zero-row extra-state ops: "
+                f"{sorted(retained_zero_extra_ops)}"
+            )
+
+    concat_route = read_json(CATALOG_ROOT / CONCAT_WINDOW_TAIL_ROUTE_PATH)
+    removed_concat_ops = {"extra_get", "extra_dst_view", "extra_copy"}
+    retained_concat_ops = removed_concat_ops.intersection(
+        concat_route["match"]["ops"]
+    )
+    if retained_concat_ops:
+        raise AssertionError(
+            f"native concat route retains zero-row extra-state ops: "
+            f"{sorted(retained_concat_ops)}"
+        )
+    removed_concat_tensors = {
+        "zero_indices",
+        "zero_get_dst",
+        "zero_copy_base",
+        "zero_copy_target",
+        "zero_copy_dst",
+    }
+    retained_concat_tensors = removed_concat_tensors.intersection(
+        concat_route["tensors"]
+    )
+    if retained_concat_tensors:
+        raise AssertionError(
+            f"native concat route retains zero-row extra-state tensors: "
+            f"{sorted(retained_concat_tensors)}"
+        )
+    if len(concat_route["match"]["ops"]) != 10:
+        raise AssertionError("native concat route must match exactly 10 graph ops")
+
     route_path = CATALOG_ROOT / RECURRENT_ROUTE_PATH
     definitions = loom.load_definitions(CATALOG_ROOT)
     loom.validate_route(route_path, definitions, {"gfx1151"})
@@ -623,12 +691,93 @@ def expect_native_recurrent_op_schema_and_generation():
         "static constexpr int matched_node_count = 40;",
         "plan->consumed_node_count = 40;",
         "plan->dispatch_count = 5;",
-        "plan->dispatches[3].binding_count = 10;",
+        "plan->dispatches[0].binding_count = 6;",
+        "plan->dispatches[2].binding_count = 12;",
+        "plan->dispatches[3].binding_count = 8;",
+        "plan->dispatches[4].binding_count = 4;",
         "plan->transient_count = 1;",
     ):
         if fragment not in impl:
             raise AssertionError(
                 f"native recurrent generator missing {fragment!r}"
+            )
+
+    shared_route_path = CATALOG_ROOT / RECURRENT_SHARED_EMPTY_INDEX_ROUTE_PATH
+    loom.validate_route(shared_route_path, definitions, {"gfx1151"})
+    shared_route = read_json(shared_route_path)
+    shared_dispatch_definitions = loom.resolve_dispatch_definitions(
+        shared_route, shared_route_path, definitions
+    )
+    shared_impl = route_impl.generate_route_impl(
+        shared_route_path, shared_route, shared_dispatch_definitions
+    )
+    for fragment in (
+        "static constexpr int matched_node_count = 40;",
+        "plan->consumed_node_count = 40;",
+        "plan->dispatch_count = 5;",
+        "plan->dispatches[0].binding_count = 6;",
+        "plan->dispatches[2].binding_count = 12;",
+        "plan->dispatches[3].binding_count = 8;",
+        "plan->dispatches[4].binding_count = 4;",
+        "plan->transient_count = 1;",
+    ):
+        if fragment not in shared_impl:
+            raise AssertionError(
+                f"native shared-empty-index recurrent generator missing {fragment!r}"
+            )
+
+    zero_scale_route_path = CATALOG_ROOT / RECURRENT_ZERO_SCALE_ROUTE_PATH
+    loom.validate_route(zero_scale_route_path, definitions, {"gfx1151"})
+    zero_scale_route = read_json(zero_scale_route_path)
+    zero_scale_dispatch_definitions = loom.resolve_dispatch_definitions(
+        zero_scale_route, zero_scale_route_path, definitions
+    )
+    zero_scale_impl = route_impl.generate_route_impl(
+        zero_scale_route_path, zero_scale_route, zero_scale_dispatch_definitions
+    )
+    for fragment in (
+        "static constexpr int matched_node_count = 40;",
+        "plan->consumed_node_count = 40;",
+        "plan->dispatch_count = 4;",
+        "plan->dispatches[0].binding_count = 6;",
+        "plan->dispatches[1].binding_count = 12;",
+        "plan->dispatches[2].binding_count = 8;",
+        "plan->dispatches[3].binding_count = 4;",
+        "ggml_backend_hrx_loom_bind_tensor(request, gdn_cache_read, &plan->dispatches[2].bindings[5])",
+        "plan->transient_count = 1;",
+    ):
+        if fragment not in zero_scale_impl:
+            raise AssertionError(
+                f"native zero-scale recurrent generator missing {fragment!r}"
+            )
+
+    shared_zero_scale_route_path = (
+        CATALOG_ROOT / RECURRENT_SHARED_EMPTY_INDEX_ZERO_SCALE_ROUTE_PATH
+    )
+    loom.validate_route(shared_zero_scale_route_path, definitions, {"gfx1151"})
+    shared_zero_scale_route = read_json(shared_zero_scale_route_path)
+    shared_zero_scale_dispatch_definitions = loom.resolve_dispatch_definitions(
+        shared_zero_scale_route, shared_zero_scale_route_path, definitions
+    )
+    shared_zero_scale_impl = route_impl.generate_route_impl(
+        shared_zero_scale_route_path,
+        shared_zero_scale_route,
+        shared_zero_scale_dispatch_definitions,
+    )
+    for fragment in (
+        "static constexpr int matched_node_count = 40;",
+        "plan->consumed_node_count = 40;",
+        "plan->dispatch_count = 4;",
+        "plan->dispatches[0].binding_count = 6;",
+        "plan->dispatches[1].binding_count = 12;",
+        "plan->dispatches[2].binding_count = 8;",
+        "plan->dispatches[3].binding_count = 4;",
+        "ggml_backend_hrx_loom_bind_tensor(request, gdn_cache_read, &plan->dispatches[2].bindings[5])",
+        "plan->transient_count = 1;",
+    ):
+        if fragment not in shared_zero_scale_impl:
+            raise AssertionError(
+                f"native shared-empty-index zero-scale recurrent generator missing {fragment!r}"
             )
 
 
@@ -647,7 +796,7 @@ def expect_native_pp_gdn_rms_side_generation():
         "static constexpr int matched_node_count = 25;",
         "plan->consumed_node_count = 25;",
         "plan->dispatch_count = 5;",
-        "plan->dispatches[0].binding_count = 10;",
+        "plan->dispatches[0].binding_count = 7;",
         "plan->dispatches[1].binding_count = 8;",
         "plan->dispatches[2].binding_count = 2;",
         "plan->dispatches[3].binding_count = 4;",
@@ -809,6 +958,14 @@ def main():
         FUSION_ROUTE_PATH,
         lambda route: route["match"]["predicates"][3].update({"no_overlap": ["x"]}),
         "expected two tensor names",
+    )
+    expect_invalid_full_catalog_mutation(
+        "fusion-same-or-disjoint-storage-arity",
+        FUSION_ROUTE_PATH,
+        lambda route: route["match"]["predicates"].append(
+            {"same_or_disjoint_storage": ["x"]}
+        ),
+        "expected at least two tensors",
     )
 
     expect_invalid_catalog_mutation(

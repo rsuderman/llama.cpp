@@ -155,9 +155,9 @@
     "weights_final_reshape_dst": {
       "type": "F32",
       "shape": [
+        1,
         "weights_out_selected",
         "weights_out_tokens",
-        "weights_out_batch2",
         "weights_out_batch3"
       ]
     },
