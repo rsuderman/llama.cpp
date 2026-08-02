@@ -1,13 +1,13 @@
 {
   "schema": "ggml-hrx-loom-route-v1",
-  "id": "mul_mat_q8_0_f32_packed_decode_k2048_wg256_scfunroll2",
+  "id": "mul_mat_f32_f32_tiled",
   "format": "loom",
-  "priority": 141,
+  "priority": 800021,
   "match": {
     "op": "GGML_OP_MUL_MAT",
     "tensors": {
       "src0": {
-        "type": "Q8_0",
+        "type": "F32",
         "shape": [
           "k",
           "rows",
@@ -38,15 +38,19 @@
     "predicates": [
       {
         "field": "shape.src0.k",
-        "equals": 2048
+        "min": 64
       },
       {
         "field": "shape.src0.k",
-        "multiple_of": 2048
+        "max": 32768
+      },
+      {
+        "field": "shape.src0.k",
+        "multiple_of": 64
       },
       {
         "field": "shape.src0.rows",
-        "min": 1
+        "min": 33
       },
       {
         "field": "shape.src0.rows",
@@ -54,11 +58,11 @@
       },
       {
         "field": "shape.src1.cols",
-        "min": 1
+        "min": 32
       },
       {
         "field": "shape.src1.cols",
-        "max": 16
+        "max": 32768
       },
       {
         "field": "shape.src0.batch2",
@@ -107,14 +111,29 @@
       }
     ]
   },
-  "derived": {},
+  "derived": {
+    "col_tiles": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.src1.cols",
+        32
+      ]
+    },
+    "row_tiles": {
+      "type": "i64",
+      "ceil_div": [
+        "shape.src0.rows",
+        32
+      ]
+    }
+  },
   "architectures": [
     "gfx1151"
   ],
   "dispatches": [
     {
       "name": "main",
-      "definition": "../../../../defs/gfx1151/mul_mat/q8_0_f32/mul_mat_q8_0_f32_packed_decode_k2048_wg256_scfunroll2.json",
+      "definition": "../../../../defs/gfx1151/mul_mat/f32_f32/mul_mat_f32_f32_tiled.json",
       "config": {
         "mode": "compile",
         "bindings": [
@@ -132,16 +151,6 @@
             "name": "hrx2_shape_cols",
             "type": "i64",
             "source": "shape.src1.cols"
-          },
-          {
-            "name": "hrx2_tuning_workgroup_size",
-            "type": "i64",
-            "value": 256
-          },
-          {
-            "name": "hrx2_tuning_q8_0_f32_unroll_factor",
-            "type": "i64",
-            "value": 2
           }
         ]
       },
@@ -159,27 +168,21 @@
           "kind": "input"
         },
         {
-          "name": "src1_hi",
-          "tensor": "src1",
-          "position": 2,
-          "kind": "input"
-        },
-        {
           "name": "dst",
           "tensor": "dst",
-          "position": 3,
+          "position": 2,
           "kind": "output"
         }
       ],
       "scalars": [],
       "dispatch": {
         "workgroups": [
-          "shape.src0.rows",
-          "shape.src1.cols",
+          "derived.col_tiles",
+          "derived.row_tiles",
           1
         ],
         "workgroup_size": [
-          256,
+          1024,
           1,
           1
         ]

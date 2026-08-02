@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "concat_window_tail_ssm_silu_pp512_zero_scale_wg1024",
   "format": "loom",
-  "priority": 699,
+  "priority": 903217,
   "tensors": {
     "state": {
       "type": "F32",

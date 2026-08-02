@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "flash_attn_ext_f32_f16_wmma_gate_epilogue",
   "format": "loom",
-  "priority": 300,
+  "priority": 702188,
   "tensors": {
     "q": {
       "type": "F32",

@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "gated_delta_net_f32_pp512_rms_side_compound",
   "format": "loom",
-  "priority": 950,
+  "priority": 903382,
   "tensors": {
     "conv_output": {"type": "F32", "shape": ["conv_channels", "projection_cols", 1, 1]},
     "raw_q": {"type": "F32", "shape": ["width", "q_heads", "tokens", "sequences"]},

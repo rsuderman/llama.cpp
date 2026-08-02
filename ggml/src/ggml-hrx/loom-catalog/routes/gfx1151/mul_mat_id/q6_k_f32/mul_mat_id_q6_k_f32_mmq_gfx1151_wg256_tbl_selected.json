@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "mul_mat_id_q6_k_f32_mmq_gfx1151_wg256_tbl_selected",
   "format": "loom",
-  "priority": 110,
+  "priority": 800050,
   "match": {
     "op": "GGML_OP_MUL_MAT_ID",
     "tensors": {
@@ -155,11 +155,29 @@
       },
       {
         "field": "tensor.src1.element_strides.2",
-        "min": 1
-      },
-      {
-        "field": "tensor.src1.element_strides.2",
-        "max": 1048576
+        "in": [
+          1,
+          2,
+          4,
+          8,
+          16,
+          32,
+          64,
+          128,
+          256,
+          512,
+          1024,
+          2048,
+          4096,
+          8192,
+          16384,
+          32768,
+          65536,
+          131072,
+          262144,
+          524288,
+          1048576
+        ]
       },
       {
         "field": "tensor.dst.element_strides.2",

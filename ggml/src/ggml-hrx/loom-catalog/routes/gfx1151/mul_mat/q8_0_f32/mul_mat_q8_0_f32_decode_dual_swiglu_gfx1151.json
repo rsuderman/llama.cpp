@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "mul_mat_q8_0_f32_decode_dual_swiglu",
   "format": "loom",
-  "priority": 420,
+  "priority": 802062,
   "tensors": {
     "gate_weight": {
       "type": "Q8_0",

@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "wide_add_rms_norm_mul_f32",
   "format": "loom",
-  "priority": 400,
+  "priority": 902050,
   "tensors": {
     "src0": {
       "type": "F32",

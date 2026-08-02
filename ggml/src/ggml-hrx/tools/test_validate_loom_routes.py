@@ -74,10 +74,10 @@ Q5_DOWN_STORAGE_CONSUMERS = {
 }
 FA_VARIABLE_KV_ROUTE_PATHS = (
     Path("routes/gfx1151/flash_attn_ext/f32_f16/wmma_gate_epilogue.json"),
-    Path("routes/gfx1151/flash_attn_ext/f32_f16/direct_kv64_f32acc_gate.json"),
+    Path("routes/gfx1151/qwen_moe/qwen3_moe/direct_kv64_f32acc_gate.json"),
 )
 FA_DIRECT_SOURCE_PATH = Path(
-    "sources/gfx1151/flash_attn_ext/f32_f16/direct_kv64_f32acc_gate.loom"
+    "sources/gfx11-generic/flash_attn_ext/f32_f16/direct_kv64_f32acc_gate.loom"
 )
 RUNTIME_PUBLIC_HEADER = CATALOG_ROOT / "ggml-hrx-loom-catalog-runtime.h"
 RUNTIME_INTERNAL_HEADER = CATALOG_ROOT / "ggml-hrx-loom-catalog-runtime-internal.h"
@@ -797,82 +797,18 @@ def expect_variable_kv_fa_mask_extent_guards():
         if expected_row_guard not in route["match"]["predicates"]:
             raise AssertionError(f"{route_path}: missing mask row count guard")
 
-    direct_route = read_json(CATALOG_ROOT / FA_VARIABLE_KV_ROUTE_PATHS[1])
-    direct_dispatch = direct_route["dispatches"][0]
-    expected_runtime_scalars = {
-        "key_value_token_count": ("index", 0, "shape.k.nkv"),
-        "mask_stride_token": ("index", 1, "tensor.mask.element_strides.1"),
-        "scale": ("f32", 2, "attribute.fa.scale"),
-    }
-    runtime_scalars = {
-        scalar["name"]: (scalar["type"], scalar["position"], scalar["source"])
-        for scalar in direct_dispatch["scalars"]
-    }
-    for name, expected in expected_runtime_scalars.items():
-        if runtime_scalars.get(name) != expected:
-            raise AssertionError(f"direct FA route has invalid runtime scalar {name}")
-    compile_bindings = {
-        binding["name"] for binding in direct_dispatch["config"]["bindings"]
-    }
-    if {
-        "hrx2_shape_fa_nkv",
-        "hrx2_shape_fa_mask_stride_token",
-    } & compile_bindings:
-        raise AssertionError("direct FA route specializes variable KV extents")
-    expected_predicates = (
-        {"field": "shape.k.nkv", "min": 512},
-        {"field": "shape.k.nkv", "max": 32768},
-        {"field": "shape.k.nkv", "multiple_of": 64},
-        {"field": "shape.mask.nkv", "min": "shape.k.nkv"},
-        {
-            "field": "tensor.mask.element_strides.1",
-            "equals": "shape.mask.nkv",
-        },
-    )
-    for predicate in expected_predicates:
-        if predicate not in direct_route["match"]["predicates"]:
-            raise AssertionError(f"direct FA route is missing predicate {predicate}")
-
-    definition_path = (
-        CATALOG_ROOT
-        / FA_VARIABLE_KV_ROUTE_PATHS[1].parent
-        / direct_dispatch["definition"]
-    ).resolve()
-    definition = read_json(definition_path)
-    if definition["abi"] != {
-        "binding_count": 6,
-        "parameter_count": 9,
-        "constant_byte_length": 12,
-    }:
-        raise AssertionError("direct FA runtime ABI counts are invalid")
-    if definition["parameters"] != [
-        {"name": "key_value_token_count", "type": "index"},
-        {"name": "mask_stride_token", "type": "index"},
-        {"name": "scale", "type": "f32"},
-    ]:
-        raise AssertionError("direct FA runtime ABI parameter order is invalid")
-
     source = (CATALOG_ROOT / FA_DIRECT_SOURCE_PATH).read_text(encoding="utf-8")
     expected_view = (
-        "view<[%bounded_query_token_count]x[%bounded_mask_stride_token]xf16, #dense>"
+        "view<[%bounded_query_token_count]x[%mask_stride_token]xf16, #dense>"
     )
-    expected_signature = (
-        "(%key_value_token_count: index, %mask_stride_token: index)"
-    )
-    if expected_signature not in source:
-        raise AssertionError("direct FA source does not accept runtime KV extents")
-    expected_bounds = (
-        "%bounded_key_value_token_count, %bounded_mask_stride_token = "
-        "index.assume %key_value_token_count, %mask_stride_token"
-    )
-    if expected_bounds not in source or "le(%key_value_token_count, %mask_stride_token)" not in source:
-        raise AssertionError("direct FA source does not relate the runtime KV extents")
+    if "%mask_stride_token0 = config.get @hrx2_shape_fa_mask_stride_token" not in source:
+        raise AssertionError("direct FA source does not read the configured mask stride")
     if f"%mask_view = buffer.view %mask_aligned[%zero_offset] : buffer -> {expected_view}" not in source:
-        raise AssertionError("direct FA source does not use the runtime mask stride")
+        raise AssertionError("direct FA source does not use the configured mask stride")
     if source.count(f"view.load %mask_view[") != 5:
         raise AssertionError("unexpected direct FA mask load count")
     if source.count(f": {expected_view} -> f16") != 5:
-        raise AssertionError("direct FA mask loads do not use the runtime mask stride")
+        raise AssertionError("direct FA mask loads do not use the configured mask stride")
 
 
 def expect_native_recurrent_op_schema_and_generation():

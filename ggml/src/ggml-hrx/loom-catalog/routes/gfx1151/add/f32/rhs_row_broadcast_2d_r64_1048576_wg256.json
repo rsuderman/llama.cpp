@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "add_f32_rhs_row_broadcast_2d_r64_1048576_wg256",
   "format": "loom",
-  "priority": 200,
+  "priority": 700014,
   "match": {
     "op": "GGML_OP_ADD",
     "tensors": {

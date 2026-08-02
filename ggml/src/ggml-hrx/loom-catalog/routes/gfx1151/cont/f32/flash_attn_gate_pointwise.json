@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "flash_attn_gate_pointwise_f32",
   "format": "loom",
-  "priority": 290,
+  "priority": 902074,
   "tensors": {
     "raw_gate": {
       "type": "F32",

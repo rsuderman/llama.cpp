@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "q4_q5_down_f16_sum_slices_pp512",
   "format": "loom",
-  "priority": 540,
+  "priority": 903333,
   "tensors": {
     "gate_weight": {
       "type": "Q4_K",

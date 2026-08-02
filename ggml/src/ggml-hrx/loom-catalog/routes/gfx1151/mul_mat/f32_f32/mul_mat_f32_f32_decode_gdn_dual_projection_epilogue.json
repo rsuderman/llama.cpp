@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "mul_mat_f32_f32_decode_gdn_dual_projection_epilogue",
   "format": "loom",
-  "priority": 850,
+  "priority": 702141,
   "tensors": {
     "alpha_weight": {
       "type": "F32",

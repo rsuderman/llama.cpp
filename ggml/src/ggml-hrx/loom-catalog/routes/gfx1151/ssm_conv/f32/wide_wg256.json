@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "ssm_conv_f32_wide_wg256",
   "format": "loom",
-  "priority": 110,
+  "priority": 800051,
   "match": {
     "op": "GGML_OP_SSM_CONV",
     "tensors": {

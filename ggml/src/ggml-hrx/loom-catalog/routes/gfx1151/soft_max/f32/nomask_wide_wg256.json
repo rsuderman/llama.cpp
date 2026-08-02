@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "soft_max_f32_nomask_wide_wg256",
   "format": "loom",
-  "priority": 200,
+  "priority": 700012,
   "match": {
     "op": "GGML_OP_SOFT_MAX",
     "tensors": {
