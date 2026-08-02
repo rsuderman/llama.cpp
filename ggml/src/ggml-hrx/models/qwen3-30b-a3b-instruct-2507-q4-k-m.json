@@ -1,0 +1,35 @@
+{
+  "schema": "ggml-hrx-model-lock-v1",
+  "model": "Qwen3-30B-A3B-Instruct-2507",
+  "artifact": {
+    "repository": "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",
+    "revision": "35da2cb042bf9177adb8365cf0f056a3968a8388",
+    "filename": "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
+    "size": 18556686752,
+    "sha256": "6c997b8af17debdfb01d890214400ccbab00db6acc0ba8da5de1cc906c4774d0"
+  },
+  "owned_runtime": {
+    "revision": "cfde4038a103c8273bb6b6b3bd5d44fb32fcd081",
+    "parameter_count": 579,
+    "layer_count": 48
+  },
+  "top_level": {
+    "token_embd.weight": { "types": { "Q4_K": 175030272 } },
+    "output_norm.weight": { "types": { "F32": 8192 } },
+    "output.weight": { "types": { "Q6_K": 255252480 } }
+  },
+  "per_layer": {
+    "attn_norm.weight": { "types": { "F32": 8192 } },
+    "attn_q.weight": { "types": { "Q4_K": 4718592 } },
+    "attn_k.weight": { "types": { "Q4_K": 589824 } },
+    "attn_v.weight": { "types": { "Q4_K": 589824, "Q6_K": 860160 } },
+    "attn_q_norm.weight": { "types": { "F32": 512 } },
+    "attn_k_norm.weight": { "types": { "F32": 512 } },
+    "attn_output.weight": { "types": { "Q4_K": 4718592 } },
+    "ffn_norm.weight": { "types": { "F32": 8192 } },
+    "ffn_gate_inp.weight": { "types": { "F32": 1048576 } },
+    "ffn_gate_exps.weight": { "types": { "Q4_K": 113246208 } },
+    "ffn_up_exps.weight": { "types": { "Q4_K": 113246208 } },
+    "ffn_down_exps.weight": { "types": { "Q4_K": 113246208, "Q6_K": 165150720 } }
+  }
+}

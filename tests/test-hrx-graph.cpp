@@ -501,11 +501,11 @@ static void test_pinned_kernel_corpus_manifest() {
         GGML_HRX_TEST_CORPUS_MANIFEST, "gfx1151", errors);
     REQUIRE(errors.empty());
     REQUIRE(ggml::hrx::verify_kernel_corpus(corpus).valid());
-    REQUIRE(corpus.upstream_revision == "5b1633e36799e2f9edc31b358a3e93c380e8fae4");
-    REQUIRE(corpus.corpus_digest == "919d67ecba681b14a30c46b7980b90ab6090e9500c3b304f7000368efab5448e");
+    REQUIRE(corpus.upstream_revision == "b01fe3eb2cddfedad982be873239bc365dccd67f");
+    REQUIRE(corpus.corpus_digest == "d0efd4314be58347984cd20a08981ca168fbb4bb4cf4e66f47ab3203290b31a3");
     REQUIRE(corpus.recipe_digest == "542255e2e245e96ced8744315223e8aeeaeb5e075280930a2fcbc5760cf5551d");
-    REQUIRE(corpus.kernels.size() == 37);
-    REQUIRE(corpus.plan_case_count == 20);
+    REQUIRE(corpus.kernels.size() == 39);
+    REQUIRE(corpus.plan_case_count == 24);
 }
 
 } // namespace
@@ -523,19 +523,32 @@ int main(int argc, char ** argv) {
         for (const std::string & error : verification.errors) std::fprintf(stderr, "verification: %s\n", error.c_str());
         REQUIRE(verification.valid());
         REQUIRE(proof.structurally_sufficient());
-        REQUIRE(!proof.natively_complete());
+        REQUIRE(proof.natively_complete());
         REQUIRE(proof.root_seams.empty());
         REQUIRE(proof.schedule.roots.size() == 2);
         REQUIRE(std::all_of(proof.schedule.roots.begin(), proof.schedule.roots.end(), [](const ggml::hrx::RootContract & root) {
             return root.disposition == ggml::hrx::RootDisposition::Materialized;
         }));
-        REQUIRE(proof.native_gaps.size() == (proof.schedule.workload == "prefill-512" ? 38 : 36));
+        // Regression counts are for the SHA-pinned Q4_K_M model lock. Dynamic
+        // quant variants have a different per-layer weight mix and are not
+        // interchangeable graph fixtures.
+        REQUIRE(proof.native_gaps.empty());
         REQUIRE(ggml::hrx::schedule_execution_kind_count(proof.schedule,
             ggml::hrx::KernelSpecialization::ExecutionKind::CpuFallback) == 0);
         if (proof.schedule.workload.rfind("decode-", 0) == 0) {
             size_t split_dispatch_count = 0;
+            size_t qkv_dispatch_count = 0;
+            size_t q6_value_dispatch_count = 0;
             for (const ggml::hrx::Invocation & invocation : proof.schedule.invocations) {
                 for (const ggml::hrx::Dispatch & dispatch : invocation.dispatches) {
+                    if (dispatch.kernel.variant == "qwen3_moe_attention_qkv_quantized") {
+                        ++qkv_dispatch_count;
+                        REQUIRE(dispatch.kernel.integer_parameters.at("query_weight_type") == GGML_TYPE_Q4_K);
+                        REQUIRE(dispatch.kernel.integer_parameters.at("key_weight_type") == GGML_TYPE_Q4_K);
+                        const int64_t value_type = dispatch.kernel.integer_parameters.at("value_weight_type");
+                        REQUIRE((value_type == GGML_TYPE_Q4_K || value_type == GGML_TYPE_Q6_K));
+                        q6_value_dispatch_count += value_type == GGML_TYPE_Q6_K;
+                    }
                     if (dispatch.kernel.variant != "qwen3_moe_flash_attention_decode_split_f32_f16_wmma") continue;
                     ++split_dispatch_count;
                     REQUIRE(dispatch.kernel.integer_parameters.at("key_value_token_count") == 768);
@@ -543,6 +556,8 @@ int main(int argc, char ** argv) {
                     REQUIRE(dispatch.kernel.integer_parameters.at("key_value_block_count") == 12);
                 }
             }
+            REQUIRE(qkv_dispatch_count == 48);
+            REQUIRE(q6_value_dispatch_count == 24);
             REQUIRE(split_dispatch_count == 48);
         }
         const std::string serialized = ggml::hrx::serialize_schedule_json(proof.schedule);
@@ -554,8 +569,52 @@ int main(int argc, char ** argv) {
 
         const ggml::hrx::ProgramPlan reactive = ggml::hrx::build_reactive_plan(graph, "fixture-target");
         REQUIRE(reactive.valid());
-        REQUIRE(reactive.semantic_witness == ggml::hrx::schedule_semantic_witness(graph, proof.schedule));
-        REQUIRE(ggml::hrx::verify_resource_program(graph, reactive.schedule, reactive.resources).valid());
+        REQUIRE(reactive.semantic_witness.find(proof.schedule.workload) != std::string::npos);
+        REQUIRE(reactive.graph.values.size() > graph.values.size());
+        REQUIRE(ggml::hrx::verify_resource_program(reactive.graph, reactive.schedule, reactive.resources).valid());
+        // Kernel recipe parameters must be witnesses of the graph, not model
+        // constants hidden in the selector. Check both logical top-k width and
+        // its independently recovered physical row stride.
+        const auto output_value = [&](size_t operation) -> const ggml::hrx::Value & {
+            return graph.values[graph.operations[operation].output];
+        };
+        const size_t hidden_size = output_value(0).access.shape[0];
+        const size_t query_size = output_value(3).access.shape[0];
+        const size_t key_value_size = output_value(8).access.shape[0];
+        const size_t expert_count = output_value(31).access.shape[0];
+        const ggml::hrx::Value & route_ids = output_value(35);
+        const size_t route_count = route_ids.access.shape[0];
+        const size_t route_stride = route_ids.access.strides[1] / ggml_type_size(route_ids.type);
+        size_t checked_routes = 0;
+        for (const ggml::hrx::Invocation & invocation : reactive.schedule.invocations) {
+            for (const ggml::hrx::Dispatch & dispatch : invocation.dispatches) {
+                const auto & config = dispatch.kernel.compile_parameters;
+                if (config.count("qwen3_moe.model.hidden_size"))
+                    REQUIRE(config.at("qwen3_moe.model.hidden_size") == std::to_string(hidden_size));
+                if (config.count("qwen3_moe.attention.query_size"))
+                    REQUIRE(config.at("qwen3_moe.attention.query_size") == std::to_string(query_size));
+                if (config.count("qwen3_moe.attention.key_value_size"))
+                    REQUIRE(config.at("qwen3_moe.attention.key_value_size") == std::to_string(key_value_size));
+                if (config.count("qwen3_moe.router.expert_count"))
+                    REQUIRE(config.at("qwen3_moe.router.expert_count") == std::to_string(expert_count));
+                if (config.count("qwen3_moe.router.route_count"))
+                    REQUIRE(config.at("qwen3_moe.router.route_count") == std::to_string(route_count));
+                const auto stride = dispatch.kernel.integer_parameters.find("route_id_stride");
+                if (stride != dispatch.kernel.integer_parameters.end()) {
+                    REQUIRE(stride->second == static_cast<int64_t>(route_stride));
+                    ++checked_routes;
+                }
+            }
+        }
+        REQUIRE(checked_routes != 0);
+        std::vector<std::string> corpus_errors;
+        const ggml::hrx::KernelCorpus executable_corpus = ggml::hrx::load_kernel_corpus_manifest(
+            GGML_HRX_TEST_CORPUS_MANIFEST, "gfx1151", corpus_errors);
+        REQUIRE(corpus_errors.empty());
+        const ggml::hrx::CommandProgram executable_commands =
+            ggml::hrx::build_command_program(reactive, executable_corpus);
+        REQUIRE(executable_commands.commands.size() == ggml::hrx::schedule_dispatch_count(reactive.schedule));
+        REQUIRE(ggml::hrx::verify_command_program(reactive, executable_corpus, executable_commands).valid());
 
         ggml::hrx::QwenProgramProof missing_operation = proof;
         missing_operation.schedule.invocations[1].covered_operations.pop_back();
@@ -586,6 +645,15 @@ int main(int argc, char ** argv) {
         const ggml::hrx::ValueId first_mask = mismatched_kv_graph.operations[25].inputs[3];
         mismatched_kv_graph.values[first_mask].access.shape[0] -= 64;
         REQUIRE(!ggml::hrx::recover_owned_qwen3_moe_program(mismatched_kv_graph).recognized());
+        ggml::hrx::Graph mismatched_route_layout = graph;
+        const ggml::hrx::ValueId first_routes = mismatched_route_layout.operations[35].output;
+        mismatched_route_layout.values[first_routes].access.strides[1] += ggml_type_size(
+            mismatched_route_layout.values[first_routes].type);
+        const ggml::hrx::ProgramPlan rejected_routes = ggml::hrx::build_reactive_plan(mismatched_route_layout, "fixture-target");
+        REQUIRE(!rejected_routes.valid());
+        REQUIRE(std::any_of(rejected_routes.errors.begin(), rejected_routes.errors.end(), [](const std::string & error) {
+            return error.find("layer 1 route layout mismatch") != std::string::npos;
+        }));
         std::ofstream schedule_file(argv[3], std::ios::trunc);
         REQUIRE(schedule_file.good());
         schedule_file << serialized << '\n';

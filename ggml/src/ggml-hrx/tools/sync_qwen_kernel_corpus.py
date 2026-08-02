@@ -38,8 +38,18 @@ CORPUS_FILES = (
     "qwen3_moe/router_top8_f32.loom",
 )
 
+# These two request-setup kernels are deliberately owned by the llama.cpp HRX
+# backend. They are not attributed to the pinned qwen_moe corpus or its BUILD
+# recipes, even though their initial implementations were validated on Ben's
+# later integration branch.
+OWNED_SOURCE_DIR = pathlib.Path(__file__).resolve().parent.parent / "kernels/qwen_owned"
+OWNED_FILES = (
+    "token_embedding_bringup_workaround.loom",
+    "attention_metadata_bringup_workaround.loom",
+)
+
 KERNEL_RE = re.compile(
-    r"kernel\.def(?:\s+target\([^)]*\))?\s+@(?P<symbol>[A-Za-z0-9_]+)"
+    r"kernel\.def(?:\s+target\([^)]*\))?(?:\s+export\(\"[^\"]+\"\))?\s+@(?P<symbol>[A-Za-z0-9_]+)"
     r"\((?P<workload>.*?)\)\s*\{.*?\}\s*launch\((?P<launch>.*?)\)\s*\{",
     re.DOTALL,
 )
@@ -155,7 +165,7 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
     link_modules, plan_cases = parse_build_recipes(build_data.decode("utf-8"))
     file_rows: list[dict[str, object]] = []
     exports: list[dict[str, object]] = []
-    aggregate = hashlib.sha256()
+    upstream_aggregate = hashlib.sha256()
     for relative_text in CORPUS_FILES:
         relative = pathlib.Path(relative_text)
         source = source_directory / relative
@@ -163,21 +173,81 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
             raise RuntimeError(f"missing required corpus source: {source}")
         data = source.read_bytes()
         digest = sha256(data)
-        aggregate.update(relative_text.encode())
-        aggregate.update(b"\0")
-        aggregate.update(bytes.fromhex(digest))
+        upstream_aggregate.update(relative_text.encode())
+        upstream_aggregate.update(b"\0")
+        upstream_aggregate.update(bytes.fromhex(digest))
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         file_rows.append({"path": relative_text, "sha256": digest, "size": len(data)})
         exports.extend(parse_exports(data.decode("utf-8"), relative_text))
 
+    upstream_digest = upstream_aggregate.hexdigest()
+    owned_aggregate = hashlib.sha256()
+    for filename in OWNED_FILES:
+        source = OWNED_SOURCE_DIR / filename
+        if not source.is_file():
+            raise RuntimeError(f"missing required backend-owned kernel source: {source}")
+        data = source.read_bytes()
+        digest = sha256(data)
+        relative_text = f"../qwen_owned/{filename}"
+        owned_aggregate.update(filename.encode())
+        owned_aggregate.update(b"\0")
+        owned_aggregate.update(bytes.fromhex(digest))
+        file_rows.append({"path": relative_text, "sha256": digest, "size": len(data), "owner": "ggml-hrx"})
+        owned_exports = parse_exports(data.decode("utf-8"), relative_text)
+        for item in owned_exports:
+            if item["symbol"] == "qwen_attention_metadata_bringup_workaround":
+                item["binding_access"] = ["read", "read_write", "read_write", "read_write", "read_write"]
+        exports.extend(owned_exports)
+
+    owned_digest = owned_aggregate.hexdigest()
+    combined_aggregate = hashlib.sha256()
+    combined_aggregate.update(bytes.fromhex(upstream_digest))
+    combined_aggregate.update(bytes.fromhex(owned_digest))
+    plan_cases.extend([
+        {
+            "name": "owned_token_embedding_decode_plan_test",
+            "args": ["$(location ../qwen_owned/token_embedding_bringup_workaround.loom)",
+                     "--benchmark=@qwen_token_embedding_q4k_model_decode", "--dry-run",
+                     "--output-format=jsonl", "--sample-compilation=per_sample"],
+            "source": "../qwen_owned/token_embedding_bringup_workaround.loom",
+            "owner": "ggml-hrx",
+        },
+        {
+            "name": "owned_token_embedding_prefill_plan_test",
+            "args": ["$(location ../qwen_owned/token_embedding_bringup_workaround.loom)",
+                     "--benchmark=@qwen_token_embedding_q4k_prefill_512", "--dry-run",
+                     "--output-format=jsonl", "--sample-compilation=per_sample"],
+            "source": "../qwen_owned/token_embedding_bringup_workaround.loom",
+            "owner": "ggml-hrx",
+        },
+        {
+            "name": "owned_attention_metadata_decode_plan_test",
+            "args": ["$(location ../qwen_owned/attention_metadata_bringup_workaround.loom)",
+                     "--benchmark=@qwen_attention_metadata_decode_768", "--dry-run",
+                     "--output-format=jsonl", "--sample-compilation=per_sample"],
+            "source": "../qwen_owned/attention_metadata_bringup_workaround.loom",
+            "owner": "ggml-hrx",
+        },
+        {
+            "name": "owned_attention_metadata_prefill_plan_test",
+            "args": ["$(location ../qwen_owned/attention_metadata_bringup_workaround.loom)",
+                     "--benchmark=@qwen_attention_metadata_model_prefill_512", "--dry-run",
+                     "--output-format=jsonl", "--sample-compilation=per_sample"],
+            "source": "../qwen_owned/attention_metadata_bringup_workaround.loom",
+            "owner": "ggml-hrx",
+        },
+    ])
+
     manifest = {
         "schema": "ggml-hrx-qwen-kernel-corpus-v1",
         "upstream_repository": git(source_root, "config", "--get", "remote.origin.url"),
         "upstream_revision": revision,
         "source_subdirectory": SOURCE_SUBDIR.as_posix(),
-        "corpus_sha256": aggregate.hexdigest(),
+        "corpus_sha256": combined_aggregate.hexdigest(),
+        "upstream_corpus_sha256": upstream_digest,
+        "owned_corpus_sha256": owned_digest,
         "build_bazel_sha256": sha256(build_data),
         "files": file_rows,
         "exports": sorted(exports, key=lambda item: (str(item["symbol"]), str(item["source"]))),

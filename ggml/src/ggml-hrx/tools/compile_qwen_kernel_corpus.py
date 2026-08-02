@@ -19,6 +19,7 @@ BENCHMARK_RE = re.compile(
 ATTR_RE = re.compile(r"(?P<name>[A-Za-z0-9_.]+)\s*=\s*(?P<value>-?[0-9]+)")
 CASE_RE = re.compile(r"check\.case(?:\s+public)?\s+@(?P<name>[A-Za-z0-9_]+)\s*\{")
 LITERAL_RE = re.compile(r"%(?P<name>[A-Za-z0-9_]+)\s*=\s*check\.literal\s+value\((?P<value>-?[0-9]+)\)\s*:\s*index")
+FUNC_CALL_RE = re.compile(r"func\.call\s+@(?P<name>[A-Za-z0-9_]+)\s*\(")
 
 
 def run(command: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -42,6 +43,8 @@ def main() -> int:
     parser.add_argument("--compiler", type=pathlib.Path, required=True)
     parser.add_argument("--target", choices=("gfx1100", "gfx1151"), required=True)
     parser.add_argument("--output-dir", type=pathlib.Path, required=True)
+    parser.add_argument("--schedule", type=pathlib.Path, action="append", default=[],
+                        help="materialized program.json whose exact specializations must compile")
     args = parser.parse_args()
 
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
@@ -77,8 +80,22 @@ def main() -> int:
         return output
 
     exports = {item["symbol"]: item for item in manifest["exports"]}
+
+    def source_for_root(root: str) -> pathlib.Path:
+        source_name = exports[root]["source"]
+        direct_modules = [name for name, recipe in modules.items() if source_name in recipe["srcs"]]
+        if direct_modules:
+            return link_module(direct_modules[0])
+        library_modules = [name for name, recipe in modules.items() if source_name in recipe["libraries"]]
+        if library_modules:
+            return link_module(library_modules[0])
+        return args.corpus_dir / source_name
+
     results: list[dict[str, object]] = []
     compiled_keys: set[tuple[str, tuple[int, ...], tuple[str, ...]]] = set()
+    root_sources: dict[str, pathlib.Path] = {}
+    planned_invocation_count = 0
+    resolved_invocation_count = 0
     for case in manifest["plan_cases"]:
         source = link_module(case["link_module"]) if "link_module" in case else args.corpus_dir / case["source"]
         plan_command = [str(args.benchmark_tool)]
@@ -93,7 +110,9 @@ def main() -> int:
         (case_dir / "plan.jsonl").write_text(plan.stdout, encoding="utf-8")
         (case_dir / "plan.stderr.txt").write_text(plan.stderr, encoding="utf-8")
         plan_rows = [json.loads(line) for line in plan.stdout.splitlines() if line.strip()]
-        plan_rows = [row for row in plan_rows if row.get("row") == "plan" and row.get("actual_entry")]
+        plan_rows = [row for row in plan_rows if row.get("row") == "plan"]
+        if not plan_rows:
+            raise RuntimeError(f"BUILD recipe {case['name']} produced no planner rows")
         source_text = source.read_text(encoding="utf-8")
         benchmark_defs = {
             match.group("name"): (match.group("case"),
@@ -101,6 +120,7 @@ def main() -> int:
             for match in BENCHMARK_RE.finditer(source.read_text(encoding="utf-8"))
         }
         case_literals: dict[str, dict[str, int]] = {}
+        case_calls: dict[str, list[str]] = {}
         for match in CASE_RE.finditer(source_text):
             depth = 1
             cursor = match.end()
@@ -112,40 +132,100 @@ def main() -> int:
             case_literals[match.group("name")] = {
                 item.group("name"): int(item.group("value")) for item in LITERAL_RE.finditer(body)
             }
+            case_calls[match.group("name")] = [item.group("name") for item in FUNC_CALL_RE.finditer(body)]
         configs = [item.removeprefix("--config=") for item in case["args"] if item.startswith("--config=")]
         selects_benchmark = any(item.startswith("--benchmark=") for item in case["args"])
         owned_sources = set(modules[case["link_module"]]["srcs"]) if "link_module" in case else {case["source"]}
         for row in plan_rows:
-            root = row["actual_entry"]
-            if root not in exports:
-                raise RuntimeError(f"BUILD recipe {case['name']} selected unmanifested kernel {root}")
-            if not selects_benchmark and exports[root]["source"] not in owned_sources:
-                continue
-            parameter_names = [item["name"] for item in exports[root]["workload_parameters"]]
             benchmark_case, attrs = benchmark_defs.get(row["benchmark"], (row["case"], {}))
             concrete_values = dict(case_literals.get(benchmark_case, {}))
             concrete_values.update(attrs)
-            missing = [name for name in parameter_names if name not in concrete_values]
-            if missing:
-                raise RuntimeError(f"{case['name']} recipe omits concrete {missing} for {root}")
-            workload = tuple(concrete_values[name] for name in parameter_names)
-            key = (root, workload, tuple(configs))
-            if key in compiled_keys:
-                continue
-            compiled_keys.add(key)
-            compile_dir = case_dir / f"{root}-{len(compiled_keys):03d}"
-            command = [str(args.compiler), "--target", args.target, "--source", str(source),
-                       "--root", root, "--output", str(compile_dir)]
-            for config in configs:
-                command.extend(("--config", config))
-            for value in workload:
-                command.extend(("--workload", str(value)))
-            compile_result = run(command, env=os.environ.copy())
-            (case_dir / f"{root}-{len(compiled_keys):03d}.stdout.txt").write_text(compile_result.stdout, encoding="utf-8")
-            (case_dir / f"{root}-{len(compiled_keys):03d}.stderr.txt").write_text(compile_result.stderr, encoding="utf-8")
-            result = {"case": case["name"], "root": root, "workload": workload,
-                      "configs": configs, "status": "ok" if compile_result.returncode == 0 else "failed"}
-            results.append(result)
+            expected_count = int(row.get("actual_invocation_count", 1))
+            planned_invocation_count += expected_count
+            if row.get("actual_entry"):
+                roots = [row["actual_entry"]]
+            else:
+                roots = [root for root in case_calls.get(benchmark_case, []) if root in exports]
+            if len(roots) != expected_count:
+                raise RuntimeError(
+                    f"BUILD recipe {case['name']} planner reports {expected_count} invocations for "
+                    f"{benchmark_case}, but source resolves {len(roots)} exported calls: {roots}"
+                )
+            resolved_invocation_count += len(roots)
+            for root in roots:
+                if root not in exports:
+                    raise RuntimeError(f"BUILD recipe {case['name']} selected unmanifested kernel {root}")
+                if not selects_benchmark and exports[root]["source"] not in owned_sources:
+                    continue
+                root_sources.setdefault(root, source)
+                parameter_names = [item["name"] for item in exports[root]["workload_parameters"]]
+                missing = [name for name in parameter_names if name not in concrete_values]
+                if missing:
+                    raise RuntimeError(f"{case['name']} recipe omits concrete {missing} for {root}")
+                workload = tuple(concrete_values[name] for name in parameter_names)
+                key = (root, workload, tuple(configs))
+                if key in compiled_keys:
+                    continue
+                compiled_keys.add(key)
+                compile_dir = case_dir / f"{root}-{len(compiled_keys):03d}"
+                command = [str(args.compiler), "--target", args.target, "--source", str(source),
+                           "--root", root, "--output", str(compile_dir)]
+                for config in configs:
+                    command.extend(("--config", config))
+                for value in workload:
+                    command.extend(("--workload", str(value)))
+                compile_result = run(command, env=os.environ.copy())
+                (case_dir / f"{root}-{len(compiled_keys):03d}.stdout.txt").write_text(compile_result.stdout, encoding="utf-8")
+                (case_dir / f"{root}-{len(compiled_keys):03d}.stderr.txt").write_text(compile_result.stderr, encoding="utf-8")
+                result = {"case": case["name"], "root": root, "workload": workload,
+                          "configs": configs, "artifact_dir": str(compile_dir),
+                          "status": "ok" if compile_result.returncode == 0 else "failed"}
+                results.append(result)
+
+    schedule_requirement_count = 0
+    schedule_unique_requirement_count = 0
+    for schedule_path in args.schedule:
+        schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
+        schedule_dir = args.output_dir / "schedules" / schedule_path.parent.name
+        schedule_dir.mkdir(parents=True, exist_ok=True)
+        for invocation in schedule.get("invocations", []):
+            for dispatch in invocation.get("dispatches", []):
+                specialization = dispatch["kernel"]
+                if specialization.get("execution") != "native":
+                    raise RuntimeError(f"schedule {schedule_path} contains non-native dispatch {specialization['variant']}")
+                root = specialization["variant"]
+                if root not in exports:
+                    raise RuntimeError(f"schedule {schedule_path} selects unmanifested kernel {root}")
+                schedule_requirement_count += 1
+                parameters = specialization.get("parameters", {})
+                parameter_names = [item["name"] for item in exports[root]["workload_parameters"]]
+                missing = [name for name in parameter_names if name not in parameters]
+                if missing:
+                    raise RuntimeError(f"schedule {schedule_path} omits concrete {missing} for {root}")
+                workload = tuple(int(parameters[name]) for name in parameter_names)
+                configs = tuple(f"{name}={value}" for name, value in
+                                sorted(specialization.get("compile_parameters", {}).items()))
+                key = (root, workload, configs)
+                if key in compiled_keys:
+                    continue
+                schedule_unique_requirement_count += 1
+                compiled_keys.add(key)
+                source = root_sources[root] if root in root_sources else source_for_root(root)
+                compile_dir = schedule_dir / f"{root}-{schedule_unique_requirement_count:03d}"
+                command = [str(args.compiler), "--target", args.target, "--source", str(source),
+                           "--root", root, "--output", str(compile_dir)]
+                for config in configs:
+                    command.extend(("--config", config))
+                for value in workload:
+                    command.extend(("--workload", str(value)))
+                compile_result = run(command, env=os.environ.copy())
+                (schedule_dir / f"{root}-{schedule_unique_requirement_count:03d}.stdout.txt").write_text(
+                    compile_result.stdout, encoding="utf-8")
+                (schedule_dir / f"{root}-{schedule_unique_requirement_count:03d}.stderr.txt").write_text(
+                    compile_result.stderr, encoding="utf-8")
+                results.append({"case": f"schedule:{schedule_path}", "root": root, "workload": workload,
+                                "configs": configs, "artifact_dir": str(compile_dir),
+                                "status": "ok" if compile_result.returncode == 0 else "failed"})
 
     summary = {
         "schema": "ggml-hrx-qwen-compile-report-v1",
@@ -155,13 +235,17 @@ def main() -> int:
         "corpus_digest": manifest["corpus_sha256"],
         "recipe_digest": manifest["build_bazel_sha256"],
         "plan_case_count": len(manifest["plan_cases"]),
+        "planned_invocation_count": planned_invocation_count,
+        "resolved_invocation_count": resolved_invocation_count,
+        "schedule_requirement_count": schedule_requirement_count,
+        "schedule_unique_requirement_count": schedule_unique_requirement_count,
         "compile_count": len(results),
         "failed_count": sum(item["status"] != "ok" for item in results),
         "results": results,
     }
     (args.output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({key: summary[key] for key in ("target", "plan_case_count", "compile_count", "failed_count")}))
-    return 0 if summary["failed_count"] == 0 else 1
+    return 0 if summary["failed_count"] == 0 and planned_invocation_count == resolved_invocation_count else 1
 
 
 if __name__ == "__main__":

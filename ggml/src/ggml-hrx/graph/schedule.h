@@ -20,13 +20,18 @@ struct KernelSpecialization {
     std::string variant;
     std::map<std::string, int64_t> integer_parameters;
     ExecutionKind execution_kind = ExecutionKind::Native;
+    std::map<std::string, std::string> compile_parameters;
 };
 
 struct TensorBinding {
     std::string role;
     ValueId value = kInvalidId;
+    size_t offset = 0;
+    size_t length = 0;
 
-    bool operator==(const TensorBinding & other) const { return role == other.role && value == other.value; }
+    bool operator==(const TensorBinding & other) const {
+        return role == other.role && value == other.value && offset == other.offset && length == other.length;
+    }
     bool operator!=(const TensorBinding & other) const { return !(*this == other); }
 };
 

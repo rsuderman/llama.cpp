@@ -8,7 +8,7 @@
 namespace ggml::hrx {
 namespace {
 
-static constexpr const char * kOracleRevision = "hrx-system:5b1633e36799/qwen-program-full-logits-v1";
+static constexpr const char * kOracleRevision = "hrx-system:b01fe3eb2cdd/qwen-program-full-logits-v1";
 static constexpr size_t kLayerCount = 48;
 static constexpr size_t kRegularLayerOperationCount = 63;
 static constexpr OperationId kFirstLayerOperation = 1;
@@ -86,6 +86,18 @@ struct AttentionGeometry {
     int64_t head_size = 0;
     int64_t key_value_token_count = 0;
     int64_t key_value_head_count = 0;
+    int64_t query_head_count = 0;
+};
+
+// Recovered model-family geometry. Qwen-specific operation ordinals identify
+// the values, but none of these dimensions are selector constants.
+struct RoutedTransformerGeometry {
+    int64_t hidden_size = 0;
+    int64_t query_size = 0;
+    int64_t key_value_size = 0;
+    int64_t expert_count = 0;
+    int64_t route_count = 0;
+    int64_t expert_intermediate_size = 0;
 };
 
 static bool recover_attention_geometry(const Graph & graph, size_t layer, AttentionGeometry & geometry,
@@ -110,8 +122,9 @@ static bool recover_attention_geometry(const Graph & graph, size_t layer, Attent
     geometry.head_size = key.access.shape[0];
     geometry.key_value_token_count = key.access.shape[1];
     geometry.key_value_head_count = key.access.shape[2];
-    if (geometry.head_size != 128 || geometry.key_value_head_count != 4 ||
-        query.access.shape[0] != geometry.head_size || query.access.shape[2] != 32 ||
+    geometry.query_head_count = query.access.shape[2];
+    if (geometry.head_size <= 0 || geometry.key_value_head_count <= 0 || geometry.query_head_count <= 0 ||
+        query.access.shape[0] != geometry.head_size ||
         value.access.shape[0] != geometry.head_size ||
         value.access.shape[1] != geometry.key_value_token_count ||
         value.access.shape[2] != geometry.key_value_head_count ||
@@ -131,25 +144,30 @@ static bool recover_attention_geometry(const Graph & graph, size_t layer, Attent
 }
 
 static bool validate_layer_facts(const Graph & graph, size_t layer, size_t token_count,
+                                 const RoutedTransformerGeometry & model,
                                  std::vector<std::string> & errors) {
     const OperationId start = layer_start(layer);
     const bool terminal = layer == 47;
     const int64_t active_rows = terminal ? 1 : static_cast<int64_t>(token_count);
     AttentionGeometry attention_geometry;
     if (!recover_attention_geometry(graph, layer, attention_geometry, errors)) return false;
-    if (!has_shape(graph, start, { 2048, static_cast<int64_t>(token_count) }) ||
-        !has_shape(graph, start + 2, { 4096, static_cast<int64_t>(token_count) }) ||
-        !has_shape(graph, start + 7, { 512, static_cast<int64_t>(token_count) }) ||
-        !has_shape(graph, start + 9, { 512, static_cast<int64_t>(token_count) })) {
-        errors.push_back("layer " + std::to_string(layer) + " attention dimensions do not match Qwen3-30B-A3B");
+    if (!has_shape(graph, start, { model.hidden_size, static_cast<int64_t>(token_count) }) ||
+        !has_shape(graph, start + 2, { model.query_size, static_cast<int64_t>(token_count) }) ||
+        !has_shape(graph, start + 7, { model.key_value_size, static_cast<int64_t>(token_count) }) ||
+        !has_shape(graph, start + 9, { model.key_value_size, static_cast<int64_t>(token_count) }) ||
+        model.query_size != attention_geometry.head_size * attention_geometry.query_head_count ||
+        model.key_value_size != attention_geometry.head_size * attention_geometry.key_value_head_count) {
+        errors.push_back("layer " + std::to_string(layer) + " attention dimensions disagree with recovered model geometry");
         return false;
     }
     const OperationId router = start + (terminal ? 32 : 30);
     const OperationId gate = start + (terminal ? 44 : 42);
     const OperationId up = gate + 1;
     const OperationId down = start + (terminal ? 47 : 45);
-    if (!has_shape(graph, router, { 128, active_rows }) || !has_shape(graph, gate, { 768, 8, active_rows }) ||
-        !has_shape(graph, up, { 768, 8, active_rows }) || !has_shape(graph, down, { 2048, 8, active_rows }) ||
+    if (!has_shape(graph, router, { model.expert_count, active_rows }) ||
+        !has_shape(graph, gate, { model.expert_intermediate_size, model.route_count, active_rows }) ||
+        !has_shape(graph, up, { model.expert_intermediate_size, model.route_count, active_rows }) ||
+        !has_shape(graph, down, { model.hidden_size, model.route_count, active_rows }) ||
         weight_type(graph, router) != GGML_TYPE_F32 || weight_type(graph, gate) != GGML_TYPE_Q4_K ||
         weight_type(graph, up) != GGML_TYPE_Q4_K) {
         errors.push_back("layer " + std::to_string(layer) + " router or expert dimensions/storage do not match");
@@ -173,6 +191,18 @@ static bool validate_layer_facts(const Graph & graph, size_t layer, size_t token
         }
     }
     return true;
+}
+
+static RoutedTransformerGeometry recover_model_geometry(const Graph & graph) {
+    const OperationId start = layer_start(0);
+    RoutedTransformerGeometry model;
+    model.hidden_size = graph.values[graph.operations[start].output].access.shape[0];
+    model.query_size = graph.values[graph.operations[start + 2].output].access.shape[0];
+    model.key_value_size = graph.values[graph.operations[start + 7].output].access.shape[0];
+    model.expert_count = graph.values[graph.operations[start + 30].output].access.shape[0];
+    model.route_count = graph.values[graph.operations[start + 34].output].access.shape[0];
+    model.expert_intermediate_size = graph.values[graph.operations[start + 42].output].access.shape[0];
+    return model;
 }
 
 static std::string type_suffix(enum ggml_type type) {
@@ -292,8 +322,11 @@ static void append_decode_layer_dispatches(const Graph & graph, Invocation & inv
     const OperationId start = layer_start(layer);
     const bool terminal = layer == 47;
     const enum ggml_type query_type = weight_type(graph, start + 2);
-    const enum ggml_type key_type = weight_type(graph, start + 7);
-    const enum ggml_type value_type = weight_type(graph, start + 9);
+    // llama.cpp emits the projection matmuls in Q, V, K order. Keep the
+    // physical operation ordinals separate from the semantic kernel roles:
+    // Ben's mixed-format specialization requires Q4 Q/K and permits Q4/Q6 V.
+    const enum ggml_type value_type = weight_type(graph, start + 7);
+    const enum ggml_type key_type = weight_type(graph, start + 9);
     if ((query_type == GGML_TYPE_Q4_K) && (key_type == GGML_TYPE_Q4_K) &&
         (value_type == GGML_TYPE_Q4_K || value_type == GGML_TYPE_Q6_K)) {
         KernelSpecialization qkv = kernel("qwen3_moe_attention_qkv_quantized", layer, token_count);
@@ -376,9 +409,18 @@ QwenProgramProof recover_owned_qwen3_moe_program(const Graph & graph) {
         proof.errors.push_back("canonical topology has unsupported token count " + std::to_string(token_count));
         return proof;
     }
+    const RoutedTransformerGeometry model = recover_model_geometry(graph);
+    const Value & embedding_weight = graph.values[graph.operations[0].inputs[0]];
+    const int64_t vocabulary_count = embedding_weight.access.shape[1];
+    if (model.hidden_size <= 0 || model.query_size <= 0 || model.key_value_size <= 0 ||
+        model.expert_count <= 0 || model.route_count <= 0 || model.expert_intermediate_size <= 0 ||
+        embedding_weight.access.shape[0] != model.hidden_size || vocabulary_count <= 0) {
+        proof.errors.push_back("Qwen topology contains invalid recovered model geometry");
+        return proof;
+    }
     int64_t program_key_value_token_count = 0;
     for (size_t layer = 0; layer < kLayerCount; ++layer) {
-        if (!validate_layer_facts(graph, layer, token_count, proof.errors)) return proof;
+        if (!validate_layer_facts(graph, layer, token_count, model, proof.errors)) return proof;
         AttentionGeometry attention_geometry;
         if (!recover_attention_geometry(graph, layer, attention_geometry, proof.errors)) return proof;
         if (layer == 0) program_key_value_token_count = attention_geometry.key_value_token_count;
@@ -395,7 +437,7 @@ QwenProgramProof recover_owned_qwen3_moe_program(const Graph & graph) {
     schedule.expected_dispatch_count = prefill ? 724 : 580;
     for (ValueId root : graph.roots) {
         const Value & value = graph.values[root];
-        const std::string materialization = value.access.shape[0] == 151936
+        const std::string materialization = value.access.shape[0] == vocabulary_count
             ? "full_f32_logits" : "normalized_f32_hidden_state";
         schedule.roots.push_back({ root, RootDisposition::Materialized, materialization });
     }
@@ -406,14 +448,13 @@ QwenProgramProof recover_owned_qwen3_moe_program(const Graph & graph) {
     preamble.covered_operations = prefill ? inclusive_range(0, 0) : inclusive_range(0, 2);
     preamble.kernel = kernel("owned_program_preamble", -1, token_count);
     calculate_boundaries(graph, preamble);
-    for (const char * unresolved : {
-             "qwen_token_embedding_q4k_bringup_workaround",
-             "qwen_attention_metadata_bringup_workaround",
-         }) {
-        proof.native_gaps.push_back(std::string("program preamble: ") + unresolved);
-        add_dispatch(preamble, kernel(unresolved, -1, token_count,
-            KernelSpecialization::ExecutionKind::NativeGap), dispatch_ordinal);
-    }
+    KernelSpecialization embedding = kernel("qwen_token_embedding_q4k_bringup_workaround", -1, token_count);
+    embedding.integer_parameters["vocabulary_count"] = vocabulary_count;
+    embedding.integer_parameters["hidden_size"] = model.hidden_size;
+    add_dispatch(preamble, std::move(embedding), dispatch_ordinal);
+    KernelSpecialization metadata = kernel("qwen_attention_metadata_bringup_workaround", -1, token_count);
+    metadata.integer_parameters["context_capacity"] = program_key_value_token_count;
+    add_dispatch(preamble, std::move(metadata), dispatch_ordinal);
     if (decode) add_dispatch(preamble, kernel("qwen3_moe_attention_rmsnorm_quantize_q8_1_x4", -1, token_count), dispatch_ordinal);
     schedule.invocations.push_back(std::move(preamble));
 
@@ -448,6 +489,9 @@ QwenProgramProof recover_owned_qwen3_moe_program(const Graph & graph) {
     if (prefill) add_dispatch(endpoint, kernel("qwen3_moe_rmsnorm_f32_quantize_q8_1_x4", -1, 1), dispatch_ordinal);
     add_dispatch(endpoint, kernel("ggml_linear_q6k_q8_1_x4", -1, 1), dispatch_ordinal);
     schedule.invocations.push_back(std::move(endpoint));
+    if (!proof.native_gaps.empty()) {
+        proof.errors.push_back("owned Qwen recovery has no native implementation for " + proof.native_gaps.front());
+    }
     return proof;
 }
 
@@ -467,6 +511,7 @@ VerificationResult verify_owned_qwen3_moe_program(const Graph & graph, const Qwe
     if (schedule_execution_kind_count(proof.schedule, KernelSpecialization::ExecutionKind::CpuFallback) != 0) {
         result.errors.push_back("owned Qwen proof contains CPU fallback");
     }
+    if (!proof.natively_complete()) result.errors.push_back("owned Qwen proof is not natively complete");
     if (proof.schedule.oracle_revision != kOracleRevision) result.errors.push_back("owned Qwen oracle revision is not pinned");
     if (proof.schedule.invocations.size() != 50) result.errors.push_back("owned Qwen proof must contain preamble, 48 layers, and endpoint");
     const QwenProgramProof expected = recover_owned_qwen3_moe_program(graph);
@@ -493,6 +538,7 @@ VerificationResult verify_owned_qwen3_moe_program(const Graph & graph, const Qwe
                 if (actual.kernel.family != oracle.kernel.family || actual.kernel.variant != oracle.kernel.variant ||
                     actual.kernel.execution_kind != oracle.kernel.execution_kind ||
                     actual.kernel.integer_parameters != oracle.kernel.integer_parameters ||
+                    actual.kernel.compile_parameters != oracle.kernel.compile_parameters ||
                     actual.dependencies != oracle.dependencies || actual.bindings != oracle.bindings) {
                     result.errors.push_back("dispatch in invocation " + std::to_string(i) +
                         " does not match the pinned owned program oracle");

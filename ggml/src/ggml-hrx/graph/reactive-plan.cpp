@@ -1,6 +1,7 @@
 #include "reactive-plan.h"
 
 #include "optimizer.h"
+#include "qwen-bindings.h"
 #include "qwen-program.h"
 #include "qwen-rules.h"
 
@@ -79,15 +80,18 @@ bool eager_capability_declared(enum ggml_op op) {
 }
 
 bool graph_semantically_equal(const Graph & lhs, const Graph & rhs) {
-    if (lhs.storages.size() != rhs.storages.size() || lhs.values.size() != rhs.values.size() ||
+    if (lhs.storages.size() < rhs.storages.size() || lhs.values.size() < rhs.values.size() ||
         lhs.operations.size() != rhs.operations.size() || lhs.roots != rhs.roots) return false;
-    for (size_t i = 0; i < lhs.storages.size(); ++i) {
+    for (size_t i = rhs.values.size(); i < lhs.values.size(); ++i) {
+        if (lhs.values[i].name.rfind("hrx.synthetic.", 0) != 0) return false;
+    }
+    for (size_t i = 0; i < rhs.storages.size(); ++i) {
         const Storage & a = lhs.storages[i];
         const Storage & b = rhs.storages[i];
         if (a.id != b.id || a.root != b.root || a.size != b.size || a.external != b.external ||
             a.weight != b.weight || a.mutable_state != b.mutable_state || a.final_version != b.final_version) return false;
     }
-    for (size_t i = 0; i < lhs.values.size(); ++i) {
+    for (size_t i = 0; i < rhs.values.size(); ++i) {
         const Value & a = lhs.values[i];
         const Value & b = rhs.values[i];
         if (a.id != b.id || a.type != b.type || a.op != b.op || a.boundary != b.boundary ||
@@ -155,6 +159,15 @@ ResourceProgram build_resource_program(const Graph & graph, const Schedule & sch
             if (!layout_only && !output_write_recorded) {
                 const uint32_t version = graph.values[operation.output].access.version;
                 merge_use(output_storage, version, version, ResourceAccess::Write);
+            }
+        }
+        for (const Dispatch & dispatch : invocation.dispatches) {
+            for (const TensorBinding & binding : dispatch.bindings) {
+                if (binding.value >= graph.values.size()) continue;
+                const Value & value = graph.values[binding.value];
+                if (value.name.rfind("hrx.synthetic.", 0) == 0) {
+                    merge_use(value.access.storage, 0, 0, ResourceAccess::ReadWrite);
+                }
             }
         }
         for (auto & item : uses) {
@@ -261,14 +274,25 @@ ProgramPlan build_reactive_plan(const Graph & graph, const std::string & target)
     if (!result.errors.empty()) return result;
 
     const QwenProgramProof proof = recover_owned_qwen3_moe_program(graph);
+    if (!proof.errors.empty() && !proof.schedule.invocations.empty()) {
+        result.errors = proof.errors;
+        return result;
+    }
     result.schedule = proof.recognized() ? proof.schedule : eager_schedule(graph);
     const VerificationResult schedule_verification = proof.recognized()
         ? verify_owned_qwen3_moe_program(graph, proof) : verify_schedule(graph, result.schedule);
     result.errors.insert(result.errors.end(), schedule_verification.errors.begin(), schedule_verification.errors.end());
-    result.resources = build_resource_program(graph, result.schedule);
-    const VerificationResult resource_verification = verify_resource_program(graph, result.schedule, result.resources);
+    if (proof.recognized()) {
+        const VerificationResult bindings = materialize_qwen3_moe_dispatch_bindings(result.graph, result.schedule);
+        result.errors.insert(result.errors.end(), bindings.errors.begin(), bindings.errors.end());
+        const VerificationResult bound_schedule = verify_schedule(result.graph, result.schedule);
+        result.errors.insert(result.errors.end(), bound_schedule.errors.begin(), bound_schedule.errors.end());
+    }
+    if (!result.errors.empty()) return result;
+    result.resources = build_resource_program(result.graph, result.schedule);
+    const VerificationResult resource_verification = verify_resource_program(result.graph, result.schedule, result.resources);
     result.errors.insert(result.errors.end(), resource_verification.errors.begin(), resource_verification.errors.end());
-    result.semantic_witness = schedule_semantic_witness(graph, result.schedule);
+    result.semantic_witness = schedule_semantic_witness(result.graph, result.schedule);
     return result;
 }
 
@@ -288,6 +312,8 @@ ExecutionFrame ReactivePlanCache::prepare(const ggml_cgraph * cgraph, const std:
             frame.plan = candidate;
             frame.values = std::move(imported.value_tensors);
             frame.storage_roots = std::move(imported.storage_roots);
+            frame.values.resize(candidate->graph.values.size(), nullptr);
+            frame.storage_roots.resize(candidate->graph.storages.size(), nullptr);
             return frame;
         }
         ++stats_.semantic_collisions;
@@ -303,6 +329,8 @@ ExecutionFrame ReactivePlanCache::prepare(const ggml_cgraph * cgraph, const std:
     bucket.push_back(frame.plan);
     frame.values = std::move(imported.value_tensors);
     frame.storage_roots = std::move(imported.storage_roots);
+    frame.values.resize(frame.plan->graph.values.size(), nullptr);
+    frame.storage_roots.resize(frame.plan->graph.storages.size(), nullptr);
     return frame;
 }
 

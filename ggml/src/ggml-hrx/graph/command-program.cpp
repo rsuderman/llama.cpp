@@ -182,15 +182,26 @@ KernelCorpus load_kernel_corpus_manifest(const std::string & path, const std::st
             kernel.source = item.at("source").get<std::string>();
             kernel.target = target;
             kernel.source_digest = digests.at(kernel.source);
-            for (const nlohmann::json & parameter : item.at("workload_parameters")) {
-                kernel.scalar_parameters.push_back(parameter.at("name").get<std::string>());
+            for (const char * group : { "workload_parameters", "launch_parameters" }) {
+                for (const nlohmann::json & parameter : item.at(group)) {
+                    const std::string name = parameter.at("name").get<std::string>();
+                    if (std::find(kernel.scalar_parameters.begin(), kernel.scalar_parameters.end(), name) ==
+                        kernel.scalar_parameters.end()) kernel.scalar_parameters.push_back(name);
+                }
             }
-            for (const nlohmann::json & parameter : item.at("launch_parameters")) {
-                kernel.scalar_parameters.push_back(parameter.at("name").get<std::string>());
+            const std::vector<std::string> binding_names = item.at("bindings").get<std::vector<std::string>>();
+            const std::vector<std::string> explicit_access = item.value("binding_access", std::vector<std::string>());
+            if (!explicit_access.empty() && explicit_access.size() != binding_names.size()) {
+                throw std::runtime_error("kernel binding access metadata has the wrong arity");
             }
-            for (const std::string & name : item.at("bindings").get<std::vector<std::string>>()) {
+            for (size_t binding_index = 0; binding_index < binding_names.size(); ++binding_index) {
+                const std::string & name = binding_names[binding_index];
                 ResourceAccess access = ResourceAccess::Read;
-                if (name.find("output") != std::string::npos || name.find("partial") != std::string::npos ||
+                if (!explicit_access.empty()) {
+                    if (explicit_access[binding_index] == "write") access = ResourceAccess::Write;
+                    else if (explicit_access[binding_index] == "read_write") access = ResourceAccess::ReadWrite;
+                    else if (explicit_access[binding_index] != "read") throw std::runtime_error("invalid kernel binding access metadata");
+                } else if (name.find("output") != std::string::npos || name.find("partial") != std::string::npos ||
                     name.find("counter") != std::string::npos || name == "destination") access = ResourceAccess::ReadWrite;
                 kernel.bindings.push_back({ name, access });
             }
@@ -228,6 +239,7 @@ CommandProgram build_command_program(const ProgramPlan & plan, const KernelCorpu
             command.label = invocation.stage + (invocation.layer >= 0 ? "." + std::to_string(invocation.layer) : "");
             command.kernel_id = dispatch.kernel.variant;
             command.scalar_parameters = dispatch.kernel.integer_parameters;
+            command.compile_parameters = dispatch.kernel.compile_parameters;
             command.dependencies = dispatch.dependencies;
             const KernelDefinition * definition = find_kernel(corpus, command.kernel_id);
             if (definition == nullptr) {
@@ -238,12 +250,13 @@ CommandProgram build_command_program(const ProgramPlan & plan, const KernelCorpu
                 if (tensor_binding.value >= plan.graph.values.size()) continue;
                 const Value & value = plan.graph.values[tensor_binding.value];
                 CommandBinding binding;
-                binding.name = definition != nullptr && binding_index < definition->bindings.size()
-                    ? definition->bindings[binding_index].name : tensor_binding.role;
+                binding.name = tensor_binding.role;
                 binding.value = tensor_binding.value;
                 binding.storage = value.access.storage;
-                binding.offset = value.access.offset;
-                binding.length = value_span(value);
+                binding.offset = value.access.offset + tensor_binding.offset;
+                const size_t span = value_span(value);
+                const size_t available = tensor_binding.offset < span ? span - tensor_binding.offset : 0;
+                binding.length = tensor_binding.length == 0 ? available : tensor_binding.length;
                 binding.access = definition != nullptr && binding_index < definition->bindings.size()
                     ? definition->bindings[binding_index].access : ResourceAccess::ReadWrite;
                 command.bindings.push_back(std::move(binding));
@@ -312,6 +325,12 @@ VerificationResult verify_command_program(const ProgramPlan & plan, const Kernel
         if (command.kind == CommandKind::Kernel && definition == nullptr) {
             result.errors.push_back("command references an unknown kernel " + command.kernel_id);
         } else if (definition != nullptr) {
+            for (const std::string & scalar : definition->scalar_parameters) {
+                if (command.scalar_parameters.count(scalar) == 0) {
+                    result.errors.push_back("command " + std::to_string(command.ordinal) + " kernel " +
+                        command.kernel_id + " omits scalar " + scalar);
+                }
+            }
             if (command.bindings.size() != definition->bindings.size()) {
                 result.errors.push_back("command " + std::to_string(command.ordinal) + " kernel " + command.kernel_id +
                     " has " + std::to_string(command.bindings.size()) + " bindings but its ABI requires " +
@@ -429,7 +448,13 @@ std::string format_command_program(const CommandProgram & program) {
         out << "  command " << command.ordinal << ' ' << command_kind_name(command.kind) << ' ' << command.kernel_id
             << " label=" << command.label << " deps=[";
         for (size_t i = 0; i < command.dependencies.size(); ++i) out << (i ? "," : "") << command.dependencies[i];
-        out << "]\n";
+        out << "] scalars={";
+        size_t scalar_index = 0;
+        for (const auto & scalar : command.scalar_parameters) out << (scalar_index++ ? "," : "") << scalar.first << '=' << scalar.second;
+        out << "} configs={";
+        size_t config_index = 0;
+        for (const auto & config : command.compile_parameters) out << (config_index++ ? "," : "") << config.first << '=' << config.second;
+        out << "}\n";
         for (size_t i = 0; i < command.bindings.size(); ++i) {
             const CommandBinding & binding = command.bindings[i];
             out << "    binding[" << i << "] " << binding.name << ' ' << resource_access_name(binding.access)
@@ -520,6 +545,7 @@ std::string serialize_command_program_json(const CommandProgram & program) {
         nlohmann::ordered_json item = {
             { "ordinal", command.ordinal }, { "kind", command_kind_name(command.kind) }, { "label", command.label },
             { "kernel", command.kernel_id }, { "scalars", command.scalar_parameters },
+            { "compile_parameters", command.compile_parameters },
             { "workgroup_count", command.workgroup_count }, { "workgroup_size", command.workgroup_size },
             { "subgroup_size", command.subgroup_size }, { "dependencies", command.dependencies },
             { "bindings", nlohmann::ordered_json::array() },

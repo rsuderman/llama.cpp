@@ -106,6 +106,13 @@ VerificationResult verify_schedule(const Graph & graph, const Schedule & schedul
             for (const TensorBinding & binding : dispatch.bindings) {
                 if (binding.role.empty() || binding.value >= graph.values.size()) {
                     error(result, "dispatch " + std::to_string(dispatch_ordinal) + " has an invalid tensor binding");
+                } else {
+                    const Value & value = graph.values[binding.value];
+                    const Storage & storage = graph.storages[value.access.storage];
+                    const size_t available = storage.size > value.access.offset ? storage.size - value.access.offset : 0;
+                    if (binding.offset > available || (binding.length != 0 && binding.length > available - binding.offset)) {
+                        error(result, "dispatch " + std::to_string(dispatch_ordinal) + " tensor binding range escapes storage");
+                    }
                 }
             }
             for (uint32_t dependency : dispatch.dependencies) {
@@ -266,7 +273,8 @@ Schedule deserialize_schedule_json(const std::string & text, std::vector<std::st
             auto read_bindings = [](const nlohmann::json & bindings) {
                 std::vector<TensorBinding> result;
                 for (const nlohmann::json & binding : bindings) {
-                    result.push_back({ binding.at("role").get<std::string>(), binding.at("value").get<ValueId>() });
+                    result.push_back({ binding.at("role").get<std::string>(), binding.at("value").get<ValueId>(),
+                                       binding.value("offset", size_t{0}), binding.value("length", size_t{0}) });
                 }
                 return result;
             };
@@ -280,6 +288,8 @@ Schedule deserialize_schedule_json(const std::string & text, std::vector<std::st
                     dispatch.kernel.family = dispatch_kernel.at("family").get<std::string>();
                     dispatch.kernel.variant = dispatch_kernel.at("variant").get<std::string>();
                     dispatch.kernel.integer_parameters = dispatch_kernel.at("parameters").get<std::map<std::string, int64_t>>();
+                    dispatch.kernel.compile_parameters = dispatch_kernel.value(
+                        "compile_parameters", std::map<std::string, std::string>());
                     dispatch.bindings = read_bindings(dispatch_item.at("bindings"));
                     dispatch.dependencies = dispatch_item.at("dependencies").get<std::vector<uint32_t>>();
                     invocation.dispatches.push_back(std::move(dispatch));
@@ -350,10 +360,17 @@ std::string serialize_schedule_json(const Schedule & schedule) {
                 if (dispatch_parameter_index++ != 0) out << ',';
                 out << '\"' << escape_json(parameter.first) << "\":" << parameter.second;
             }
+            out << "},\"compile_parameters\":{";
+            size_t compile_parameter_index = 0;
+            for (const auto & parameter : dispatch.kernel.compile_parameters) {
+                if (compile_parameter_index++ != 0) out << ',';
+                out << '\"' << escape_json(parameter.first) << "\":\"" << escape_json(parameter.second) << '\"';
+            }
             out << "}},\"bindings\":[";
             for (size_t k = 0; k < dispatch.bindings.size(); ++k) {
                 if (k != 0) out << ',';
-                out << "{\"role\":\"" << escape_json(dispatch.bindings[k].role) << "\",\"value\":" << dispatch.bindings[k].value << '}';
+                out << "{\"role\":\"" << escape_json(dispatch.bindings[k].role) << "\",\"value\":" << dispatch.bindings[k].value
+                    << ",\"offset\":" << dispatch.bindings[k].offset << ",\"length\":" << dispatch.bindings[k].length << '}';
             }
             out << "],\"dependencies\":[";
             for (size_t k = 0; k < dispatch.dependencies.size(); ++k) {

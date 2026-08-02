@@ -65,6 +65,7 @@ struct Command {
     std::string label;
     std::string kernel_id;
     std::map<std::string, int64_t> scalar_parameters;
+    std::map<std::string, std::string> compile_parameters;
     std::array<uint32_t, 3> workgroup_count = { 0, 0, 0 };
     std::array<uint32_t, 3> workgroup_size = { 0, 0, 0 };
     uint32_t subgroup_size = 0;

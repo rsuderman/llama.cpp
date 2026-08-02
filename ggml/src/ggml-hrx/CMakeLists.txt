@@ -14,6 +14,8 @@ add_library(ggml-hrx-graph STATIC
     graph/qwen-rules.h
     graph/qwen-program.cpp
     graph/qwen-program.h
+    graph/qwen-bindings.cpp
+    graph/qwen-bindings.h
     graph/reactive-plan.cpp
     graph/reactive-plan.h
     graph/schedule.cpp
