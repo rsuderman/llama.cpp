@@ -7,7 +7,7 @@ FUSION_MATCH_FIELDS = {"anchors", "ops", "predicates", "reorder"}
 FUSION_OP_FIELDS = {"op", "tensors", "attributes"}
 TENSOR_FIELDS = {"type", "optional", "shape", "layout"}
 ATTRIBUTE_FIELDS = {"type", "source", "default"}
-PREDICATE_FIELDS = {"contiguous", "same_shape", "same_layout", "rank", "field", "equals", "in", "min", "max", "multiple_of", "divisible_by", "src_absent", "src_present", "elided", "no_overlap"}
+PREDICATE_FIELDS = {"contiguous", "same_shape", "same_layout", "same_storage_span", "rank", "field", "equals", "in", "min", "max", "multiple_of", "divisible_by", "src_absent", "src_present", "elided", "no_overlap"}
 DERIVED_FIELDS = {"type", "field", "value", "sum", "difference", "product", "ceil_div", "maximum", "next_power_of_2"}
 TRANSIENT_BUFFER_FIELDS = {"size"}
 ROUTE_DISPATCH_FIELDS = {"name", "definition", "config", "buffers", "scalars", "dispatch"}
@@ -862,6 +862,7 @@ def validate_predicates(predicates, route_path, context):
                 "contiguous",
                 "same_shape",
                 "same_layout",
+                "same_storage_span",
                 "rank",
                 "field",
                 "src_absent",
@@ -885,6 +886,10 @@ def validate_predicates(predicates, route_path, context):
             validate_tensor_list_predicate(predicate["same_layout"], source, context, "same_layout")
             if len(keys) != 1:
                 raise ValueError(f"{source}: same_layout predicate does not accept extra fields")
+        elif form == "same_storage_span":
+            validate_tensor_pair_predicate(predicate["same_storage_span"], source, context, "same_storage_span")
+            if len(keys) != 1:
+                raise ValueError(f"{source}: same_storage_span predicate does not accept extra fields")
         elif form == "rank":
             context.validate_tensor_role(predicate["rank"], f"{source}.rank")
             if keys != {"rank", "equals"}:

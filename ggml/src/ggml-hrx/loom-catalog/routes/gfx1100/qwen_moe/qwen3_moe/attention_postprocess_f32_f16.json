@@ -135,7 +135,7 @@
       {"field": "tensor.value_input.element_strides.1", "equals": "shape.value_input.head_size"},
       {"field": "tensor.value_input.element_strides.2", "equals": "derived.key_value_size"},
       {"field": "tensor.key_rows.view_source", "equals": "tensor.key_output"},
-      {"field": "tensor.value_rows.view_source", "equals": "tensor.value_input"},
+      {"same_storage_span": ["value_rows", "value_input"]},
       {"field": "tensor.key_cache_output.view_source", "equals": "tensor.key_cache"},
       {"field": "tensor.value_cache_output.view_source", "equals": "tensor.value_cache"},
       {"elided": ["query_rms", "query_weighted", "key_rms", "key_weighted", "key_output", "key_rows", "value_rows"]},

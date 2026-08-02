@@ -593,6 +593,14 @@ def emit_same_layout_predicate(predicate, context, schema):
     ])
 
 
+def emit_same_storage_span_predicate(predicate, context, schema):
+    # Tentative: remove this emitter if storage-span aliasing stays route-specific.
+    del context
+    del schema
+    lhs, rhs = predicate["same_storage_span"]
+    return f"ggml_backend_hrx_loom_tensors_have_same_storage_span({role_var(lhs)}, {role_var(rhs)})"
+
+
 def emit_rank_predicate(predicate, context, schema):
     del context
     del schema
@@ -639,6 +647,7 @@ PREDICATE_EMITTERS = {
     "contiguous": emit_contiguous_predicate,
     "same_shape": emit_same_shape_predicate,
     "same_layout": emit_same_layout_predicate,
+    "same_storage_span": emit_same_storage_span_predicate,
     "rank": emit_rank_predicate,
     "field": emit_field_predicate,
     "src_absent": emit_src_absent_predicate,
