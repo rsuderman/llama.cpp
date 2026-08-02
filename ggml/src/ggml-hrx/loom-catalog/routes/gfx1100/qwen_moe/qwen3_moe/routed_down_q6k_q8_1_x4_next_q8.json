@@ -88,7 +88,6 @@
       {"no_overlap": ["route_ids", "output"]},
       {"no_overlap": ["route_weights", "output"]},
       {"no_overlap": ["residual", "output"]},
-      {"no_overlap": ["output", "next_projection_input"]},
       {"no_overlap": ["next_norm_weight", "output"]},
       {"no_overlap": ["next_norm_weight", "next_projection_input"]}
     ]
