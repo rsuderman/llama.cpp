@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "qwen3_moe_routed_down_q6k_q8_1_x4_next_q8",
   "format": "loom",
-  "priority": 903363,
+  "priority": 903411,
   "tensors": {
     "down_weight": {
       "type": "Q6_K",

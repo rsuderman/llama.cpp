@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "qwen3_moe_flash_attention_f32_f16_wmma",
   "format": "loom",
-  "priority": 800053,
+  "priority": 800090,
   "match": {
     "op": "GGML_OP_FLASH_ATTN_EXT",
     "tensors": {

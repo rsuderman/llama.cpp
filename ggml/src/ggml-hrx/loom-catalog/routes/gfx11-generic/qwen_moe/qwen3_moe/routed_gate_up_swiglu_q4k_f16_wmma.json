@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma",
   "format": "loom",
-  "priority": 902066,
+  "priority": 902086,
   "tensors": {
     "gate_weight": {
       "type": "Q4_K",

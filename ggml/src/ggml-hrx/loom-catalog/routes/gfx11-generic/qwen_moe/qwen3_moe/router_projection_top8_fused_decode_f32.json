@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "qwen3_moe_router_projection_top8_fused_decode_f32",
   "format": "loom",
-  "priority": 903137,
+  "priority": 903153,
   "tensors": {
     "input": {
       "type": "F32",

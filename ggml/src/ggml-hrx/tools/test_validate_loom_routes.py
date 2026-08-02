@@ -423,6 +423,35 @@ def expect_terminal_output_transients_raise_priority():
         raise AssertionError("route-priority: expected terminal output transient reason")
 
 
+def expect_narrow_predicate_range_raises_priority():
+    broad = route_for_priority(
+        "ggml-hrx-loom-fusion-route-v2",
+        "test_route_broad",
+        ["GGML_OP_MUL", "GGML_OP_ADD", "GGML_OP_MUL"],
+    )
+    narrow = route_for_priority(
+        "ggml-hrx-loom-fusion-route-v2",
+        "test_route_narrow",
+        ["GGML_OP_MUL", "GGML_OP_ADD", "GGML_OP_MUL"],
+    )
+    broad["match"]["predicates"].extend([
+        {"field": "shape.output.token_count", "min": 1},
+        {"field": "shape.output.token_count", "max": 2048},
+    ])
+    narrow["match"]["predicates"].extend([
+        {"field": "shape.output.token_count", "min": 2},
+        {"field": "shape.output.token_count", "max": 32},
+    ])
+
+    broad_priority = hrx_route_priority.route_priority("routes/gfx1100/test_family/test_model/broad.json", broad)
+    narrow_priority = hrx_route_priority.route_priority("routes/gfx1100/test_family/test_model/narrow.json", narrow)
+
+    if narrow_priority.priority <= broad_priority.priority:
+        raise AssertionError("route-priority: expected narrow predicate range to raise priority")
+    if "predicate range specificity: 32" not in narrow_priority.reasons:
+        raise AssertionError("route-priority: expected predicate range specificity reason")
+
+
 def expect_priority_replacement_preserves_route_text():
     with tempfile.TemporaryDirectory(prefix="priority-replace-") as tmpdir:
         route_path = Path(tmpdir) / "route.json"
@@ -1101,6 +1130,7 @@ def main():
     expect_derived_math_valid()
     expect_route_priority_order()
     expect_terminal_output_transients_raise_priority()
+    expect_narrow_predicate_range_raises_priority()
     expect_priority_replacement_preserves_route_text()
     expect_view_field_predicates_valid()
     expect_fusion_reshape_valid()

@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "qwen3_moe_router_top8_f32_stride_bringup_workaround",
   "format": "loom",
-  "priority": 902110,
+  "priority": 902130,
   "tensors": {
     "logits": {
       "type": "F32",

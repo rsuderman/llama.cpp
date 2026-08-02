@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "qwen3_moe_dense_linear_q4k_f16_wmma",
   "format": "loom",
-  "priority": 800024,
+  "priority": 800033,
   "match": {
     "op": "GGML_OP_MUL_MAT",
     "tensors": {

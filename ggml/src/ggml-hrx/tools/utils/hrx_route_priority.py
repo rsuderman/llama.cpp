@@ -33,6 +33,7 @@ FUSION_BUCKETS = (
     (2, 1000, "small fusion"),
 )
 
+
 @dataclass(frozen=True)
 class RoutePriority:
     priority: int
@@ -74,13 +75,55 @@ def _fusion_ops(route, route_path):
     ops = route_schema.require_dict(match, "ops", f"{route_path}: match")
     return list(ops)
 
-
 def _predicate_count(route):
     match = route.get("match")
     if not isinstance(match, dict):
         return 0
     predicates = match.get("predicates", [])
     return len(predicates) if isinstance(predicates, list) else 0
+
+
+def _predicate_range_specificity(route):
+    match = route.get("match")
+    if not isinstance(match, dict):
+        return 0
+    predicates = match.get("predicates", [])
+    if not isinstance(predicates, list):
+        return 0
+
+    ranges = {}
+    for predicate in predicates:
+        if not isinstance(predicate, dict):
+            continue
+        field = predicate.get("field")
+        if not isinstance(field, str):
+            continue
+        bounds = ranges.setdefault(field, {})
+        if "min" in predicate and isinstance(predicate["min"], (int, float)):
+            bounds["min"] = predicate["min"]
+        if "max" in predicate and isinstance(predicate["max"], (int, float)):
+            bounds["max"] = predicate["max"]
+
+    score = 0
+    for bounds in ranges.values():
+        if "min" not in bounds or "max" not in bounds:
+            continue
+        span = bounds["max"] - bounds["min"]
+        if span < 0:
+            continue
+        if span == 0:
+            score += 40
+        elif span <= 32:
+            score += 32
+        elif span <= 128:
+            score += 16
+        elif span <= 512:
+            score += 8
+        elif span <= 2048:
+            score += 4
+        else:
+            score += 1
+    return score
 
 
 def _dispatch_count(route):
@@ -174,6 +217,11 @@ def route_priority(route_path, route):
     if predicates:
         priority += min(predicates, 99)
         reasons.append(f"predicates: {predicates}")
+
+    range_specificity = _predicate_range_specificity(route) if _is_model_path(route_path) else 0
+    if range_specificity:
+        priority += range_specificity
+        reasons.append(f"predicate range specificity: {range_specificity}")
 
     terminal_output_transients = _terminal_output_transient_count(route)
     if terminal_output_transients:

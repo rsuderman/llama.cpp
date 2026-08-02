@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "qwen3_moe_dense_linear_q4k_q8_1_x4_next_q8",
   "format": "loom",
-  "priority": 902180,
+  "priority": 902212,
   "tensors": {
     "attention_output": {
       "type": "F32",

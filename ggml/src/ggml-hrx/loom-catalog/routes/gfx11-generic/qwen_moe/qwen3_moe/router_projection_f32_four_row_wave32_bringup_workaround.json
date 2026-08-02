@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v2",
   "id": "qwen3_moe_router_projection_f32_four_row_wave32_bringup_workaround",
   "format": "loom",
-  "priority": 800008,
+  "priority": 800012,
   "tensors": {
     "src0": {
       "type": "F32",

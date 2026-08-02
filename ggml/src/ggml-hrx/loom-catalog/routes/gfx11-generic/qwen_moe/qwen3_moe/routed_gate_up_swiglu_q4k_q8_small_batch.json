@@ -1,8 +1,8 @@
 {
   "schema": "ggml-hrx-loom-fusion-route-v2",
-  "id": "qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma_prefill_512_partition_fused",
+  "id": "qwen3_moe_routed_gate_up_swiglu_q4k_q8_small_batch",
   "format": "loom",
-  "priority": 902069,
+  "priority": 902105,
   "tensors": {
     "gate_weight": {
       "type": "Q4_K",
@@ -137,7 +137,11 @@
       },
       {
         "field": "shape.output.token_count",
-        "equals": 512
+        "min": 2
+      },
+      {
+        "field": "shape.output.token_count",
+        "max": 32
       },
       {
         "field": "tensor.route_ids.element_strides.1",
@@ -190,93 +194,53 @@
       "type": "i64",
       "field": "shape.gate_weight.expert_count"
     },
-    "token_plus_one": {
+    "input_size": {
       "type": "i64",
-      "sum": [
-        "derived.token_count",
-        1
-      ]
+      "field": "shape.gate_weight.input_size"
     },
-    "expert_table_i32_count": {
+    "output_size": {
       "type": "i64",
-      "product": [
-        "derived.expert_count",
-        "derived.token_plus_one"
-      ]
+      "field": "shape.output.output_size"
     },
-    "expert_table_bytes": {
-      "type": "i64",
-      "product": [
-        "derived.expert_table_i32_count",
-        4
-      ]
-    },
-    "assignment_count": {
+    "routed_row_count": {
       "type": "i64",
       "product": [
         "derived.token_count",
         "derived.route_count"
       ]
     },
-    "assignment_partition_count": {
+    "q8_input_group_count": {
       "type": "i64",
       "ceil_div": [
-        "derived.assignment_count",
-        32
+        "derived.input_size",
+        128
       ]
     },
-    "partition_descriptor_count": {
-      "type": "i64",
-      "sum": [
-        "derived.assignment_partition_count",
-        "derived.expert_count"
-      ]
-    },
-    "partition_table_i32_count": {
-      "type": "i64",
-      "sum": [
-        1,
-        "derived.partition_descriptor_count"
-      ]
-    },
-    "partition_table_bytes": {
+    "q8_input_workgroups": {
       "type": "i64",
       "product": [
-        "derived.partition_table_i32_count",
-        4
+        "derived.q8_input_group_count",
+        "derived.token_count"
       ]
     },
-    "completion_counter_bytes": {
+    "q8_input_bytes_per_token": {
       "type": "i64",
       "product": [
-        1,
-        4
+        "derived.q8_input_group_count",
+        144
       ]
     },
-    "output_tiles": {
+    "q8_input_bytes": {
       "type": "i64",
-      "ceil_div": [
-        "shape.output.output_size",
-        64
-      ]
-    },
-    "launch_partition_count": {
-      "type": "i64",
-      "maximum": [
-        "derived.assignment_partition_count",
-        "derived.expert_count"
+      "product": [
+        "derived.q8_input_bytes_per_token",
+        "derived.token_count"
       ]
     }
   },
   "transient_buffers": {
-    "expert_table": {
-      "size": "derived.expert_table_bytes"
-    },
-    "partition_table": {
-      "size": "derived.partition_table_bytes"
-    },
-    "completion_counter": {
-      "size": "derived.completion_counter_bytes"
+    "q8_input": {
+      "size": "derived.q8_input_bytes"
     }
   },
   "architectures": [
@@ -285,36 +249,109 @@
   ],
   "dispatches": [
     {
-      "name": "build_expert_table_partition",
-      "definition": "../../../../defs/gfx11-generic/qwen_moe/qwen3_moe/build_expert_table_partition_prefill_512.json",
+      "name": "prepare_q8_input",
+      "definition": "../../../../defs/gfx11-generic/qwen_moe/ggml/quantize_q8_1_x4_f32.json",
       "config": {
         "mode": "compile",
         "bindings": []
       },
       "buffers": [
         {
-          "name": "route_ids",
-          "tensor": "route_ids",
+          "name": "input",
+          "tensor": "input",
           "position": 0,
           "kind": "input"
         },
         {
-          "name": "expert_table",
-          "transient": "expert_table",
+          "name": "output",
+          "transient": "q8_input",
           "position": 1,
           "kind": "output"
+        }
+      ],
+      "scalars": [
+        {
+          "name": "token_count",
+          "type": "index",
+          "position": 0,
+          "source": "derived.token_count"
         },
         {
-          "name": "partition_table",
-          "transient": "partition_table",
+          "name": "input_size",
+          "type": "index",
+          "position": 1,
+          "source": "derived.input_size"
+        }
+      ],
+      "dispatch": {
+        "workgroups": [
+          "derived.q8_input_workgroups"
+        ],
+        "workgroup_size": [
+          32,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "fused_gate_up_swiglu_q8",
+      "definition": "../../../../defs/gfx11-generic/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k_q8_small_batch.json",
+      "config": {
+        "mode": "compile",
+        "bindings": [
+          {
+            "name": "qwen3_moe_routed_gate_up_input_size",
+            "type": "i64",
+            "source": "derived.input_size"
+          },
+          {
+            "name": "qwen3_moe_routed_gate_up_route_count",
+            "type": "i64",
+            "source": "derived.route_count"
+          },
+          {
+            "name": "qwen3_moe_routed_gate_up_expert_count",
+            "type": "i64",
+            "source": "derived.expert_count"
+          },
+          {
+            "name": "qwen3_moe_routed_gate_up_output_size",
+            "type": "i64",
+            "source": "derived.output_size"
+          }
+        ]
+      },
+      "buffers": [
+        {
+          "name": "q8_input",
+          "transient": "q8_input",
+          "position": 0,
+          "kind": "input"
+        },
+        {
+          "name": "route_ids",
+          "tensor": "route_ids",
+          "position": 1,
+          "kind": "input"
+        },
+        {
+          "name": "gate_weight",
+          "tensor": "gate_weight",
           "position": 2,
-          "kind": "output"
+          "kind": "input"
         },
         {
-          "name": "completion_counter",
-          "transient": "completion_counter",
+          "name": "up_weight",
+          "tensor": "up_weight",
           "position": 3,
-          "kind": "inout"
+          "kind": "input"
+        },
+        {
+          "name": "output",
+          "tensor": "output",
+          "position": 4,
+          "kind": "output"
         }
       ],
       "scalars": [
@@ -341,100 +378,22 @@
           "type": "index",
           "position": 3,
           "source": "derived.expert_count"
-        }
-      ],
-      "dispatch": {
-        "workgroups": [
-          "derived.expert_count"
-        ],
-        "workgroup_size": [
-          256,
-          1,
-          1
-        ]
-      }
-    },
-    {
-      "name": "fused_gate_up_swiglu",
-      "definition": "../../../../defs/gfx11-generic/qwen_moe/qwen3_moe/routed_gate_up_swiglu_q4k_f16_wmma.json",
-      "config": {
-        "mode": "compile",
-        "bindings": [
-          {
-            "name": "qwen3_moe_routed_gate_up_input_size",
-            "type": "i64",
-            "source": "shape.gate_weight.input_size"
-          },
-          {
-            "name": "qwen3_moe_routed_gate_up_route_count",
-            "type": "i64",
-            "source": "derived.route_count"
-          },
-          {
-            "name": "qwen3_moe_routed_gate_up_expert_count",
-            "type": "i64",
-            "source": "derived.expert_count"
-          },
-          {
-            "name": "qwen3_moe_routed_gate_up_output_size",
-            "type": "i64",
-            "source": "shape.output.output_size"
-          }
-        ]
-      },
-      "buffers": [
-        {
-          "name": "input",
-          "tensor": "input",
-          "position": 0,
-          "kind": "input"
         },
         {
-          "name": "expert_table",
-          "transient": "expert_table",
-          "position": 1,
-          "kind": "input"
-        },
-        {
-          "name": "partition_table",
-          "transient": "partition_table",
-          "position": 2,
-          "kind": "input"
-        },
-        {
-          "name": "gate_weight",
-          "tensor": "gate_weight",
-          "position": 3,
-          "kind": "input"
-        },
-        {
-          "name": "up_weight",
-          "tensor": "up_weight",
-          "position": 4,
-          "kind": "input"
-        },
-        {
-          "name": "output",
-          "tensor": "output",
-          "position": 5,
-          "kind": "output"
-        }
-      ],
-      "scalars": [
-        {
-          "name": "token_count",
+          "name": "output_size",
           "type": "index",
-          "position": 0,
-          "source": "derived.token_count"
+          "position": 4,
+          "source": "derived.output_size"
         }
       ],
       "dispatch": {
         "workgroups": [
-          "derived.output_tiles",
-          "derived.launch_partition_count"
+          "derived.output_size",
+          "derived.route_count",
+          "derived.token_count"
         ],
         "workgroup_size": [
-          256,
+          32,
           1,
           1
         ]
