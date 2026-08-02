@@ -170,8 +170,10 @@ set(GGML_HRX_LOOM_ROUTE_FILES
         routes/gfx1151/mul_mat_id/q6_k_f32/mul_mat_id_q6_k_f32_mmq_gfx1151_wg256_tbl_selected.json
         routes/gfx1151/add_rms_norm_mul/f32/wide_wg256.json
         routes/gfx1151/concat/f32/window_tail_ssm_silu_pp512.json
+        routes/gfx1151/concat/f32/window_tail_ssm_silu_pp512_zero_scale.json
         routes/gfx1151/cont/f32/flash_attn_gate_pointwise.json
         routes/gfx1151/flash_attn_ext/f32_f16/wmma_gate_epilogue.json
+        routes/gfx1151/flash_attn_ext/f32_f16/direct_kv64_f32acc_gate.json
         routes/gfx1151/gated_delta_net/f32/state_cache_decode_token1_compound.json
         routes/gfx1151/gated_delta_net/f32/state_cache_decode_token1_compound_shared_empty_index.json
         routes/gfx1151/gated_delta_net/f32/state_cache_decode_token1_compound_zero_scale.json
@@ -195,6 +197,7 @@ set(GGML_HRX_LOOM_ROUTE_FILES
         routes/gfx1151/mul_mat_id/q4_k_f32/mul_mat_id_q4_k_swiglu_q5_down_qact.json
         routes/gfx1151/mul_mat_id/q4_k_f32/mul_mat_id_q4_k_gate_up_swiglu_shared_qact_pp512.json
         routes/gfx1151/mul_mat_id/q4_k_f32/mul_mat_id_q4_k_gate_up_swiglu_q5_down_shared_qact_pp512.json
+        routes/gfx1151/mul_mat_id/q4_k_f32/q4_q5_down_f16_sum_slices_pp512.json
         routes/gfx1151/mul_mat_id/q5_k_f32/mul_mat_id_q5_k_f32_mmq_gfx1151_wg256_pre_tbl_decode_table.json
         routes/gfx1151/mul_mat_id/q5_k_f32/mul_mat_id_q5_k_f32_mmq_gfx1151_wg256_tbl_decode_table_down_group4.json
         routes/gfx1151/mul_mat_id/q5_k_f32/mul_mat_id_q5_k_f32_mmq_gfx1151_wg256_tableless_decode_down_group4.json

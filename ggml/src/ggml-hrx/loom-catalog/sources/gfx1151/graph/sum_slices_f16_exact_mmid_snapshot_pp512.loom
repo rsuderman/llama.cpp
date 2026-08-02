@@ -1,28 +1,16 @@
-// Decode ntokens=1 specialization of the sum-slices reducer.
-//
-// The router source may alias dst. Lane zero therefore loads all eight live
-// weights into LDS, every lane crosses one workgroup barrier, and only then may
-// any lane execute a destination store. One WG owns the complete 2048-F32
-// destination, so no cross-workgroup snapshot is required at ntokens=1.
+// Ordered PP512 weighted reduction from compact F16 selected output.
+// Values widen immediately to F32; MUL and ADD retain the accepted slot order.
 
-config.decl @hrx2_shape_sumslices_n : %value: index where [range(%value, 2048, 2048), mul(%value, 2048)]
-config.decl @hrx2_shape_sumslices_ntokens : %value: index where [range(%value, 1, 1)]
-config.decl @hrx2_shape_sumslices_nslices : %value: index where [range(%value, 8, 8), mul(%value, 8)]
-config.decl @hrx2_shape_sumslices_src_slice_stride : %value: index where [range(%value, 2048, 2048), mul(%value, 2048)]
-config.decl @hrx2_shape_sumslices_src_token_stride : %value: index where [range(%value, 16384, 16384), mul(%value, 16384)]
-config.decl @hrx2_shape_sumslices_dst_token_stride : %value: index where [range(%value, 2048, 2048), mul(%value, 2048)]
-config.decl @hrx2_shape_sumslices_router_source_stride : %value: index where [range(%value, 8, 256), mul(%value, 8)]
-config.decl @hrx2_shape_sumslices_router_source_offset : %value: index where [range(%value, 0, 8), mul(%value, 8)]
+config.decl @hrx2_shape_sumslices_ntokens : %value: index where [range(%value, 1, 512)]
 config.decl @hrx2_tuning_sumslices_workgroup_size : %value: index where [range(%value, 256, 256), mul(%value, 256)]
 
-kernel.def export("hrx2_sum_slices_f32_decode_nosnapshot")
-    @hrx2_sum_slices_f32_decode_nosnapshot() {
+kernel.def export("hrx2_sum_slices_f16_exact_mmid_snapshot") @hrx2_sum_slices_f16_exact_mmid_snapshot() {
   %one = index.constant 1 : index
   %groups = config.get @hrx2_shape_sumslices_ntokens : index
   %threads = config.get @hrx2_tuning_sumslices_workgroup_size : index
   kernel.launch.config workgroups(%groups, %one, %one)
       workgroup_size(%threads, %one, %one) : index
-} launch(%selected: buffer, %dst: buffer, %router_source: buffer) {
+} launch(%selected: buffer, %dst: buffer, %snapshot: buffer) {
   %base = index.constant 0 : offset
   %zero = index.constant 0 : index
   %eight = index.constant 8 : index
@@ -36,20 +24,9 @@ kernel.def export("hrx2_sum_slices_f32_decode_nosnapshot")
   %row0 = index.mul %lane, %eight : index
   %row = index.assume %row0
       [range(%row0, 0, 2040), mul(%row0, 8)] : index
-  %source_stride0 =
-      config.get @hrx2_shape_sumslices_router_source_stride : index
-  %source_offset0 =
-      config.get @hrx2_shape_sumslices_router_source_offset : index
-  %source_stride = index.assume %source_stride0
-      [range(%source_stride0, 8, 256), mul(%source_stride0, 8)] : index
-  %source_offset = index.assume %source_offset0
-      [range(%source_offset0, 0, 8), mul(%source_offset0, 8)] : index
-  %source_row0 = index.mul %token, %source_stride : index
-  %source_row = index.assume %source_row0
-      [range(%source_row0, 0, 130816), mul(%source_row0, 8)] : index
-  %source_index0 = index.add %source_row, %source_offset : index
-  %source_index = index.assume %source_index0
-      [range(%source_index0, 0, 130824), mul(%source_index0, 8)] : index
+  %snapshot_base0 = index.mul %token, %eight : index
+  %snapshot_base = index.assume %snapshot_base0
+      [range(%snapshot_base0, 0, 4088), mul(%snapshot_base0, 8)] : index
   %selected_base0 = index.mul %token, %selected_token_stride : index
   %selected_base = index.assume %selected_base0
       [range(%selected_base0, 0, 8372224),
@@ -64,17 +41,15 @@ kernel.def export("hrx2_sum_slices_f32_decode_nosnapshot")
 
   %selected_g = buffer.assume.memory_space<global> %selected : buffer
   %dst_g = buffer.assume.memory_space<global> %dst : buffer
-  %router_g = buffer.assume.memory_space<global> %router_source : buffer
-  %selected_na, %dst_na = buffer.assume.noalias
-      %selected_g, %dst_g : buffer, buffer
+  %snapshot_g = buffer.assume.memory_space<global> %snapshot : buffer
+  %selected_na, %dst_na, %snapshot_na = buffer.assume.noalias
+      %selected_g, %dst_g, %snapshot_g : buffer, buffer, buffer
   %selected_v = buffer.view %selected_na[%base] :
-      buffer -> view<8388608xf32, #dense>
+      buffer -> view<8388608xf16, #dense>
   %dst_v = buffer.view %dst_na[%base] :
       buffer -> view<1048576xf32, #dense>
-  // router_g intentionally does not participate in noalias: the live
-  // eight-F32 source may reside in the destination allocation.
-  %router_v = buffer.view %router_g[%base] :
-      buffer -> view<131072xf32, #dense>
+  %snapshot_v = buffer.view %snapshot_na[%base] :
+      buffer -> view<4096xf32, #dense>
   %scratch = buffer.alloca %lds_bytes
       {base_alignment = 16, memory_space = workgroup} : buffer
   %weights_lds = buffer.view %scratch[%base] :
@@ -82,9 +57,9 @@ kernel.def export("hrx2_sum_slices_f32_decode_nosnapshot")
 
   %is_owner = index.cmp eq, %lane, %zero : index
   scf.if %is_owner {
-    %live_weights = vector.load %router_v[%source_index] :
-        view<131072xf32, #dense> -> vector<8xf32>
-    vector.store %live_weights, %weights_lds[%zero] :
+    %snapshot_weights = vector.load %snapshot_v[%snapshot_base] :
+        view<4096xf32, #dense> -> vector<8xf32>
+    vector.store %snapshot_weights, %weights_lds[%zero] :
         vector<8xf32>, view<8xf32, #dense>
   }
   kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
@@ -96,8 +71,9 @@ kernel.def export("hrx2_sum_slices_f32_decode_nosnapshot")
   %x0_index0 = index.add %x0_base0, %row : index
   %x0_index = index.assume %x0_index0
       [range(%x0_index0, 0, 8388600)] : index
-  %x0 = vector.load %selected_v[%x0_index] :
-      view<8388608xf32, #dense> -> vector<8xf32>
+  %x0_f16 = vector.load %selected_v[%x0_index] :
+      view<8388608xf16, #dense> -> vector<8xf16>
+  %x0 = vector.extf %x0_f16 : vector<8xf16> to vector<8xf32>
   %w0 = vector.extract %weights[0] : vector<8xf32> -> f32
   %wv0 = vector.splat %w0 : vector<8xf32>
   %p0 = vector.mulf<nnan|ninf|nsz> %x0, %wv0 : vector<8xf32>
@@ -106,8 +82,9 @@ kernel.def export("hrx2_sum_slices_f32_decode_nosnapshot")
   %x1_index0 = index.add %x1_base0, %row : index
   %x1_index = index.assume %x1_index0
       [range(%x1_index0, 0, 8388600)] : index
-  %x1 = vector.load %selected_v[%x1_index] :
-      view<8388608xf32, #dense> -> vector<8xf32>
+  %x1_f16 = vector.load %selected_v[%x1_index] :
+      view<8388608xf16, #dense> -> vector<8xf16>
+  %x1 = vector.extf %x1_f16 : vector<8xf16> to vector<8xf32>
   %w1 = vector.extract %weights[1] : vector<8xf32> -> f32
   %wv1 = vector.splat %w1 : vector<8xf32>
   %p1 = vector.mulf<nnan|ninf|nsz> %x1, %wv1 : vector<8xf32>
@@ -117,8 +94,9 @@ kernel.def export("hrx2_sum_slices_f32_decode_nosnapshot")
   %x2_index0 = index.add %x2_base0, %row : index
   %x2_index = index.assume %x2_index0
       [range(%x2_index0, 0, 8388600)] : index
-  %x2 = vector.load %selected_v[%x2_index] :
-      view<8388608xf32, #dense> -> vector<8xf32>
+  %x2_f16 = vector.load %selected_v[%x2_index] :
+      view<8388608xf16, #dense> -> vector<8xf16>
+  %x2 = vector.extf %x2_f16 : vector<8xf16> to vector<8xf32>
   %w2 = vector.extract %weights[2] : vector<8xf32> -> f32
   %wv2 = vector.splat %w2 : vector<8xf32>
   %p2 = vector.mulf<nnan|ninf|nsz> %x2, %wv2 : vector<8xf32>
@@ -128,8 +106,9 @@ kernel.def export("hrx2_sum_slices_f32_decode_nosnapshot")
   %x3_index0 = index.add %x3_base0, %row : index
   %x3_index = index.assume %x3_index0
       [range(%x3_index0, 0, 8388600)] : index
-  %x3 = vector.load %selected_v[%x3_index] :
-      view<8388608xf32, #dense> -> vector<8xf32>
+  %x3_f16 = vector.load %selected_v[%x3_index] :
+      view<8388608xf16, #dense> -> vector<8xf16>
+  %x3 = vector.extf %x3_f16 : vector<8xf16> to vector<8xf32>
   %w3 = vector.extract %weights[3] : vector<8xf32> -> f32
   %wv3 = vector.splat %w3 : vector<8xf32>
   %p3 = vector.mulf<nnan|ninf|nsz> %x3, %wv3 : vector<8xf32>
@@ -139,8 +118,9 @@ kernel.def export("hrx2_sum_slices_f32_decode_nosnapshot")
   %x4_index0 = index.add %x4_base0, %row : index
   %x4_index = index.assume %x4_index0
       [range(%x4_index0, 0, 8388600)] : index
-  %x4 = vector.load %selected_v[%x4_index] :
-      view<8388608xf32, #dense> -> vector<8xf32>
+  %x4_f16 = vector.load %selected_v[%x4_index] :
+      view<8388608xf16, #dense> -> vector<8xf16>
+  %x4 = vector.extf %x4_f16 : vector<8xf16> to vector<8xf32>
   %w4 = vector.extract %weights[4] : vector<8xf32> -> f32
   %wv4 = vector.splat %w4 : vector<8xf32>
   %p4 = vector.mulf<nnan|ninf|nsz> %x4, %wv4 : vector<8xf32>
@@ -150,8 +130,9 @@ kernel.def export("hrx2_sum_slices_f32_decode_nosnapshot")
   %x5_index0 = index.add %x5_base0, %row : index
   %x5_index = index.assume %x5_index0
       [range(%x5_index0, 0, 8388600)] : index
-  %x5 = vector.load %selected_v[%x5_index] :
-      view<8388608xf32, #dense> -> vector<8xf32>
+  %x5_f16 = vector.load %selected_v[%x5_index] :
+      view<8388608xf16, #dense> -> vector<8xf16>
+  %x5 = vector.extf %x5_f16 : vector<8xf16> to vector<8xf32>
   %w5 = vector.extract %weights[5] : vector<8xf32> -> f32
   %wv5 = vector.splat %w5 : vector<8xf32>
   %p5 = vector.mulf<nnan|ninf|nsz> %x5, %wv5 : vector<8xf32>
@@ -161,8 +142,9 @@ kernel.def export("hrx2_sum_slices_f32_decode_nosnapshot")
   %x6_index0 = index.add %x6_base0, %row : index
   %x6_index = index.assume %x6_index0
       [range(%x6_index0, 0, 8388600)] : index
-  %x6 = vector.load %selected_v[%x6_index] :
-      view<8388608xf32, #dense> -> vector<8xf32>
+  %x6_f16 = vector.load %selected_v[%x6_index] :
+      view<8388608xf16, #dense> -> vector<8xf16>
+  %x6 = vector.extf %x6_f16 : vector<8xf16> to vector<8xf32>
   %w6 = vector.extract %weights[6] : vector<8xf32> -> f32
   %wv6 = vector.splat %w6 : vector<8xf32>
   %p6 = vector.mulf<nnan|ninf|nsz> %x6, %wv6 : vector<8xf32>
@@ -172,8 +154,9 @@ kernel.def export("hrx2_sum_slices_f32_decode_nosnapshot")
   %x7_index0 = index.add %x7_base0, %row : index
   %x7_index = index.assume %x7_index0
       [range(%x7_index0, 0, 8388600)] : index
-  %x7 = vector.load %selected_v[%x7_index] :
-      view<8388608xf32, #dense> -> vector<8xf32>
+  %x7_f16 = vector.load %selected_v[%x7_index] :
+      view<8388608xf16, #dense> -> vector<8xf16>
+  %x7 = vector.extf %x7_f16 : vector<8xf16> to vector<8xf32>
   %w7 = vector.extract %weights[7] : vector<8xf32> -> f32
   %wv7 = vector.splat %w7 : vector<8xf32>
   %p7 = vector.mulf<nnan|ninf|nsz> %x7, %wv7 : vector<8xf32>

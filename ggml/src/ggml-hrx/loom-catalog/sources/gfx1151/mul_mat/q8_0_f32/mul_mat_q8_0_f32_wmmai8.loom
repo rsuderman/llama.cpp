@@ -2,10 +2,8 @@
 // workgroup, 2x4 16x16 tiles per wave, 64 k staged per round.
 // Physical LDS strides are activation=80, weight=80 bytes.
 //
-// Work-only explicit-unroll screen derived from current production.
-//
 // Weights arrive in native 34-byte Q8_0 blocks and are decoded directly into LDS;
-// tensor; activations arrive int8 with per-32 scales from
+// activations arrive int8 with per-32 scales from
 // the shared quantisation prepass. lhs is the activations so the 8-per-lane
 // scale index falls on them, where it is shared across every weight tile.
 

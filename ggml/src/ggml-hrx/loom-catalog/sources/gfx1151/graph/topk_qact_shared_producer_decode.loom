@@ -1,7 +1,7 @@
-// Work-only native decode prefix: accepted TopK/Qact plus accepted SharedP.
+// Native decode prefix: TopK/Qact plus SharedP.
 //
-// WGs 0..rows-1 execute the accepted shared dual-Q8 rows, WG rows executes its
-// accepted scalar gate, and WG rows+1 executes the current one-WG TopK/Qact
+// WGs 0..rows-1 execute the existing shared dual-Q8 rows, WG rows executes its
+// scalar gate, and WG rows+1 executes the one-WG TopK/Qact
 // body. Shared output and raw gate use native graph-transient bindings; the
 // normalized router weights retain their original graph tensor and semantics.
 // The classes are independent and the following dispatch is the grid sync.

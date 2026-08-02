@@ -1,4 +1,4 @@
-// Work-only native packed-Q8 shared terminal plus exact MoE reduction.
+// Native packed-Q8 shared terminal plus exact MoE reduction.
 //
 // The Q8 reduction is copied from the accepted shared terminal. Lane zero
 // then executes the accepted eight-slice left-associated MoE sum, adds the

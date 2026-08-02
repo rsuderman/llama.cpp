@@ -3,8 +3,6 @@
 // 4 waves a workgroup, 16 queries a wave, 32 queries a workgroup.
 // d=256: 16 accumulator fragments, 16 WMMA a score tile in 4 independent
 // chains, 16 WMMA an output update. LDS 42112 B.
-//
-// Derived by gen_fa_gate_epilogue_proto.py from gen_fa_wmma.py.
 // Adds one raw-strided gate binding and writes the terminal gated value.
 
 config.decl @hrx2_shape_fa_d : %value: index where [range(%value, 32, 1024), mul(%value, 32)]

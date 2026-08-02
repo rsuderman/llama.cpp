@@ -1,4 +1,4 @@
-// Decode convolution direct recurrent-cache prototype.
+// Decode convolution with direct recurrent-cache access.
 // Exact trace shape: d_conv=4, d_inner=8192, n_t=1, n_s=1. One workitem owns
 // one channel. It loads old cache rows 0/1/2 and x before any store, computes
 // the accepted four-tap FMA order, then performs the in-place shift

@@ -1,4 +1,4 @@
-// Work-only decode producer prepass for the GDN FusionRoute-v2 chain.
+// Decode producer prepass for the GDN FusionRoute-v2 chain.
 //
 // One WG256 grid contains disjoint workgroup classes:
 //   [0, qk_rows)                 paired q+k reciprocal L2 scales

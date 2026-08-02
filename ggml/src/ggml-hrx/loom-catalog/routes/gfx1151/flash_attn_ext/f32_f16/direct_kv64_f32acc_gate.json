@@ -1,8 +1,8 @@
 {
   "schema": "ggml-hrx-loom-fusion-route-v2",
-  "id": "flash_attn_ext_f32_f16_wmma_gate_epilogue",
+  "id": "flash_attn_ext_f32_f16_direct_kv64_f32acc_gate",
   "format": "loom",
-  "priority": 300,
+  "priority": 301,
   "tensors": {
     "q": {
       "type": "F32",
@@ -244,15 +244,15 @@
       },
       {
         "field": "shape.k.nkv",
-        "min": 16
+        "min": 512
       },
       {
         "field": "shape.k.nkv",
-        "max": 1048576
+        "max": 32768
       },
       {
         "field": "shape.k.nkv",
-        "multiple_of": 16
+        "multiple_of": 64
       },
       {
         "field": "shape.k.nkvheads",
@@ -638,7 +638,7 @@
       "type": "i64",
       "ceil_div": [
         "shape.q.ntokens",
-        32
+        16
       ]
     },
     "mask_token_extent": {
@@ -708,7 +708,7 @@
   "dispatches": [
     {
       "name": "main",
-      "definition": "../../../../defs/gfx1151/flash_attn_ext/f32_f16/wmma_gate_epilogue.json",
+      "definition": "../../../../defs/gfx1151/flash_attn_ext/f32_f16/direct_kv64_f32acc_gate.json",
       "config": {
         "mode": "compile",
         "bindings": [
@@ -847,7 +847,7 @@
           "shape.q.nheads"
         ],
         "workgroup_size": [
-          128,
+          256,
           1,
           1
         ]

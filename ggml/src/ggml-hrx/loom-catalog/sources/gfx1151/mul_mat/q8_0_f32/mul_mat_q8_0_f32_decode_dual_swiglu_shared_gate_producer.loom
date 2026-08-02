@@ -1,9 +1,9 @@
 // Co-dispatch the shared-expert raw gate projection with the native packed-Q8
 // gate/up SwiGLU producer.
 //
-// Workgroups 0..rows-1 execute the exact accepted dual-Q8 arithmetic with the
-// accepted workgroup-to-row map. The one additional workgroup at ID rows
-// executes the exact accepted WG256 F32 dot-product arithmetic. Outputs are
+// Workgroups 0..rows-1 execute the existing dual-Q8 arithmetic with the
+// existing workgroup-to-row map. The one additional workgroup at ID rows
+// executes the existing WG256 F32 dot-product arithmetic. Outputs are
 // independent and have no ordering relationship; the purpose of the extra
 // workgroup is solely to remove one
 // dispatch boundary from every shared-expert decode layer.

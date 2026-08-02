@@ -1,4 +1,4 @@
-// Isolated decode prototype for the profiled [2048,256] x [2048,1] router.
+// Decode specialization for the [2048,256] x [2048,1] router.
 // Eight adjacent F32 elements are loaded per lane; weights and storage remain
 // unchanged. The exact production shape has no vector tail.
 config.decl @hrx2_shape_k : %value: index where [range(%value, 2048, 2048), mul(%value, 2048)]

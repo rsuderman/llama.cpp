@@ -10,6 +10,7 @@
 #include <mutex>
 #include <new>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -338,6 +339,7 @@ struct ggml_backend_hrx_loom_catalog {
     std::string                                                      architecture;
     std::string                                                      target;
     std::mutex                                                       routes_mutex;
+    std::unordered_map<std::string_view, const ggml_backend_hrx_loom_catalog_entry *> entries_by_id;
     std::vector<std::unique_ptr<ggml_backend_hrx_loaded_loom_route>> routes;
     std::unordered_map<
         const ggml_backend_hrx_loom_catalog_entry *,
@@ -359,14 +361,8 @@ const ggml_backend_hrx_loom_catalog_entry * ggml_backend_hrx_loom_find_entry(
         return nullptr;
     }
 
-    size_t                                      count   = 0;
-    const ggml_backend_hrx_loom_catalog_entry * entries = ggml_backend_hrx_loom_catalog_entries(&count);
-    for (size_t i = 0; i < count; ++i) {
-        if (std::strcmp(entries[i].id, route_id) == 0 && catalog->target == entries[i].target) {
-            return &entries[i];
-        }
-    }
-    return nullptr;
+    const auto it = catalog->entries_by_id.find(route_id);
+    return it != catalog->entries_by_id.end() ? it->second : nullptr;
 }
 
 namespace {
@@ -539,9 +535,11 @@ static bool ggml_backend_hrx_loom_dispatch_one(ggml_backend_hrx_loom_catalog *  
     if (!plan || !dispatch || !dispatch->entry) {
         return false;
     }
-    auto * route =
-        ggml_backend_hrx_loom_get_loaded_route(catalog, dispatch->entry, dispatch->config_bindings,
-                                               dispatch->config_binding_count);
+    auto * route = static_cast<ggml_backend_hrx_loaded_loom_route *>(dispatch->loaded_route);
+    if (!route && dispatch->config_bindings) {
+        route = ggml_backend_hrx_loom_get_loaded_route(catalog, dispatch->entry, dispatch->config_bindings,
+                                                       dispatch->config_binding_count);
+    }
     if (!route || !stream) {
         return false;
     }
@@ -679,7 +677,31 @@ ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_prepare_plan(
     ggml_backend_hrx_loom_catalog *          catalog,
     const ggml_backend_hrx_loom_op_request * request,
     ggml_backend_hrx_loom_execution_plan *   plan) {
-    return ggml_backend_hrx_loom_match_or_prepare_request(catalog, request, plan);
+    if (!catalog || !request || !plan) {
+        return ggml_backend_hrx_loom_unsupported(GGML_BACKEND_HRX_LOOM_UNSUPPORTED_NO_ROUTE);
+    }
+
+    ggml_backend_hrx_loom_config_binding config_storage[
+        GGML_BACKEND_HRX_LOOM_MAX_DISPATCHES * GGML_BACKEND_HRX_LOOM_MAX_CONFIG_BINDINGS];
+    plan->config_storage = config_storage;
+    ggml_backend_hrx_loom_op_response response =
+        ggml_backend_hrx_loom_match_or_prepare_request(catalog, request, plan);
+    if (response.result == GGML_BACKEND_HRX_LOOM_INVOKED) {
+        for (size_t i = 0; i < plan->dispatch_count; ++i) {
+            ggml_backend_hrx_loom_dispatch_plan & dispatch = plan->dispatches[i];
+            dispatch.loaded_route = ggml_backend_hrx_loom_get_loaded_route(
+                catalog, dispatch.entry, dispatch.config_bindings, dispatch.config_binding_count);
+            if (!dispatch.loaded_route) {
+                response = ggml_backend_hrx_loom_failed(response.route_id);
+                break;
+            }
+        }
+    }
+    plan->config_storage = nullptr;
+    for (size_t i = 0; i < GGML_BACKEND_HRX_LOOM_MAX_DISPATCHES; ++i) {
+        plan->dispatches[i].config_bindings = nullptr;
+    }
+    return response;
 }
 
 bool ggml_backend_hrx_loom_dispatch_prepared(ggml_backend_hrx_loom_catalog *        catalog,
@@ -937,6 +959,14 @@ ggml_backend_hrx_loom_catalog * ggml_backend_hrx_loom_catalog_new(hrx_device_t d
     catalog->device       = device;
     catalog->architecture = architecture;
     catalog->target       = ggml_backend_hrx_architecture_base(architecture);
+    size_t                                      entry_count = 0;
+    const ggml_backend_hrx_loom_catalog_entry * entries = ggml_backend_hrx_loom_catalog_entries(&entry_count);
+    catalog->entries_by_id.reserve(entry_count);
+    for (size_t i = 0; i < entry_count; ++i) {
+        if (catalog->target == entries[i].target) {
+            catalog->entries_by_id.emplace(entries[i].id, &entries[i]);
+        }
+    }
     return catalog;
 }
 

@@ -1,0 +1,53 @@
+{
+  "schema": "ggml-hrx-loom-def-v1",
+  "id": "q4_gate_packed_meta_pp512",
+  "op": "GGML_OP_MUL_MAT_ID",
+  "source": "sources/gfx1151/graph/q4_gate_packed_meta_pp512.loom",
+  "source_format": "loom-text",
+  "symbol": "hrx2_mul_mat_id_q4_k_f32_mmqt_static_packed_meta",
+  "abi": {
+    "binding_count": 8,
+    "parameter_count": 8,
+    "constant_byte_length": 0
+  },
+  "workgroup_size": [
+    256,
+    1,
+    1
+  ],
+  "parameters": [],
+  "bindings": [
+    {
+      "name": "src0",
+      "access": "read"
+    },
+    {
+      "name": "src1",
+      "access": "read"
+    },
+    {
+      "name": "idx",
+      "access": "read"
+    },
+    {
+      "name": "dst",
+      "access": "write"
+    },
+    {
+      "name": "aq",
+      "access": "read"
+    },
+    {
+      "name": "as",
+      "access": "read"
+    },
+    {
+      "name": "asum",
+      "access": "read"
+    },
+    {
+      "name": "tbl",
+      "access": "read"
+    }
+  ]
+}

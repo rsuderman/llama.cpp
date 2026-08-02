@@ -59,13 +59,13 @@ MULTI_STEP_ROUTE_FUNCTION_OPEN_TEMPLATE = """static ggml_backend_hrx_loom_op_res
     }}"""
 
 PLAN_SETUP_TEMPLATE = """
-    std::memset(plan, 0, sizeof(*plan));
+    ggml_backend_hrx_loom_reset_plan(plan);
     plan->route_id = {route_id_constant};
     plan->consumed_node_count = 1;
     plan->consumed_node_indices[0] = request->node_index;"""
 
 MULTI_STEP_PLAN_SETUP_TEMPLATE = """
-    std::memset(plan, 0, sizeof(*plan));
+    ggml_backend_hrx_loom_reset_plan(plan);
     plan->route_id = {route_id_constant};
     plan->consumed_node_count = 1;
     plan->consumed_node_indices[0] = request->node_index;"""

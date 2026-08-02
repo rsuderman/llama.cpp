@@ -36,9 +36,46 @@ RECURRENT_SHARED_EMPTY_INDEX_ZERO_SCALE_ROUTE_PATH = Path(
 CONCAT_WINDOW_TAIL_ROUTE_PATH = Path(
     "routes/gfx1151/concat/f32/window_tail_ssm_silu_pp512.json"
 )
+CONCAT_WINDOW_TAIL_ZERO_SCALE_ROUTE_PATH = Path(
+    "routes/gfx1151/concat/f32/window_tail_ssm_silu_pp512_zero_scale.json"
+)
 PP_GDN_RMS_SIDE_ROUTE_PATH = Path(
     "routes/gfx1151/gated_delta_net/f32/"
     "sv128_qk_l2_full_head_rms_scale_fused.json"
+)
+Q5_DOWN_STORAGE_TRANSFORM_PATH = Path(
+    "storage-transforms/gfx1151/q5_k_expert_down_group4.json"
+)
+Q5_DOWN_STORAGE_CONSUMERS = {
+    Path(
+        "sources/gfx1151/mul_mat_id/q5_k_f32/"
+        "mul_mat_id_q5_k_f32_mmqt_down_group4.loom"
+    ): ("c0_0_k", "c0_1_k", "c1_0_k", "c1_1_k"),
+    Path(
+        "sources/gfx1151/mul_mat_id/q5_k_f32/"
+        "mul_mat_id_q5_k_f32_mmqt_down_group4_tableless_decode.loom"
+    ): ("c0_0_k", "c0_1_k", "c1_0_k", "c1_1_k"),
+    Path(
+        "sources/gfx1151/mul_mat_id/q5_k_f32/"
+        "mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact.loom"
+    ): ("rd_p0_q0_c", "rd_p0_q1_c", "rd_p1_q0_c", "rd_p1_q1_c"),
+    Path(
+        "sources/gfx1151/mul_mat_id/q5_k_f32/"
+        "q5_down_tableless_compact_qact_decode.loom"
+    ): ("rd_p0_q0_c", "rd_p0_q1_c", "rd_p1_q0_c", "rd_p1_q1_c"),
+    Path("sources/gfx1151/graph/q5_down_f16_pp512.loom"): (
+        "rd_p0_q0_c",
+        "rd_p0_q1_c",
+        "rd_p1_q0_c",
+        "rd_p1_q1_c",
+    ),
+}
+FA_VARIABLE_KV_ROUTE_PATHS = (
+    Path("routes/gfx1151/flash_attn_ext/f32_f16/wmma_gate_epilogue.json"),
+    Path("routes/gfx1151/flash_attn_ext/f32_f16/direct_kv64_f32acc_gate.json"),
+)
+FA_DIRECT_SOURCE_PATH = Path(
+    "sources/gfx1151/flash_attn_ext/f32_f16/direct_kv64_f32acc_gate.loom"
 )
 RUNTIME_PUBLIC_HEADER = CATALOG_ROOT / "ggml-hrx-loom-catalog-runtime.h"
 RUNTIME_INTERNAL_HEADER = CATALOG_ROOT / "ggml-hrx-loom-catalog-runtime-internal.h"
@@ -591,6 +628,60 @@ def expect_native_fusion_capacity_boundaries():
         raise AssertionError("generator accepted 17 bindings")
 
 
+def expect_q5_down_storage_consumer_offsets():
+    transform = read_json(CATALOG_ROOT / Q5_DOWN_STORAGE_TRANSFORM_PATH)
+    layout = transform["transform"]
+    component_bytes = layout["row_group"] * layout["unit_bytes"]
+    expected_offsets = tuple(component_bytes * i for i in range(1, 5))
+    for source_path, names in Q5_DOWN_STORAGE_CONSUMERS.items():
+        source = (CATALOG_ROOT / source_path).read_text(encoding="utf-8")
+        for name, offset in zip(names, expected_offsets):
+            marker = f"%{name} = index.constant {offset} : index"
+            if marker not in source:
+                raise AssertionError(
+                    f"{source_path}: missing row-group component offset {marker}"
+                )
+
+
+def expect_variable_kv_fa_mask_extent_guards():
+    expected_extent = {
+        "type": "i64",
+        "product": [
+            "shape.q.ntokens",
+            "tensor.mask.element_strides.1",
+        ],
+    }
+    expected_guard = {
+        "field": "derived.mask_token_extent",
+        "max": 268435456,
+    }
+    expected_row_guard = {
+        "field": "shape.mask.ntokens",
+        "min": "shape.q.ntokens",
+    }
+    for route_path in FA_VARIABLE_KV_ROUTE_PATHS:
+        route = read_json(CATALOG_ROOT / route_path)
+        if route["derived"].get("mask_token_extent") != expected_extent:
+            raise AssertionError(f"{route_path}: missing mask token extent")
+        if expected_guard not in route["match"]["predicates"]:
+            raise AssertionError(f"{route_path}: missing mask token extent guard")
+        if expected_row_guard not in route["match"]["predicates"]:
+            raise AssertionError(f"{route_path}: missing mask row count guard")
+
+    source = (CATALOG_ROOT / FA_DIRECT_SOURCE_PATH).read_text(encoding="utf-8")
+    expected_view = (
+        "view<[%bounded_query_token_count]x[%mask_stride_token]xf16, #dense>"
+    )
+    if "%mask_stride_token0 = config.get @hrx2_shape_fa_mask_stride_token" not in source:
+        raise AssertionError("direct FA source does not read the configured mask stride")
+    if f"%mask_view = buffer.view %mask_aligned[%zero_offset] : buffer -> {expected_view}" not in source:
+        raise AssertionError("direct FA source does not use the configured mask stride")
+    if source.count(f"view.load %mask_view[") != 5:
+        raise AssertionError("unexpected direct FA mask load count")
+    if source.count(f": {expected_view} -> f16") != 5:
+        raise AssertionError("direct FA mask loads do not use the configured mask stride")
+
+
 def expect_native_recurrent_op_schema_and_generation():
     expected_rules = {
         "GGML_OP_RESHAPE": ({"src0", "dst"}, set()),
@@ -649,16 +740,7 @@ def expect_native_recurrent_op_schema_and_generation():
                 f"{sorted(retained_zero_extra_ops)}"
             )
 
-    concat_route = read_json(CATALOG_ROOT / CONCAT_WINDOW_TAIL_ROUTE_PATH)
     removed_concat_ops = {"extra_get", "extra_dst_view", "extra_copy"}
-    retained_concat_ops = removed_concat_ops.intersection(
-        concat_route["match"]["ops"]
-    )
-    if retained_concat_ops:
-        raise AssertionError(
-            f"native concat route retains zero-row extra-state ops: "
-            f"{sorted(retained_concat_ops)}"
-        )
     removed_concat_tensors = {
         "zero_indices",
         "zero_get_dst",
@@ -666,16 +748,39 @@ def expect_native_recurrent_op_schema_and_generation():
         "zero_copy_target",
         "zero_copy_dst",
     }
-    retained_concat_tensors = removed_concat_tensors.intersection(
-        concat_route["tensors"]
-    )
-    if retained_concat_tensors:
-        raise AssertionError(
-            f"native concat route retains zero-row extra-state tensors: "
-            f"{sorted(retained_concat_tensors)}"
+    for concat_path in (
+        CONCAT_WINDOW_TAIL_ROUTE_PATH,
+        CONCAT_WINDOW_TAIL_ZERO_SCALE_ROUTE_PATH,
+    ):
+        concat_route = read_json(CATALOG_ROOT / concat_path)
+        retained_concat_ops = removed_concat_ops.intersection(
+            concat_route["match"]["ops"]
         )
-    if len(concat_route["match"]["ops"]) != 10:
-        raise AssertionError("native concat route must match exactly 10 graph ops")
+        if retained_concat_ops:
+            raise AssertionError(
+                f"native concat route retains zero-row extra-state ops: "
+                f"{sorted(retained_concat_ops)}"
+            )
+        retained_concat_tensors = removed_concat_tensors.intersection(
+            concat_route["tensors"]
+        )
+        if retained_concat_tensors:
+            raise AssertionError(
+                f"native concat route retains zero-row extra-state tensors: "
+                f"{sorted(retained_concat_tensors)}"
+            )
+        if len(concat_route["match"]["ops"]) != 10:
+            raise AssertionError("native concat route must match exactly 10 graph ops")
+
+    concat_zero_scale_route = read_json(
+        CATALOG_ROOT / CONCAT_WINDOW_TAIL_ZERO_SCALE_ROUTE_PATH
+    )
+    if [dispatch["name"] for dispatch in concat_zero_scale_route["dispatches"]] != [
+        "concat_window_tail_ssm_prepass",
+        "gdn_state_get",
+        "main",
+    ]:
+        raise AssertionError("zero-scale concat route must elide only the empty scale dispatch")
 
     route_path = CATALOG_ROOT / RECURRENT_ROUTE_PATH
     definitions = loom.load_definitions(CATALOG_ROOT)
@@ -837,6 +942,8 @@ def main():
     expect_graph_transient_generation_valid()
     expect_transient_storage_invalid()
     expect_native_fusion_capacity_boundaries()
+    expect_q5_down_storage_consumer_offsets()
+    expect_variable_kv_fa_mask_extent_guards()
     expect_native_recurrent_op_schema_and_generation()
     expect_native_pp_gdn_rms_side_generation()
 
