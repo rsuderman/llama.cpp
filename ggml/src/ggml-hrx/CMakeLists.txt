@@ -26,13 +26,22 @@ target_compile_features(ggml-hrx-graph PRIVATE cxx_std_17)
 target_link_libraries(ggml-hrx-graph PRIVATE ggml-base)
 set_target_properties(ggml-hrx-graph PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-ggml_add_backend_library(ggml-hrx
-    ggml-hrx.cpp
+add_library(ggml-hrx-executable STATIC
+    executable-program.cpp
+    executable-program.h
     loom-jit/ggml-hrx-loom-jit.cpp
     loom-jit/ggml-hrx-loom-jit.h
 )
+target_include_directories(ggml-hrx-executable PUBLIC . graph PRIVATE loom-jit .. ../../include ../../../vendor)
+target_compile_features(ggml-hrx-executable PRIVATE cxx_std_17)
+target_link_libraries(ggml-hrx-executable PUBLIC ggml-hrx-graph hrx::hrx PRIVATE loomc::loomc)
+set_target_properties(ggml-hrx-executable PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+ggml_add_backend_library(ggml-hrx
+    ggml-hrx.cpp
+)
 target_link_libraries(ggml-hrx PRIVATE hrx::hrx loomc::loomc)
-target_link_libraries(ggml-hrx PRIVATE ggml-hrx-graph)
+target_link_libraries(ggml-hrx PRIVATE ggml-hrx-executable)
 target_compile_definitions(ggml-hrx PRIVATE GGML_USE_HRX)
 target_compile_definitions(ggml-hrx PRIVATE
     GGML_HRX_QWEN_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/kernels/qwen_moe")
@@ -53,3 +62,8 @@ add_executable(ggml-hrx-dump-program tools/dump-program.cpp)
 target_link_libraries(ggml-hrx-dump-program PRIVATE ggml-hrx-graph)
 target_include_directories(ggml-hrx-dump-program PRIVATE graph .. ../../include ../../../vendor)
 target_compile_features(ggml-hrx-dump-program PRIVATE cxx_std_17)
+
+add_executable(ggml-hrx-record-program tools/record-program.cpp)
+target_link_libraries(ggml-hrx-record-program PRIVATE ggml-hrx-executable hrx::hrx)
+target_include_directories(ggml-hrx-record-program PRIVATE . graph .. ../../include ../../../vendor)
+target_compile_features(ggml-hrx-record-program PRIVATE cxx_std_17)

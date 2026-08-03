@@ -152,6 +152,26 @@
         "input",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "linear_q6k_f32_linked",
+        "primary_sources": [
+          "ggml/linear_q6k_f32.loom"
+        ],
+        "library_sources": [
+          "ggml/linear_q6k_q8_1_x4.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ggml/linear_q6k_q8_1_x4.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -189,6 +209,26 @@
         "input",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "linear_q6k_f32_linked",
+        "primary_sources": [
+          "ggml/linear_q6k_f32.loom"
+        ],
+        "library_sources": [
+          "ggml/linear_q6k_q8_1_x4.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ggml/linear_q6k_q8_1_x4.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -226,6 +266,24 @@
         "q8_input",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "linear_q6k_q8_1_x4_linked",
+        "primary_sources": [
+          "ggml/linear_q6k_q8_1_x4.loom"
+        ],
+        "library_sources": [
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -238,6 +296,27 @@
         "words",
         "d_values",
         "s_values"
+      ],
+      "binding_access": [
+        "read",
+        "write",
+        "write",
+        "write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "attention_prepare_quantized_linked",
+        "primary_sources": [
+          "qwen3_moe/attention_prepare_quantized.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/model_config.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/model_config.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -266,6 +345,25 @@
       "bindings": [
         "input",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "attention_prepare_quantized_linked",
+        "primary_sources": [
+          "qwen3_moe/attention_prepare_quantized.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/model_config.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/model_config.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -304,6 +402,33 @@
         "query_output",
         "key_cache",
         "value_cache"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write",
+        "read_write",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "attention_postprocess_f32_f16_linked",
+        "primary_sources": [
+          "qwen3_moe/attention_postprocess_f32_f16.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/model_config.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/model_config.loom"
       ]
     },
     {
@@ -329,6 +454,40 @@
         "query_output",
         "key_output",
         "value_output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write",
+        "read_write",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "attention_qkv_quantized_linked",
+        "primary_sources": [
+          "qwen3_moe/attention_qkv_quantized.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/model_config.loom",
+          "qwen3_moe/attention_prepare_quantized.loom",
+          "qwen3_moe/dense_linear_quantized_f16_wmma.loom",
+          "ggml/linear_q6k_q8_1_x4.loom",
+          "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/model_config.loom",
+        "qwen3_moe/attention_prepare_quantized.loom",
+        "qwen3_moe/dense_linear_quantized_f16_wmma.loom",
+        "ggml/linear_q6k_q8_1_x4.loom",
+        "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+        "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -350,6 +509,26 @@
         "input",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "attention_prepare_quantized_linked",
+        "primary_sources": [
+          "qwen3_moe/attention_prepare_quantized.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/model_config.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/model_config.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -386,6 +565,23 @@
       "bindings": [
         "expert_table",
         "partition_table"
+      ],
+      "binding_access": [
+        "read",
+        "write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "routed_gate_up_swiglu_q4k_linked",
+        "primary_sources": [
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom"
+        ],
+        "library_sources": [
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -430,6 +626,23 @@
       "bindings": [
         "route_ids",
         "expert_table"
+      ],
+      "binding_access": [
+        "read",
+        "write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "routed_gate_up_swiglu_q4k_linked",
+        "primary_sources": [
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom"
+        ],
+        "library_sources": [
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -451,6 +664,30 @@
         "input",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "dense_linear_quantized_f16_wmma_linked",
+        "primary_sources": [
+          "qwen3_moe/dense_linear_quantized_f16_wmma.loom"
+        ],
+        "library_sources": [
+          "ggml/linear_q6k_q8_1_x4.loom",
+          "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ggml/linear_q6k_q8_1_x4.loom",
+        "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+        "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -472,6 +709,30 @@
         "q8_input",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "dense_linear_quantized_f16_wmma_linked",
+        "primary_sources": [
+          "qwen3_moe/dense_linear_quantized_f16_wmma.loom"
+        ],
+        "library_sources": [
+          "ggml/linear_q6k_q8_1_x4.loom",
+          "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ggml/linear_q6k_q8_1_x4.loom",
+        "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+        "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -493,6 +754,30 @@
         "input",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "dense_linear_quantized_f16_wmma_linked",
+        "primary_sources": [
+          "qwen3_moe/dense_linear_quantized_f16_wmma.loom"
+        ],
+        "library_sources": [
+          "ggml/linear_q6k_q8_1_x4.loom",
+          "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ggml/linear_q6k_q8_1_x4.loom",
+        "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+        "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -516,7 +801,22 @@
         "value",
         "mask",
         "output"
-      ]
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "qwen3_moe/flash_attention_decode_f32_f16_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
     },
     {
       "symbol": "qwen3_moe_flash_attention_decode_q128_fused_f32_f16_wmma",
@@ -539,7 +839,22 @@
         "value",
         "mask",
         "output"
-      ]
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "qwen3_moe/flash_attention_decode_q128_f32_f16_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
     },
     {
       "symbol": "qwen3_moe_flash_attention_decode_split_f32_f16_wmma",
@@ -566,7 +881,26 @@
         "partial_output",
         "completion_counter",
         "output"
-      ]
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write",
+        "read_write",
+        "read_write",
+        "read_write",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "qwen3_moe/flash_attention_decode_split_f32_f16_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
     },
     {
       "symbol": "qwen3_moe_flash_attention_decode_split_produce_partials_f32_f16_wmma",
@@ -591,7 +925,24 @@
         "partial_max",
         "partial_sum",
         "partial_output"
-      ]
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write",
+        "read_write",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "qwen3_moe/flash_attention_decode_split_f32_f16_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
     },
     {
       "symbol": "qwen3_moe_flash_attention_decode_split_reduce_f32",
@@ -613,7 +964,21 @@
         "partial_sum",
         "partial_output",
         "output"
-      ]
+      ],
+      "binding_access": [
+        "read_write",
+        "read_write",
+        "read_write",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "qwen3_moe/flash_attention_decode_split_f32_f16_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
     },
     {
       "symbol": "qwen3_moe_flash_attention_f32_f16_wmma",
@@ -644,7 +1009,22 @@
         "value",
         "mask",
         "output"
-      ]
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "qwen3_moe/flash_attention_f32_f16_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
     },
     {
       "symbol": "qwen3_moe_rmsnorm_f32",
@@ -665,6 +1045,26 @@
         "input",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "attention_prepare_quantized_linked",
+        "primary_sources": [
+          "qwen3_moe/attention_prepare_quantized.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/model_config.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/model_config.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -687,6 +1087,27 @@
         "weight",
         "normalized_output",
         "q8_output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "attention_prepare_quantized_linked",
+        "primary_sources": [
+          "qwen3_moe/attention_prepare_quantized.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/model_config.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/model_config.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -709,6 +1130,35 @@
         "expert_table",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "routed_down_quantized_f16_wmma_linked",
+        "primary_sources": [
+          "qwen3_moe/routed_down_quantized_f16_wmma.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+          "qwen3_moe/routed_down_q4k.loom",
+          "qwen3_moe/routed_down_q6k.loom",
+          "ggml/linear_q6k_q8_1_x4.loom",
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+        "qwen3_moe/routed_down_q4k.loom",
+        "qwen3_moe/routed_down_q6k.loom",
+        "ggml/linear_q6k_q8_1_x4.loom",
+        "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -772,6 +1222,28 @@
         "route_weights",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "routed_down_q4k_linked",
+        "primary_sources": [
+          "qwen3_moe/routed_down_q4k.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -794,6 +1266,35 @@
         "expert_table",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "routed_down_quantized_f16_wmma_linked",
+        "primary_sources": [
+          "qwen3_moe/routed_down_quantized_f16_wmma.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+          "qwen3_moe/routed_down_q4k.loom",
+          "qwen3_moe/routed_down_q6k.loom",
+          "ggml/linear_q6k_q8_1_x4.loom",
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+        "qwen3_moe/routed_down_q4k.loom",
+        "qwen3_moe/routed_down_q6k.loom",
+        "ggml/linear_q6k_q8_1_x4.loom",
+        "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -857,6 +1358,30 @@
         "route_weights",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "routed_down_q6k_linked",
+        "primary_sources": [
+          "qwen3_moe/routed_down_q6k.loom"
+        ],
+        "library_sources": [
+          "ggml/linear_q6k_f32.loom",
+          "ggml/linear_q6k_q8_1_x4.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ggml/linear_q6k_f32.loom",
+        "ggml/linear_q6k_q8_1_x4.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -920,6 +1445,30 @@
         "route_weights",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "routed_down_q6k_linked",
+        "primary_sources": [
+          "qwen3_moe/routed_down_q6k.loom"
+        ],
+        "library_sources": [
+          "ggml/linear_q6k_f32.loom",
+          "ggml/linear_q6k_q8_1_x4.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ggml/linear_q6k_f32.loom",
+        "ggml/linear_q6k_q8_1_x4.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -941,6 +1490,34 @@
         "route_weights",
         "routed_output",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "routed_down_quantized_f16_wmma_linked",
+        "primary_sources": [
+          "qwen3_moe/routed_down_quantized_f16_wmma.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+          "qwen3_moe/routed_down_q4k.loom",
+          "qwen3_moe/routed_down_q6k.loom",
+          "ggml/linear_q6k_q8_1_x4.loom",
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
+        "qwen3_moe/routed_down_q4k.loom",
+        "qwen3_moe/routed_down_q6k.loom",
+        "ggml/linear_q6k_q8_1_x4.loom",
+        "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -965,6 +1542,29 @@
         "gate_weight",
         "up_weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "routed_gate_up_swiglu_q4k_f16_wmma_linked",
+        "primary_sources": [
+          "qwen3_moe/routed_linear_q4k_f16_wmma.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -1020,6 +1620,26 @@
         "gate_weight",
         "up_weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "routed_gate_up_swiglu_q4k_linked",
+        "primary_sources": [
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom"
+        ],
+        "library_sources": [
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -1067,6 +1687,26 @@
         "gate_weight",
         "up_weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "routed_gate_up_swiglu_q4k_linked",
+        "primary_sources": [
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom"
+        ],
+        "library_sources": [
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -1089,6 +1729,27 @@
         "expert_table",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "routed_gate_up_swiglu_q4k_f16_wmma_linked",
+        "primary_sources": [
+          "qwen3_moe/routed_linear_q4k_f16_wmma.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -1110,6 +1771,26 @@
         "gate",
         "up",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "routed_gate_up_swiglu_q4k_f16_wmma_linked",
+        "primary_sources": [
+          "qwen3_moe/routed_linear_q4k_f16_wmma.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -1131,6 +1812,26 @@
         "gate",
         "up",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "routed_gate_up_swiglu_q4k_f16_wmma_linked",
+        "primary_sources": [
+          "qwen3_moe/routed_linear_q4k_f16_wmma.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+          "ggml/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
+        "ggml/quantize_q8_1_x4.loom"
       ]
     },
     {
@@ -1152,6 +1853,24 @@
         "input",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "router_projection_f32_linked",
+        "primary_sources": [
+          "qwen3_moe/router_projection_f32.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/model_config.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/model_config.loom"
       ]
     },
     {
@@ -1173,6 +1892,24 @@
         "input",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "router_projection_f32_linked",
+        "primary_sources": [
+          "qwen3_moe/router_projection_f32.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/model_config.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/model_config.loom"
       ]
     },
     {
@@ -1194,6 +1931,24 @@
         "input",
         "weight",
         "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "router_projection_f32_linked",
+        "primary_sources": [
+          "qwen3_moe/router_projection_f32.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/model_config.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/model_config.loom"
       ]
     },
     {
@@ -1223,6 +1978,24 @@
         "logits",
         "route_ids",
         "route_weights"
+      ],
+      "binding_access": [
+        "read",
+        "write",
+        "write"
+      ],
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "router_top8_f32_linked",
+        "primary_sources": [
+          "qwen3_moe/router_top8_f32.loom"
+        ],
+        "library_sources": [
+          "qwen3_moe/model_config.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "qwen3_moe/model_config.loom"
       ]
     },
     {
@@ -1261,7 +2034,15 @@
         "read_write",
         "read_write",
         "read_write"
-      ]
+      ],
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "../qwen_owned/attention_metadata_bringup_workaround.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
     },
     {
       "symbol": "qwen_token_embedding_q4k_bringup_workaround",
@@ -1298,7 +2079,20 @@
         "token_ids",
         "weight",
         "output"
-      ]
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "../qwen_owned/token_embedding_bringup_workaround.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
     }
   ],
   "link_modules": [

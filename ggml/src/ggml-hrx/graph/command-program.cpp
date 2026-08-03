@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstring>
 #include <iomanip>
 #include <fstream>
 #include <limits>
@@ -28,6 +30,129 @@ static size_t value_span(const Value & value) {
     return result;
 }
 
+static ValueId find_named_value(const Graph & graph, const std::string & name) {
+    const auto position = std::find_if(graph.values.begin(), graph.values.end(), [&](const Value & value) {
+        return value.name == name;
+    });
+    return position == graph.values.end() ? kInvalidId : position->id;
+}
+
+static void append_rope_initialization(const ProgramPlan & plan, CommandProgram & program) {
+    const ValueId frequencies = find_named_value(plan.graph, "hrx.synthetic.inverse_frequencies");
+    if (frequencies == kInvalidId) return;
+    const Operation * reference = nullptr;
+    for (const Operation & operation : plan.graph.operations) {
+        if (operation.op != GGML_OP_ROPE) continue;
+        if (operation.inputs.size() != 2) {
+            program.errors.push_back("selected attention kernel requires ROPE without a frequency-factor tensor");
+            return;
+        }
+        if (reference == nullptr) reference = &operation;
+        else if (operation.raw_params != reference->raw_params) {
+            program.errors.push_back("ROPE parameters are not coherent across the owned program");
+            return;
+        }
+    }
+    if (reference == nullptr) {
+        program.errors.push_back("owned program has no ROPE witness for inverse-frequency initialization");
+        return;
+    }
+    int32_t params[15] = {};
+    std::memcpy(params, reference->raw_params.data(), sizeof(params));
+    float frequency_base = 0.0f;
+    float frequency_scale = 0.0f;
+    float extension_factor = 0.0f;
+    float attention_factor = 0.0f;
+    std::memcpy(&frequency_base, params + 5, sizeof(float));
+    std::memcpy(&frequency_scale, params + 6, sizeof(float));
+    std::memcpy(&extension_factor, params + 7, sizeof(float));
+    std::memcpy(&attention_factor, params + 8, sizeof(float));
+    const size_t n_dims = static_cast<size_t>(params[1]);
+    if (params[2] != GGML_ROPE_TYPE_NEOX || n_dims == 0 || n_dims % 2 != 0 ||
+        !std::isfinite(frequency_base) || frequency_base <= 0.0f ||
+        !std::isfinite(frequency_scale) || frequency_scale <= 0.0f ||
+        extension_factor != 0.0f || attention_factor != 1.0f) {
+        program.errors.push_back("ROPE parameters are outside the selected NEOX inverse-frequency contract");
+        return;
+    }
+    const Value & destination = plan.graph.values[frequencies];
+    if (plan.graph.storages[destination.access.storage].size != n_dims / 2 * sizeof(float)) {
+        program.errors.push_back("inverse-frequency storage does not agree with recovered ROPE dimensions");
+        return;
+    }
+    ConstantInitialization initialization;
+    initialization.label = "rope.inverse_frequencies";
+    initialization.storage = destination.access.storage;
+    initialization.data.resize(n_dims / 2 * sizeof(float));
+    const float theta_scale = std::pow(frequency_base, -2.0f / static_cast<float>(n_dims));
+    float theta = frequency_scale;
+    for (size_t i = 0; i < n_dims / 2; ++i) {
+        std::memcpy(initialization.data.data() + i * sizeof(float), &theta, sizeof(float));
+        theta *= theta_scale;
+    }
+    program.initializations.push_back(std::move(initialization));
+}
+
+static std::vector<Command> expand_synthetic_commands(const std::vector<Command> & kernels,
+                                                       std::vector<std::string> & errors) {
+    std::vector<Command> result;
+    std::vector<uint32_t> remap(kernels.size(), UINT32_MAX);
+    auto mapped_dependencies = [&](const Command & command) {
+        std::vector<uint32_t> dependencies;
+        for (uint32_t dependency : command.dependencies) {
+            if (dependency >= remap.size() || remap[dependency] == UINT32_MAX) {
+                errors.push_back("cannot remap a forward synthetic command dependency");
+            } else {
+                dependencies.push_back(remap[dependency]);
+            }
+        }
+        return dependencies;
+    };
+    for (const Command & original : kernels) {
+        std::vector<uint32_t> dependencies = mapped_dependencies(original);
+        uint32_t synthetic = UINT32_MAX;
+        if (original.kernel_id == "qwen_attention_metadata_bringup_workaround" && original.bindings.size() >= 2) {
+            Command copy;
+            copy.ordinal = static_cast<uint32_t>(result.size());
+            copy.kind = CommandKind::Copy;
+            copy.label = original.label + ".capture_context_base";
+            copy.dependencies = dependencies;
+            CommandBinding source = original.bindings[1];
+            source.name = "source";
+            source.length = sizeof(int32_t);
+            source.access = ResourceAccess::Read;
+            CommandBinding destination = original.bindings[0];
+            destination.name = "destination";
+            destination.length = sizeof(int32_t);
+            destination.access = ResourceAccess::Write;
+            copy.bindings = { source, destination };
+            result.push_back(std::move(copy));
+            synthetic = result.back().ordinal;
+        } else if (original.kernel_id == "qwen3_moe_flash_attention_decode_split_f32_f16_wmma" &&
+                   original.bindings.size() >= 8) {
+            Command fill;
+            fill.ordinal = static_cast<uint32_t>(result.size());
+            fill.kind = CommandKind::Fill;
+            fill.label = original.label + ".clear_completion_counter";
+            fill.scalar_parameters["fill_byte"] = 0;
+            fill.dependencies = dependencies;
+            CommandBinding destination = original.bindings[7];
+            destination.name = "destination";
+            destination.access = ResourceAccess::Write;
+            fill.bindings = { destination };
+            result.push_back(std::move(fill));
+            synthetic = result.back().ordinal;
+        }
+        Command command = original;
+        command.ordinal = static_cast<uint32_t>(result.size());
+        command.dependencies = std::move(dependencies);
+        if (synthetic != UINT32_MAX) command.dependencies.push_back(synthetic);
+        result.push_back(std::move(command));
+        remap[original.ordinal] = result.back().ordinal;
+    }
+    return result;
+}
+
 static const KernelDefinition * find_kernel(const KernelCorpus & corpus, const std::string & id) {
     const auto position = std::find_if(corpus.kernels.begin(), corpus.kernels.end(),
         [&](const KernelDefinition & kernel) { return kernel.id == id; });
@@ -47,6 +172,50 @@ static std::string stable_hash(const std::string & text) {
     return out.str();
 }
 
+static void pack_transient_plan(TransientPlan & result) {
+    result.arena_size = 0;
+    for (TransientAllocation & allocation : result.allocations) allocation.arena_offset = 0;
+    std::vector<size_t> order(result.allocations.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](size_t lhs, size_t rhs) {
+        const TransientAllocation & a = result.allocations[lhs];
+        const TransientAllocation & b = result.allocations[rhs];
+        if (a.first_command != b.first_command) return a.first_command < b.first_command;
+        if (a.size != b.size) return a.size > b.size;
+        return a.storage < b.storage;
+    });
+    std::vector<bool> is_placed(result.allocations.size(), false);
+    for (size_t index : order) {
+        TransientAllocation & allocation = result.allocations[index];
+        size_t candidate = 0;
+        for (;;) {
+            candidate = align_up(candidate, allocation.alignment);
+            bool conflict = false;
+            size_t next_candidate = candidate;
+            for (size_t placed_index = 0; placed_index < result.allocations.size(); ++placed_index) {
+                if (!is_placed[placed_index]) continue;
+                const TransientAllocation & placed = result.allocations[placed_index];
+                const bool lifetime_overlap = allocation.first_command <= placed.last_command &&
+                    placed.first_command <= allocation.last_command;
+                const bool range_overlap = candidate < placed.arena_offset + placed.size &&
+                    placed.arena_offset < candidate + allocation.size;
+                if (lifetime_overlap && range_overlap) {
+                    conflict = true;
+                    next_candidate = std::max(next_candidate, placed.arena_offset + placed.size);
+                }
+            }
+            if (!conflict) break;
+            candidate = next_candidate;
+        }
+        allocation.arena_offset = candidate;
+        is_placed[index] = true;
+        result.arena_size = std::max(result.arena_size, candidate + allocation.size);
+    }
+    result.arena_size = align_up(result.arena_size, result.arena_alignment);
+    std::sort(result.allocations.begin(), result.allocations.end(),
+              [](const TransientAllocation & a, const TransientAllocation & b) { return a.id < b.id; });
+}
+
 static TransientPlan build_transient_plan(const ProgramPlan & plan,
                                           const std::vector<uint32_t> & invocation_first_command,
                                           const std::vector<uint32_t> & invocation_last_command) {
@@ -63,43 +232,7 @@ static TransientPlan build_transient_plan(const ProgramPlan & plan,
         allocation.last_command = invocation_last_command[resource.last_invocation];
         result.allocations.push_back(allocation);
     }
-
-    std::vector<size_t> order(result.allocations.size());
-    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
-    std::stable_sort(order.begin(), order.end(), [&](size_t lhs, size_t rhs) {
-        const TransientAllocation & a = result.allocations[lhs];
-        const TransientAllocation & b = result.allocations[rhs];
-        if (a.first_command != b.first_command) return a.first_command < b.first_command;
-        if (a.size != b.size) return a.size > b.size;
-        return a.storage < b.storage;
-    });
-    for (size_t index : order) {
-        TransientAllocation & allocation = result.allocations[index];
-        size_t candidate = 0;
-        for (;;) {
-            candidate = align_up(candidate, allocation.alignment);
-            bool conflict = false;
-            size_t next_candidate = candidate;
-            for (const TransientAllocation & placed : result.allocations) {
-                if (&placed == &allocation || placed.arena_offset + placed.size == 0) continue;
-                const bool lifetime_overlap = allocation.first_command <= placed.last_command &&
-                    placed.first_command <= allocation.last_command;
-                const bool range_overlap = candidate < placed.arena_offset + placed.size &&
-                    placed.arena_offset < candidate + allocation.size;
-                if (lifetime_overlap && range_overlap) {
-                    conflict = true;
-                    next_candidate = std::max(next_candidate, placed.arena_offset + placed.size);
-                }
-            }
-            if (!conflict) break;
-            candidate = next_candidate;
-        }
-        allocation.arena_offset = candidate;
-        result.arena_size = std::max(result.arena_size, candidate + allocation.size);
-    }
-    result.arena_size = align_up(result.arena_size, result.arena_alignment);
-    std::sort(result.allocations.begin(), result.allocations.end(),
-              [](const TransientAllocation & a, const TransientAllocation & b) { return a.id < b.id; });
+    pack_transient_plan(result);
     return result;
 }
 
@@ -148,6 +281,15 @@ VerificationResult verify_kernel_corpus(const KernelCorpus & corpus) {
     for (const KernelDefinition & kernel : corpus.kernels) {
         if (kernel.id.empty() || kernel.source.empty() || kernel.symbol.empty() || kernel.target.empty() ||
             kernel.source_digest.empty()) result.errors.push_back("kernel definition is incomplete");
+        const bool source_is_primary = std::find(kernel.compile_recipe.primary_sources.begin(),
+            kernel.compile_recipe.primary_sources.end(), kernel.source) != kernel.compile_recipe.primary_sources.end();
+        const bool source_is_library = std::find(kernel.compile_recipe.library_sources.begin(),
+            kernel.compile_recipe.library_sources.end(), kernel.source) != kernel.compile_recipe.library_sources.end();
+        if ((kernel.compile_recipe.mode != "direct" && kernel.compile_recipe.mode != "archive") ||
+            kernel.compile_recipe.primary_sources.empty() || (!source_is_primary && !source_is_library) ||
+            (kernel.compile_recipe.mode == "archive" && kernel.compile_recipe.link_module.empty())) {
+            result.errors.push_back("kernel " + kernel.id + " has an invalid BUILD compile recipe");
+        }
         if (!ids.insert(kernel.id).second) result.errors.push_back("kernel corpus repeats id " + kernel.id);
         std::set<std::string> names;
         for (const KernelBindingDefinition & binding : kernel.bindings) {
@@ -155,6 +297,7 @@ VerificationResult verify_kernel_corpus(const KernelCorpus & corpus) {
                 result.errors.push_back("kernel " + kernel.id + " has invalid binding names");
             }
         }
+        if (kernel.bindings.size() == 0) result.errors.push_back("kernel " + kernel.id + " has no binding ABI");
     }
     return result;
 }
@@ -182,27 +325,36 @@ KernelCorpus load_kernel_corpus_manifest(const std::string & path, const std::st
             kernel.source = item.at("source").get<std::string>();
             kernel.target = target;
             kernel.source_digest = digests.at(kernel.source);
+            kernel.dependencies = item.at("compile_dependencies").get<std::vector<std::string>>();
+            const nlohmann::json & recipe = item.at("compile_recipe");
+            kernel.compile_recipe.mode = recipe.at("mode").get<std::string>();
+            kernel.compile_recipe.link_module = recipe.value("link_module", std::string());
+            kernel.compile_recipe.primary_sources = recipe.at("primary_sources").get<std::vector<std::string>>();
+            kernel.compile_recipe.library_sources = recipe.at("library_sources").get<std::vector<std::string>>();
+            if (kernel.dependencies != kernel.compile_recipe.library_sources) {
+                throw std::runtime_error("legacy dependency closure disagrees with compile recipe");
+            }
             for (const char * group : { "workload_parameters", "launch_parameters" }) {
                 for (const nlohmann::json & parameter : item.at(group)) {
                     const std::string name = parameter.at("name").get<std::string>();
                     if (std::find(kernel.scalar_parameters.begin(), kernel.scalar_parameters.end(), name) ==
                         kernel.scalar_parameters.end()) kernel.scalar_parameters.push_back(name);
+                    KernelScalarDefinition definition { name, parameter.at("type").get<std::string>() };
+                    if (std::string(group) == "workload_parameters") kernel.workload_parameters.push_back(std::move(definition));
+                    else kernel.launch_parameters.push_back(std::move(definition));
                 }
             }
             const std::vector<std::string> binding_names = item.at("bindings").get<std::vector<std::string>>();
             const std::vector<std::string> explicit_access = item.value("binding_access", std::vector<std::string>());
-            if (!explicit_access.empty() && explicit_access.size() != binding_names.size()) {
+            if (explicit_access.size() != binding_names.size()) {
                 throw std::runtime_error("kernel binding access metadata has the wrong arity");
             }
             for (size_t binding_index = 0; binding_index < binding_names.size(); ++binding_index) {
                 const std::string & name = binding_names[binding_index];
                 ResourceAccess access = ResourceAccess::Read;
-                if (!explicit_access.empty()) {
-                    if (explicit_access[binding_index] == "write") access = ResourceAccess::Write;
-                    else if (explicit_access[binding_index] == "read_write") access = ResourceAccess::ReadWrite;
-                    else if (explicit_access[binding_index] != "read") throw std::runtime_error("invalid kernel binding access metadata");
-                } else if (name.find("output") != std::string::npos || name.find("partial") != std::string::npos ||
-                    name.find("counter") != std::string::npos || name == "destination") access = ResourceAccess::ReadWrite;
+                if (explicit_access[binding_index] == "write") access = ResourceAccess::Write;
+                else if (explicit_access[binding_index] == "read_write") access = ResourceAccess::ReadWrite;
+                else if (explicit_access[binding_index] != "read") throw std::runtime_error("invalid kernel binding access metadata");
                 kernel.bindings.push_back({ name, access });
             }
             corpus.kernels.push_back(std::move(kernel));
@@ -265,6 +417,8 @@ CommandProgram build_command_program(const ProgramPlan & plan, const KernelCorpu
         }
         invocation_last[invocation_id] = ordinal == 0 ? 0 : ordinal - 1;
     }
+    result.commands = expand_synthetic_commands(result.commands, result.errors);
+    append_rope_initialization(plan, result);
     result.transients = build_transient_plan(plan, invocation_first, invocation_last);
     for (Command & command : result.commands) {
         for (CommandBinding & binding : command.bindings) {
@@ -276,6 +430,19 @@ CommandProgram build_command_program(const ProgramPlan & plan, const KernelCorpu
             }
         }
     }
+    for (TransientAllocation & allocation : result.transients.allocations) {
+        allocation.first_command = UINT32_MAX;
+        allocation.last_command = 0;
+    }
+    for (const Command & command : result.commands) {
+        for (const CommandBinding & binding : command.bindings) {
+            if (binding.origin != BindingOrigin::Transient || binding.transient >= result.transients.allocations.size()) continue;
+            TransientAllocation & allocation = result.transients.allocations[binding.transient];
+            allocation.first_command = std::min(allocation.first_command, command.ordinal);
+            allocation.last_command = std::max(allocation.last_command, command.ordinal);
+        }
+    }
+    pack_transient_plan(result.transients);
     // Schedule dependencies describe authored ordering. Add the conservative
     // resource hazards required by concrete command recording so a future
     // recipe may expose independent commands without weakening mutation or
@@ -314,7 +481,10 @@ VerificationResult verify_command_program(const ProgramPlan & plan, const Kernel
         commands.target != plan.target || commands.corpus_digest != corpus.corpus_digest) {
         result.errors.push_back("command program identity does not match its plan or corpus");
     }
-    if (commands.commands.size() != schedule_dispatch_count(plan.schedule)) {
+    const size_t kernel_count = std::count_if(commands.commands.begin(), commands.commands.end(), [](const Command & command) {
+        return command.kind == CommandKind::Kernel;
+    });
+    if (kernel_count != schedule_dispatch_count(plan.schedule)) {
         result.errors.push_back("command program does not cover every scheduled dispatch");
     }
     for (size_t i = 0; i < commands.commands.size(); ++i) {
@@ -346,6 +516,12 @@ VerificationResult verify_command_program(const ProgramPlan & plan, const Kernel
                 }
             }
         }
+        if (command.kind == CommandKind::Copy && command.bindings.size() != 2) {
+            result.errors.push_back("copy command does not have source and destination bindings");
+        }
+        if (command.kind == CommandKind::Fill && command.bindings.size() != 1) {
+            result.errors.push_back("fill command does not have one destination binding");
+        }
         for (uint32_t dependency : command.dependencies) {
             if (dependency >= command.ordinal) result.errors.push_back("command has a forward dependency");
         }
@@ -354,6 +530,12 @@ VerificationResult verify_command_program(const ProgramPlan & plan, const Kernel
                 binding.offset + binding.length > plan.graph.storages[binding.storage].size) {
                 result.errors.push_back("command has an invalid resource range");
             }
+        }
+    }
+    for (const ConstantInitialization & initialization : commands.initializations) {
+        if (initialization.storage >= plan.graph.storages.size() || initialization.data.empty() ||
+            initialization.data.size() > plan.graph.storages[initialization.storage].size) {
+            result.errors.push_back("invalid constant initialization payload");
         }
     }
     for (const TransientAllocation & a : commands.transients.allocations) {
@@ -416,10 +598,23 @@ std::string format_kernel_corpus(const KernelCorpus & corpus) {
     for (const KernelDefinition & kernel : corpus.kernels) {
         out << "  kernel " << kernel.id << " target=" << kernel.target << " symbol=@" << kernel.symbol
             << " source=" << kernel.source << " sha256=" << kernel.source_digest << '\n';
+        out << "    recipe " << kernel.compile_recipe.mode;
+        if (!kernel.compile_recipe.link_module.empty()) out << " module=" << kernel.compile_recipe.link_module;
+        out << " primary=";
+        for (size_t i = 0; i < kernel.compile_recipe.primary_sources.size(); ++i)
+            out << (i ? "," : "") << kernel.compile_recipe.primary_sources[i];
+        out << " libraries=";
+        for (size_t i = 0; i < kernel.compile_recipe.library_sources.size(); ++i)
+            out << (i ? "," : "") << kernel.compile_recipe.library_sources[i];
+        out << '\n';
         for (size_t i = 0; i < kernel.bindings.size(); ++i) {
             out << "    binding[" << i << "] " << kernel.bindings[i].name << ' '
                 << resource_access_name(kernel.bindings[i].access) << '\n';
         }
+        for (const KernelScalarDefinition & parameter : kernel.workload_parameters)
+            out << "    workload " << parameter.name << ' ' << parameter.type << '\n';
+        for (const KernelScalarDefinition & parameter : kernel.launch_parameters)
+            out << "    launch " << parameter.name << ' ' << parameter.type << '\n';
     }
     return out.str();
 }
@@ -469,6 +664,10 @@ std::string format_command_program(const CommandProgram & program) {
         out << "  transient " << allocation.id << " storage=" << allocation.storage << " range="
             << allocation.arena_offset << "+" << allocation.size << " live=" << allocation.first_command
             << ".." << allocation.last_command << '\n';
+    }
+    for (const ConstantInitialization & initialization : program.initializations) {
+        out << "  initialize " << initialization.label << " storage=" << initialization.storage
+            << " bytes=" << initialization.data.size() << '\n';
     }
     return out.str();
 }
@@ -523,8 +722,19 @@ std::string serialize_kernel_corpus_json(const KernelCorpus & corpus) {
             { "id", kernel.id }, { "source", kernel.source }, { "dependencies", kernel.dependencies },
             { "symbol", kernel.symbol }, { "target", kernel.target }, { "compile_config", kernel.compile_config },
             { "scalar_parameters", kernel.scalar_parameters }, { "source_digest", kernel.source_digest },
+            { "compile_recipe", {
+                { "mode", kernel.compile_recipe.mode }, { "link_module", kernel.compile_recipe.link_module },
+                { "primary_sources", kernel.compile_recipe.primary_sources },
+                { "library_sources", kernel.compile_recipe.library_sources },
+            } },
+            { "workload_parameters", nlohmann::ordered_json::array() },
+            { "launch_parameters", nlohmann::ordered_json::array() },
             { "bindings", nlohmann::ordered_json::array() },
         };
+        for (const KernelScalarDefinition & parameter : kernel.workload_parameters)
+            item["workload_parameters"].push_back({ { "name", parameter.name }, { "type", parameter.type } });
+        for (const KernelScalarDefinition & parameter : kernel.launch_parameters)
+            item["launch_parameters"].push_back({ { "name", parameter.name }, { "type", parameter.type } });
         for (const KernelBindingDefinition & binding : kernel.bindings) {
             item["bindings"].push_back({ { "name", binding.name }, { "access", resource_access_name(binding.access) } });
         }
@@ -538,6 +748,7 @@ std::string serialize_command_program_json(const CommandProgram & program) {
         { "schema", program.schema }, { "workload", program.workload }, { "target", program.target },
         { "graph_fingerprint", program.graph_fingerprint }, { "recipe_revision", program.recipe_revision },
         { "corpus_digest", program.corpus_digest }, { "commands", nlohmann::ordered_json::array() },
+        { "initializations", nlohmann::ordered_json::array() },
         { "transients", { { "arena_size", program.transients.arena_size },
             { "arena_alignment", program.transients.arena_alignment }, { "allocations", nlohmann::ordered_json::array() } } },
     };
@@ -552,6 +763,13 @@ std::string serialize_command_program_json(const CommandProgram & program) {
         };
         for (const CommandBinding & binding : command.bindings) item["bindings"].push_back(binding_json(binding));
         root["commands"].push_back(std::move(item));
+    }
+    for (const ConstantInitialization & initialization : program.initializations) {
+        std::ostringstream bytes;
+        bytes << std::hex << std::setfill('0');
+        for (uint8_t byte : initialization.data) bytes << std::setw(2) << static_cast<unsigned>(byte);
+        root["initializations"].push_back({ { "label", initialization.label }, { "storage", initialization.storage },
+                                             { "bytes_hex", bytes.str() } });
     }
     for (const TransientAllocation & allocation : program.transients.allocations) {
         root["transients"]["allocations"].push_back({

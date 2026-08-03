@@ -114,9 +114,12 @@ static void test_deterministic_import_and_matcher() {
     mul_only.name = "mul";
     mul_only.states = { { "mul", { { GGML_OP_MUL }, GGML_TYPE_F32, 2 }, {} } };
     const std::vector<ggml::hrx::FusionRule> rules = {
-        { automaton, { "test", "fused_add_mul", {} }, 100 },
-        { add_only, { "test", "add", {} }, 1 },
-        { mul_only, { "test", "mul", {} }, 1 },
+        { automaton, { "test", "fused_add_mul", {},
+            ggml::hrx::KernelSpecialization::ExecutionKind::Native, {} }, 100 },
+        { add_only, { "test", "add", {},
+            ggml::hrx::KernelSpecialization::ExecutionKind::Native, {} }, 1 },
+        { mul_only, { "test", "mul", {},
+            ggml::hrx::KernelSpecialization::ExecutionKind::Native, {} }, 1 },
     };
     const ggml::hrx::Selection selection = ggml::hrx::select_regions(first, rules);
     REQUIRE(selection.regions.size() == 1);
@@ -151,7 +154,8 @@ static void test_deterministic_import_and_matcher() {
     ggml::hrx::Schedule schedule;
     schedule.graph_fingerprint = first.fingerprint;
     ggml::hrx::Invocation invocation;
-    invocation.kernel = { "test", "fused_add_mul", { { "width", 4 } } };
+    invocation.kernel = { "test", "fused_add_mul", { { "width", 4 } },
+        ggml::hrx::KernelSpecialization::ExecutionKind::Native, {} };
     invocation.covered_operations = { 0, 1 };
     for (ggml::hrx::ValueId value = 0; value < first.values.size(); ++value) {
         if (first.values[value].producer == ggml::hrx::kInvalidId) {
@@ -247,10 +251,10 @@ static void test_set_rows_effects_and_views() {
     ggml::hrx::Schedule reversed;
     reversed.graph_fingerprint = effect_graph.fingerprint;
     reversed.invocations = {
-        { { "test", "consumer", {} }, { view_id, add_id },
+        { { "test", "consumer", {}, ggml::hrx::KernelSpecialization::ExecutionKind::Native, {} }, { view_id, add_id },
           { { "destination", effect_graph.operations[view_id].inputs[0] }, { "increment", effect_graph.operations[add_id].inputs[1] } },
           { { "sum", effect_graph.operations[add_id].output } }, {}, "", -1 },
-        { { "test", "writer", {} }, { set_rows_id },
+        { { "test", "writer", {}, ggml::hrx::KernelSpecialization::ExecutionKind::Native, {} }, { set_rows_id },
           { { "rows", operation.inputs[0] }, { "indices", operation.inputs[1] }, { "destination", operation.inputs[2] } },
           { { "updated", operation.output } }, {}, "", -1 },
     };
@@ -428,6 +432,8 @@ static ggml::hrx::KernelCorpus make_test_corpus(const ggml::hrx::ProgramPlan & p
             kernel.symbol = kernel.id;
             kernel.target = plan.target;
             kernel.source_digest = "sha256-" + kernel.id;
+            kernel.compile_recipe.mode = "direct";
+            kernel.compile_recipe.primary_sources = { kernel.source };
             for (const ggml::hrx::TensorBinding & binding : dispatch.bindings) {
                 kernel.bindings.push_back({ binding.role, ggml::hrx::ResourceAccess::ReadWrite });
             }
@@ -499,6 +505,7 @@ static void test_pinned_kernel_corpus_manifest() {
     std::vector<std::string> errors;
     const ggml::hrx::KernelCorpus corpus = ggml::hrx::load_kernel_corpus_manifest(
         GGML_HRX_TEST_CORPUS_MANIFEST, "gfx1151", errors);
+    for (const std::string & error : errors) std::fprintf(stderr, "kernel corpus: %s\n", error.c_str());
     REQUIRE(errors.empty());
     REQUIRE(ggml::hrx::verify_kernel_corpus(corpus).valid());
     REQUIRE(corpus.upstream_revision == "b01fe3eb2cddfedad982be873239bc365dccd67f");
@@ -613,7 +620,26 @@ int main(int argc, char ** argv) {
         REQUIRE(corpus_errors.empty());
         const ggml::hrx::CommandProgram executable_commands =
             ggml::hrx::build_command_program(reactive, executable_corpus);
-        REQUIRE(executable_commands.commands.size() == ggml::hrx::schedule_dispatch_count(reactive.schedule));
+        const size_t kernel_command_count = std::count_if(
+            executable_commands.commands.begin(), executable_commands.commands.end(),
+            [](const ggml::hrx::Command & command) {
+                return command.kind == ggml::hrx::CommandKind::Kernel;
+            });
+        const size_t copy_command_count = std::count_if(
+            executable_commands.commands.begin(), executable_commands.commands.end(),
+            [](const ggml::hrx::Command & command) {
+                return command.kind == ggml::hrx::CommandKind::Copy;
+            });
+        const size_t fill_command_count = std::count_if(
+            executable_commands.commands.begin(), executable_commands.commands.end(),
+            [](const ggml::hrx::Command & command) {
+                return command.kind == ggml::hrx::CommandKind::Fill;
+            });
+        REQUIRE(kernel_command_count == ggml::hrx::schedule_dispatch_count(reactive.schedule));
+        REQUIRE(copy_command_count == 1);
+        REQUIRE(fill_command_count == (proof.schedule.workload.rfind("decode", 0) == 0 ? 48 : 0));
+        REQUIRE(executable_commands.initializations.size() == 1);
+        REQUIRE(executable_commands.initializations[0].data.size() == 256);
         REQUIRE(ggml::hrx::verify_command_program(reactive, executable_corpus, executable_commands).valid());
 
         ggml::hrx::QwenProgramProof missing_operation = proof;

@@ -345,6 +345,13 @@ if (TARGET ggml-hrx-graph)
         GGML_HRX_TEST_CORPUS_MANIFEST="${CMAKE_CURRENT_SOURCE_DIR}/../ggml/src/ggml-hrx/kernels/qwen_moe/manifest.json")
     add_test(NAME test-hrx-graph COMMAND test-hrx-graph)
 
+    if (TARGET ggml-hrx-executable)
+        add_executable(test-hrx-executable test-hrx-executable.cpp)
+        target_link_libraries(test-hrx-executable PRIVATE ggml-hrx-executable)
+        target_include_directories(test-hrx-executable PRIVATE ../ggml/include)
+        add_test(NAME test-hrx-executable COMMAND test-hrx-executable)
+    endif()
+
     add_executable(hrx-capture-decode-graph hrx-capture-decode-graph.cpp)
     target_link_libraries(hrx-capture-decode-graph PRIVATE llama)
     target_include_directories(hrx-capture-decode-graph PRIVATE ../src)

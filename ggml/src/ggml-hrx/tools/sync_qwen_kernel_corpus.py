@@ -56,6 +56,24 @@ KERNEL_RE = re.compile(
 ARG_RE = re.compile(r"%(?P<name>[A-Za-z0-9_]+)\s*:\s*(?P<type>[A-Za-z0-9<>?]+)")
 
 
+def binding_access(symbol: str, name: str) -> str:
+    """Authoritative launch ABI access contract; no name inference at runtime."""
+    if symbol == "qwen_attention_metadata_bringup_workaround" and name != "control":
+        return "read_write"
+    if symbol == "qwen3_moe_router_top8_f32" and name in ("route_ids", "route_weights"):
+        return "write"
+    if symbol == "qwen3_moe_build_expert_table" and name == "expert_table":
+        return "write"
+    if symbol == "qwen3_moe_build_expert_partition_table" and name == "partition_table":
+        return "write"
+    if symbol == "ggml_q8_1_x4_inspect_one_group" and name != "packed":
+        return "write"
+    if name in ("output", "query_output", "key_output", "value_output", "normalized_output", "q8_output",
+                "key_cache", "value_cache", "partial_max", "partial_sum", "partial_output", "completion_counter"):
+        return "read_write"
+    return "read"
+
+
 def starlark_calls(text: str, function: str) -> list[str]:
     """Extracts the literal-only calls used by the pinned kernel BUILD file."""
     result: list[str] = []
@@ -141,13 +159,15 @@ def parse_exports(text: str, source: str) -> list[dict[str, object]]:
     for match in KERNEL_RE.finditer(text):
         workload = [item.groupdict() for item in ARG_RE.finditer(match.group("workload"))]
         launch = [item.groupdict() for item in ARG_RE.finditer(match.group("launch"))]
+        bindings = [item["name"] for item in launch if item["type"] == "buffer"]
         exports.append(
             {
                 "symbol": match.group("symbol"),
                 "source": source,
                 "workload_parameters": workload,
                 "launch_parameters": [item for item in launch if item["type"] != "buffer"],
-                "bindings": [item["name"] for item in launch if item["type"] == "buffer"],
+                "bindings": bindings,
+                "binding_access": [binding_access(match.group("symbol"), name) for name in bindings],
             }
         )
     return exports
@@ -163,6 +183,33 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
     source_directory = source_root / SOURCE_SUBDIR
     build_data = (source_directory / "BUILD.bazel").read_bytes()
     link_modules, plan_cases = parse_build_recipes(build_data.decode("utf-8"))
+
+    modules_by_name = {str(item["name"]): item for item in link_modules}
+
+    def module_files(name: str) -> list[str]:
+        module = modules_by_name[name]
+        result = list(module["srcs"])
+        for library in module["libraries"]:
+            if str(library).startswith(":"):
+                result.extend(module_files(str(library)[1:]))
+            else:
+                result.append(str(library))
+        return list(dict.fromkeys(result))
+
+    def compile_recipe(source: str) -> dict[str, object]:
+        direct = [str(item["name"]) for item in link_modules if source in item["srcs"]]
+        indirect = [str(item["name"]) for item in link_modules if source in item["libraries"]]
+        if not direct and not indirect:
+            return {"mode": "direct", "primary_sources": [source], "library_sources": []}
+        module_name = (direct or indirect)[0]
+        module = modules_by_name[module_name]
+        files = module_files(module_name)
+        return {
+            "mode": "archive",
+            "link_module": module_name,
+            "primary_sources": list(module["srcs"]),
+            "library_sources": [item for item in files if item not in module["srcs"]],
+        }
     file_rows: list[dict[str, object]] = []
     exports: list[dict[str, object]] = []
     upstream_aggregate = hashlib.sha256()
@@ -195,11 +242,7 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
         owned_aggregate.update(b"\0")
         owned_aggregate.update(bytes.fromhex(digest))
         file_rows.append({"path": relative_text, "sha256": digest, "size": len(data), "owner": "ggml-hrx"})
-        owned_exports = parse_exports(data.decode("utf-8"), relative_text)
-        for item in owned_exports:
-            if item["symbol"] == "qwen_attention_metadata_bringup_workaround":
-                item["binding_access"] = ["read", "read_write", "read_write", "read_write", "read_write"]
-        exports.extend(owned_exports)
+        exports.extend(parse_exports(data.decode("utf-8"), relative_text))
 
     owned_digest = owned_aggregate.hexdigest()
     combined_aggregate = hashlib.sha256()
@@ -239,6 +282,11 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
             "owner": "ggml-hrx",
         },
     ])
+
+    for item in exports:
+        recipe = compile_recipe(str(item["source"]))
+        item["compile_recipe"] = recipe
+        item["compile_dependencies"] = list(recipe["library_sources"])
 
     manifest = {
         "schema": "ggml-hrx-qwen-kernel-corpus-v1",

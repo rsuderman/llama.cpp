@@ -614,7 +614,7 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu_t        
     LoomModule    module;
     LoomResult    result;
     std::string specialized_source;
-    if (options->source_format == GGML_HRX_LOOM_JIT_SOURCE_FORMAT_TEXT &&
+    if (options->source_format == GGML_HRX_LOOM_JIT_SOURCE_FORMAT_TEXT && options->dependency_count == 0 &&
         options->workload_argument_count > 0) {
         std::string specialization_error;
         const std::string source_text(static_cast<const char *>(options->source_data), options->source_size);
@@ -684,7 +684,10 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu_t        
         dependency_sources.push_back(dependency_source);
         loomc_link_index_source_options_t dependency_link_options = {};
         dependency_link_options.provider_name = loomc_make_cstring_view(dependency.source_identifier);
-        dependency_link_options.role = LOOMC_LINK_PROVIDER_ROLE_LIBRARY;
+        const std::string dependency_text(
+            static_cast<const char *>(dependency.source_data), dependency.source_size);
+        dependency_link_options.role = dependency_text.find("config.decl") != std::string::npos
+            ? LOOMC_LINK_PROVIDER_ROLE_INPUT : LOOMC_LINK_PROVIDER_ROLE_LIBRARY;
         status = loomc_link_index_builder_add_source(link_index_builder.get(), dependency_source,
                                                      &dependency_link_options, nullptr);
         if (!loomc_status_is_ok(status)) {
@@ -709,9 +712,93 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu_t        
         return ggml_hrx_loom_jit_status_from_loom(status, "create Loom linker");
     }
 
-    const loomc_string_view_t root_symbols[]             = {
-        loomc_make_cstring_view(options->root_symbol),
-    };
+    // BUILD-authored kernel recipes first archive their primary source and
+    // libraries, then compile roots from that linked module. Preserve that
+    // composition exactly. In particular, config.decl operations are not
+    // callable dependency edges and disappear if raw source libraries are
+    // fed directly to a selective link.
+    LoomSource archived_source;
+    LoomSource specialized_archive_source;
+    std::string specialized_archive_text;
+    if (options->dependency_count > 0) {
+        LoomModule archive_module;
+        loomc_link_options_t archive_options = {};
+        archive_options.type = LOOMC_STRUCTURE_TYPE_LINK_OPTIONS;
+        archive_options.structure_size = sizeof(archive_options);
+        archive_options.link_index = link_index.get();
+        archive_options.module_name = loomc_make_cstring_view(options->module_name);
+        archive_options.flags = LOOMC_LINK_FLAG_STRIP_CHECK_SYMBOLS;
+        status = loomc_link_module(linker.get(), workspace.get(), &archive_options,
+                                   archive_module.out(), result.out());
+        if (!loomc_status_is_ok(status)) {
+            return ggml_hrx_loom_jit_status_from_loom(status, "archive Loom kernel module");
+        }
+        if (!loomc_result_succeeded(result.get())) {
+            return ggml_hrx_loom_jit_status_from_result(result.get(), "Loom kernel archive linking failed");
+        }
+        result.reset();
+        loomc_module_serialize_options_t serialize_options = {};
+        serialize_options.type = LOOMC_STRUCTURE_TYPE_MODULE_SERIALIZE_OPTIONS;
+        serialize_options.structure_size = sizeof(serialize_options);
+        serialize_options.format = LOOMC_SOURCE_FORMAT_TEXT;
+        serialize_options.identifier = loomc_make_cstring_view(options->source_identifier);
+        status = loomc_module_serialize_to_source(archive_module.get(), &serialize_options,
+                                                  loomc_allocator_system(), archived_source.out());
+        if (!loomc_status_is_ok(status)) {
+            return ggml_hrx_loom_jit_status_from_loom(status, "serialize Loom kernel archive");
+        }
+        loomc_source_t * archive_index_source = archived_source.get();
+        if (options->workload_argument_count > 0) {
+            const loomc_byte_span_t archive_contents = loomc_source_contents(archived_source.get());
+            const std::string archive_text(reinterpret_cast<const char *>(archive_contents.data),
+                                           archive_contents.data_length);
+            std::string specialization_error;
+            if (!ggml_hrx_loom_specialize_workload_text(
+                    archive_text, options->root_symbol, options->workload_arguments,
+                    options->workload_argument_count, specialized_archive_text,
+                    specialization_error)) {
+                return ggml_hrx_loom_jit_make_status(HRX_STATUS_FAILED_PRECONDITION,
+                                                      specialization_error.c_str());
+            }
+            loomc_source_options_t specialized_options = {};
+            specialized_options.type = LOOMC_STRUCTURE_TYPE_SOURCE_OPTIONS;
+            specialized_options.structure_size = sizeof(specialized_options);
+            specialized_options.format = LOOMC_SOURCE_FORMAT_TEXT;
+            specialized_options.identifier = loomc_make_cstring_view(options->source_identifier);
+            specialized_options.contents = loomc_make_byte_span(
+                specialized_archive_text.data(), specialized_archive_text.size());
+            specialized_options.storage = LOOMC_SOURCE_STORAGE_BORROWED;
+            status = loomc_source_create(&specialized_options, loomc_allocator_system(),
+                                         specialized_archive_source.out());
+            if (!loomc_status_is_ok(status)) {
+                return ggml_hrx_loom_jit_status_from_loom(status, "create specialized Loom kernel archive");
+            }
+            archive_index_source = specialized_archive_source.get();
+        }
+        LoomLinkIndexBuilder archive_index_builder;
+        status = loomc_link_index_builder_create(jit->context, nullptr, loomc_allocator_system(),
+                                                  archive_index_builder.out());
+        if (!loomc_status_is_ok(status)) {
+            return ggml_hrx_loom_jit_status_from_loom(status, "create Loom kernel archive index");
+        }
+        loomc_link_index_source_options_t archive_source_options = {};
+        archive_source_options.provider_name = loomc_make_cstring_view(options->source_identifier);
+        archive_source_options.role = LOOMC_LINK_PROVIDER_ROLE_INPUT;
+        status = loomc_link_index_builder_add_source(archive_index_builder.get(), archive_index_source,
+                                                     &archive_source_options, nullptr);
+        if (!loomc_status_is_ok(status)) {
+            return ggml_hrx_loom_jit_status_from_loom(status, "index Loom kernel archive");
+        }
+        status = loomc_link_index_builder_finish(archive_index_builder.get(), link_index.out(), result.out());
+        if (!loomc_status_is_ok(status)) {
+            return ggml_hrx_loom_jit_status_from_loom(status, "finish Loom kernel archive index");
+        }
+        if (!loomc_result_succeeded(result.get())) {
+            return ggml_hrx_loom_jit_status_from_result(result.get(), "Loom kernel archive indexing failed");
+        }
+        result.reset();
+    }
+    const loomc_string_view_t root_symbols[] = { loomc_make_cstring_view(options->root_symbol) };
     loomc_link_options_t link_options = {};
     link_options.type                 = LOOMC_STRUCTURE_TYPE_LINK_OPTIONS;
     link_options.structure_size       = sizeof(link_options);

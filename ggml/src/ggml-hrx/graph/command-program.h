@@ -27,6 +27,18 @@ struct KernelBindingDefinition {
     ResourceAccess access = ResourceAccess::Read;
 };
 
+struct KernelScalarDefinition {
+    std::string name;
+    std::string type;
+};
+
+struct KernelCompileRecipe {
+    std::string mode;
+    std::string link_module;
+    std::vector<std::string> primary_sources;
+    std::vector<std::string> library_sources;
+};
+
 struct KernelDefinition {
     std::string id;
     std::string source;
@@ -37,6 +49,9 @@ struct KernelDefinition {
     std::vector<std::string> scalar_parameters;
     std::vector<KernelBindingDefinition> bindings;
     std::string source_digest;
+    std::vector<KernelScalarDefinition> workload_parameters;
+    std::vector<KernelScalarDefinition> launch_parameters;
+    KernelCompileRecipe compile_recipe;
 };
 
 struct KernelCorpus {
@@ -89,6 +104,12 @@ struct TransientPlan {
     std::vector<TransientAllocation> allocations;
 };
 
+struct ConstantInitialization {
+    std::string label;
+    StorageId storage = kInvalidId;
+    std::vector<uint8_t> data;
+};
+
 struct CommandProgram {
     std::string schema = "ggml-hrx-command-program-v1";
     std::string workload;
@@ -98,6 +119,7 @@ struct CommandProgram {
     std::string corpus_digest;
     std::vector<Command> commands;
     TransientPlan transients;
+    std::vector<ConstantInitialization> initializations;
     std::vector<RootContract> roots;
     std::vector<std::string> errors;
 
