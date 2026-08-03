@@ -163,6 +163,10 @@ struct PreparedExecutableProgram::Impl {
     size_t resident_host_weight_bytes = 0;
     size_t host_staging_bytes = 0;
     size_t transient_bytes = 0;
+    size_t source_command_count = 0;
+    bool command_prefix = false;
+    bool split_commands = false;
+    bool serialized_commands = false;
     AllocationFingerprint allocation_fingerprint;
     hrx_device_t device = nullptr;
     TransferManager * transfers = nullptr;
@@ -188,6 +192,10 @@ size_t PreparedExecutableProgram::borrowed_device_weight_bytes() const { return 
 size_t PreparedExecutableProgram::resident_host_weight_bytes() const { return impl_ == nullptr ? 0 : impl_->resident_host_weight_bytes; }
 size_t PreparedExecutableProgram::host_staging_bytes() const { return impl_ == nullptr ? 0 : impl_->host_staging_bytes; }
 size_t PreparedExecutableProgram::transient_bytes() const { return impl_ == nullptr ? 0 : impl_->transient_bytes; }
+size_t PreparedExecutableProgram::source_command_count() const { return impl_ == nullptr ? 0 : impl_->source_command_count; }
+bool PreparedExecutableProgram::command_prefix() const { return impl_ != nullptr && impl_->command_prefix; }
+bool PreparedExecutableProgram::split_commands() const { return impl_ != nullptr && impl_->split_commands; }
+bool PreparedExecutableProgram::serialized_commands() const { return impl_ != nullptr && impl_->serialized_commands; }
 const AllocationFingerprint & PreparedExecutableProgram::allocation_fingerprint() const { return impl_->allocation_fingerprint; }
 const std::vector<std::string> & PreparedExecutableProgram::errors() const { return impl_->errors; }
 const std::vector<PreparedArtifactDiagnostic> & PreparedExecutableProgram::artifacts() const { return impl_->artifacts; }
@@ -247,6 +255,10 @@ std::string PreparedExecutableProgram::complete_after_synchronize() {
     return {};
 }
 
+void PreparedExecutableProgram::abandon_after_synchronize() {
+    if (impl_ != nullptr) impl_->launch_in_flight = false;
+}
+
 PreparedExecutableProgram prepare_executable_program(
     hrx_device_t device, hrx_stream_t stream, TransferManager & transfers,
     WeightResidencyCache & weights,
@@ -272,6 +284,11 @@ PreparedExecutableProgram prepare_executable_program(
 
     impl.device = device;
     impl.transfers = &transfers;
+    impl.source_command_count = commands.commands.size();
+    const size_t record_command_count = std::min(options.command_limit, commands.commands.size());
+    impl.command_prefix = record_command_count != commands.commands.size();
+    impl.split_commands = options.split_commands;
+    impl.serialized_commands = options.serialize_commands || options.split_commands;
     impl.allocation_fingerprint = fingerprint_bindings(bindings.snapshot);
     std::string error;
     if (commands.transients.arena_size != 0) {
@@ -296,6 +313,8 @@ PreparedExecutableProgram prepare_executable_program(
     jit_options.structure_size = sizeof(jit_options);
     jit_options.processor = options.target.c_str();
     jit_options.identifier = options.target.c_str();
+    jit_options.sanitizer = options.sanitizer.empty() ? nullptr : options.sanitizer.c_str();
+    jit_options.sanitizer_reporting = options.sanitizer_reporting.empty() ? nullptr : options.sanitizer_reporting.c_str();
     ggml_hrx_loom_jit_amdgpu_t jit = nullptr;
     error = take_status(ggml_hrx_loom_jit_amdgpu_create(&jit_options, &jit));
     if (!error.empty()) { impl.errors.push_back("create Loom JIT: " + error); return result; }
@@ -308,6 +327,7 @@ PreparedExecutableProgram prepare_executable_program(
     std::vector<std::vector<uint8_t>> command_constants(commands.commands.size());
     std::set<std::string> program_artifact_keys;
     for (const Command & command : commands.commands) {
+        if (command.ordinal >= record_command_count) break;
         if (command.kind != CommandKind::Kernel) continue;
         const KernelDefinition * definition = find_kernel(corpus, command.kernel_id);
         if (definition == nullptr) { impl.errors.push_back("missing kernel " + command.kernel_id); break; }
@@ -317,7 +337,9 @@ PreparedExecutableProgram prepare_executable_program(
             break;
         }
         command_constants[command.ordinal] = constants.bytes;
-        const std::string key = kernel_artifact_key(*definition, command);
+        std::string key = kernel_artifact_key(*definition, command);
+        if (!options.sanitizer.empty()) key += "|sanitizer=" + options.sanitizer;
+        if (!options.sanitizer_reporting.empty()) key += "|sanitizer_reporting=" + options.sanitizer_reporting;
         auto found = artifact_cache.find(key);
         if (found != artifact_cache.end()) {
             command_artifacts[command.ordinal] = found->second;
@@ -559,8 +581,10 @@ PreparedExecutableProgram prepare_executable_program(
         return true;
     };
 
-    std::vector<hrx_graph_node_t> nodes(commands.commands.size(), nullptr);
+    std::vector<hrx_graph_node_t> nodes(record_command_count, nullptr);
+    size_t expected_node_count = 0;
     for (const Command & command : commands.commands) {
+        if (command.ordinal >= record_command_count) break;
         std::vector<hrx_graph_node_t> deps;
         for (uint32_t dependency : command.dependencies) {
             if (dependency >= nodes.size() || nodes[dependency] == nullptr) {
@@ -568,6 +592,14 @@ PreparedExecutableProgram prepare_executable_program(
                 return result;
             }
             deps.push_back(nodes[dependency]);
+        }
+        // Split mode uses a non-recordable empty node as a partition boundary.
+        // Chaining those boundaries is required: otherwise an independent
+        // command may be topologically sorted ahead of the prior boundary and
+        // share its command buffer.
+        if ((options.serialize_commands || options.split_commands) && command.ordinal != 0) {
+            const hrx_graph_node_t predecessor = nodes[command.ordinal - 1];
+            if (std::find(deps.begin(), deps.end(), predecessor) == deps.end()) deps.push_back(predecessor);
         }
         PreparedCommandDiagnostic diagnostic;
         diagnostic.ordinal = command.ordinal;
@@ -612,11 +644,21 @@ PreparedExecutableProgram prepare_executable_program(
             error = take_status(hrx_graph_add_empty_node(impl.graph, deps.data(), deps.size(), &nodes[command.ordinal]));
         }
         if (!error.empty()) { impl.errors.push_back("record command " + std::to_string(command.ordinal) + ": " + error); return result; }
+        ++expected_node_count;
+        if (options.split_commands) {
+            const hrx_graph_node_t command_node = nodes[command.ordinal];
+            error = take_status(hrx_graph_add_empty_node(impl.graph, &command_node, 1, &nodes[command.ordinal]));
+            if (!error.empty()) {
+                impl.errors.push_back("record split after command " + std::to_string(command.ordinal) + ": " + error);
+                return result;
+            }
+            ++expected_node_count;
+        }
         impl.commands.push_back(std::move(diagnostic));
     }
     error = take_status(hrx_graph_size(impl.graph, &impl.node_count));
     if (!error.empty()) { impl.errors.push_back("query HRX graph size: " + error); return result; }
-    if (impl.node_count != commands.commands.size()) {
+    if (impl.node_count != expected_node_count) {
         impl.errors.push_back("recorded HRX graph node count does not match command program");
         return result;
     }
@@ -631,6 +673,10 @@ std::string format_prepared_executable_program(const PreparedExecutableProgram &
         << "valid=" << (program.valid() ? "true" : "false") << '\n'
         << "artifacts=" << program.artifact_count() << '\n'
         << "nodes=" << program.node_count() << '\n'
+        << "source_commands=" << program.source_command_count() << '\n'
+        << "command_prefix=" << (program.command_prefix() ? "true" : "false") << '\n'
+        << "split_commands=" << (program.split_commands() ? "true" : "false") << '\n'
+        << "serialized_commands=" << (program.serialized_commands() ? "true" : "false") << '\n'
         << "retained_bytes=" << program.retained_bytes() << '\n'
         << "borrowed_device_weight_bytes=" << program.borrowed_device_weight_bytes() << '\n'
         << "resident_host_weight_bytes=" << program.resident_host_weight_bytes() << '\n'
@@ -659,6 +705,10 @@ std::string serialize_prepared_executable_program_json(const PreparedExecutableP
     nlohmann::json root = {
         { "schema", "ggml-hrx-prepared-executable-v1" },
         { "valid", program.valid() }, { "node_count", program.node_count() },
+        { "source_command_count", program.source_command_count() },
+        { "command_prefix", program.command_prefix() },
+        { "split_commands", program.split_commands() },
+        { "serialized_commands", program.serialized_commands() },
         { "artifact_count", program.artifact_count() }, { "retained_bytes", program.retained_bytes() },
         { "borrowed_device_weight_bytes", program.borrowed_device_weight_bytes() },
         { "resident_host_weight_bytes", program.resident_host_weight_bytes() },

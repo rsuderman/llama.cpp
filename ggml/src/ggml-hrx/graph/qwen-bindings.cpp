@@ -614,7 +614,8 @@ VerificationResult materialize_qwen3_moe_dispatch_bindings(Graph & graph, Schedu
         result.errors.push_back("cannot materialize bindings for unsupported workload " + schedule.workload);
         return result;
     }
-    const std::string expected_workload = (prefill ? "prefill-" : "decode-") + std::to_string(facts.context_count);
+    const std::string expected_workload = prefill ? "prefill-" + std::to_string(facts.token_count)
+                                                  : "decode-" + std::to_string(facts.context_count);
     if (schedule.workload != expected_workload || (decode && facts.token_count != 1)) {
         result.errors.push_back("schedule workload does not agree with recovered graph geometry");
         return result;

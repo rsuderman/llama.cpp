@@ -3,8 +3,8 @@
   "upstream_repository": "https://github.com/ROCm/hrx-system.git",
   "upstream_revision": "b01fe3eb2cddfedad982be873239bc365dccd67f",
   "source_subdirectory": "experimental/qwen_moe/kernels",
-  "corpus_sha256": "d0efd4314be58347984cd20a08981ca168fbb4bb4cf4e66f47ab3203290b31a3",
-  "upstream_corpus_sha256": "919d67ecba681b14a30c46b7980b90ab6090e9500c3b304f7000368efab5448e",
+  "corpus_sha256": "542b6cd6502ca8d7f1e98f723c3eb805f07b42518f5798c6557637591c91cbb1",
+  "upstream_corpus_sha256": "ccc2ab7c506bd8a108f66308e108b25e75e143539a6e5511a03df9df2e234c3d",
   "owned_corpus_sha256": "52c1f00e19aaeb36d6a9737d8fcdb386dcfc8ccd33511f7c1b3e9f6c3ac59f9a",
   "build_bazel_sha256": "542255e2e245e96ced8744315223e8aeeaeb5e075280930a2fcbc5760cf5551d",
   "files": [
@@ -55,8 +55,8 @@
     },
     {
       "path": "qwen3_moe/flash_attention_decode_split_f32_f16_wmma.loom",
-      "sha256": "20c128f56036544e4300ad55c9d587ecfdf453a87e21d0f64a630101d4d035d0",
-      "size": 75537
+      "sha256": "d064b3ec71507378a0fa862d3f45d2603a8d60f45f50c0e88184dddbcccbd244",
+      "size": 75611
     },
     {
       "path": "qwen3_moe/flash_attention_f32_f16_wmma.loom",

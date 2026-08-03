@@ -16,6 +16,9 @@ static constexpr OperationId kTerminalLayerOperation = 2962;
 static constexpr OperationId kEndpointOperation = 3027;
 static constexpr int64_t kAttentionKvTileSize = 64;
 static constexpr int64_t kAttentionKvMaximum = 32768;
+// The current grouped routed-gate/up prefill specialization has the narrowest
+// token-domain contract in the owned kernel schedule.
+static constexpr size_t kPrefillTokenMaximum = 512;
 
 static const std::vector<enum ggml_op> & regular_layer_signature() {
     static const std::vector<enum ggml_op> value = {
@@ -290,6 +293,7 @@ static void append_prefill_layer_dispatches(const Graph & graph, Invocation & in
                                             size_t token_count, size_t & ordinal, std::vector<std::string> & gaps) {
     const OperationId start = layer_start(layer);
     const bool terminal = layer == 47;
+    const size_t active_token_count = terminal ? 1 : token_count;
     if (layer == 0) add_dispatch(invocation, kernel("qwen3_moe_rmsnorm_f32", layer, token_count), ordinal);
     const std::array<OperationId, 3> projection_ops = { start + 2, start + 7, start + 9 };
     for (size_t i = 0; i < projection_ops.size(); ++i) {
@@ -302,18 +306,18 @@ static void append_prefill_layer_dispatches(const Graph & graph, Invocation & in
     add_dispatch(invocation, storage_kernel("qwen3_moe_dense_linear_q4k_f16_wmma",
         "qwen3_moe_dense_linear_q6k_f16_wmma", "dense_attention_output",
         weight_type(graph, start + 26), layer, token_count, gaps), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_rmsnorm_f32", layer, terminal ? 1 : token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_router_projection_f32_four_row_wave32", layer, terminal ? 1 : token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_router_top8_f32", layer, terminal ? 1 : token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_build_expert_table", layer, terminal ? 1 : token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_build_expert_partition_table", layer, terminal ? 1 : token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma", layer, terminal ? 1 : token_count), ordinal);
+    add_dispatch(invocation, kernel("qwen3_moe_rmsnorm_f32", layer, active_token_count), ordinal);
+    add_dispatch(invocation, kernel("qwen3_moe_router_projection_f32_four_row_wave32", layer, active_token_count), ordinal);
+    add_dispatch(invocation, kernel("qwen3_moe_router_top8_f32", layer, active_token_count), ordinal);
+    add_dispatch(invocation, kernel("qwen3_moe_build_expert_table", layer, active_token_count), ordinal);
+    add_dispatch(invocation, kernel("qwen3_moe_build_expert_partition_table", layer, active_token_count), ordinal);
+    add_dispatch(invocation, kernel("qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma", layer, active_token_count), ordinal);
     const OperationId down_operation = start + (terminal ? 47 : 45);
     add_dispatch(invocation, storage_kernel("qwen3_moe_routed_down_q4k_f16_wmma_grouped",
         "qwen3_moe_routed_down_q6k_f16_wmma_grouped", "routed_down",
-        weight_type(graph, down_operation), layer, terminal ? 1 : token_count, gaps), ordinal);
+        weight_type(graph, down_operation), layer, active_token_count, gaps), ordinal);
     add_dispatch(invocation, kernel("qwen3_moe_routed_down_weighted_reduce_f16_f32",
-        layer, terminal ? 1 : token_count), ordinal);
+        layer, active_token_count), ordinal);
     if (!terminal) add_dispatch(invocation, kernel("qwen3_moe_rmsnorm_f32", layer, token_count), ordinal);
 }
 
@@ -403,10 +407,18 @@ QwenProgramProof recover_owned_qwen3_moe_program(const Graph & graph) {
     if (!check_signature(graph, kTerminalLayerOperation, terminal_layer_signature(), "terminal layer", proof.errors)) return proof;
     const Value & activation = graph.values[graph.operations[0].output];
     const size_t token_count = static_cast<size_t>(activation.access.shape[1]);
-    const bool prefill = token_count == 512;
+    const Value & logits = graph.values[graph.operations[kEndpointOperation + 2].output];
+    const size_t output_token_count = static_cast<size_t>(logits.access.shape[1]);
+    const bool prefill = token_count > 1 && token_count <= kPrefillTokenMaximum;
     const bool decode = token_count == 1;
     if (!prefill && !decode) {
-        proof.errors.push_back("canonical topology has unsupported token count " + std::to_string(token_count));
+        proof.errors.push_back("canonical topology token count " + std::to_string(token_count) +
+            " is outside the owned decode=1/prefill=2.." + std::to_string(kPrefillTokenMaximum) + " kernel contract");
+        return proof;
+    }
+    if (output_token_count != 1) {
+        proof.errors.push_back("endpoint token count " + std::to_string(output_token_count) +
+            " requires runtime-selected multi-row materialization, which the owned schedule does not yet lower");
         return proof;
     }
     const RoutedTransformerGeometry model = recover_model_geometry(graph);
@@ -432,7 +444,12 @@ QwenProgramProof recover_owned_qwen3_moe_program(const Graph & graph) {
 
     Schedule & schedule = proof.schedule;
     schedule.graph_fingerprint = graph.fingerprint;
-    schedule.workload = (prefill ? "prefill-" : "decode-") + std::to_string(program_key_value_token_count);
+    // Prefill specializations are selected by the number of query tokens. The
+    // KV dimension is padded capacity (for example, 23 queries with a 256-row
+    // attention view), so using it here aliases distinct JIT programs. Decode
+    // is one query and remains specialized by its varying padded KV extent.
+    schedule.workload = prefill ? "prefill-" + std::to_string(token_count)
+                                : "decode-" + std::to_string(program_key_value_token_count);
     schedule.oracle_revision = kOracleRevision;
     schedule.expected_dispatch_count = prefill ? 724 : 580;
     for (ValueId root : graph.roots) {
@@ -476,7 +493,8 @@ QwenProgramProof recover_owned_qwen3_moe_program(const Graph & graph) {
         }
         std::sort(invocation.covered_operations.begin(), invocation.covered_operations.end());
         calculate_boundaries(graph, invocation);
-        if (prefill) append_prefill_layer_dispatches(graph, invocation, layer, token_count, dispatch_ordinal, proof.native_gaps);
+        if (prefill) append_prefill_layer_dispatches(
+            graph, invocation, layer, token_count, dispatch_ordinal, proof.native_gaps);
         else append_decode_layer_dispatches(graph, invocation, layer, token_count, dispatch_ordinal, proof.native_gaps);
         schedule.invocations.push_back(std::move(invocation));
     }
@@ -503,7 +521,10 @@ VerificationResult verify_owned_qwen3_moe_program(const Graph & graph, const Qwe
         return result;
     }
     result = verify_schedule(graph, proof.schedule);
-    const size_t expected_dispatch_count = proof.schedule.workload == "prefill-512" ? 724 : 580;
+    const bool prefill = proof.schedule.workload.rfind("prefill-", 0) == 0;
+    const bool decode = proof.schedule.workload.rfind("decode-", 0) == 0;
+    if (!prefill && !decode) result.errors.push_back("owned Qwen workload has an unknown execution mode");
+    const size_t expected_dispatch_count = prefill ? 724 : 580;
     if (proof.schedule.expected_dispatch_count != expected_dispatch_count ||
         schedule_dispatch_count(proof.schedule) != expected_dispatch_count) {
         result.errors.push_back("owned Qwen dispatch topology does not match the pinned oracle");

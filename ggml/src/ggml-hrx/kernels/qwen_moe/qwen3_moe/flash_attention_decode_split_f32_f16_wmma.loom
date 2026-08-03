@@ -49,6 +49,7 @@ func.template<qwen3_moe.attention.decode_split.produce_partials> device @qwen3_m
   %product_stage_bytes = index.constant 4096 : offset
   %zero_f32 = scalar.constant 0.0 : f32
   %negative_large = scalar.constant -1e+30 : f32
+  %false = scalar.constant false : i1
   %zero_i32 = scalar.constant 0 : i32
   %one_i32 = scalar.constant 1 : i32
   %head_size_f32 = scalar.constant 128.0 : f32
@@ -89,7 +90,6 @@ func.template<qwen3_moe.attention.decode_split.produce_partials> device @qwen3_m
   %query_head_valid1 = index.cmp ult, %query_head1, %query_head_count : index
   %query_head_valid2 = index.cmp ult, %query_head2, %query_head_count : index
   %query_head_valid3 = index.cmp ult, %query_head3, %query_head_count : index
-  %query_valid = vector.from_elements %query_head_valid0, %query_head_valid1, %query_head_valid2, %query_head_valid3 : vector<4xi1>
   %subgroup_output_channel = index.mul %subgroup, %thirtytwo : index
   %subgroup_output_channel1 = index.add %subgroup_output_channel, %sixteen : index
   %lane_output_channel = index.mul %lane, %four : index
@@ -202,43 +202,48 @@ func.template<qwen3_moe.attention.decode_split.produce_partials> device @qwen3_m
   %score_valid1 = scalar.andi %query_head_valid1, %key_valid : i1
   %score_valid2 = scalar.andi %query_head_valid2, %key_valid : i1
   %score_valid3 = scalar.andi %query_head_valid3, %key_valid : i1
-  %masked_score0 = scf.if %score_valid0 -> (f32) {
+  %mask_f32, %mask_active = scf.if %key_valid -> (f32, i1) {
     %mask_f16 = view.load %mask_view[%key_token] : view<[%bounded_key_value_token_count]xf16, #dense> -> f16
-    %mask_f32 = scalar.extf %mask_f16 : f16 to f32
+    %loaded_mask_f32 = scalar.extf %mask_f16 : f16 to f32
+    %loaded_mask_active = scalar.cmpf ogt, %loaded_mask_f32, %negative_large : f32
+    scf.yield %loaded_mask_f32, %loaded_mask_active : f32, i1
+  } else {
+    scf.yield %zero_f32, %false : f32, i1
+  }
+  %score_active0 = scalar.andi %score_valid0, %mask_active : i1
+  %score_active1 = scalar.andi %score_valid1, %mask_active : i1
+  %score_active2 = scalar.andi %score_valid2, %mask_active : i1
+  %score_active3 = scalar.andi %score_valid3, %mask_active : i1
+  %masked_score0 = scf.if %score_active0 -> (f32) {
     %score = scalar.addf<reassoc|nnan|ninf|nsz> %raw_score0, %mask_f32 : f32
     scf.yield %score : f32
   } else {
     scf.yield %negative_large : f32
   }
-  %masked_score1 = scf.if %score_valid1 -> (f32) {
-    %mask_f16 = view.load %mask_view[%key_token] : view<[%bounded_key_value_token_count]xf16, #dense> -> f16
-    %mask_f32 = scalar.extf %mask_f16 : f16 to f32
+  %masked_score1 = scf.if %score_active1 -> (f32) {
     %score = scalar.addf<reassoc|nnan|ninf|nsz> %raw_score1, %mask_f32 : f32
     scf.yield %score : f32
   } else {
     scf.yield %negative_large : f32
   }
-  %masked_score2 = scf.if %score_valid2 -> (f32) {
-    %mask_f16 = view.load %mask_view[%key_token] : view<[%bounded_key_value_token_count]xf16, #dense> -> f16
-    %mask_f32 = scalar.extf %mask_f16 : f16 to f32
+  %masked_score2 = scf.if %score_active2 -> (f32) {
     %score = scalar.addf<reassoc|nnan|ninf|nsz> %raw_score2, %mask_f32 : f32
     scf.yield %score : f32
   } else {
     scf.yield %negative_large : f32
   }
-  %masked_score3 = scf.if %score_valid3 -> (f32) {
-    %mask_f16 = view.load %mask_view[%key_token] : view<[%bounded_key_value_token_count]xf16, #dense> -> f16
-    %mask_f32 = scalar.extf %mask_f16 : f16 to f32
+  %masked_score3 = scf.if %score_active3 -> (f32) {
     %score = scalar.addf<reassoc|nnan|ninf|nsz> %raw_score3, %mask_f32 : f32
     scf.yield %score : f32
   } else {
     scf.yield %negative_large : f32
   }
   %masked_scores = vector.from_elements %masked_score0, %masked_score1, %masked_score2, %masked_score3 : vector<4xf32>
+  %score_active = vector.from_elements %score_active0, %score_active1, %score_active2, %score_active3 : vector<4xi1>
   %block_max = kernel.subgroup.reduce<maxnumf> %masked_scores : vector<4xf32>
   %score_delta = vector.subf<reassoc|nnan|ninf|nsz> %masked_scores, %block_max : vector<4xf32>
   %raw_probability = vector.expf<afn> %score_delta : vector<4xf32>
-  %probability = vector.select %query_valid, %raw_probability, %zero_f32x4 : vector<4xf32>
+  %probability = vector.select %score_active, %raw_probability, %zero_f32x4 : vector<4xf32>
   %block_sum = kernel.subgroup.reduce<addf> %probability : vector<4xf32>
   %probability_f16 = vector.fptrunc %probability : vector<4xf32> to vector<4xf16>
   %probability0 = vector.extract %probability_f16[0] : vector<4xf16> -> f16

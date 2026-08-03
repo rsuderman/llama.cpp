@@ -53,6 +53,11 @@ struct ExecutablePreparationOptions {
     std::string corpus_directory;
     std::string target;
     size_t recorder_buffer_limit = 256ull * 1024ull * 1024ull;
+    size_t command_limit = SIZE_MAX;
+    bool serialize_commands = false;
+    bool split_commands = false;
+    std::string sanitizer;
+    std::string sanitizer_reporting;
 };
 
 struct ExecutableBufferBinding {
@@ -114,10 +119,15 @@ public:
     size_t resident_host_weight_bytes() const;
     size_t host_staging_bytes() const;
     size_t transient_bytes() const;
+    size_t source_command_count() const;
+    bool command_prefix() const;
+    bool split_commands() const;
+    bool serialized_commands() const;
     const AllocationFingerprint & allocation_fingerprint() const;
     std::string rebind(const ExecutableBindings & bindings);
     std::string launch(hrx_stream_t stream);
     std::string complete_after_synchronize();
+    void abandon_after_synchronize();
     const std::vector<std::string> & errors() const;
     const std::vector<PreparedArtifactDiagnostic> & artifacts() const;
     const std::vector<PreparedCommandDiagnostic> & commands() const;
