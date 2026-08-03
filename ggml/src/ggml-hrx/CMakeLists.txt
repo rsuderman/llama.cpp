@@ -26,6 +26,17 @@ target_compile_features(ggml-hrx-graph PRIVATE cxx_std_17)
 target_link_libraries(ggml-hrx-graph PRIVATE ggml-base)
 set_target_properties(ggml-hrx-graph PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+add_library(ggml-hrx-transfer STATIC
+    transfer-manager.cpp
+    transfer-manager.h
+    weight-residency.cpp
+    weight-residency.h
+)
+target_include_directories(ggml-hrx-transfer PUBLIC .)
+target_compile_features(ggml-hrx-transfer PRIVATE cxx_std_17)
+target_link_libraries(ggml-hrx-transfer PUBLIC hrx::hrx)
+set_target_properties(ggml-hrx-transfer PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 add_library(ggml-hrx-executable STATIC
     executable-program.cpp
     executable-program.h
@@ -34,7 +45,7 @@ add_library(ggml-hrx-executable STATIC
 )
 target_include_directories(ggml-hrx-executable PUBLIC . graph PRIVATE loom-jit .. ../../include ../../../vendor)
 target_compile_features(ggml-hrx-executable PRIVATE cxx_std_17)
-target_link_libraries(ggml-hrx-executable PUBLIC ggml-hrx-graph hrx::hrx PRIVATE loomc::loomc)
+target_link_libraries(ggml-hrx-executable PUBLIC ggml-hrx-graph ggml-hrx-transfer hrx::hrx PRIVATE loomc::loomc)
 set_target_properties(ggml-hrx-executable PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 ggml_add_backend_library(ggml-hrx

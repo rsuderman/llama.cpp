@@ -350,6 +350,18 @@ if (TARGET ggml-hrx-graph)
         target_link_libraries(test-hrx-executable PRIVATE ggml-hrx-executable)
         target_include_directories(test-hrx-executable PRIVATE ../ggml/include)
         add_test(NAME test-hrx-executable COMMAND test-hrx-executable)
+
+        add_executable(test-hrx-transfer test-hrx-transfer.cpp)
+        target_link_libraries(test-hrx-transfer PRIVATE ggml-hrx-transfer)
+        target_include_directories(test-hrx-transfer PRIVATE ../ggml/src/ggml-hrx)
+        add_test(NAME test-hrx-transfer COMMAND test-hrx-transfer)
+    endif()
+
+    if (TARGET ggml-hrx)
+        add_executable(test-hrx-buffer test-hrx-buffer.cpp)
+        target_link_libraries(test-hrx-buffer PRIVATE ggml-hrx ggml)
+        target_include_directories(test-hrx-buffer PRIVATE ../ggml/include ../ggml/src/ggml-hrx)
+        add_test(NAME test-hrx-buffer COMMAND test-hrx-buffer)
     endif()
 
     add_executable(hrx-capture-decode-graph hrx-capture-decode-graph.cpp)

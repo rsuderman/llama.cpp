@@ -1,6 +1,7 @@
 #pragma once
 
 #include "graph/command-program.h"
+#include "weight-residency.h"
 
 #include "hrx_runtime.h"
 
@@ -11,6 +12,8 @@
 #include <vector>
 
 namespace ggml::hrx {
+
+class TransferManager;
 
 struct PackedKernelConstants {
     std::vector<uint8_t> bytes;
@@ -49,7 +52,49 @@ struct PreparedCommandDiagnostic {
 struct ExecutablePreparationOptions {
     std::string corpus_directory;
     std::string target;
-    size_t dummy_buffer_limit = 256ull * 1024ull * 1024ull;
+    size_t recorder_buffer_limit = 256ull * 1024ull * 1024ull;
+};
+
+struct ExecutableBufferBinding {
+    StorageId storage = kInvalidId;
+    hrx_buffer_t buffer = nullptr;
+    void * host_data = nullptr;
+    uint64_t buffer_identity = 0;
+    uint64_t generation = 0;
+    size_t capacity = 0;
+    size_t offset = 0;
+    size_t length = 0;
+    bool upload_before_launch = false;
+    bool initialize_from_host = false;
+    bool download_after_completion = false;
+    bool weight = false;
+    bool mutable_state = false;
+    bool exported = false;
+    std::string layout = "ggml-native";
+};
+
+struct ExecutableBindings {
+    BindingSnapshot snapshot;
+    std::vector<ExecutableBufferBinding> storages;
+};
+
+class PreparedExecutableProgram;
+
+class ExecutableArtifactRepository {
+public:
+    ExecutableArtifactRepository();
+    ~ExecutableArtifactRepository();
+    ExecutableArtifactRepository(const ExecutableArtifactRepository &) = delete;
+    ExecutableArtifactRepository & operator=(const ExecutableArtifactRepository &) = delete;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+    friend PreparedExecutableProgram prepare_executable_program(
+        hrx_device_t, hrx_stream_t, TransferManager &, WeightResidencyCache &,
+        ExecutableArtifactRepository &, const ProgramPlan &,
+        const KernelCorpus &, const CommandProgram &, const ExecutableBindings &,
+        const ExecutablePreparationOptions &);
 };
 
 class PreparedExecutableProgram {
@@ -64,6 +109,15 @@ public:
     bool valid() const;
     size_t node_count() const;
     size_t artifact_count() const;
+    size_t retained_bytes() const;
+    size_t borrowed_device_weight_bytes() const;
+    size_t resident_host_weight_bytes() const;
+    size_t host_staging_bytes() const;
+    size_t transient_bytes() const;
+    const AllocationFingerprint & allocation_fingerprint() const;
+    std::string rebind(const ExecutableBindings & bindings);
+    std::string launch(hrx_stream_t stream);
+    std::string complete_after_synchronize();
     const std::vector<std::string> & errors() const;
     const std::vector<PreparedArtifactDiagnostic> & artifacts() const;
     const std::vector<PreparedCommandDiagnostic> & commands() const;
@@ -72,16 +126,23 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     friend PreparedExecutableProgram prepare_executable_program(
-        hrx_device_t, hrx_stream_t, const ProgramPlan &, const KernelCorpus &,
-        const CommandProgram &, const ExecutablePreparationOptions &);
+        hrx_device_t, hrx_stream_t, TransferManager &, WeightResidencyCache &,
+        ExecutableArtifactRepository &, const ProgramPlan &,
+        const KernelCorpus &, const CommandProgram &, const ExecutableBindings &,
+        const ExecutablePreparationOptions &);
 };
 
 PreparedExecutableProgram prepare_executable_program(
-    hrx_device_t device, hrx_stream_t stream, const ProgramPlan & plan,
-    const KernelCorpus & corpus, const CommandProgram & commands,
+    hrx_device_t device, hrx_stream_t stream, TransferManager & transfers,
+    WeightResidencyCache & weights,
+    ExecutableArtifactRepository & artifacts,
+    const ProgramPlan & plan, const KernelCorpus & corpus, const CommandProgram & commands,
+    const ExecutableBindings & bindings,
     const ExecutablePreparationOptions & options);
 
 std::string format_prepared_executable_program(const PreparedExecutableProgram & program);
 std::string serialize_prepared_executable_program_json(const PreparedExecutableProgram & program);
+std::string format_executable_bindings(const ExecutableBindings & bindings);
+std::string serialize_executable_bindings_json(const ExecutableBindings & bindings);
 
 } // namespace ggml::hrx

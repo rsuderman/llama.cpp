@@ -1,10 +1,13 @@
 #include "command-program.h"
 #include "executable-program.h"
+#include "transfer-manager.h"
+#include "weight-residency.h"
 #include "graph-ir.h"
 #include "reactive-plan.h"
 
 #include "hrx_runtime.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -12,6 +15,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -78,9 +82,40 @@ int main(int argc, char ** argv) {
         ggml::hrx::ExecutablePreparationOptions options;
         options.corpus_directory = corpus_directory.string();
         options.target = target;
+        size_t recorder_size = 1;
+        for (const ggml::hrx::ResourceContract & resource : plan.resources.resources) {
+            if (!resource.elidable) recorder_size = std::max(recorder_size, resource.size);
+        }
+        if (recorder_size > options.recorder_buffer_limit) {
+            throw std::runtime_error("largest imported binding exceeds bounded recorder limit");
+        }
+        hrx_buffer_t recorder_buffer = nullptr;
+        check(hrx_buffer_allocate(stream, recorder_size, HRX_MEMORY_TYPE_DEVICE_LOCAL,
+                                  HRX_BUFFER_USAGE_DEFAULT, &recorder_buffer), "allocate recorder buffer");
+        ggml::hrx::ExecutableBindings executable_bindings;
+        executable_bindings.snapshot.device_identity = target;
+        for (const ggml::hrx::ResourceContract & resource : plan.resources.resources) {
+            if (resource.elidable) continue;
+            executable_bindings.snapshot.bindings.push_back({
+                resource.storage, 1, 1, recorder_size, 0, resource.size });
+            ggml::hrx::ExecutableBufferBinding binding;
+            binding.storage = resource.storage;
+            binding.buffer = recorder_buffer;
+            binding.buffer_identity = 1;
+            binding.generation = 1;
+            binding.capacity = recorder_size;
+            binding.length = resource.size;
+            executable_bindings.storages.push_back(std::move(binding));
+        }
         {
+            ggml::hrx::TransferManager transfers(device);
+            if (!transfers.valid()) {
+                throw std::runtime_error("transfer manager initialization failed: " + transfers.initialization_error());
+            }
+            ggml::hrx::ExecutableArtifactRepository artifacts;
+            ggml::hrx::WeightResidencyCache weights(device);
             ggml::hrx::PreparedExecutableProgram prepared = ggml::hrx::prepare_executable_program(
-                device, stream, plan, corpus, commands, options);
+                device, stream, transfers, weights, artifacts, plan, corpus, commands, executable_bindings, options);
             std::filesystem::create_directories(output_directory);
             write_file(output_directory / "prepared.txt", ggml::hrx::format_prepared_executable_program(prepared));
             write_file(output_directory / "prepared.json", ggml::hrx::serialize_prepared_executable_program_json(prepared));
@@ -119,6 +154,7 @@ int main(int argc, char ** argv) {
                       << " artifacts=" << prepared.artifact_count() << " nodes=" << prepared.node_count()
                       << " instantiated=true launched=false\n";
         }
+        hrx_buffer_release(recorder_buffer);
         hrx_stream_release(stream);
         stream = nullptr;
         hrx_device_release(device);

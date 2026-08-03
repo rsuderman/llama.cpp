@@ -76,10 +76,36 @@ void test_artifact_key_uses_only_compilation_facts() {
     REQUIRE(ggml::hrx::kernel_artifact_key(kernel, command) != first);
 }
 
+void test_binding_diagnostics_are_explicit() {
+    ggml::hrx::ExecutableBindings bindings;
+    ggml::hrx::ExecutableBufferBinding device_weight;
+    device_weight.storage = 3;
+    device_weight.buffer = reinterpret_cast<hrx_buffer_t>(uintptr_t { 1 });
+    device_weight.capacity = 4096;
+    device_weight.length = 2048;
+    device_weight.weight = true;
+    bindings.storages.push_back(device_weight);
+    ggml::hrx::ExecutableBufferBinding host_weight;
+    host_weight.storage = 4;
+    host_weight.host_data = reinterpret_cast<void *>(uintptr_t { 1 });
+    host_weight.capacity = 4096;
+    host_weight.length = 4096;
+    host_weight.weight = true;
+    bindings.storages.push_back(host_weight);
+    const std::string text = ggml::hrx::format_executable_bindings(bindings);
+    REQUIRE(text.find("borrowed_device_weight") != std::string::npos);
+    REQUIRE(text.find("resident_host_weight") != std::string::npos);
+    REQUIRE(text.find("layout=ggml-native") != std::string::npos);
+    const std::string json = ggml::hrx::serialize_executable_bindings_json(bindings);
+    REQUIRE(json.find("borrowed_device_weight") != std::string::npos);
+    REQUIRE(json.find("resident_host_weight") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
     test_constant_packing();
     test_artifact_key_uses_only_compilation_facts();
+    test_binding_diagnostics_are_explicit();
     return 0;
 }

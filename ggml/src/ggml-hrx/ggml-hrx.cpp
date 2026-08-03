@@ -4,6 +4,9 @@
 #include "graph/graph-ir.h"
 #include "graph/qwen-program.h"
 #include "graph/reactive-plan.h"
+#include "executable-program.h"
+#include "transfer-manager.h"
+#include "weight-residency.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
 #include "hrx_runtime.h"
@@ -29,9 +32,7 @@ namespace {
 
 static constexpr size_t GGML_HRX_ALIGNMENT = 256;
 static constexpr uintptr_t GGML_HRX_FAKE_PTR_BASE = 0x1000;
-// Deliberately not configurable. The reactive-planning phase must be unable to
-// allocate device storage or submit work while model graphs are being captured.
-static constexpr bool GGML_HRX_PLANNING_ONLY = true;
+static std::atomic<uint64_t> g_allocation_generation { 1 };
 
 struct ggml_backend_hrx_device_context;
 
@@ -44,6 +45,8 @@ struct ggml_backend_hrx_buffer_context {
     ggml_backend_hrx_device_context * device;
     hrx_buffer_t buffer;
     uint8_t * base;
+    uint64_t identity;
+    uint64_t generation;
 };
 
 struct ggml_backend_hrx_device_context {
@@ -55,6 +58,9 @@ struct ggml_backend_hrx_device_context {
     ggml_backend_buffer_type buft = {};
     ggml_backend_hrx_buffer_type_context buft_context = {};
     ggml::hrx::ReactivePlanCache plan_cache;
+    std::unique_ptr<ggml::hrx::TransferManager> transfers;
+    std::mutex active_stream_mutex;
+    hrx_stream_t active_stream = nullptr;
 };
 
 struct ggml_backend_hrx_context {
@@ -68,6 +74,15 @@ struct ggml_backend_hrx_context {
     } diagnostics;
     std::mutex oracle_mutex;
     std::unordered_map<std::string, std::string> oracle_witnesses;
+    ggml::hrx::KernelCorpus corpus;
+    std::unique_ptr<ggml::hrx::WeightResidencyCache> weights;
+    ggml::hrx::ExecutableArtifactRepository artifacts;
+    std::mutex execution_mutex;
+    std::unordered_map<std::string, std::unique_ptr<ggml::hrx::PreparedExecutableProgram>> executables;
+    std::vector<ggml::hrx::PreparedExecutableProgram *> pending_completions;
+    uint64_t executable_builds = 0;
+    uint64_t executable_hits = 0;
+    uint64_t launches = 0;
 };
 
 struct ggml_backend_hrx_reg_context {
@@ -141,54 +156,49 @@ static void * buffer_base(ggml_backend_buffer_t buffer) {
 }
 
 static void buffer_memset(ggml_backend_buffer_t buffer, ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
-    if (GGML_HRX_PLANNING_ONLY) {
-        GGML_UNUSED(buffer); GGML_UNUSED(tensor); GGML_UNUSED(value); GGML_UNUSED(offset); GGML_UNUSED(size);
-        return;
-    }
     if (size == 0) {
         return;
     }
     auto * context = buffer_context(buffer);
-    hrx_stream_t stream = nullptr;
-    if (!HRX_CHECK(hrx_stream_create(context->device->device, 0, &stream))) {
-        return;
-    }
     const size_t destination_offset = tensor_offset(context, tensor) + offset;
-    const bool ok = HRX_CHECK(hrx_stream_fill_buffer(stream, context->buffer, destination_offset, size, &value, sizeof(value))) &&
-        HRX_CHECK(hrx_stream_synchronize(stream));
-    GGML_UNUSED(ok);
-    hrx_stream_release(stream);
+    GGML_ASSERT(destination_offset <= buffer->size && size <= buffer->size - destination_offset);
+    const std::string error = context->device->transfers->fill(
+        context->buffer, destination_offset, size, &value, sizeof(value));
+    if (!error.empty()) GGML_LOG_ERROR("%s: %s\n", __func__, error.c_str());
 }
 
 static void buffer_set(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
-    if (GGML_HRX_PLANNING_ONLY) {
-        GGML_UNUSED(buffer); GGML_UNUSED(tensor); GGML_UNUSED(data); GGML_UNUSED(offset); GGML_UNUSED(size);
-        return;
-    }
     if (size == 0) {
         return;
     }
     auto * context = buffer_context(buffer);
-    HRX_CHECK(hrx_synchronous_h2d(context->device->device, data, context->buffer, tensor_offset(context, tensor) + offset, size));
+    const size_t destination_offset = tensor_offset(context, tensor) + offset;
+    GGML_ASSERT(destination_offset <= buffer->size && size <= buffer->size - destination_offset);
+    const std::string error = context->device->transfers->upload(
+        data, context->buffer, destination_offset, size);
+    if (!error.empty()) GGML_LOG_ERROR("%s: %s\n", __func__, error.c_str());
 }
 
 static void buffer_get(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
-    if (GGML_HRX_PLANNING_ONLY) {
-        GGML_UNUSED(buffer); GGML_UNUSED(tensor); GGML_UNUSED(data); GGML_UNUSED(offset); GGML_UNUSED(size);
-        GGML_ABORT("HRX planning-only buffers cannot be read");
-    }
     if (size == 0) {
         return;
     }
     auto * context = buffer_context(buffer);
-    HRX_CHECK(hrx_synchronous_d2h(context->device->device, context->buffer, tensor_offset(context, tensor) + offset, data, size));
+    const size_t source_offset = tensor_offset(context, tensor) + offset;
+    GGML_ASSERT(source_offset <= buffer->size && size <= buffer->size - source_offset);
+    hrx_stream_t producer = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(context->device->active_stream_mutex);
+        producer = context->device->active_stream;
+        if (producer != nullptr) hrx_stream_retain(producer);
+    }
+    const std::string error = context->device->transfers->download(
+        producer, context->buffer, source_offset, data, size);
+    if (producer != nullptr) hrx_stream_release(producer);
+    if (!error.empty()) GGML_LOG_ERROR("%s: %s\n", __func__, error.c_str());
 }
 
 static bool buffer_copy(ggml_backend_buffer_t buffer, const ggml_tensor * source, ggml_tensor * destination) {
-    if (GGML_HRX_PLANNING_ONLY) {
-        GGML_UNUSED(buffer); GGML_UNUSED(source); GGML_UNUSED(destination);
-        return true;
-    }
     ggml_backend_buffer_t source_buffer = source->view_src != nullptr ? source->view_src->buffer : source->buffer;
     if (source_buffer == nullptr || source_buffer->iface.get_base != buffer_base) {
         return false;
@@ -198,34 +208,33 @@ static bool buffer_copy(ggml_backend_buffer_t buffer, const ggml_tensor * source
     if (source_context->device != destination_context->device) {
         return false;
     }
-    hrx_stream_t stream = nullptr;
-    if (!HRX_CHECK(hrx_stream_create(destination_context->device->device, 0, &stream))) {
-        return false;
+    const size_t source_offset = tensor_offset(source_context, source);
+    const size_t destination_offset = tensor_offset(destination_context, destination);
+    const size_t size = ggml_nbytes(source);
+    if (source_offset > source_buffer->size || size > source_buffer->size - source_offset ||
+        destination_offset > buffer->size || size > buffer->size - destination_offset) return false;
+    hrx_stream_t producer = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(destination_context->device->active_stream_mutex);
+        producer = destination_context->device->active_stream;
+        if (producer != nullptr) hrx_stream_retain(producer);
     }
-    bool ok = HRX_CHECK(hrx_stream_copy_buffer(stream, source_context->buffer, tensor_offset(source_context, source),
-        destination_context->buffer, tensor_offset(destination_context, destination), ggml_nbytes(source)));
-    ok = ok && HRX_CHECK(hrx_stream_synchronize(stream));
-    hrx_stream_release(stream);
-    return ok;
+    const std::string error = destination_context->device->transfers->copy(
+        producer, source_context->buffer, source_offset,
+        destination_context->buffer, destination_offset, size);
+    if (producer != nullptr) hrx_stream_release(producer);
+    if (!error.empty()) GGML_LOG_ERROR("%s: %s\n", __func__, error.c_str());
+    return error.empty();
 }
 
 static void buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
-    if (GGML_HRX_PLANNING_ONLY) {
-        GGML_UNUSED(buffer); GGML_UNUSED(value);
-        return;
-    }
     if (buffer->size == 0) {
         return;
     }
     auto * context = buffer_context(buffer);
-    hrx_stream_t stream = nullptr;
-    if (!HRX_CHECK(hrx_stream_create(context->device->device, 0, &stream))) {
-        return;
-    }
-    const bool ok = HRX_CHECK(hrx_stream_fill_buffer(stream, context->buffer, 0, buffer->size, &value, sizeof(value))) &&
-        HRX_CHECK(hrx_stream_synchronize(stream));
-    GGML_UNUSED(ok);
-    hrx_stream_release(stream);
+    const std::string error = context->device->transfers->fill(
+        context->buffer, 0, buffer->size, &value, sizeof(value));
+    if (!error.empty()) GGML_LOG_ERROR("%s: %s\n", __func__, error.c_str());
 }
 
 static const ggml_backend_buffer_i buffer_i = {
@@ -238,12 +247,14 @@ static ggml_backend_buffer_t buffer_alloc(ggml_backend_buffer_type_t buft, size_
         HRX_MEMORY_TYPE_DEVICE_LOCAL, HRX_MEMORY_ACCESS_ALL, HRX_BUFFER_USAGE_DEFAULT, 0,
     };
     hrx_buffer_t allocation = nullptr;
-    if (!GGML_HRX_PLANNING_ONLY && size > 0 &&
+    if (size > 0 &&
         !HRX_CHECK(hrx_allocator_allocate_buffer(hrx_device_allocator(type_context->device->device), params, size, &allocation))) {
         return nullptr;
     }
+    const uint64_t generation = g_allocation_generation.fetch_add(1);
     auto * context = new (std::nothrow) ggml_backend_hrx_buffer_context {
         type_context->device, allocation, reinterpret_cast<uint8_t *>(GGML_HRX_FAKE_PTR_BASE),
+        generation, generation,
     };
     if (context == nullptr) {
         if (allocation != nullptr) {
@@ -359,6 +370,46 @@ static void dump_plan(const ggml_backend_hrx_context::DiagnosticOptions & option
     }
 }
 
+static void dump_execution_state(
+    const ggml_backend_hrx_context::DiagnosticOptions & options,
+    const ggml::hrx::ProgramPlan & plan, const ggml::hrx::ExecutableBindings & bindings,
+    const ggml::hrx::PreparedExecutableProgram & executable,
+    const ggml::hrx::TransferManagerStats & transfer_stats,
+    const ggml::hrx::WeightResidencyStats & weight_stats, const char * state,
+    const std::string & detail, uint64_t builds, uint64_t hits, uint64_t launches) {
+    if (options.directory.empty()) return;
+    try {
+        std::string target = plan.target;
+        std::replace_if(target.begin(), target.end(), [](char ch) {
+            return !std::isalnum(static_cast<unsigned char>(ch));
+        }, '_');
+        const std::filesystem::path directory = options.directory / "runtime" /
+            (plan.schedule.workload + "-" + plan.graph.fingerprint + "-" + target + "-" +
+             ggml::hrx::fingerprint_bindings(bindings.snapshot).value);
+        write_atomic(directory / "bindings.txt", ggml::hrx::format_binding_snapshot(bindings.snapshot, false));
+        write_atomic(directory / "bindings.json", ggml::hrx::serialize_binding_snapshot_json(bindings.snapshot, false));
+        write_atomic(directory / "bindings-detail.txt", ggml::hrx::format_executable_bindings(bindings));
+        write_atomic(directory / "bindings-detail.json", ggml::hrx::serialize_executable_bindings_json(bindings));
+        write_atomic(directory / "executable.txt", ggml::hrx::format_prepared_executable_program(executable));
+        write_atomic(directory / "executable.json", ggml::hrx::serialize_prepared_executable_program_json(executable));
+        write_atomic(directory / "transfers.txt", ggml::hrx::format_transfer_manager_stats(transfer_stats));
+        write_atomic(directory / "weights.txt", ggml::hrx::format_weight_residency_stats(weight_stats));
+        std::ostringstream status;
+        status << "schema=ggml-hrx-runtime-status-v1\nstate=" << state
+               << "\nvalid=" << (executable.valid() ? "true" : "false")
+               << "\nbuilds=" << builds << "\nhits=" << hits << "\nlaunches=" << launches
+               << "\nretained_bytes=" << executable.retained_bytes() << '\n';
+        status << "borrowed_device_weight_bytes=" << executable.borrowed_device_weight_bytes() << '\n'
+               << "resident_host_weight_bytes=" << executable.resident_host_weight_bytes() << '\n'
+               << "resident_weight_allocations=" << weight_stats.allocation_count << '\n'
+               << "resident_weight_bytes=" << weight_stats.resident_bytes << '\n';
+        if (!detail.empty()) status << "detail=" << detail << '\n';
+        write_atomic(directory / "status.txt", status.str());
+    } catch (const std::exception & error) {
+        GGML_LOG_ERROR("%s: runtime dump failed: %s\n", __func__, error.what());
+    }
+}
+
 static enum ggml_backend_graph_claim_result graph_claim(ggml_backend_t backend, const ggml_cgraph * graph, enum ggml_backend_graph_claim_mode mode) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
     if (!context->diagnostics.graph_oracle || graph->n_nodes == 0) {
@@ -391,9 +442,70 @@ static const char * backend_name(ggml_backend_t backend) {
     return static_cast<ggml_backend_hrx_context *>(backend->context)->name.c_str();
 }
 
+static bool tensor_hrx_binding(const ggml_tensor * tensor,
+                               ggml_backend_hrx_buffer_context ** out_context,
+                               size_t * out_offset) {
+    if (tensor == nullptr) return false;
+    ggml_backend_buffer_t buffer = tensor->view_src != nullptr ? tensor->view_src->buffer : tensor->buffer;
+    if (buffer == nullptr || buffer->iface.get_base != buffer_base) return false;
+    auto * context = buffer_context(buffer);
+    const size_t offset = tensor_offset(context, tensor);
+    if (context->buffer == nullptr || offset > buffer->size || ggml_nbytes(tensor) > buffer->size - offset) return false;
+    *out_context = context;
+    *out_offset = offset;
+    return true;
+}
+
+static void backend_set_tensor_async(ggml_backend_t backend, ggml_tensor * tensor,
+                                     const void * data, size_t offset, size_t size) {
+    auto * backend_context = static_cast<ggml_backend_hrx_context *>(backend->context);
+    ggml_backend_hrx_buffer_context * context = nullptr;
+    size_t tensor_base = 0;
+    if (!tensor_hrx_binding(tensor, &context, &tensor_base) || offset > ggml_nbytes(tensor) ||
+        size > ggml_nbytes(tensor) - offset) {
+        GGML_LOG_ERROR("%s: invalid or failed HRX tensor upload\n", __func__);
+        return;
+    }
+    std::string error = backend_context->device->transfers->upload(
+        data, context->buffer, tensor_base + offset, size);
+    if (error.empty()) error = backend_context->device->transfers->join(backend_context->stream);
+    if (!error.empty()) GGML_LOG_ERROR("%s: %s\n", __func__, error.c_str());
+}
+
+static bool backend_copy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst,
+                                      const ggml_tensor * source, ggml_tensor * destination) {
+    GGML_UNUSED(backend_src);
+    auto * destination_backend = static_cast<ggml_backend_hrx_context *>(backend_dst->context);
+    ggml_backend_hrx_buffer_context * destination_context = nullptr;
+    size_t destination_offset = 0;
+    if (!tensor_hrx_binding(destination, &destination_context, &destination_offset)) return false;
+    ggml_backend_hrx_buffer_context * source_context = nullptr;
+    size_t source_offset = 0;
+    if (tensor_hrx_binding(source, &source_context, &source_offset)) {
+        if (source_context->device != destination_context->device) return false;
+        std::string error = destination_backend->device->transfers->copy(
+            destination_backend->stream, source_context->buffer, source_offset,
+            destination_context->buffer, destination_offset, ggml_nbytes(source));
+        if (error.empty()) error = destination_backend->device->transfers->join(destination_backend->stream);
+        return error.empty();
+    }
+    ggml_backend_buffer_t source_buffer = source->view_src != nullptr ? source->view_src->buffer : source->buffer;
+    if (source_buffer != nullptr && ggml_backend_buffer_is_host(source_buffer)) {
+        std::string error = destination_backend->device->transfers->upload(
+            source->data, destination_context->buffer, destination_offset, ggml_nbytes(source));
+        if (error.empty()) error = destination_backend->device->transfers->join(destination_backend->stream);
+        return error.empty();
+    }
+    return false;
+}
+
 static void backend_free(ggml_backend_t backend) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
     HRX_CHECK(hrx_stream_synchronize(context->stream));
+    {
+        std::lock_guard<std::mutex> lock(context->device->active_stream_mutex);
+        if (context->device->active_stream == context->stream) context->device->active_stream = nullptr;
+    }
     hrx_stream_release(context->stream);
     delete context;
     delete backend;
@@ -401,11 +513,97 @@ static void backend_free(ggml_backend_t backend) {
 
 static void backend_synchronize(ggml_backend_t backend) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
-    HRX_CHECK(hrx_stream_synchronize(context->stream));
+    if (!HRX_CHECK(hrx_stream_synchronize(context->stream))) return;
+    const std::string transfer_error = context->device->transfers->collect();
+    if (!transfer_error.empty()) GGML_LOG_ERROR("%s: %s\n", __func__, transfer_error.c_str());
+    std::lock_guard<std::mutex> lock(context->execution_mutex);
+    for (ggml::hrx::PreparedExecutableProgram * executable : context->pending_completions) {
+        const std::string error = executable->complete_after_synchronize();
+        if (!error.empty()) GGML_LOG_ERROR("%s: %s\n", __func__, error.c_str());
+    }
+    context->pending_completions.clear();
+}
+
+static ggml::hrx::ExecutableBindings resolve_executable_bindings(
+    const ggml_backend_hrx_context & context, const ggml::hrx::ExecutionFrame & frame,
+    std::vector<std::string> & errors) {
+    ggml::hrx::ExecutableBindings result;
+    result.snapshot.device_identity = context.device->name + ":" + context.device->architecture;
+    if (frame.storage_roots.size() != frame.plan->graph.storages.size()) {
+        errors.push_back("runtime storage-root count does not match the normalized graph");
+        return result;
+    }
+    for (const ggml::hrx::ResourceContract & resource : frame.plan->resources.resources) {
+        if (resource.elidable) continue;
+        const ggml_tensor * root = frame.storage_roots[resource.storage];
+        if (root == nullptr || root->buffer == nullptr || root->data == nullptr) {
+            errors.push_back("storage " + std::to_string(resource.storage) + " has no live tensor allocation");
+            continue;
+        }
+        ggml::hrx::ExecutableBufferBinding binding;
+        binding.storage = resource.storage;
+        binding.length = resource.size;
+        binding.weight = resource.weight;
+        binding.mutable_state = resource.mutable_state;
+        binding.exported = resource.exported;
+        ggml_backend_hrx_buffer_context * hrx_context = nullptr;
+        size_t root_offset = 0;
+        if (tensor_hrx_binding(root, &hrx_context, &root_offset)) {
+            binding.buffer = hrx_context->buffer;
+            binding.buffer_identity = hrx_context->identity;
+            binding.generation = hrx_context->generation;
+            binding.capacity = root->buffer->size;
+            binding.offset = root_offset;
+        } else if (ggml_backend_buffer_is_host(root->buffer)) {
+            void * base = ggml_backend_buffer_get_base(root->buffer);
+            const size_t capacity = ggml_backend_buffer_get_size(root->buffer);
+            if (base == nullptr || static_cast<const uint8_t *>(root->data) < static_cast<const uint8_t *>(base)) {
+                errors.push_back("host storage " + std::to_string(resource.storage) + " has no valid backing base");
+                continue;
+            }
+            const size_t host_offset = static_cast<size_t>(
+                static_cast<const uint8_t *>(root->data) - static_cast<const uint8_t *>(base));
+            if (host_offset > capacity || resource.size > capacity - host_offset) {
+                errors.push_back("host storage " + std::to_string(resource.storage) + " exceeds its backing allocation");
+                continue;
+            }
+            binding.host_data = base;
+            const uint64_t buffer_address = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(root->buffer));
+            const uint64_t base_address = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(base));
+            binding.buffer_identity = buffer_address ^ (base_address + 0x9e3779b97f4a7c15ull +
+                                                        (buffer_address << 6) + (buffer_address >> 2));
+            binding.generation = 1;
+            binding.capacity = capacity;
+            binding.offset = host_offset;
+            binding.initialize_from_host = resource.weight;
+            binding.upload_before_launch = (resource.imported && !resource.weight) || resource.mutable_state;
+            binding.download_after_completion = resource.exported || resource.mutable_state;
+        } else {
+            errors.push_back("storage " + std::to_string(resource.storage) +
+                             " belongs to an unsupported foreign buffer");
+            continue;
+        }
+        result.snapshot.bindings.push_back({ binding.storage, binding.buffer_identity,
+            binding.generation, binding.capacity, binding.offset, binding.length });
+        result.storages.push_back(binding);
+    }
+    const ggml::hrx::VerificationResult verification =
+        ggml::hrx::verify_binding_snapshot(*frame.plan, result.snapshot);
+    errors.insert(errors.end(), verification.errors.begin(), verification.errors.end());
+    return result;
 }
 
 static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * graph) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
+    {
+        std::lock_guard<std::mutex> lock(context->device->active_stream_mutex);
+        context->device->active_stream = context->stream;
+    }
+    const std::string transfer_join_error = context->device->transfers->join(context->stream);
+    if (!transfer_join_error.empty()) {
+        GGML_LOG_ERROR("%s: cannot join pending transfers: %s\n", __func__, transfer_join_error.c_str());
+        return GGML_STATUS_FAILED;
+    }
     dump_graph(context->diagnostics, graph, "execute", "reactive-split");
     ggml::hrx::ExecutionFrame frame = context->device->plan_cache.prepare(graph, context->device->architecture);
     if (!frame.valid()) {
@@ -443,13 +641,87 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
         ggml::hrx::schedule_dispatch_count(frame.plan->schedule),
         static_cast<unsigned long long>(stats.builds), static_cast<unsigned long long>(stats.hits));
     dump_plan(context->diagnostics, *frame.plan);
-    GGML_LOG_ERROR("%s: refusing dispatch in the planning-only HRX build\n", __func__);
-    return GGML_STATUS_FAILED;
+    std::vector<std::string> binding_errors;
+    ggml::hrx::ExecutableBindings bindings = resolve_executable_bindings(*context, frame, binding_errors);
+    if (!binding_errors.empty()) {
+        GGML_LOG_ERROR("%s: live binding resolution failed: %s\n", __func__, binding_errors.front().c_str());
+        return GGML_STATUS_FAILED;
+    }
+    const ggml::hrx::AllocationFingerprint allocation = ggml::hrx::fingerprint_bindings(bindings.snapshot);
+    const std::string executable_key = frame.plan->graph.fingerprint + '|' +
+        frame.plan->schedule.workload + '|' + frame.plan->target + '|' +
+        context->corpus.recipe_digest + '|' + context->corpus.corpus_digest + '|' + allocation.value;
+
+    std::lock_guard<std::mutex> lock(context->execution_mutex);
+    ggml::hrx::PreparedExecutableProgram * executable = nullptr;
+    auto found = context->executables.find(executable_key);
+    if (found != context->executables.end()) {
+        executable = found->second.get();
+        ++context->executable_hits;
+    } else {
+        const std::filesystem::path corpus_directory = GGML_HRX_QWEN_CORPUS_DIR;
+        const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(*frame.plan, context->corpus);
+        if (!commands.valid()) {
+            GGML_LOG_ERROR("%s: command construction failed: %s\n", __func__, commands.errors.front().c_str());
+            return GGML_STATUS_FAILED;
+        }
+        ggml::hrx::ExecutablePreparationOptions options;
+        options.corpus_directory = corpus_directory.string();
+        options.target = frame.plan->target;
+        auto prepared = std::make_unique<ggml::hrx::PreparedExecutableProgram>(
+            ggml::hrx::prepare_executable_program(context->device->device, context->stream,
+                *context->device->transfers,
+                *context->weights, context->artifacts, *frame.plan, context->corpus, commands, bindings, options));
+        if (!prepared->valid()) {
+            dump_execution_state(context->diagnostics, *frame.plan, bindings, *prepared,
+                context->device->transfers->stats(),
+                context->weights->stats(),
+                "prepare_failed", prepared->errors().empty() ? "unknown error" : prepared->errors().front(),
+                context->executable_builds, context->executable_hits, context->launches);
+            GGML_LOG_ERROR("%s: executable preparation failed: %s\n", __func__,
+                prepared->errors().empty() ? "unknown error" : prepared->errors().front().c_str());
+            return GGML_STATUS_FAILED;
+        }
+        executable = prepared.get();
+        context->executables.emplace(executable_key, std::move(prepared));
+        ++context->executable_builds;
+        GGML_LOG_WARN("%s: prepared %s executable: nodes=%zu artifacts=%zu retained=%zu bytes builds=%llu\n",
+            __func__, frame.plan->schedule.workload.c_str(), executable->node_count(),
+            executable->artifact_count(), executable->retained_bytes(),
+            static_cast<unsigned long long>(context->executable_builds));
+    }
+    const std::string rebind_error = executable->rebind(bindings);
+    if (!rebind_error.empty()) {
+        GGML_LOG_ERROR("%s: executable rebinding failed: %s\n", __func__, rebind_error.c_str());
+        return GGML_STATUS_FAILED;
+    }
+    const std::string launch_error = executable->launch(context->stream);
+    if (!launch_error.empty()) {
+        dump_execution_state(context->diagnostics, *frame.plan, bindings, *executable,
+            context->device->transfers->stats(),
+            context->weights->stats(),
+            "launch_failed", launch_error, context->executable_builds, context->executable_hits, context->launches);
+        GGML_LOG_ERROR("%s: HRX graph launch failed: %s\n", __func__, launch_error.c_str());
+        return GGML_STATUS_FAILED;
+    }
+    if (std::find(context->pending_completions.begin(), context->pending_completions.end(), executable) ==
+        context->pending_completions.end()) {
+        context->pending_completions.push_back(executable);
+    }
+    ++context->launches;
+    dump_execution_state(context->diagnostics, *frame.plan, bindings, *executable,
+        context->device->transfers->stats(),
+        context->weights->stats(),
+        "submitted", {}, context->executable_builds, context->executable_hits, context->launches);
+    GGML_LOG_WARN("%s: submitted %s launch=%llu cache_hits=%llu\n", __func__,
+        frame.plan->schedule.workload.c_str(), static_cast<unsigned long long>(context->launches),
+        static_cast<unsigned long long>(context->executable_hits));
+    return GGML_STATUS_SUCCESS;
 }
 
 static const ggml_backend_i backend_i = {
     backend_name, backend_free,
-    nullptr, nullptr, nullptr, nullptr, nullptr,
+    backend_set_tensor_async, nullptr, nullptr, nullptr, backend_copy_tensor_async,
     backend_synchronize,
     nullptr, nullptr, nullptr, nullptr,
     graph_compute,
@@ -499,6 +771,26 @@ static ggml_backend_t device_init(ggml_backend_dev_t device, const char * parame
         context->device = device_ctx;
         context->stream = stream;
         context->name = device_ctx->name;
+        std::vector<std::string> corpus_errors;
+        context->corpus = ggml::hrx::load_kernel_corpus_manifest(
+            (std::filesystem::path(GGML_HRX_QWEN_CORPUS_DIR) / "manifest.json").string(),
+            device_ctx->architecture, corpus_errors);
+        if (!corpus_errors.empty()) {
+            GGML_LOG_ERROR("%s: kernel corpus load failed: %s\n", __func__, corpus_errors.front().c_str());
+            delete context;
+            context = nullptr;
+        }
+        if (context != nullptr) {
+            context->weights = std::make_unique<ggml::hrx::WeightResidencyCache>(device_ctx->device);
+            if (!context->weights->valid()) {
+                GGML_LOG_ERROR("%s: weight residency initialization failed: %s\n", __func__,
+                    context->weights->initialization_error().c_str());
+                delete context;
+                context = nullptr;
+            }
+        }
+    }
+    if (context != nullptr) {
         context->diagnostics.graph_oracle = oracle != nullptr && std::string(oracle) == "1";
         if (dump_directory != nullptr && dump_directory[0] != '\0') context->diagnostics.directory = dump_directory;
         if (dump_level != nullptr && dump_level[0] != '\0') context->diagnostics.level = dump_level;
@@ -589,6 +881,13 @@ static std::unique_ptr<ggml_backend_hrx_reg_context> create_registry_context() {
         device_ctx->memory_total = static_cast<size_t>(memory);
         device_ctx->description = std::string(name.data()) + " (" + architecture.data() + ")";
         device_ctx->architecture = architecture.data();
+        device_ctx->transfers = std::make_unique<ggml::hrx::TransferManager>(hrx_device);
+        if (!device_ctx->transfers->valid()) {
+            GGML_LOG_ERROR("%s: transfer manager initialization failed: %s\n", __func__,
+                device_ctx->transfers->initialization_error().c_str());
+            hrx_device_release(hrx_device);
+            continue;
+        }
         device_ctx->buft_context = { device_ctx.get(), device_ctx->name };
         device_ctx->buft = { buffer_type_i, nullptr, &device_ctx->buft_context };
         context->device_contexts.emplace_back(std::move(device_ctx));
