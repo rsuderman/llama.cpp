@@ -42,11 +42,33 @@ struct KernelScalarDefinition {
     const char * type = "";
 };
 
+enum KernelSourceFormat {
+    KERNEL_SOURCE_FORMAT_TEXT,
+    KERNEL_SOURCE_FORMAT_BINARY,
+};
+
+struct KernelSourceSpan {
+    const char *       data;
+    size_t             length;
+    KernelSourceFormat format;
+};
+
+struct KernelSource {
+    KernelSourceSpan         source;
+    const KernelSourceSpan * dependencies;
+    size_t                   dependency_count;
+};
+
+struct KernelSourceRef {
+    const char *         path     = "";
+    const KernelSource * contents = nullptr;
+};
+
 struct KernelCompileRecipe {
     const char *             mode        = "";
     const char *             link_module = "";
-    KernelSpan<const char *> primary_sources;
-    KernelSpan<const char *> library_sources;
+    KernelSpan<KernelSourceRef> primary_sources;
+    KernelSpan<KernelSourceRef> library_sources;
 };
 
 struct KernelDefinition {
@@ -71,23 +93,6 @@ struct KernelCorpus {
     const char *                 recipe_digest     = "";
     size_t                       plan_case_count   = 0;
     KernelSpan<KernelDefinition> kernels;
-};
-
-enum KernelSourceFormat {
-    KERNEL_SOURCE_FORMAT_TEXT,
-    KERNEL_SOURCE_FORMAT_BINARY,
-};
-
-struct KernelSourceSpan {
-    const char *       source;
-    size_t             length;
-    KernelSourceFormat format;
-};
-
-struct KernelSource {
-    KernelSourceSpan         source;
-    const KernelSourceSpan * dependencies;
-    size_t                   dependency_count;
 };
 
 const KernelSource * get_kernel_source(const char * source_path);

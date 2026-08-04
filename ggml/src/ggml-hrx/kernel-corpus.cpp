@@ -34,13 +34,15 @@ static bool string_empty(const char * value) {
     return value == nullptr || value[0] == 0;
 }
 
-static bool contains_string(KernelSpan<const char *> values, const char * value) {
-    return std::find_if(values.begin(), values.end(), [&](const char * item) { return string_equal(item, value); }) !=
+static bool contains_source_ref(KernelSpan<KernelSourceRef> values, const char * path) {
+    return std::find_if(values.begin(), values.end(), [&](const KernelSourceRef & item) {
+        return string_equal(item.path, path);
+    }) !=
            values.end();
 }
 
-#include "kernel-corpus-qwen.inc"
 #include "kernel-corpus-sources.inc"
+#include "kernel-corpus-qwen.inc"
 
 }  // namespace
 
@@ -84,14 +86,26 @@ VerificationResult verify_kernel_corpus(const KernelCorpus & corpus) {
             string_empty(kernel.target) || string_empty(kernel.source_digest)) {
             result.errors.push_back("kernel definition is incomplete");
         }
-        const bool source_is_primary = contains_string(kernel.compile_recipe.primary_sources, kernel.source);
-        const bool source_is_library = contains_string(kernel.compile_recipe.library_sources, kernel.source);
+        const bool source_is_primary = contains_source_ref(kernel.compile_recipe.primary_sources, kernel.source);
+        const bool source_is_library = contains_source_ref(kernel.compile_recipe.library_sources, kernel.source);
         if ((!string_equal(kernel.compile_recipe.mode, "direct") &&
              !string_equal(kernel.compile_recipe.mode, "archive")) ||
             kernel.compile_recipe.primary_sources.empty() || (!source_is_primary && !source_is_library) ||
             (string_equal(kernel.compile_recipe.mode, "archive") && string_empty(kernel.compile_recipe.link_module))) {
             result.errors.push_back("kernel " + std::string(kernel.id != nullptr ? kernel.id : "") +
                                     " has an invalid BUILD compile recipe");
+        }
+        for (const KernelSourceRef & source : kernel.compile_recipe.primary_sources) {
+            if (string_empty(source.path) || source.contents == nullptr) {
+                result.errors.push_back("kernel " + std::string(kernel.id != nullptr ? kernel.id : "") +
+                                        " has an invalid embedded primary source reference");
+            }
+        }
+        for (const KernelSourceRef & source : kernel.compile_recipe.library_sources) {
+            if (string_empty(source.path) || source.contents == nullptr) {
+                result.errors.push_back("kernel " + std::string(kernel.id != nullptr ? kernel.id : "") +
+                                        " has an invalid embedded library source reference");
+            }
         }
         if (!ids.insert(kernel.id != nullptr ? kernel.id : "").second) {
             result.errors.push_back("kernel corpus repeats id " + std::string(kernel.id != nullptr ? kernel.id : ""));
@@ -125,11 +139,11 @@ std::string format_kernel_corpus(const KernelCorpus & corpus) {
         }
         out << " primary=";
         for (size_t i = 0; i < kernel.compile_recipe.primary_sources.size(); ++i) {
-            out << (i ? "," : "") << kernel.compile_recipe.primary_sources[i];
+            out << (i ? "," : "") << kernel.compile_recipe.primary_sources[i].path;
         }
         out << " libraries=";
         for (size_t i = 0; i < kernel.compile_recipe.library_sources.size(); ++i) {
-            out << (i ? "," : "") << kernel.compile_recipe.library_sources[i];
+            out << (i ? "," : "") << kernel.compile_recipe.library_sources[i].path;
         }
         out << '\n';
         for (size_t i = 0; i < kernel.bindings.size(); ++i) {

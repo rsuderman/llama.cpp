@@ -25,6 +25,14 @@ nlohmann::ordered_json string_span_json(KernelSpan<const char *> values) {
     return result;
 }
 
+nlohmann::ordered_json source_ref_span_json(KernelSpan<KernelSourceRef> values) {
+    nlohmann::ordered_json result = nlohmann::ordered_json::array();
+    for (const KernelSourceRef & value : values) {
+        result.push_back(value.path != nullptr ? value.path : "");
+    }
+    return result;
+}
+
 nlohmann::ordered_json compile_config_json(KernelSpan<KernelCompileConfig> values) {
     nlohmann::ordered_json result = nlohmann::ordered_json::object();
     for (const KernelCompileConfig & value : values) {
@@ -58,8 +66,8 @@ std::string serialize_kernel_corpus_json(const KernelCorpus & corpus) {
              {
                   { "mode", kernel.compile_recipe.mode },
                   { "link_module", kernel.compile_recipe.link_module },
-                  { "primary_sources", string_span_json(kernel.compile_recipe.primary_sources) },
-                  { "library_sources", string_span_json(kernel.compile_recipe.library_sources) },
+                  { "primary_sources", source_ref_span_json(kernel.compile_recipe.primary_sources) },
+                  { "library_sources", source_ref_span_json(kernel.compile_recipe.library_sources) },
               }                                                                 },
             { "workload_parameters", nlohmann::ordered_json::array()            },
             { "launch_parameters",   nlohmann::ordered_json::array()            },

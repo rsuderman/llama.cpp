@@ -156,6 +156,14 @@ def string_array(symbol: str, items: Iterable[str]) -> Tuple[str, str]:
     return typed_array(symbol, "const char * const", [cpp_string(item) for item in items])
 
 
+def source_ref_array(symbol: str, items: Iterable[str], source_records: Dict[str, str]) -> Tuple[str, str]:
+    values = [
+        "{ " + cpp_string(item) + ", &" + source_records[item] + " }"
+        for item in items
+    ]
+    return typed_array(symbol, "const KernelSourceRef", values)
+
+
 def scalar_array(symbol: str, items: Iterable[dict]) -> Tuple[str, str]:
     values = [
         "{ " + cpp_string(item["name"]) + ", " + cpp_string(item["type"]) + " }"
@@ -218,7 +226,7 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def generate_corpus_records(manifest: dict) -> Tuple[str, str, int]:
+def generate_corpus_records(manifest: dict, source_records: Dict[str, str]) -> Tuple[str, str, int]:
     digests = manifest_file_digests(manifest)
     arrays = []
     records = []
@@ -244,8 +252,8 @@ def generate_corpus_records(manifest: dict) -> Tuple[str, str, int]:
         )
         workload_array, workload_span = scalar_array(f"kKernelWorkloadParameters{index}", workload_parameters)
         launch_array, launch_span = scalar_array(f"kKernelLaunchParameters{index}", launch_parameters)
-        primary_array, primary_span = string_array(f"kKernelPrimarySources{index}", recipe["primary_sources"])
-        library_array, library_span = string_array(f"kKernelLibrarySources{index}", library_sources)
+        primary_array, primary_span = source_ref_array(f"kKernelPrimarySources{index}", recipe["primary_sources"], source_records)
+        library_array, library_span = source_ref_array(f"kKernelLibrarySources{index}", library_sources, source_records)
         arrays.extend(
             item for item in [
                 dependencies_array,
@@ -315,11 +323,13 @@ def generate_includes(args: argparse.Namespace, manifest: dict) -> Tuple[str, st
         )
 
     dependency_tables = []
-    source_records = []
+    source_record_definitions = []
+    source_record_symbols = {}
     lookup_entries = []
     for index, source in enumerate(sources):
         dependencies = source_dependencies.get(source, [])
         record = f"kernel_source_record_{index}"
+        source_record_symbols[source] = record
         if dependencies:
             dependency_table = f"kernel_source_dependencies_{index}"
             entries = []
@@ -337,7 +347,7 @@ def generate_includes(args: argparse.Namespace, manifest: dict) -> Tuple[str, st
         else:
             dependency_table = "nullptr"
 
-        source_records.append(
+        source_record_definitions.append(
             SOURCE_RECORD_TEMPLATE.format(
                 record=record,
                 source_symbol=source_symbols[source],
@@ -347,12 +357,12 @@ def generate_includes(args: argparse.Namespace, manifest: dict) -> Tuple[str, st
         )
         lookup_entries.append(f"    {{ {cpp_string(source)}, &{record} }},")
 
-    kernel_arrays, kernel_records, kernel_count = generate_corpus_records(manifest)
+    kernel_arrays, kernel_records, kernel_count = generate_corpus_records(manifest, source_record_symbols)
     return (
         SOURCE_DATA_TEMPLATE.format(
             source_arrays="\n".join(source_arrays),
             dependency_tables="\n".join(dependency_tables),
-            source_records="\n".join(source_records),
+            source_records="\n".join(source_record_definitions),
             lookup_entries="\n".join(lookup_entries),
         ),
         CORPUS_DATA_TEMPLATE.format(

@@ -422,17 +422,20 @@ static ggml::hrx::KernelCorpus make_test_corpus(const ggml::hrx::ProgramPlan & p
     static std::vector<std::string> sources;
     static std::vector<std::string> digests;
     static std::vector<std::vector<ggml::hrx::KernelBindingDefinition>> bindings;
-    static std::vector<const char *> primary_sources;
+    static std::vector<ggml::hrx::KernelSource> source_records;
+    static std::vector<ggml::hrx::KernelSourceRef> primary_sources;
     const size_t dispatch_count = ggml::hrx::schedule_dispatch_count(plan.schedule);
     kernels.clear();
     sources.clear();
     digests.clear();
     bindings.clear();
+    source_records.clear();
     primary_sources.clear();
     kernels.reserve(dispatch_count);
     sources.reserve(dispatch_count);
     digests.reserve(dispatch_count);
     bindings.reserve(dispatch_count);
+    source_records.reserve(dispatch_count);
     primary_sources.reserve(dispatch_count);
 
     ggml::hrx::KernelCorpus corpus;
@@ -447,7 +450,15 @@ static ggml::hrx::KernelCorpus make_test_corpus(const ggml::hrx::ProgramPlan & p
                 }) != kernels.end()) continue;
             sources.push_back("test/" + dispatch.kernel.variant + ".loom");
             digests.push_back("sha256-" + dispatch.kernel.variant);
-            primary_sources.push_back(sources.back().c_str());
+            source_records.emplace_back();
+            source_records.back().source.data = sources.back().c_str();
+            source_records.back().source.length = sources.back().size();
+            source_records.back().source.format = ggml::hrx::KERNEL_SOURCE_FORMAT_TEXT;
+            source_records.back().dependencies = nullptr;
+            source_records.back().dependency_count = 0;
+            primary_sources.emplace_back();
+            primary_sources.back().path = sources.back().c_str();
+            primary_sources.back().contents = &source_records.back();
             bindings.emplace_back();
             bindings.back().reserve(dispatch.bindings.size());
             for (const ggml::hrx::TensorBinding & binding : dispatch.bindings) {

@@ -360,28 +360,38 @@ bool ExecutableProgramPreparer::compile_artifacts() {
             continue;
         }
 
-        const char * primary_source = definition->compile_recipe.primary_sources.front();
-        const KernelSource * embedded_source = get_kernel_source(primary_source);
-        if (embedded_source == nullptr) {
-            result.errors_.push_back("missing embedded Loom source " + std::string(primary_source != nullptr ? primary_source : ""));
+        if (definition->compile_recipe.primary_sources.empty()) {
+            result.errors_.push_back("kernel " + command.kernel_id + " has no embedded primary source");
             break;
         }
-        if (embedded_source->dependency_count != definition->compile_recipe.library_sources.size()) {
+        const KernelSourceRef & primary_source = definition->compile_recipe.primary_sources.front();
+        const KernelSource * source_contents = primary_source.contents;
+        if (source_contents == nullptr) {
+            result.errors_.push_back("missing embedded Loom source " +
+                std::string(primary_source.path != nullptr ? primary_source.path : ""));
+            break;
+        }
+        if (source_contents->dependency_count != definition->compile_recipe.library_sources.size()) {
             result.errors_.push_back("embedded Loom source dependency count does not match " +
-                std::string(primary_source != nullptr ? primary_source : ""));
+                std::string(primary_source.path != nullptr ? primary_source.path : ""));
             break;
         }
-        std::vector<std::string> dependency_paths;
         std::vector<ggml_hrx_loom_jit_source> dependencies;
-        dependency_paths.reserve(definition->compile_recipe.library_sources.size());
         dependencies.reserve(definition->compile_recipe.library_sources.size());
         for (size_t dependency_index = 0; dependency_index < definition->compile_recipe.library_sources.size(); ++dependency_index) {
-            dependency_paths.push_back(definition->compile_recipe.library_sources[dependency_index]);
-            const KernelSourceSpan & dependency = embedded_source->dependencies[dependency_index];
+            const KernelSourceRef & dependency_ref = definition->compile_recipe.library_sources[dependency_index];
+            const KernelSource * dependency_contents = dependency_ref.contents;
+            if (dependency_contents == nullptr) {
+                result.errors_.push_back("missing embedded Loom dependency " +
+                    std::string(dependency_ref.path != nullptr ? dependency_ref.path : ""));
+                break;
+            }
+            const KernelSourceSpan & dependency = dependency_contents->source;
             dependencies.push_back({
-                dependency.source, dependency.length, to_jit_source_format(dependency.format),
-                dependency_paths.back().c_str() });
+                dependency.data, dependency.length, to_jit_source_format(dependency.format),
+                dependency_ref.path });
         }
+        if (!result.errors_.empty()) break;
         std::vector<std::string> config_keys;
         std::vector<std::string> config_values;
         std::vector<ggml_hrx_loom_jit_config_binding> configs;
@@ -403,10 +413,10 @@ bool ExecutableProgramPreparer::compile_artifacts() {
         }
         if (!result.errors_.empty()) break;
         ggml_hrx_loom_jit_compile_options compile_options = {};
-        compile_options.source_data = embedded_source->source.source;
-        compile_options.source_size = embedded_source->source.length;
-        compile_options.source_format = to_jit_source_format(embedded_source->source.format);
-        compile_options.source_identifier = primary_source;
+        compile_options.source_data = source_contents->source.data;
+        compile_options.source_size = source_contents->source.length;
+        compile_options.source_format = to_jit_source_format(source_contents->source.format);
+        compile_options.source_identifier = primary_source.path;
         compile_options.root_symbol = definition->symbol;
         compile_options.module_name = definition->symbol;
         compile_options.artifact_identifier = definition->symbol;

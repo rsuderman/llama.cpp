@@ -18,10 +18,18 @@
 namespace {
 
 ggml::hrx::KernelDefinition definition() {
-    static const char * primary_sources[1];
+    static const char source_text[] = "test kernel";
+    static ggml::hrx::KernelSource source;
+    static ggml::hrx::KernelSourceRef primary_sources[1];
     static ggml::hrx::KernelScalarDefinition workload_parameters[1];
     static ggml::hrx::KernelScalarDefinition launch_parameters[2];
-    primary_sources[0] = "test.loom";
+    source.source.data = source_text;
+    source.source.length = sizeof(source_text) - 1;
+    source.source.format = ggml::hrx::KERNEL_SOURCE_FORMAT_TEXT;
+    source.dependencies = nullptr;
+    source.dependency_count = 0;
+    primary_sources[0].path = "test.loom";
+    primary_sources[0].contents = &source;
     workload_parameters[0].name = "rows";
     workload_parameters[0].type = "index";
     launch_parameters[0].name = "rows";
@@ -43,10 +51,18 @@ ggml::hrx::KernelDefinition definition() {
 }
 
 ggml::hrx::KernelDefinition unsupported_definition() {
-    static const char * primary_sources[1];
+    static const char source_text[] = "test kernel";
+    static ggml::hrx::KernelSource source;
+    static ggml::hrx::KernelSourceRef primary_sources[1];
     static ggml::hrx::KernelScalarDefinition workload_parameters[1];
     static ggml::hrx::KernelScalarDefinition launch_parameters[2];
-    primary_sources[0] = "test.loom";
+    source.source.data = source_text;
+    source.source.length = sizeof(source_text) - 1;
+    source.source.format = ggml::hrx::KERNEL_SOURCE_FORMAT_TEXT;
+    source.dependencies = nullptr;
+    source.dependency_count = 0;
+    primary_sources[0].path = "test.loom";
+    primary_sources[0].contents = &source;
     workload_parameters[0].name = "rows";
     workload_parameters[0].type = "index";
     launch_parameters[0].name = "rows";
@@ -139,12 +155,12 @@ void test_binding_diagnostics_are_explicit() {
 void test_kernel_source_lookup() {
     const ggml::hrx::KernelSource * source = ggml::hrx::get_kernel_source("ggml/linear_q6k_f32.loom");
     REQUIRE(source != nullptr);
-    REQUIRE(source->source.source != nullptr);
+    REQUIRE(source->source.data != nullptr);
     REQUIRE(source->source.length != 0);
     REQUIRE(source->source.format == ggml::hrx::KERNEL_SOURCE_FORMAT_TEXT);
     REQUIRE(source->dependency_count == 2);
     REQUIRE(source->dependencies != nullptr);
-    REQUIRE(source->dependencies[0].source != nullptr);
+    REQUIRE(source->dependencies[0].data != nullptr);
     REQUIRE(source->dependencies[0].length != 0);
     REQUIRE(source->dependencies[0].format == ggml::hrx::KERNEL_SOURCE_FORMAT_TEXT);
 
