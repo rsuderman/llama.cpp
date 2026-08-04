@@ -1,14 +1,13 @@
 #include "executable-program.h"
 #include "transfer-manager.h"
 
+#include "kernel-corpus.h"
 #include "loom-jit.h"
 
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -38,16 +37,12 @@ ExecutableArtifactRepository::~ExecutableArtifactRepository() = default;
 
 namespace {
 
-std::string read_file(const std::filesystem::path & path) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) return {};
-    return { std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
-}
-
-const KernelDefinition * find_kernel(const KernelCorpus & corpus, const std::string & id) {
-    const auto it = std::find_if(corpus.kernels.begin(), corpus.kernels.end(),
-        [&](const KernelDefinition & definition) { return definition.id == id; });
-    return it == corpus.kernels.end() ? nullptr : &*it;
+ggml_hrx_loom_jit_source_format to_jit_source_format(KernelSourceFormat format) {
+    switch (format) {
+        case KERNEL_SOURCE_FORMAT_TEXT: return GGML_HRX_LOOM_JIT_SOURCE_FORMAT_TEXT;
+        case KERNEL_SOURCE_FORMAT_BINARY: return GGML_HRX_LOOM_JIT_SOURCE_FORMAT_BYTECODE;
+    }
+    return GGML_HRX_LOOM_JIT_SOURCE_FORMAT_TEXT;
 }
 
 const TransientAllocation * find_transient(const CommandProgram & commands, uint32_t id) {
@@ -74,17 +69,20 @@ PackedKernelConstants pack_kernel_constants(const KernelDefinition & definition,
                                              const Command & command) {
     PackedKernelConstants result;
     for (const KernelScalarDefinition & parameter : definition.launch_parameters) {
-        const auto value = command.scalar_parameters.find(parameter.name);
-        if (value == command.scalar_parameters.end()) {
-            result.errors.push_back("missing launch scalar " + parameter.name);
+        const auto value = command.kernel.integer_parameters.find(parameter.name != nullptr ? parameter.name : "");
+        if (value == command.kernel.integer_parameters.end()) {
+            result.errors.push_back("missing launch scalar " + std::string(parameter.name != nullptr ? parameter.name : ""));
             continue;
         }
-        if (parameter.type != "index") {
-            result.errors.push_back("unsupported launch scalar type " + parameter.type + " for " + parameter.name);
+        if (std::strcmp(parameter.type != nullptr ? parameter.type : "", "index") != 0) {
+            result.errors.push_back("unsupported launch scalar type " +
+                std::string(parameter.type != nullptr ? parameter.type : "") + " for " +
+                std::string(parameter.name != nullptr ? parameter.name : ""));
             continue;
         }
         if (value->second < 0 || static_cast<uint64_t>(value->second) > std::numeric_limits<uint32_t>::max()) {
-            result.errors.push_back("launch scalar " + parameter.name + " does not fit the index ABI");
+            result.errors.push_back("launch scalar " + std::string(parameter.name != nullptr ? parameter.name : "") +
+                " does not fit the index ABI");
             continue;
         }
         append_u32(result.bytes, static_cast<uint32_t>(value->second));
@@ -95,17 +93,24 @@ PackedKernelConstants pack_kernel_constants(const KernelDefinition & definition,
 
 std::string kernel_artifact_key(const KernelDefinition & definition,
                                 const Command & command) {
+    return kernel_artifact_key(definition, command, definition.target != nullptr ? definition.target : "");
+}
+
+std::string kernel_artifact_key(const KernelDefinition & definition,
+                                const Command & command,
+                                const std::string & target) {
     std::ostringstream out;
-    out << definition.target << '|' << definition.source_digest << '|' << definition.symbol
+    out << target << '|' << definition.source_digest << '|' << definition.symbol
         << "|recipe=" << definition.compile_recipe.mode;
-    if (!definition.compile_recipe.link_module.empty()) out << ':' << definition.compile_recipe.link_module;
+    if (definition.compile_recipe.link_module != nullptr && definition.compile_recipe.link_module[0] != 0)
+        out << ':' << definition.compile_recipe.link_module;
     for (const KernelScalarDefinition & parameter : definition.workload_parameters) {
-        const auto value = command.scalar_parameters.find(parameter.name);
+        const auto value = command.kernel.integer_parameters.find(parameter.name != nullptr ? parameter.name : "");
         out << '|' << parameter.name << '=';
-        if (value == command.scalar_parameters.end()) out << "<missing>";
+        if (value == command.kernel.integer_parameters.end()) out << "<missing>";
         else out << value->second;
     }
-    out << join_key(command.compile_parameters);
+    out << join_key(command.kernel.compile_parameters);
     return out.str();
 }
 
@@ -328,15 +333,21 @@ bool ExecutableProgramPreparer::compile_artifacts() {
     for (const Command & command : commands.commands) {
         if (command.ordinal >= record_command_count) break;
         if (command.kind != CommandKind::Kernel) continue;
-        const KernelDefinition * definition = find_kernel(corpus, command.kernel_id);
-        if (definition == nullptr) { result.errors_.push_back("missing kernel " + command.kernel_id); break; }
+        const KernelResolveResult resolved = resolve_kernel_definition(corpus, command.kernel);
+        const KernelDefinition * definition = resolved.definition;
+        if (!resolved.found()) {
+            result.errors_.push_back(format_kernel_resolve_error(resolved, command.kernel));
+            break;
+        }
         const PackedKernelConstants constants = pack_kernel_constants(*definition, command);
         if (!constants.valid()) {
-            for (const std::string & item : constants.errors) result.errors_.push_back(command.kernel_id + ": " + item);
+            for (const std::string & item : constants.errors) {
+                result.errors_.push_back(kernel_specialization_name(command.kernel) + ": " + item);
+            }
             break;
         }
         command_constants[command.ordinal] = constants.bytes;
-        std::string key = kernel_artifact_key(*definition, command);
+        std::string key = kernel_artifact_key(*definition, command, options.target);
         if (!options.sanitizer.empty()) key += "|sanitizer=" + options.sanitizer;
         if (!options.sanitizer_reporting.empty()) key += "|sanitizer_reporting=" + options.sanitizer_reporting;
         auto found = artifact_cache.find(key);
@@ -349,51 +360,66 @@ bool ExecutableProgramPreparer::compile_artifacts() {
             continue;
         }
 
-        const std::filesystem::path source_path = std::filesystem::path(options.corpus_directory) /
-            definition->compile_recipe.primary_sources.front();
-        const std::string source = read_file(source_path);
-        if (source.empty()) { result.errors_.push_back("cannot read Loom source " + source_path.string()); break; }
-        std::vector<std::string> dependency_text;
-        std::vector<std::string> dependency_paths;
+        if (definition->compile_recipe.primary_sources.empty()) {
+            result.errors_.push_back("kernel " + kernel_specialization_name(command.kernel) + " has no embedded primary source");
+            break;
+        }
+        const KernelSourceRef & primary_source = definition->compile_recipe.primary_sources.front();
+        const KernelSource * source_contents = primary_source.contents;
+        if (source_contents == nullptr) {
+            result.errors_.push_back("missing embedded Loom source " +
+                std::string(primary_source.path != nullptr ? primary_source.path : ""));
+            break;
+        }
+        if (source_contents->dependency_count != definition->compile_recipe.library_sources.size()) {
+            result.errors_.push_back("embedded Loom source dependency count does not match " +
+                std::string(primary_source.path != nullptr ? primary_source.path : ""));
+            break;
+        }
         std::vector<ggml_hrx_loom_jit_source> dependencies;
-        dependency_text.reserve(definition->compile_recipe.library_sources.size());
-        dependency_paths.reserve(definition->compile_recipe.library_sources.size());
         dependencies.reserve(definition->compile_recipe.library_sources.size());
-        for (const std::string & relative : definition->compile_recipe.library_sources) {
-            dependency_paths.push_back((std::filesystem::path(options.corpus_directory) / relative).string());
-            dependency_text.push_back(read_file(dependency_paths.back()));
-            if (dependency_text.back().empty()) { result.errors_.push_back("cannot read Loom dependency " + dependency_paths.back()); break; }
+        for (size_t dependency_index = 0; dependency_index < definition->compile_recipe.library_sources.size(); ++dependency_index) {
+            const KernelSourceRef & dependency_ref = definition->compile_recipe.library_sources[dependency_index];
+            const KernelSource * dependency_contents = dependency_ref.contents;
+            if (dependency_contents == nullptr) {
+                result.errors_.push_back("missing embedded Loom dependency " +
+                    std::string(dependency_ref.path != nullptr ? dependency_ref.path : ""));
+                break;
+            }
+            const KernelSourceSpan & dependency = dependency_contents->source;
+            dependencies.push_back({
+                dependency.data, dependency.length, to_jit_source_format(dependency.format),
+                dependency_ref.path });
         }
         if (!result.errors_.empty()) break;
-        for (size_t i = 0; i < dependency_text.size(); ++i) dependencies.push_back({
-            dependency_text[i].data(), dependency_text[i].size(), GGML_HRX_LOOM_JIT_SOURCE_FORMAT_TEXT,
-            dependency_paths[i].c_str() });
         std::vector<std::string> config_keys;
         std::vector<std::string> config_values;
         std::vector<ggml_hrx_loom_jit_config_binding> configs;
-        for (const auto & item : command.compile_parameters) {
+        for (const auto & item : command.kernel.compile_parameters) {
             config_keys.push_back(item.first);
             config_values.push_back(item.second);
         }
         for (size_t i = 0; i < config_keys.size(); ++i) configs.push_back({ config_keys[i].c_str(), config_values[i].c_str() });
         std::vector<int64_t> workload;
         for (const KernelScalarDefinition & parameter : definition->workload_parameters) {
-            const auto value = command.scalar_parameters.find(parameter.name);
-            if (value == command.scalar_parameters.end() || parameter.type != "index") {
-                result.errors_.push_back("invalid workload ABI for " + command.kernel_id + " parameter " + parameter.name);
+            const auto value = command.kernel.integer_parameters.find(parameter.name != nullptr ? parameter.name : "");
+            if (value == command.kernel.integer_parameters.end() ||
+                std::strcmp(parameter.type != nullptr ? parameter.type : "", "index") != 0) {
+                result.errors_.push_back("invalid workload ABI for " + kernel_specialization_name(command.kernel) + " parameter " +
+                    std::string(parameter.name != nullptr ? parameter.name : ""));
                 break;
             }
             workload.push_back(value->second);
         }
         if (!result.errors_.empty()) break;
-        ggml_hrx_loom_jit_compile_options compile_options;
-        compile_options.source_data = source.data();
-        compile_options.source_size = source.size();
-        compile_options.source_format = GGML_HRX_LOOM_JIT_SOURCE_FORMAT_TEXT;
-        compile_options.source_identifier = source_path.c_str();
-        compile_options.root_symbol = definition->symbol.c_str();
-        compile_options.module_name = definition->symbol.c_str();
-        compile_options.artifact_identifier = definition->symbol.c_str();
+        ggml_hrx_loom_jit_compile_options compile_options = {};
+        compile_options.source_data = source_contents->source.data;
+        compile_options.source_size = source_contents->source.length;
+        compile_options.source_format = to_jit_source_format(source_contents->source.format);
+        compile_options.source_identifier = primary_source.path;
+        compile_options.root_symbol = definition->symbol;
+        compile_options.module_name = definition->symbol;
+        compile_options.artifact_identifier = definition->symbol;
         compile_options.dependencies = dependencies.data();
         compile_options.dependency_count = dependencies.size();
         compile_options.config_bindings = configs.data();
@@ -421,7 +447,7 @@ bool ExecutableProgramPreparer::compile_artifacts() {
         error = take_status(hrx_executable_load_data(device, compiled.hsaco_data, compiled.hsaco_size,
             "amdgpu", options.target.c_str(), &artifact->executable));
         if (error) { result.errors_.push_back("load " + key + ": " + *error); break; }
-        error = take_status(hrx_executable_lookup_export_by_name(artifact->executable, definition->symbol.c_str(),
+        error = take_status(hrx_executable_lookup_export_by_name(artifact->executable, definition->symbol,
             &artifact->export_ordinal));
         if (!error) error = take_status(hrx_executable_export_info(artifact->executable,
             artifact->export_ordinal, &artifact->export_info));
@@ -449,7 +475,7 @@ bool ExecutableProgramPreparer::compile_artifacts() {
             break;
         }
         artifact->diagnostic.key = key;
-        artifact->diagnostic.kernel_id = definition->id;
+        artifact->diagnostic.kernel_id = definition->name != nullptr ? definition->name : "";
         for (size_t i = 0; i < 3; ++i) {
             artifact->diagnostic.workgroup_count[i] = artifact->launch.workgroup_count[i];
             artifact->diagnostic.workgroup_size[i] = artifact->launch.workgroup_size[i];
@@ -635,7 +661,7 @@ bool ExecutableProgramPreparer::record_graph() {
             error = take_status(hrx_graph_add_copy_buffer_node(impl.graph, deps.data(), deps.size(), &attrs,
                 &nodes[command.ordinal]));
         } else if (command.kind == CommandKind::Fill) {
-            const uint32_t fill_byte = static_cast<uint32_t>(command.scalar_parameters.at("fill_byte")) & 0xffu;
+            const uint32_t fill_byte = static_cast<uint32_t>(command.kernel.integer_parameters.at("fill_byte")) & 0xffu;
             hrx_graph_fill_buffer_node_attrs_t attrs = {};
             if (!resolve_binding(command.bindings[0], attrs.dst)) return false;
             attrs.pattern = fill_byte;

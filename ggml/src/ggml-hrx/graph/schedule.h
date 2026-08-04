@@ -1,6 +1,7 @@
 #pragma once
 
 #include "graph-ir.h"
+#include "kernel-corpus-catalog.h"
 
 #include <map>
 #include <string>
@@ -21,6 +22,7 @@ struct KernelSpecialization {
     std::map<std::string, int64_t> integer_parameters;
     ExecutionKind execution_kind = ExecutionKind::Native;
     std::map<std::string, std::string> compile_parameters;
+    uint64_t kernel_id = kUncatalogedKernelId;
 };
 
 struct TensorBinding {
@@ -83,6 +85,7 @@ Schedule deserialize_schedule_json(const std::string & json, std::vector<std::st
 std::string serialize_schedule_json(const Schedule & schedule);
 size_t schedule_dispatch_count(const Schedule & schedule);
 size_t schedule_execution_kind_count(const Schedule & schedule, KernelSpecialization::ExecutionKind kind);
+std::string kernel_specialization_name(const KernelSpecialization & kernel);
 const char * execution_kind_name(KernelSpecialization::ExecutionKind kind);
 const char * root_disposition_name(RootDisposition disposition);
 

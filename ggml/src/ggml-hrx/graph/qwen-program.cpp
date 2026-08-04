@@ -1,5 +1,7 @@
 #include "qwen-program.h"
 
+#include "kernel-corpus-catalog-verify.h"
+
 #include <algorithm>
 #include <array>
 #include <set>
@@ -19,6 +21,10 @@ static constexpr int64_t kAttentionKvMaximum = 32768;
 // The current grouped routed-gate/up prefill specialization has the narrowest
 // token-domain contract in the owned kernel schedule.
 static constexpr size_t kPrefillTokenMaximum = 512;
+
+static constexpr KernelCatalogRef kNoKernelRef = {};
+
+#define K(name_literal) GGML_HRX_KERNEL_REF("qwen3_moe", name_literal)
 
 static const std::vector<enum ggml_op> & regular_layer_signature() {
     static const std::vector<enum ggml_op> value = {
@@ -212,33 +218,52 @@ static std::string type_suffix(enum ggml_type type) {
     return type == GGML_TYPE_COUNT ? "invalid" : ggml_type_name(type);
 }
 
-static KernelSpecialization kernel(const std::string & variant, int layer, size_t token_count,
-                                   KernelSpecialization::ExecutionKind kind = KernelSpecialization::ExecutionKind::Native) {
+static KernelSpecialization invocation_kernel(const std::string & variant, int layer, size_t token_count) {
     KernelSpecialization result;
     result.family = "qwen3_moe";
     result.variant = variant;
+    result.kernel_id = kUncatalogedKernelId;
+    result.execution_kind = KernelSpecialization::ExecutionKind::Native;
+    result.integer_parameters["token_count"] = token_count;
+    if (layer >= 0) result.integer_parameters["layer"] = layer;
+    return result;
+}
+
+static KernelSpecialization kernel(
+    KernelCatalogRef ref, int layer, size_t token_count,
+    KernelSpecialization::ExecutionKind kind = KernelSpecialization::ExecutionKind::Native) {
+    KernelSpecialization result;
+    result.family = ref.family != nullptr ? ref.family : "";
+    result.variant = ref.name != nullptr ? ref.name : "";
+    result.kernel_id = ref.id;
     result.execution_kind = kind;
     result.integer_parameters["token_count"] = token_count;
     if (layer >= 0) result.integer_parameters["layer"] = layer;
     return result;
 }
 
-static KernelSpecialization storage_kernel(const std::string & q4_variant, const std::string & q6_variant,
-                                           const std::string & semantic_role, enum ggml_type type, int layer,
-                                           size_t token_count, std::vector<std::string> & gaps) {
-    if (type == GGML_TYPE_Q4_K && !q4_variant.empty()) {
+static KernelSpecialization native_gap(const std::string & variant, int layer, size_t token_count) {
+    KernelSpecialization result = invocation_kernel(variant, layer, token_count);
+    result.execution_kind = KernelSpecialization::ExecutionKind::NativeGap;
+    return result;
+}
+
+static KernelSpecialization storage_kernel(
+    KernelCatalogRef q4_variant, KernelCatalogRef q6_variant, const std::string & semantic_role,
+    enum ggml_type type, int layer, size_t token_count, std::vector<std::string> & gaps) {
+    if (type == GGML_TYPE_Q4_K && q4_variant.valid()) {
         KernelSpecialization result = kernel(q4_variant, layer, token_count);
         result.integer_parameters["weight_type"] = GGML_TYPE_Q4_K;
         return result;
     }
-    if (type == GGML_TYPE_Q6_K && !q6_variant.empty()) {
+    if (type == GGML_TYPE_Q6_K && q6_variant.valid()) {
         KernelSpecialization result = kernel(q6_variant, layer, token_count);
         result.integer_parameters["weight_type"] = GGML_TYPE_Q6_K;
         return result;
     }
     const std::string variant = "missing_" + type_suffix(type) + "_" + semantic_role;
     gaps.push_back("layer " + std::to_string(layer) + ": " + variant);
-    return kernel(variant, layer, token_count, KernelSpecialization::ExecutionKind::NativeGap);
+    return native_gap(variant, layer, token_count);
 }
 
 static void calculate_boundaries(const Graph & graph, Invocation & invocation) {
@@ -294,31 +319,27 @@ static void append_prefill_layer_dispatches(const Graph & graph, Invocation & in
     const OperationId start = layer_start(layer);
     const bool terminal = layer == 47;
     const size_t active_token_count = terminal ? 1 : token_count;
-    if (layer == 0) add_dispatch(invocation, kernel("qwen3_moe_rmsnorm_f32", layer, token_count), ordinal);
+    if (layer == 0) add_dispatch(invocation, kernel(K("qwen3_moe_rmsnorm_f32"), layer, token_count), ordinal);
     const std::array<OperationId, 3> projection_ops = { start + 2, start + 7, start + 9 };
     for (size_t i = 0; i < projection_ops.size(); ++i) {
-        add_dispatch(invocation, storage_kernel("qwen3_moe_dense_linear_q4k_f16_wmma",
-            "qwen3_moe_dense_linear_q6k_f16_wmma", "dense_attention_projection",
+        add_dispatch(invocation, storage_kernel(K("qwen3_moe_dense_linear_q4k_f16_wmma"), K("qwen3_moe_dense_linear_q6k_f16_wmma"), "dense_attention_projection",
             weight_type(graph, projection_ops[i]), layer, token_count, gaps), ordinal);
     }
-    add_dispatch(invocation, kernel("qwen3_moe_attention_postprocess_f32_f16", layer, token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_flash_attention_f32_f16_wmma", layer, token_count), ordinal);
-    add_dispatch(invocation, storage_kernel("qwen3_moe_dense_linear_q4k_f16_wmma",
-        "qwen3_moe_dense_linear_q6k_f16_wmma", "dense_attention_output",
+    add_dispatch(invocation, kernel(K("qwen3_moe_attention_postprocess_f32_f16"), layer, token_count), ordinal);
+    add_dispatch(invocation, kernel(K("qwen3_moe_flash_attention_f32_f16_wmma"), layer, token_count), ordinal);
+    add_dispatch(invocation, storage_kernel(K("qwen3_moe_dense_linear_q4k_f16_wmma"), K("qwen3_moe_dense_linear_q6k_f16_wmma"), "dense_attention_output",
         weight_type(graph, start + 26), layer, token_count, gaps), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_rmsnorm_f32", layer, active_token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_router_projection_f32_four_row_wave32", layer, active_token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_router_top8_f32", layer, active_token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_build_expert_table", layer, active_token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_build_expert_partition_table", layer, active_token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma", layer, active_token_count), ordinal);
+    add_dispatch(invocation, kernel(K("qwen3_moe_rmsnorm_f32"), layer, active_token_count), ordinal);
+    add_dispatch(invocation, kernel(K("qwen3_moe_router_projection_f32_four_row_wave32"), layer, active_token_count), ordinal);
+    add_dispatch(invocation, kernel(K("qwen3_moe_router_top8_f32"), layer, active_token_count), ordinal);
+    add_dispatch(invocation, kernel(K("qwen3_moe_build_expert_table"), layer, active_token_count), ordinal);
+    add_dispatch(invocation, kernel(K("qwen3_moe_build_expert_partition_table"), layer, active_token_count), ordinal);
+    add_dispatch(invocation, kernel(K("qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma"), layer, active_token_count), ordinal);
     const OperationId down_operation = start + (terminal ? 47 : 45);
-    add_dispatch(invocation, storage_kernel("qwen3_moe_routed_down_q4k_f16_wmma_grouped",
-        "qwen3_moe_routed_down_q6k_f16_wmma_grouped", "routed_down",
+    add_dispatch(invocation, storage_kernel(K("qwen3_moe_routed_down_q4k_f16_wmma_grouped"), K("qwen3_moe_routed_down_q6k_f16_wmma_grouped"), "routed_down",
         weight_type(graph, down_operation), layer, active_token_count, gaps), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_routed_down_weighted_reduce_f16_f32",
-        layer, active_token_count), ordinal);
-    if (!terminal) add_dispatch(invocation, kernel("qwen3_moe_rmsnorm_f32", layer, token_count), ordinal);
+    add_dispatch(invocation, kernel(K("qwen3_moe_routed_down_weighted_reduce_f16_f32"), layer, active_token_count), ordinal);
+    if (!terminal) add_dispatch(invocation, kernel(K("qwen3_moe_rmsnorm_f32"), layer, token_count), ordinal);
 }
 
 static void append_decode_layer_dispatches(const Graph & graph, Invocation & invocation, size_t layer,
@@ -333,7 +354,7 @@ static void append_decode_layer_dispatches(const Graph & graph, Invocation & inv
     const enum ggml_type key_type = weight_type(graph, start + 9);
     if ((query_type == GGML_TYPE_Q4_K) && (key_type == GGML_TYPE_Q4_K) &&
         (value_type == GGML_TYPE_Q4_K || value_type == GGML_TYPE_Q6_K)) {
-        KernelSpecialization qkv = kernel("qwen3_moe_attention_qkv_quantized", layer, token_count);
+        KernelSpecialization qkv = kernel(K("qwen3_moe_attention_qkv_quantized"), layer, token_count);
         qkv.integer_parameters["query_weight_type"] = query_type;
         qkv.integer_parameters["key_weight_type"] = key_type;
         qkv.integer_parameters["value_weight_type"] = value_type;
@@ -342,13 +363,13 @@ static void append_decode_layer_dispatches(const Graph & graph, Invocation & inv
         const std::string variant = "qwen3_moe_attention_qkv_postprocess_fused_decode_missing_" +
             type_suffix(query_type) + "_" + type_suffix(key_type) + "_" + type_suffix(value_type);
         gaps.push_back("layer " + std::to_string(layer) + ": " + variant);
-        add_dispatch(invocation, kernel(variant, layer, token_count, KernelSpecialization::ExecutionKind::NativeGap), ordinal);
+        add_dispatch(invocation, native_gap(variant, layer, token_count), ordinal);
     }
-    add_dispatch(invocation, kernel("qwen3_moe_attention_postprocess_f32_f16", layer, token_count), ordinal);
+    add_dispatch(invocation, kernel(K("qwen3_moe_attention_postprocess_f32_f16"), layer, token_count), ordinal);
     AttentionGeometry attention_geometry;
     std::vector<std::string> unreachable_errors;
     const bool has_attention_geometry = recover_attention_geometry(graph, layer, attention_geometry, unreachable_errors);
-    KernelSpecialization flash = kernel("qwen3_moe_flash_attention_decode_split_f32_f16_wmma", layer, token_count);
+    KernelSpecialization flash = kernel(K("qwen3_moe_flash_attention_decode_split_f32_f16_wmma"), layer, token_count);
     if (has_attention_geometry) {
         flash.integer_parameters["key_value_token_count"] = attention_geometry.key_value_token_count;
         flash.integer_parameters["key_value_tile_size"] = kAttentionKvTileSize;
@@ -356,21 +377,21 @@ static void append_decode_layer_dispatches(const Graph & graph, Invocation & inv
             (attention_geometry.key_value_token_count + kAttentionKvTileSize - 1) / kAttentionKvTileSize;
     }
     add_dispatch(invocation, std::move(flash), ordinal);
-    add_dispatch(invocation, kernel("ggml_quantize_q8_1_x4_f32", layer, token_count), ordinal);
-    add_dispatch(invocation, storage_kernel("qwen3_moe_dense_linear_q4k_q8_1_x4", "",
-        "dense_attention_output_q8", weight_type(graph, start + 26), layer, token_count, gaps), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_rmsnorm_f32_quantize_q8_1_x4", layer, token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_router_projection_f32_one_row_wave64", layer, token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_router_top8_f32", layer, token_count), ordinal);
-    add_dispatch(invocation, kernel("qwen3_moe_routed_gate_up_swiglu_q4k_q8", layer, token_count), ordinal);
-    add_dispatch(invocation, kernel("ggml_quantize_q8_1_x4_f32", layer, token_count * 8), ordinal);
+    add_dispatch(invocation, kernel(K("ggml_quantize_q8_1_x4_f32"), layer, token_count), ordinal);
+    add_dispatch(invocation, storage_kernel(K("qwen3_moe_dense_linear_q4k_q8_1_x4"),
+        kNoKernelRef, "dense_attention_output_q8", weight_type(graph, start + 26), layer, token_count, gaps), ordinal);
+    add_dispatch(invocation, kernel(K("qwen3_moe_rmsnorm_f32_quantize_q8_1_x4"), layer, token_count), ordinal);
+    add_dispatch(invocation, kernel(K("qwen3_moe_router_projection_f32_one_row_wave64"), layer, token_count), ordinal);
+    add_dispatch(invocation, kernel(K("qwen3_moe_router_top8_f32"), layer, token_count), ordinal);
+    add_dispatch(invocation, kernel(K("qwen3_moe_routed_gate_up_swiglu_q4k_q8"), layer, token_count), ordinal);
+    add_dispatch(invocation, kernel(K("ggml_quantize_q8_1_x4_f32"), layer, token_count * 8), ordinal);
     const OperationId down_operation = start + (terminal ? 47 : 45);
-    add_dispatch(invocation, storage_kernel("qwen3_moe_routed_down_q4k_q8_1_x4",
-        "qwen3_moe_routed_down_q6k_q8_1_x4", "routed_down_q8",
+    add_dispatch(invocation, storage_kernel(K("qwen3_moe_routed_down_q4k_q8_1_x4"), K("qwen3_moe_routed_down_q6k_q8_1_x4"), "routed_down_q8",
         weight_type(graph, down_operation), layer, token_count, gaps), ordinal);
-    add_dispatch(invocation, kernel(terminal ? "qwen3_moe_rmsnorm_f32_quantize_q8_1_x4"
-                                             : "qwen3_moe_attention_rmsnorm_quantize_q8_1_x4",
-        layer, token_count), ordinal);
+    const KernelCatalogRef terminal_norm =
+        terminal ? K("qwen3_moe_rmsnorm_f32_quantize_q8_1_x4")
+                 : K("qwen3_moe_attention_rmsnorm_quantize_q8_1_x4");
+    add_dispatch(invocation, kernel(terminal_norm, layer, token_count), ordinal);
 }
 
 } // namespace
@@ -463,23 +484,23 @@ QwenProgramProof recover_owned_qwen3_moe_program(const Graph & graph) {
     Invocation preamble;
     preamble.stage = "program.preamble";
     preamble.covered_operations = prefill ? inclusive_range(0, 0) : inclusive_range(0, 2);
-    preamble.kernel = kernel("owned_program_preamble", -1, token_count);
+    preamble.kernel = invocation_kernel("owned_program_preamble", -1, token_count);
     calculate_boundaries(graph, preamble);
-    KernelSpecialization embedding = kernel("qwen_token_embedding_q4k_bringup_workaround", -1, token_count);
+    KernelSpecialization embedding = kernel(K("qwen_token_embedding_q4k_bringup_workaround"), -1, token_count);
     embedding.integer_parameters["vocabulary_count"] = vocabulary_count;
     embedding.integer_parameters["hidden_size"] = model.hidden_size;
     add_dispatch(preamble, std::move(embedding), dispatch_ordinal);
-    KernelSpecialization metadata = kernel("qwen_attention_metadata_bringup_workaround", -1, token_count);
+    KernelSpecialization metadata = kernel(K("qwen_attention_metadata_bringup_workaround"), -1, token_count);
     metadata.integer_parameters["context_capacity"] = program_key_value_token_count;
     add_dispatch(preamble, std::move(metadata), dispatch_ordinal);
-    if (decode) add_dispatch(preamble, kernel("qwen3_moe_attention_rmsnorm_quantize_q8_1_x4", -1, token_count), dispatch_ordinal);
+    if (decode) add_dispatch(preamble, kernel(K("qwen3_moe_attention_rmsnorm_quantize_q8_1_x4"), -1, token_count), dispatch_ordinal);
     schedule.invocations.push_back(std::move(preamble));
 
     for (size_t layer = 0; layer < kLayerCount; ++layer) {
         Invocation invocation;
         invocation.stage = layer == 47 ? "program.terminal_layer" : "program.layer";
         invocation.layer = static_cast<int32_t>(layer);
-        invocation.kernel = kernel(prefill ? "owned_prefill_layer" : "owned_decode_layer", layer, token_count);
+        invocation.kernel = invocation_kernel(prefill ? "owned_prefill_layer" : "owned_decode_layer", layer, token_count);
         const OperationId start = layer_start(layer);
         const OperationId first = start + ((prefill && layer == 0) ? 0 : 2);
         const OperationId last = layer == 47 ? 3026 : start + 62;
@@ -501,11 +522,11 @@ QwenProgramProof recover_owned_qwen3_moe_program(const Graph & graph) {
 
     Invocation endpoint;
     endpoint.stage = "program.endpoint";
-    endpoint.kernel = kernel("owned_program_endpoint", -1, 1);
+    endpoint.kernel = invocation_kernel("owned_program_endpoint", -1, 1);
     endpoint.covered_operations = prefill ? inclusive_range(3027, 3029) : inclusive_range(3029, 3029);
     calculate_boundaries(graph, endpoint);
-    if (prefill) add_dispatch(endpoint, kernel("qwen3_moe_rmsnorm_f32_quantize_q8_1_x4", -1, 1), dispatch_ordinal);
-    add_dispatch(endpoint, kernel("ggml_linear_q6k_q8_1_x4", -1, 1), dispatch_ordinal);
+    if (prefill) add_dispatch(endpoint, kernel(K("qwen3_moe_rmsnorm_f32_quantize_q8_1_x4"), -1, 1), dispatch_ordinal);
+    add_dispatch(endpoint, kernel(K("ggml_linear_q6k_q8_1_x4"), -1, 1), dispatch_ordinal);
     schedule.invocations.push_back(std::move(endpoint));
     if (!proof.native_gaps.empty()) {
         proof.errors.push_back("owned Qwen recovery has no native implementation for " + proof.native_gaps.front());
@@ -590,5 +611,7 @@ std::string qwen_program_signature(const QwenProgramProof & proof) {
     for (const std::string & gap : proof.native_gaps) out << "gap\t" << gap << '\n';
     return out.str();
 }
+
+#undef K
 
 } // namespace ggml::hrx

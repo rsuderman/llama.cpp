@@ -1,6 +1,7 @@
 #pragma once
 
 #include "graph-ir.h"
+#include "resource-access.h"
 #include "schedule.h"
 
 #include <cstdint>
@@ -11,12 +12,6 @@
 #include <vector>
 
 namespace ggml::hrx {
-
-enum class ResourceAccess : uint8_t {
-    Read,
-    Write,
-    ReadWrite,
-};
 
 struct ResourceUse {
     uint32_t invocation = 0;

@@ -1,5 +1,6 @@
 #include "command-program.h"
 #include "graph-ir.h"
+#include "kernel-corpus.h"
 #include "matcher.h"
 #include "optimizer.h"
 #include "qwen-rules.h"
@@ -13,6 +14,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -416,6 +418,26 @@ static void test_eager_capabilities_and_resource_verification() {
 }
 
 static ggml::hrx::KernelCorpus make_test_corpus(const ggml::hrx::ProgramPlan & plan) {
+    static std::vector<ggml::hrx::KernelDefinition> kernels;
+    static std::vector<std::string> sources;
+    static std::vector<std::string> digests;
+    static std::vector<std::vector<ggml::hrx::KernelBindingDefinition>> bindings;
+    static std::vector<ggml::hrx::KernelSource> source_records;
+    static std::vector<ggml::hrx::KernelSourceRef> primary_sources;
+    const size_t dispatch_count = ggml::hrx::schedule_dispatch_count(plan.schedule);
+    kernels.clear();
+    sources.clear();
+    digests.clear();
+    bindings.clear();
+    source_records.clear();
+    primary_sources.clear();
+    kernels.reserve(dispatch_count);
+    sources.reserve(dispatch_count);
+    digests.reserve(dispatch_count);
+    bindings.reserve(dispatch_count);
+    source_records.reserve(dispatch_count);
+    primary_sources.reserve(dispatch_count);
+
     ggml::hrx::KernelCorpus corpus;
     corpus.upstream_revision = "test-revision";
     corpus.corpus_digest = "test-corpus-sha256";
@@ -423,23 +445,41 @@ static ggml::hrx::KernelCorpus make_test_corpus(const ggml::hrx::ProgramPlan & p
     corpus.plan_case_count = 1;
     for (const ggml::hrx::Invocation & invocation : plan.schedule.invocations) {
         for (const ggml::hrx::Dispatch & dispatch : invocation.dispatches) {
-            if (std::find_if(corpus.kernels.begin(), corpus.kernels.end(), [&](const ggml::hrx::KernelDefinition & item) {
-                    return item.id == dispatch.kernel.variant;
-                }) != corpus.kernels.end()) continue;
-            ggml::hrx::KernelDefinition kernel;
-            kernel.id = dispatch.kernel.variant;
-            kernel.source = "test/" + kernel.id + ".loom";
-            kernel.symbol = kernel.id;
-            kernel.target = plan.target;
-            kernel.source_digest = "sha256-" + kernel.id;
-            kernel.compile_recipe.mode = "direct";
-            kernel.compile_recipe.primary_sources = { kernel.source };
+            if (std::find_if(kernels.begin(), kernels.end(), [&](const ggml::hrx::KernelDefinition & item) {
+                    return item.family != nullptr && item.name != nullptr &&
+                        dispatch.kernel.family == item.family && dispatch.kernel.variant == item.name;
+                }) != kernels.end()) continue;
+            sources.push_back("test/" + dispatch.kernel.variant + ".loom");
+            digests.push_back("sha256-" + dispatch.kernel.variant);
+            source_records.emplace_back();
+            source_records.back().source.data = sources.back().c_str();
+            source_records.back().source.length = sources.back().size();
+            source_records.back().source.format = ggml::hrx::KERNEL_SOURCE_FORMAT_TEXT;
+            source_records.back().dependencies = nullptr;
+            source_records.back().dependency_count = 0;
+            primary_sources.emplace_back();
+            primary_sources.back().path = sources.back().c_str();
+            primary_sources.back().contents = &source_records.back();
+            bindings.emplace_back();
+            bindings.back().reserve(dispatch.bindings.size());
             for (const ggml::hrx::TensorBinding & binding : dispatch.bindings) {
-                kernel.bindings.push_back({ binding.role, ggml::hrx::ResourceAccess::ReadWrite });
+                bindings.back().push_back({ binding.role.c_str(), ggml::hrx::ResourceAccess::ReadWrite });
             }
-            corpus.kernels.push_back(std::move(kernel));
+            ggml::hrx::KernelDefinition kernel;
+            kernel.family = dispatch.kernel.family.c_str();
+            kernel.name = dispatch.kernel.variant.c_str();
+            kernel.id = ggml::hrx::kernel_catalog_id(kernel.family, kernel.name);
+            kernel.source = sources.back().c_str();
+            kernel.symbol = dispatch.kernel.variant.c_str();
+            kernel.target = plan.target.c_str();
+            kernel.source_digest = digests.back().c_str();
+            kernel.bindings = { bindings.back().data(), bindings.back().size() };
+            kernel.compile_recipe.mode = "direct";
+            kernel.compile_recipe.primary_sources = { &primary_sources.back(), 1 };
+            kernels.push_back(kernel);
         }
     }
+    corpus.kernels = { kernels.data(), kernels.size() };
     return corpus;
 }
 
@@ -469,7 +509,7 @@ static void test_command_program_and_diagnostics() {
     REQUIRE(ggml::hrx::command_program_dot(commands).find("c0 -> c1") != std::string::npos);
 
     ggml::hrx::KernelCorpus missing_kernel = corpus;
-    missing_kernel.kernels.pop_back();
+    --missing_kernel.kernels.count;
     REQUIRE(!ggml::hrx::build_command_program(plan, missing_kernel).valid());
     ggml::hrx::CommandProgram bad_range = commands;
     bad_range.commands.front().bindings.front().length = plan.graph.storages[bad_range.commands.front().bindings.front().storage].size + 1;
@@ -501,15 +541,12 @@ static void test_command_program_and_diagnostics() {
     REQUIRE(!ggml::hrx::verify_binding_snapshot(plan, snapshot).valid());
 }
 
-static void test_pinned_kernel_corpus_manifest() {
-    std::vector<std::string> errors;
-    const ggml::hrx::KernelCorpus corpus = ggml::hrx::load_kernel_corpus_manifest(
-        GGML_HRX_TEST_CORPUS_MANIFEST, "gfx1151", errors);
-    for (const std::string & error : errors) std::fprintf(stderr, "kernel corpus: %s\n", error.c_str());
-    REQUIRE(errors.empty());
+static void test_embedded_kernel_corpus() {
+    const ggml::hrx::KernelCorpus & corpus = ggml::hrx::get_qwen_kernel_corpus("gfx1151");
+    REQUIRE(&corpus == &ggml::hrx::get_qwen_kernel_corpus("gfx1151"));
     REQUIRE(ggml::hrx::verify_kernel_corpus(corpus).valid());
-    REQUIRE(corpus.upstream_revision == "b01fe3eb2cddfedad982be873239bc365dccd67f");
-    REQUIRE(corpus.recipe_digest == "542255e2e245e96ced8744315223e8aeeaeb5e075280930a2fcbc5760cf5551d");
+    REQUIRE(std::strcmp(corpus.upstream_revision, "b01fe3eb2cddfedad982be873239bc365dccd67f") == 0);
+    REQUIRE(std::strcmp(corpus.recipe_digest, "542255e2e245e96ced8744315223e8aeeaeb5e075280930a2fcbc5760cf5551d") == 0);
     REQUIRE(corpus.kernels.size() == 39);
     REQUIRE(corpus.plan_case_count == 24);
 }
@@ -615,10 +652,7 @@ int main(int argc, char ** argv) {
             }
         }
         REQUIRE(checked_routes != 0);
-        std::vector<std::string> corpus_errors;
-        const ggml::hrx::KernelCorpus executable_corpus = ggml::hrx::load_kernel_corpus_manifest(
-            GGML_HRX_TEST_CORPUS_MANIFEST, "gfx1151", corpus_errors);
-        REQUIRE(corpus_errors.empty());
+        const ggml::hrx::KernelCorpus & executable_corpus = ggml::hrx::get_qwen_kernel_corpus("gfx1151");
         const ggml::hrx::CommandProgram executable_commands =
             ggml::hrx::build_command_program(reactive, executable_corpus);
         const size_t kernel_command_count = std::count_if(
@@ -734,6 +768,6 @@ int main(int argc, char ** argv) {
     test_reactive_cache_and_bindings();
     test_eager_capabilities_and_resource_verification();
     test_command_program_and_diagnostics();
-    test_pinned_kernel_corpus_manifest();
+    test_embedded_kernel_corpus();
     return 0;
 }

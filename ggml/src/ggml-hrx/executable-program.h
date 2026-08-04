@@ -29,6 +29,9 @@ PackedKernelConstants pack_kernel_constants(const KernelDefinition & definition,
                                              const Command & command);
 std::string kernel_artifact_key(const KernelDefinition & definition,
                                 const Command & command);
+std::string kernel_artifact_key(const KernelDefinition & definition,
+                                const Command & command,
+                                const std::string & target);
 
 struct PreparedArtifactDiagnostic {
     std::string key;
@@ -53,7 +56,6 @@ struct PreparedCommandDiagnostic {
 };
 
 struct ExecutablePreparationOptions {
-    std::string corpus_directory;
     std::string target;
     size_t recorder_buffer_limit = 256ull * 1024ull * 1024ull;
     size_t command_limit = SIZE_MAX;

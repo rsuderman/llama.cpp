@@ -5,6 +5,8 @@
 #include "graph/qwen-program.h"
 #include "graph/reactive-plan.h"
 #include "executable-program.h"
+#include "kernel-corpus.h"
+#include "kernel-corpus-json.h"
 #include "transfer-manager.h"
 #include "weight-residency.h"
 #include "ggml-backend-impl.h"
@@ -93,7 +95,7 @@ struct ggml_backend_hrx_context {
     } execution_debug;
     std::mutex oracle_mutex;
     std::unordered_map<std::string, std::string> oracle_witnesses;
-    ggml::hrx::KernelCorpus corpus;
+    const ggml::hrx::KernelCorpus * corpus = nullptr;
     std::unique_ptr<ggml::hrx::WeightResidencyCache> weights;
     ggml::hrx::ExecutableArtifactRepository artifacts;
     std::mutex execution_mutex;
@@ -408,7 +410,8 @@ static void write_atomic(const std::filesystem::path & path, const std::string &
 }
 
 static void dump_plan(const ggml_backend_hrx_context::DiagnosticOptions & options,
-                      const ggml::hrx::ProgramPlan & plan) {
+                      const ggml::hrx::ProgramPlan & plan,
+                      const ggml::hrx::KernelCorpus & corpus) {
     if (options.directory.empty()) return;
     static std::mutex mutex;
     try {
@@ -417,10 +420,6 @@ static void dump_plan(const ggml_backend_hrx_context::DiagnosticOptions & option
         std::replace_if(target.begin(), target.end(), [](char ch) { return !std::isalnum(static_cast<unsigned char>(ch)); }, '_');
         const std::filesystem::path directory = options.directory / "plans" /
             (plan.schedule.workload + "-" + plan.graph.fingerprint + "-" + target);
-        std::vector<std::string> corpus_errors;
-        const std::filesystem::path corpus_manifest = std::filesystem::path(GGML_HRX_QWEN_CORPUS_DIR) / "manifest.json";
-        const ggml::hrx::KernelCorpus corpus = ggml::hrx::load_kernel_corpus_manifest(
-            corpus_manifest.string(), plan.target, corpus_errors);
         const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(plan, corpus);
         const ggml::hrx::VerificationResult command_verification =
             ggml::hrx::verify_command_program(plan, corpus, commands);
@@ -437,12 +436,10 @@ static void dump_plan(const ggml_backend_hrx_context::DiagnosticOptions & option
         write_atomic(directory / "commands.dot", ggml::hrx::command_program_dot(commands));
         std::ostringstream status;
         status << "schema=ggml-hrx-plan-diagnostics-v1\nlevel=" << options.level << "\nvalid="
-               << (corpus_errors.empty() && command_verification.valid() ? "true" : "false") << '\n';
-        std::vector<std::string> errors = corpus_errors;
-        errors.insert(errors.end(), command_verification.errors.begin(), command_verification.errors.end());
-        status << ggml::hrx::format_verification_summary(errors);
+               << (command_verification.valid() ? "true" : "false") << '\n';
+        status << ggml::hrx::format_verification_summary(command_verification.errors);
         write_atomic(directory / "status.txt", status.str());
-        write_atomic(directory / "verification-errors.txt", ggml::hrx::format_verification_errors(errors));
+        write_atomic(directory / "verification-errors.txt", ggml::hrx::format_verification_errors(command_verification.errors));
     } catch (const std::exception & error) {
         GGML_LOG_ERROR("%s: plan dump failed: %s\n", __func__, error.what());
     }
@@ -739,7 +736,7 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
         __func__, frame.plan->schedule.workload.c_str(), frame.plan->graph.operations.size(),
         ggml::hrx::schedule_dispatch_count(frame.plan->schedule),
         static_cast<unsigned long long>(stats.builds), static_cast<unsigned long long>(stats.hits));
-    dump_plan(context->diagnostics, *frame.plan);
+    dump_plan(context->diagnostics, *frame.plan, *context->corpus);
 
     // Resolve semantic graph storages to this call's concrete HRX/host
     // allocations. The fingerprint below prevents reusing an executable with
@@ -766,7 +763,7 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
         context->execution_debug.sanitizer_reporting : std::string();
     const std::string executable_key = frame.plan->graph.fingerprint + '|' +
         frame.plan->schedule.workload + '|' + frame.plan->target + '|' +
-        context->corpus.recipe_digest + '|' + context->corpus.corpus_digest + '|' + allocation.value +
+        context->corpus->recipe_digest + '|' + context->corpus->corpus_digest + '|' + allocation.value +
         "|debug_limit=" + std::to_string(debug_command_limit) +
         "|debug_serialize=" + std::to_string(debug_serialize_commands) +
         "|debug_split=" + std::to_string(debug_split_commands) +
@@ -783,14 +780,12 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
         executable = found->second.get();
         ++context->executable_hits;
     } else {
-        const std::filesystem::path corpus_directory = GGML_HRX_QWEN_CORPUS_DIR;
-        const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(*frame.plan, context->corpus);
+        const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(*frame.plan, *context->corpus);
         if (!commands.valid()) {
             GGML_LOG_ERROR("%s: command construction failed: %s\n", __func__, commands.errors.front().c_str());
             return GGML_STATUS_FAILED;
         }
         ggml::hrx::ExecutablePreparationOptions options;
-        options.corpus_directory = corpus_directory.string();
         options.target = frame.plan->target;
         options.command_limit = debug_command_limit;
         options.serialize_commands = debug_serialize_commands;
@@ -800,7 +795,7 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
         auto prepared = std::make_unique<ggml::hrx::PreparedExecutableProgram>(
             ggml::hrx::prepare_executable_program(context->device->device, context->stream,
                 *context->device->transfers,
-                *context->weights, context->artifacts, *frame.plan, context->corpus, commands, bindings, options));
+                *context->weights, context->artifacts, *frame.plan, *context->corpus, commands, bindings, options));
         if (!prepared->valid()) {
             dump_execution_state(context->diagnostics, *frame.plan, bindings, *prepared,
                 context->device->transfers->stats(),
@@ -933,12 +928,10 @@ static ggml_backend_t device_init(ggml_backend_dev_t device, const char * parame
         context->device = device_ctx;
         context->stream = stream;
         context->name = device_ctx->name;
-        std::vector<std::string> corpus_errors;
-        context->corpus = ggml::hrx::load_kernel_corpus_manifest(
-            (std::filesystem::path(GGML_HRX_QWEN_CORPUS_DIR) / "manifest.json").string(),
-            device_ctx->architecture, corpus_errors);
-        if (!corpus_errors.empty()) {
-            GGML_LOG_ERROR("%s: kernel corpus load failed: %s\n", __func__, corpus_errors.front().c_str());
+        context->corpus = &ggml::hrx::get_qwen_kernel_corpus(device_ctx->architecture.c_str());
+        const ggml::hrx::VerificationResult corpus_verification = ggml::hrx::verify_kernel_corpus(*context->corpus);
+        if (!corpus_verification.valid()) {
+            GGML_LOG_ERROR("%s: embedded kernel corpus validation failed: %s\n", __func__, corpus_verification.errors.front().c_str());
             delete context;
             context = nullptr;
         }

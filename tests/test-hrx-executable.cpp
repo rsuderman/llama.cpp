@@ -1,4 +1,5 @@
 #include "executable-program.h"
+#include "kernel-corpus.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -17,23 +18,79 @@
 namespace {
 
 ggml::hrx::KernelDefinition definition() {
+    static const char source_text[] = "test kernel";
+    static ggml::hrx::KernelSource source;
+    static ggml::hrx::KernelSourceRef primary_sources[1];
+    static ggml::hrx::KernelScalarDefinition workload_parameters[1];
+    static ggml::hrx::KernelScalarDefinition launch_parameters[2];
+    source.source.data = source_text;
+    source.source.length = sizeof(source_text) - 1;
+    source.source.format = ggml::hrx::KERNEL_SOURCE_FORMAT_TEXT;
+    source.dependencies = nullptr;
+    source.dependency_count = 0;
+    primary_sources[0].path = "test.loom";
+    primary_sources[0].contents = &source;
+    workload_parameters[0].name = "rows";
+    workload_parameters[0].type = "index";
+    launch_parameters[0].name = "rows";
+    launch_parameters[0].type = "index";
+    launch_parameters[1].name = "columns";
+    launch_parameters[1].type = "index";
+
     ggml::hrx::KernelDefinition result;
-    result.id = "test_kernel";
-    result.symbol = "test_kernel";
+    result.family = "test_family";
+    result.name = "test_kernel";
+    result.id = ggml::hrx::kernel_catalog_id(result.family, result.name);
     result.source = "test.loom";
-    result.source_digest = "source-digest";
+    result.symbol = "test_kernel";
     result.target = "gfx1151";
-    result.workload_parameters = { { "rows", "index" } };
-    result.launch_parameters = { { "rows", "index" }, { "columns", "index" } };
+    result.source_digest = "source-digest";
+    result.workload_parameters = { workload_parameters, 1 };
+    result.launch_parameters = { launch_parameters, 2 };
     result.compile_recipe.mode = "direct";
-    result.compile_recipe.primary_sources = { result.source };
+    result.compile_recipe.primary_sources = { primary_sources, 1 };
+    return result;
+}
+
+ggml::hrx::KernelDefinition unsupported_definition() {
+    static const char source_text[] = "test kernel";
+    static ggml::hrx::KernelSource source;
+    static ggml::hrx::KernelSourceRef primary_sources[1];
+    static ggml::hrx::KernelScalarDefinition workload_parameters[1];
+    static ggml::hrx::KernelScalarDefinition launch_parameters[2];
+    source.source.data = source_text;
+    source.source.length = sizeof(source_text) - 1;
+    source.source.format = ggml::hrx::KERNEL_SOURCE_FORMAT_TEXT;
+    source.dependencies = nullptr;
+    source.dependency_count = 0;
+    primary_sources[0].path = "test.loom";
+    primary_sources[0].contents = &source;
+    workload_parameters[0].name = "rows";
+    workload_parameters[0].type = "index";
+    launch_parameters[0].name = "rows";
+    launch_parameters[0].type = "i64";
+    launch_parameters[1].name = "columns";
+    launch_parameters[1].type = "index";
+
+    ggml::hrx::KernelDefinition result;
+    result.family = "test_family";
+    result.name = "test_kernel";
+    result.id = ggml::hrx::kernel_catalog_id(result.family, result.name);
+    result.source = "test.loom";
+    result.symbol = "test_kernel";
+    result.target = "gfx1151";
+    result.source_digest = "source-digest";
+    result.workload_parameters = { workload_parameters, 1 };
+    result.launch_parameters = { launch_parameters, 2 };
+    result.compile_recipe.mode = "direct";
+    result.compile_recipe.primary_sources = { primary_sources, 1 };
     return result;
 }
 
 void test_constant_packing() {
     const ggml::hrx::KernelDefinition kernel = definition();
     ggml::hrx::Command command;
-    command.scalar_parameters = {
+    command.kernel.integer_parameters = {
         { "rows", 7 }, { "columns", std::numeric_limits<uint32_t>::max() },
     };
     const ggml::hrx::PackedKernelConstants packed =
@@ -47,32 +104,30 @@ void test_constant_packing() {
     REQUIRE(rows == 7);
     REQUIRE(columns == std::numeric_limits<uint32_t>::max());
 
-    command.scalar_parameters.erase("columns");
+    command.kernel.integer_parameters.erase("columns");
     REQUIRE(!ggml::hrx::pack_kernel_constants(kernel, command).valid());
-    command.scalar_parameters["columns"] = -1;
+    command.kernel.integer_parameters["columns"] = -1;
     REQUIRE(!ggml::hrx::pack_kernel_constants(kernel, command).valid());
-    command.scalar_parameters["columns"] =
+    command.kernel.integer_parameters["columns"] =
         static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) + 1;
     REQUIRE(!ggml::hrx::pack_kernel_constants(kernel, command).valid());
 
-    ggml::hrx::KernelDefinition unsupported = kernel;
-    unsupported.launch_parameters[0].type = "i64";
-    command.scalar_parameters["columns"] = 1;
-    REQUIRE(!ggml::hrx::pack_kernel_constants(unsupported, command).valid());
+    command.kernel.integer_parameters["columns"] = 1;
+    REQUIRE(!ggml::hrx::pack_kernel_constants(unsupported_definition(), command).valid());
 }
 
 void test_artifact_key_uses_only_compilation_facts() {
     const ggml::hrx::KernelDefinition kernel = definition();
     ggml::hrx::Command command;
-    command.scalar_parameters = { { "rows", 7 }, { "columns", 32 }, { "layer", 4 } };
-    command.compile_parameters = { { "mode", "fast" } };
+    command.kernel.integer_parameters = { { "rows", 7 }, { "columns", 32 }, { "layer", 4 } };
+    command.kernel.compile_parameters = { { "mode", "fast" } };
     const std::string first = ggml::hrx::kernel_artifact_key(kernel, command);
-    command.scalar_parameters["layer"] = 47;
+    command.kernel.integer_parameters["layer"] = 47;
     REQUIRE(ggml::hrx::kernel_artifact_key(kernel, command) == first);
-    command.scalar_parameters["rows"] = 8;
+    command.kernel.integer_parameters["rows"] = 8;
     REQUIRE(ggml::hrx::kernel_artifact_key(kernel, command) != first);
-    command.scalar_parameters["rows"] = 7;
-    command.compile_parameters["mode"] = "precise";
+    command.kernel.integer_parameters["rows"] = 7;
+    command.kernel.compile_parameters["mode"] = "precise";
     REQUIRE(ggml::hrx::kernel_artifact_key(kernel, command) != first);
 }
 
@@ -101,11 +156,64 @@ void test_binding_diagnostics_are_explicit() {
     REQUIRE(json.find("resident_host_weight") != std::string::npos);
 }
 
+void test_kernel_source_lookup() {
+    const ggml::hrx::KernelSource * source = ggml::hrx::get_kernel_source("ggml/linear_q6k_f32.loom");
+    REQUIRE(source != nullptr);
+    REQUIRE(source->source.data != nullptr);
+    REQUIRE(source->source.length != 0);
+    REQUIRE(source->source.format == ggml::hrx::KERNEL_SOURCE_FORMAT_TEXT);
+    REQUIRE(source->dependency_count == 2);
+    REQUIRE(source->dependencies != nullptr);
+    REQUIRE(source->dependencies[0].data != nullptr);
+    REQUIRE(source->dependencies[0].length != 0);
+    REQUIRE(source->dependencies[0].format == ggml::hrx::KERNEL_SOURCE_FORMAT_TEXT);
+
+    const ggml::hrx::KernelSource * dependency_only = ggml::hrx::get_kernel_source("qwen3_moe/model_config.loom");
+    REQUIRE(dependency_only != nullptr);
+    REQUIRE(dependency_only->dependency_count == 0);
+    REQUIRE(ggml::hrx::get_kernel_source("missing.loom") == nullptr);
+}
+
+void test_kernel_resolution_classifies_catalog_misses() {
+    const ggml::hrx::KernelDefinition kernel = definition();
+    ggml::hrx::KernelCorpus corpus;
+    corpus.kernels = { &kernel, 1 };
+
+    ggml::hrx::KernelResolveResult resolved = ggml::hrx::resolve_kernel_definition(
+        corpus, "test_family", "test_kernel", kernel.id, ggml::hrx::KernelSpecialization::ExecutionKind::Native);
+    REQUIRE(resolved.status == ggml::hrx::KernelResolveStatus::Found);
+    REQUIRE(resolved.definition == &kernel);
+
+    const uint64_t other_family_id = ggml::hrx::kernel_catalog_id("other_family", "test_kernel");
+    REQUIRE(other_family_id != kernel.id);
+    resolved = ggml::hrx::resolve_kernel_definition(
+        corpus, "other_family", "test_kernel", other_family_id,
+        ggml::hrx::KernelSpecialization::ExecutionKind::Native);
+    REQUIRE(resolved.status == ggml::hrx::KernelResolveStatus::MissingActiveCorpusEntry);
+
+    resolved = ggml::hrx::resolve_kernel_definition(
+        corpus, "test_family", "test_kernel", ggml::hrx::kUncatalogedKernelId,
+        ggml::hrx::KernelSpecialization::ExecutionKind::Native);
+    REQUIRE(resolved.status == ggml::hrx::KernelResolveStatus::UncatalogedNative);
+
+    resolved = ggml::hrx::resolve_kernel_definition(
+        corpus, "test_family", "missing_kernel", ggml::hrx::kernel_catalog_id("test_family", "missing_kernel"),
+        ggml::hrx::KernelSpecialization::ExecutionKind::Native);
+    REQUIRE(resolved.status == ggml::hrx::KernelResolveStatus::MissingActiveCorpusEntry);
+
+    resolved = ggml::hrx::resolve_kernel_definition(
+        corpus, "test_family", "missing_kernel", ggml::hrx::kUncatalogedKernelId,
+        ggml::hrx::KernelSpecialization::ExecutionKind::NativeGap);
+    REQUIRE(resolved.status == ggml::hrx::KernelResolveStatus::NativeGap);
+}
+
 } // namespace
 
 int main() {
     test_constant_packing();
     test_artifact_key_uses_only_compilation_facts();
     test_binding_diagnostics_are_explicit();
+    test_kernel_source_lookup();
+    test_kernel_resolution_classifies_catalog_misses();
     return 0;
 }
