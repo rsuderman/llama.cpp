@@ -1,5 +1,65 @@
-find_package(hrx CONFIG REQUIRED)
-find_package(loomc CONFIG REQUIRED)
+set(HRX_SOURCE_DIR "" CACHE PATH "Optional HRX source tree to build instead of using installed hrx and loomc packages")
+
+if(HRX_SOURCE_DIR)
+    include(ExternalProject)
+    include(GNUInstallDirs)
+
+    get_filename_component(HRX_SOURCE_DIR "${HRX_SOURCE_DIR}" ABSOLUTE)
+    if(NOT EXISTS "${HRX_SOURCE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR "HRX_SOURCE_DIR does not contain a CMakeLists.txt: ${HRX_SOURCE_DIR}")
+    endif()
+
+    set(GGML_HRX_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/hrx")
+    set(GGML_HRX_BUILD_DIR "${GGML_HRX_PREFIX}/src/ggml-hrx-deps-build")
+    set(GGML_HRX_LIB "${GGML_HRX_BUILD_DIR}/libhrx/src/libhrx/${CMAKE_SHARED_LIBRARY_PREFIX}hrx${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    set(GGML_LOOMC_LIB "${GGML_HRX_BUILD_DIR}/loom/binding/c/${CMAKE_SHARED_LIBRARY_PREFIX}loomc${CMAKE_SHARED_LIBRARY_SUFFIX}")
+
+    set(GGML_HRX_CMAKE_ARGS
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+        -DIREE_BUILD_TESTS=OFF
+        -DIREE_BUILD_BENCHMARKS=OFF
+        -DIREE_HAL_DRIVER_DEFAULTS=OFF
+        -DIREE_HAL_DRIVER_AMDGPU=ON
+        -DIREE_HAL_DRIVER_LOCAL_SYNC=ON
+        -DIREE_HAL_DRIVER_LOCAL_TASK=ON
+        -DIREE_HAL_DRIVER_NULL=ON
+        -DLIBHRX_BUILD_CTS=OFF
+    )
+    if(IREE_ROCM_PATH)
+        list(APPEND GGML_HRX_CMAKE_ARGS -DIREE_ROCM_PATH=${IREE_ROCM_PATH})
+    endif()
+    if(FETCHCONTENT_BASE_DIR)
+        list(APPEND GGML_HRX_CMAKE_ARGS -DFETCHCONTENT_BASE_DIR=${FETCHCONTENT_BASE_DIR})
+    endif()
+
+    ExternalProject_Add(ggml-hrx-deps
+        SOURCE_DIR "${HRX_SOURCE_DIR}"
+        PREFIX "${GGML_HRX_PREFIX}"
+        CMAKE_ARGS ${GGML_HRX_CMAKE_ARGS}
+        BUILD_COMMAND ${CMAKE_COMMAND} --build . --target hrx loomc_shared --config ${CMAKE_BUILD_TYPE}
+        INSTALL_COMMAND ""
+        BUILD_BYPRODUCTS "${GGML_HRX_LIB}" "${GGML_LOOMC_LIB}"
+        UPDATE_COMMAND ""
+    )
+
+    add_library(hrx::hrx SHARED IMPORTED GLOBAL)
+    set_target_properties(hrx::hrx PROPERTIES
+        IMPORTED_LOCATION "${GGML_HRX_LIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${HRX_SOURCE_DIR}/libhrx/include")
+    add_dependencies(hrx::hrx ggml-hrx-deps)
+
+    add_library(loomc::loomc SHARED IMPORTED GLOBAL)
+    set_target_properties(loomc::loomc PROPERTIES
+        IMPORTED_LOCATION "${GGML_LOOMC_LIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${HRX_SOURCE_DIR}/loom/binding/c/include"
+        INTERFACE_COMPILE_DEFINITIONS LOOMC_USING_SHARED_LIBRARY)
+    add_dependencies(loomc::loomc ggml-hrx-deps)
+else()
+    find_package(hrx CONFIG REQUIRED)
+    find_package(loomc CONFIG REQUIRED)
+endif()
 
 add_library(ggml-hrx-graph STATIC
     graph/command-program.cpp
