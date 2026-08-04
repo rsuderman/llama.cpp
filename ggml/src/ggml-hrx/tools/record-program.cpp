@@ -4,47 +4,21 @@
 #include "weight-residency.h"
 #include "graph-ir.h"
 #include "reactive-plan.h"
+#include "tool-utils.h"
 
 #include "hrx_runtime.h"
 
 #include <algorithm>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
-#include <iterator>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
-namespace {
-
-std::string take_status(hrx_status_t status) {
-    if (hrx_status_is_ok(status)) return {};
-    char * message = nullptr;
-    size_t length = 0;
-    hrx_status_t format_status = hrx_status_to_string(status, &message, &length);
-    if (!hrx_status_is_ok(format_status)) hrx_status_ignore(format_status);
-    const std::string result = message != nullptr ? message : "unknown HRX error";
-    hrx_status_free_message(message);
-    hrx_status_ignore(status);
-    return result;
-}
-
-void check(hrx_status_t status, const std::string & operation) {
-    const std::string error = take_status(status);
-    if (!error.empty()) throw std::runtime_error(operation + ": " + error);
-}
-
-void write_file(const std::filesystem::path & path, const std::string & contents) {
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    if (!output) throw std::runtime_error("cannot create " + path.string());
-    output << contents;
-    if (contents.empty() || contents.back() != '\n') output << '\n';
-}
-
-} // namespace
+using ggml::hrx::tool::check_status;
+using ggml::hrx::tool::write_file;
 
 int main(int argc, char ** argv) {
     if (argc != 6) {
@@ -60,10 +34,8 @@ int main(int argc, char ** argv) {
         const std::filesystem::path manifest_path = argv[3];
         const std::filesystem::path corpus_directory = argv[4];
         const std::filesystem::path output_directory = argv[5];
-        std::ifstream graph_file(graph_path, std::ios::binary);
-        if (!graph_file) throw std::runtime_error("cannot read " + graph_path.string());
-        const std::string graph_text {
-            std::istreambuf_iterator<char>(graph_file), std::istreambuf_iterator<char>() };
+        const std::string graph_text = ggml::hrx::tool::read_file(graph_path);
+        if (graph_text.empty()) throw std::runtime_error("cannot read " + graph_path.string());
         const ggml::hrx::Graph graph = ggml::hrx::deserialize_graph_json(graph_text);
         if (!graph.valid()) throw std::runtime_error("normalized graph is invalid");
         const ggml::hrx::ProgramPlan plan = ggml::hrx::build_reactive_plan(graph, target);
@@ -75,10 +47,10 @@ int main(int argc, char ** argv) {
         const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(plan, corpus);
         if (!commands.valid()) throw std::runtime_error(commands.errors.front());
 
-        check(hrx_gpu_initialize(0), "initialize GPU");
+        check_status(hrx_gpu_initialize(0), "initialize GPU");
         initialized = true;
-        check(hrx_gpu_device_get(0, &device), "get GPU device");
-        check(hrx_stream_create(device, 0, &stream), "create stream");
+        check_status(hrx_gpu_device_get(0, &device), "get GPU device");
+        check_status(hrx_stream_create(device, 0, &stream), "create stream");
         ggml::hrx::ExecutablePreparationOptions options;
         options.corpus_directory = corpus_directory.string();
         options.target = target;
@@ -90,7 +62,7 @@ int main(int argc, char ** argv) {
             throw std::runtime_error("largest imported binding exceeds bounded recorder limit");
         }
         hrx_buffer_t recorder_buffer = nullptr;
-        check(hrx_buffer_allocate(stream, recorder_size, HRX_MEMORY_TYPE_DEVICE_LOCAL,
+        check_status(hrx_buffer_allocate(stream, recorder_size, HRX_MEMORY_TYPE_DEVICE_LOCAL,
                                   HRX_BUFFER_USAGE_DEFAULT, &recorder_buffer), "allocate recorder buffer");
         ggml::hrx::ExecutableBindings executable_bindings;
         executable_bindings.snapshot.device_identity = target;
@@ -117,8 +89,8 @@ int main(int argc, char ** argv) {
             ggml::hrx::PreparedExecutableProgram prepared = ggml::hrx::prepare_executable_program(
                 device, stream, transfers, weights, artifacts, plan, corpus, commands, executable_bindings, options);
             std::filesystem::create_directories(output_directory);
-            write_file(output_directory / "prepared.txt", ggml::hrx::format_prepared_executable_program(prepared));
-            write_file(output_directory / "prepared.json", ggml::hrx::serialize_prepared_executable_program_json(prepared));
+            write_file(output_directory / "prepared.txt", prepared.format());
+            write_file(output_directory / "prepared.json", prepared.serialize_json());
             const std::filesystem::path artifact_directory = output_directory / "artifacts";
             for (size_t i = 0; i < prepared.artifacts().size(); ++i) {
                 const ggml::hrx::PreparedArtifactDiagnostic & artifact = prepared.artifacts()[i];
@@ -147,7 +119,7 @@ int main(int argc, char ** argv) {
                 "\nlaunched=false\n";
             write_file(output_directory / "status.txt", status);
             if (!prepared.valid()) {
-                std::cerr << ggml::hrx::format_prepared_executable_program(prepared);
+                std::cerr << prepared.format();
                 throw std::runtime_error("program preparation failed");
             }
             std::cout << "recorded workload=" << commands.workload << " target=" << target
@@ -159,7 +131,7 @@ int main(int argc, char ** argv) {
         stream = nullptr;
         hrx_device_release(device);
         device = nullptr;
-        check(hrx_gpu_shutdown(), "shutdown GPU");
+        check_status(hrx_gpu_shutdown(), "shutdown GPU");
         initialized = false;
         return 0;
     } catch (const std::exception & error) {

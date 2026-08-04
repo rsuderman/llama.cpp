@@ -140,7 +140,7 @@ struct TransferManager::Impl {
         pages.push_back(page);
         *out_index = pages.size() - 1;
         ++stats.page_allocations;
-        stats.staging_bytes = pages.size() * page_size;
+        stats.staging_bytes = static_cast<uint64_t>(pages.size()) * static_cast<uint64_t>(page_size);
         return {};
     }
 
@@ -392,20 +392,20 @@ TransferManagerStats TransferManager::stats() const {
     return impl_->stats;
 }
 
-std::string format_transfer_manager_stats(const TransferManagerStats & stats) {
+std::string TransferManagerStats::format() const {
     std::ostringstream out;
     out << "transfer manager\n"
-        << "uploads=" << stats.uploads << '\n'
-        << "downloads=" << stats.downloads << '\n'
-        << "uploaded_bytes=" << stats.uploaded_bytes << '\n'
-        << "downloaded_bytes=" << stats.downloaded_bytes << '\n'
-        << "submissions=" << stats.submissions << '\n'
-        << "consumer_waits=" << stats.consumer_waits << '\n'
-        << "producer_waits=" << stats.producer_waits << '\n'
-        << "page_allocations=" << stats.page_allocations << '\n'
-        << "page_reuses=" << stats.page_reuses << '\n'
-        << "backpressure_waits=" << stats.backpressure_waits << '\n'
-        << "staging_bytes=" << stats.staging_bytes << '\n';
+        << "uploads=" << uploads << '\n'
+        << "downloads=" << downloads << '\n'
+        << "uploaded_bytes=" << uploaded_bytes << '\n'
+        << "downloaded_bytes=" << downloaded_bytes << '\n'
+        << "submissions=" << submissions << '\n'
+        << "consumer_waits=" << consumer_waits << '\n'
+        << "producer_waits=" << producer_waits << '\n'
+        << "page_allocations=" << page_allocations << '\n'
+        << "page_reuses=" << page_reuses << '\n'
+        << "backpressure_waits=" << backpressure_waits << '\n'
+        << "staging_bytes=" << staging_bytes << '\n';
     return out.str();
 }
 

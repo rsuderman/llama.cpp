@@ -9,17 +9,6 @@
 namespace ggml::hrx {
 namespace {
 
-std::string take_status(hrx_status_t status) {
-    if (hrx_status_is_ok(status)) return {};
-    char * message = nullptr;
-    size_t length = 0;
-    hrx_status_to_string(status, &message, &length);
-    const std::string result = message != nullptr ? std::string(message, length) : "unknown HRX error";
-    hrx_status_free_message(message);
-    hrx_status_ignore(status);
-    return result;
-}
-
 struct SourceKey {
     uint64_t buffer_identity = 0;
     uint64_t generation = 0;
@@ -121,13 +110,19 @@ WeightResidencyResult WeightResidencyCache::acquire(hrx_stream_t stream, Transfe
     auto entry = std::make_shared<WeightResidencyLease::Entry>();
     entry->length = source.length;
     entry->layout = source.layout;
-    std::string error = take_status(hrx_buffer_allocate(stream, source.length, HRX_MEMORY_TYPE_DEVICE_LOCAL,
+    ErrorResult error = take_status(hrx_buffer_allocate(stream, source.length, HRX_MEMORY_TYPE_DEVICE_LOCAL,
                                                         HRX_BUFFER_USAGE_DEFAULT, &entry->buffer));
-    if (!error.empty()) { result.error = "allocate resident weight: " + error; return result; }
-    error = transfers.upload(static_cast<const uint8_t *>(source.host_data) + source.offset,
-                             entry->buffer, 0, source.length);
-    if (error.empty()) error = transfers.join(stream);
-    if (!error.empty()) { result.error = "initialize resident weight: " + error; return result; }
+    if (error) { result.error = "allocate resident weight: " + *error; return result; }
+    if (std::string transfer_error = transfers.upload(
+            static_cast<const uint8_t *>(source.host_data) + source.offset,
+            entry->buffer, 0, source.length); !transfer_error.empty()) {
+        result.error = "initialize resident weight: " + transfer_error;
+        return result;
+    }
+    if (std::string transfer_error = transfers.join(stream); !transfer_error.empty()) {
+        result.error = "initialize resident weight: " + transfer_error;
+        return result;
+    }
 
     impl_->entries.emplace(key, entry);
     ++impl_->stats.misses;

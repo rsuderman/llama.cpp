@@ -1,6 +1,6 @@
 #pragma once
 
-#include "hrx_runtime.h"
+#include "hrx-interop-utils.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -53,9 +53,9 @@ private:
 
 struct WeightResidencyResult {
     WeightResidencyLease lease;
-    std::string error;
+    ErrorResult error;
 
-    bool valid() const { return error.empty() && lease.valid(); }
+    bool valid() const { return !error && lease.valid(); }
 };
 
 // Owns the exceptional host-backed weights used by prepared executables. The

@@ -10,6 +10,12 @@
 namespace ggml::hrx {
 
 struct TransferManagerOptions {
+    // Eight MiB keeps a single mapped allocation comfortably larger than the
+    // common activation transfers while bounding memcpy and submission
+    // granularity for larger weights. The 32 MiB cap permits four pages, which
+    // is enough for recording, in-flight transfer, and reuse to overlap without
+    // letting staging memory scale with model size. These are policy defaults,
+    // not correctness constraints; callers may tune both together.
     size_t staging_page_size = 8ull * 1024ull * 1024ull;
     size_t maximum_staging_bytes = 32ull * 1024ull * 1024ull;
 };
@@ -25,7 +31,9 @@ struct TransferManagerStats {
     uint64_t page_allocations = 0;
     uint64_t page_reuses = 0;
     uint64_t backpressure_waits = 0;
-    size_t staging_bytes = 0;
+    uint64_t staging_bytes = 0;
+
+    std::string format() const;
 };
 
 // Owns the host-visible staging pool and its transfer timeline. Host data is
@@ -86,7 +94,5 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
-
-std::string format_transfer_manager_stats(const TransferManagerStats & stats);
 
 } // namespace ggml::hrx

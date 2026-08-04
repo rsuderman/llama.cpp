@@ -1,4 +1,5 @@
-#include "../loom-jit/ggml-hrx-loom-jit.h"
+#include "../loom-jit.h"
+#include "tool-utils.h"
 
 #include <filesystem>
 #include <fstream>
@@ -6,33 +7,8 @@
 #include <string>
 #include <vector>
 
-namespace {
-
-static std::string read_file(const std::filesystem::path & path) {
-    std::ifstream input(path, std::ios::binary);
-    return { std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
-}
-
-static void write_file(const std::filesystem::path & path, const void * data, size_t size) {
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    output.write(static_cast<const char *>(data), static_cast<std::streamsize>(size));
-}
-
-static int fail_status(const char * operation, hrx_status_t status) {
-    char * message = nullptr;
-    size_t message_length = 0;
-    hrx_status_t format_status = hrx_status_to_string(status, &message, &message_length);
-    if (!hrx_status_is_ok(format_status)) {
-        hrx_status_ignore(format_status);
-        message = nullptr;
-    }
-    std::cerr << operation << ": " << (message ? message : "unknown HRX status") << '\n';
-    hrx_status_free_message(message);
-    hrx_status_ignore(status);
-    return 1;
-}
-
-} // namespace
+using ggml::hrx::tool::report_status;
+using ggml::hrx::tool::write_file;
 
 int main(int argc, char ** argv) {
     std::string target;
@@ -59,12 +35,12 @@ int main(int argc, char ** argv) {
                      "--output dir [--config key=value] [--workload value]\n";
         return 2;
     }
-    const std::string source = read_file(source_path);
+    const std::string source = ggml::hrx::tool::read_file(source_path);
     if (source.empty()) {
         std::cerr << "cannot read Loom source: " << source_path << '\n';
         return 2;
     }
-    std::vector<ggml_hrx_loom_jit_config_binding_t> configs;
+    std::vector<ggml_hrx_loom_jit_config_binding> configs;
     std::vector<std::string> config_keys;
     std::vector<std::string> config_values;
     for (const std::string & item : config_storage) {
@@ -78,16 +54,14 @@ int main(int argc, char ** argv) {
     }
     for (size_t i = 0; i < config_keys.size(); ++i) configs.push_back({ config_keys[i].c_str(), config_values[i].c_str() });
 
-    ggml_hrx_loom_jit_amdgpu_options_t jit_options = {};
-    jit_options.structure_size = sizeof(jit_options);
+    ggml_hrx_loom_jit_amdgpu_options jit_options;
     jit_options.processor = target.c_str();
     jit_options.identifier = target.c_str();
-    ggml_hrx_loom_jit_amdgpu_t jit = nullptr;
+    ggml_hrx_loom_jit_amdgpu * jit = nullptr;
     hrx_status_t status = ggml_hrx_loom_jit_amdgpu_create(&jit_options, &jit);
-    if (!hrx_status_is_ok(status)) return fail_status("create JIT", status);
+    if (!report_status(status, "create JIT")) return 1;
 
-    ggml_hrx_loom_jit_compile_options_t options = {};
-    options.structure_size = sizeof(options);
+    ggml_hrx_loom_jit_compile_options options;
     options.source_data = source.data();
     options.source_size = source.size();
     options.source_format = GGML_HRX_LOOM_JIT_SOURCE_FORMAT_TEXT;
@@ -100,11 +74,12 @@ int main(int argc, char ** argv) {
     options.workload_arguments = workload.data();
     options.workload_argument_count = workload.size();
     options.evaluate_launch_config = !workload.empty();
-    ggml_hrx_loom_jit_compile_result_t result = {};
+    ggml_hrx_loom_jit_compile_result result;
     status = ggml_hrx_loom_jit_amdgpu_compile(jit, &options, &result);
     if (!hrx_status_is_ok(status)) {
         ggml_hrx_loom_jit_amdgpu_release(jit);
-        return fail_status("compile kernel", status);
+        report_status(status, "compile kernel");
+        return 1;
     }
     std::filesystem::create_directories(output_path);
     write_file(std::filesystem::path(output_path) / "kernel.hsaco", result.hsaco_data, result.hsaco_size);
@@ -118,7 +93,6 @@ int main(int argc, char ** argv) {
            << ',' << result.launch_config.workgroup_count[2] << '\n'
            << "workgroup_size=" << result.launch_config.workgroup_size[0] << ',' << result.launch_config.workgroup_size[1]
            << ',' << result.launch_config.workgroup_size[2] << '\n';
-    ggml_hrx_loom_jit_compile_result_deinitialize(&result);
     ggml_hrx_loom_jit_amdgpu_release(jit);
     return 0;
 }

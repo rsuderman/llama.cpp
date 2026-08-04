@@ -1,7 +1,7 @@
 #include "executable-program.h"
 #include "transfer-manager.h"
 
-#include "loom-jit/ggml-hrx-loom-jit.h"
+#include "loom-jit.h"
 
 #include "nlohmann/json.hpp"
 
@@ -24,7 +24,7 @@ struct Artifact {
     hrx_executable_t executable = nullptr;
     uint32_t export_ordinal = 0;
     hrx_executable_export_info_t export_info = {};
-    ggml_hrx_loom_jit_launch_config_t launch = {};
+    ggml_hrx_loom_jit_launch_config launch;
     PreparedArtifactDiagnostic diagnostic;
 };
 
@@ -42,18 +42,6 @@ std::string read_file(const std::filesystem::path & path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) return {};
     return { std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
-}
-
-std::string take_status(hrx_status_t status) {
-    if (hrx_status_is_ok(status)) return {};
-    char * message = nullptr;
-    size_t length = 0;
-    hrx_status_t format_status = hrx_status_to_string(status, &message, &length);
-    if (!hrx_status_is_ok(format_status)) hrx_status_ignore(format_status);
-    const std::string result = message != nullptr ? message : "unknown HRX error";
-    hrx_status_free_message(message);
-    hrx_status_ignore(status);
-    return result;
 }
 
 const KernelDefinition * find_kernel(const KernelCorpus & corpus, const std::string & id) {
@@ -157,26 +145,12 @@ struct PreparedExecutableProgram::Impl {
     hrx_graph_t graph = nullptr;
     hrx_graph_exec_t graph_exec = nullptr;
     hrx_buffer_t transient_buffer = nullptr;
-    size_t node_count = 0;
-    size_t retained_bytes = 0;
-    size_t borrowed_device_weight_bytes = 0;
-    size_t resident_host_weight_bytes = 0;
-    size_t host_staging_bytes = 0;
-    size_t transient_bytes = 0;
-    size_t source_command_count = 0;
-    bool command_prefix = false;
-    bool split_commands = false;
-    bool serialized_commands = false;
-    AllocationFingerprint allocation_fingerprint;
     hrx_device_t device = nullptr;
     TransferManager * transfers = nullptr;
     std::vector<HostStaging> host_staging;
     std::vector<WeightResidencyLease> resident_weights;
     std::vector<hrx_buffer_t> retained_buffers;
     std::vector<std::shared_ptr<Artifact>> retained_artifacts;
-    std::vector<PreparedArtifactDiagnostic> artifacts;
-    std::vector<PreparedCommandDiagnostic> commands;
-    std::vector<std::string> errors;
     bool launch_in_flight = false;
 };
 
@@ -184,26 +158,10 @@ PreparedExecutableProgram::PreparedExecutableProgram() : impl_(new Impl()) {}
 PreparedExecutableProgram::~PreparedExecutableProgram() = default;
 PreparedExecutableProgram::PreparedExecutableProgram(PreparedExecutableProgram &&) noexcept = default;
 PreparedExecutableProgram & PreparedExecutableProgram::operator=(PreparedExecutableProgram &&) noexcept = default;
-bool PreparedExecutableProgram::valid() const { return impl_ != nullptr && impl_->errors.empty() && impl_->graph_exec != nullptr; }
-size_t PreparedExecutableProgram::node_count() const { return impl_ == nullptr ? 0 : impl_->node_count; }
-size_t PreparedExecutableProgram::artifact_count() const { return impl_ == nullptr ? 0 : impl_->artifacts.size(); }
-size_t PreparedExecutableProgram::retained_bytes() const { return impl_ == nullptr ? 0 : impl_->retained_bytes; }
-size_t PreparedExecutableProgram::borrowed_device_weight_bytes() const { return impl_ == nullptr ? 0 : impl_->borrowed_device_weight_bytes; }
-size_t PreparedExecutableProgram::resident_host_weight_bytes() const { return impl_ == nullptr ? 0 : impl_->resident_host_weight_bytes; }
-size_t PreparedExecutableProgram::host_staging_bytes() const { return impl_ == nullptr ? 0 : impl_->host_staging_bytes; }
-size_t PreparedExecutableProgram::transient_bytes() const { return impl_ == nullptr ? 0 : impl_->transient_bytes; }
-size_t PreparedExecutableProgram::source_command_count() const { return impl_ == nullptr ? 0 : impl_->source_command_count; }
-bool PreparedExecutableProgram::command_prefix() const { return impl_ != nullptr && impl_->command_prefix; }
-bool PreparedExecutableProgram::split_commands() const { return impl_ != nullptr && impl_->split_commands; }
-bool PreparedExecutableProgram::serialized_commands() const { return impl_ != nullptr && impl_->serialized_commands; }
-const AllocationFingerprint & PreparedExecutableProgram::allocation_fingerprint() const { return impl_->allocation_fingerprint; }
-const std::vector<std::string> & PreparedExecutableProgram::errors() const { return impl_->errors; }
-const std::vector<PreparedArtifactDiagnostic> & PreparedExecutableProgram::artifacts() const { return impl_->artifacts; }
-const std::vector<PreparedCommandDiagnostic> & PreparedExecutableProgram::commands() const { return impl_->commands; }
 
-std::string PreparedExecutableProgram::rebind(const ExecutableBindings & bindings) {
+ErrorResult PreparedExecutableProgram::rebind(const ExecutableBindings & bindings) {
     if (!valid()) return "cannot rebind an invalid prepared executable";
-    if (fingerprint_bindings(bindings.snapshot) != impl_->allocation_fingerprint) {
+    if (fingerprint_bindings(bindings.snapshot) != allocation_fingerprint_) {
         return "live allocation fingerprint does not match prepared executable";
     }
     for (Impl::HostStaging & staging : impl_->host_staging) {
@@ -220,7 +178,7 @@ std::string PreparedExecutableProgram::rebind(const ExecutableBindings & binding
     return {};
 }
 
-std::string PreparedExecutableProgram::launch(hrx_stream_t stream) {
+ErrorResult PreparedExecutableProgram::launch(hrx_stream_t stream) {
     if (!valid() || stream == nullptr) return "cannot launch an invalid prepared executable";
     if (impl_->transfers == nullptr) return "prepared executable has no transfer manager";
     const bool has_uploads = std::any_of(impl_->host_staging.begin(), impl_->host_staging.end(),
@@ -237,12 +195,14 @@ std::string PreparedExecutableProgram::launch(hrx_stream_t stream) {
     }
     std::string error = impl_->transfers->join(stream);
     if (!error.empty()) return "join executable uploads: " + error;
-    error = take_status(hrx_graph_exec_launch(impl_->graph_exec, stream));
-    if (error.empty()) impl_->launch_in_flight = true;
-    return error;
+    if (ErrorResult launch_error = take_status(hrx_graph_exec_launch(impl_->graph_exec, stream))) {
+        return launch_error;
+    }
+    impl_->launch_in_flight = true;
+    return {};
 }
 
-std::string PreparedExecutableProgram::complete_after_synchronize() {
+ErrorResult PreparedExecutableProgram::complete_after_synchronize() {
     if (!valid()) return "cannot complete an invalid prepared executable";
     if (impl_->transfers == nullptr) return "prepared executable has no transfer manager";
     for (const Impl::HostStaging & staging : impl_->host_staging) {
@@ -259,81 +219,120 @@ void PreparedExecutableProgram::abandon_after_synchronize() {
     if (impl_ != nullptr) impl_->launch_in_flight = false;
 }
 
-PreparedExecutableProgram prepare_executable_program(
-    hrx_device_t device, hrx_stream_t stream, TransferManager & transfers,
-    WeightResidencyCache & weights,
-    ExecutableArtifactRepository & artifact_repository,
-    const ProgramPlan & plan, const KernelCorpus & corpus, const CommandProgram & commands,
-    const ExecutableBindings & bindings,
-    const ExecutablePreparationOptions & options) {
+class ExecutableProgramPreparer {
+public:
+    ExecutableProgramPreparer(
+        hrx_device_t device, hrx_stream_t stream, TransferManager & transfers,
+        WeightResidencyCache & weights, ExecutableArtifactRepository & artifact_repository,
+        const ProgramPlan & plan, const KernelCorpus & corpus, const CommandProgram & commands,
+        const ExecutableBindings & bindings, const ExecutablePreparationOptions & options)
+        : result(), impl(*result.impl_), device(device), stream(stream), transfers(transfers),
+          weights(weights), artifact_repository(artifact_repository), plan(plan), corpus(corpus),
+          commands(commands), bindings(bindings), options(options),
+          record_command_count(std::min(options.command_limit, commands.commands.size())),
+          command_artifacts(commands.commands.size()), command_constants(commands.commands.size()) {}
+
+    PreparedExecutableProgram run();
+
+private:
+    bool validate_and_initialize();
+    bool allocate_transients();
+    bool compile_artifacts();
+    bool bind_storage();
+    bool record_graph();
+    bool resolve_binding(const CommandBinding & binding, hrx_buffer_ref_t & result_ref);
+
     PreparedExecutableProgram result;
-    auto & impl = *result.impl_;
-    if (device == nullptr || stream == nullptr) impl.errors.push_back("device and stream are required");
-    if (!transfers.valid()) impl.errors.push_back("valid transfer manager is required: " + transfers.initialization_error());
-    if (!weights.valid()) impl.errors.push_back("valid weight residency cache is required: " + weights.initialization_error());
-    if (!commands.valid()) impl.errors.insert(impl.errors.end(), commands.errors.begin(), commands.errors.end());
-    if (commands.target != options.target) impl.errors.push_back("preparation target does not match command program");
+    PreparedExecutableProgram::Impl & impl;
+    hrx_device_t device;
+    hrx_stream_t stream;
+    TransferManager & transfers;
+    WeightResidencyCache & weights;
+    ExecutableArtifactRepository & artifact_repository;
+    const ProgramPlan & plan;
+    const KernelCorpus & corpus;
+    const CommandProgram & commands;
+    const ExecutableBindings & bindings;
+    const ExecutablePreparationOptions & options;
+    size_t record_command_count;
+    ErrorResult error;
+    std::vector<std::shared_ptr<Artifact>> command_artifacts;
+    std::vector<std::vector<uint8_t>> command_constants;
+    std::unordered_map<StorageId, hrx_buffer_ref_t> storage_refs;
+};
+
+bool ExecutableProgramPreparer::validate_and_initialize() {
+    if (device == nullptr || stream == nullptr) result.errors_.push_back("device and stream are required");
+    if (!transfers.valid()) result.errors_.push_back("valid transfer manager is required: " + transfers.initialization_error());
+    if (!weights.valid()) result.errors_.push_back("valid weight residency cache is required: " + weights.initialization_error());
+    if (!commands.valid()) result.errors_.insert(result.errors_.end(), commands.errors.begin(), commands.errors.end());
+    if (commands.target != options.target) result.errors_.push_back("preparation target does not match command program");
     const VerificationResult verification = verify_command_program(plan, corpus, commands);
-    impl.errors.insert(impl.errors.end(), verification.errors.begin(), verification.errors.end());
+    result.errors_.insert(result.errors_.end(), verification.errors.begin(), verification.errors.end());
     const VerificationResult binding_verification = verify_binding_snapshot(plan, bindings.snapshot);
-    impl.errors.insert(impl.errors.end(), binding_verification.errors.begin(), binding_verification.errors.end());
+    result.errors_.insert(result.errors_.end(), binding_verification.errors.begin(), binding_verification.errors.end());
     if (bindings.storages.size() != bindings.snapshot.bindings.size()) {
-        impl.errors.push_back("executable binding table does not match binding snapshot");
+        result.errors_.push_back("executable binding table does not match binding snapshot");
     }
-    if (!impl.errors.empty()) return result;
+    if (!result.errors_.empty()) return false;
 
     impl.device = device;
     impl.transfers = &transfers;
-    impl.source_command_count = commands.commands.size();
-    const size_t record_command_count = std::min(options.command_limit, commands.commands.size());
-    impl.command_prefix = record_command_count != commands.commands.size();
-    impl.split_commands = options.split_commands;
-    impl.serialized_commands = options.serialize_commands || options.split_commands;
-    impl.allocation_fingerprint = fingerprint_bindings(bindings.snapshot);
-    std::string error;
+    result.source_command_count_ = commands.commands.size();
+    result.command_prefix_ = record_command_count != commands.commands.size();
+    result.split_commands_ = options.split_commands;
+    result.serialized_commands_ = options.serialize_commands || options.split_commands;
+    result.allocation_fingerprint_ = fingerprint_bindings(bindings.snapshot);
+    return true;
+}
+
+bool ExecutableProgramPreparer::allocate_transients() {
     if (commands.transients.arena_size != 0) {
         error = take_status(hrx_buffer_allocate(stream, commands.transients.arena_size, HRX_MEMORY_TYPE_DEVICE_LOCAL,
             HRX_BUFFER_USAGE_DEFAULT, &impl.transient_buffer));
-        if (!error.empty()) { impl.errors.push_back("allocate transient arena: " + error); return result; }
+        if (error) { result.errors_.push_back("allocate transient arena: " + *error); return false; }
     }
-    impl.transient_bytes = commands.transients.arena_size;
+    result.transient_bytes_ = commands.transients.arena_size;
     for (const ConstantInitialization & initialization : commands.initializations) {
         const auto allocation = std::find_if(commands.transients.allocations.begin(), commands.transients.allocations.end(),
             [&](const TransientAllocation & item) { return item.storage == initialization.storage; });
         if (allocation == commands.transients.allocations.end() || impl.transient_buffer == nullptr) {
-            impl.errors.push_back("constant initialization does not resolve to transient storage");
-            return result;
+            result.errors_.push_back("constant initialization does not resolve to transient storage");
+            return false;
         }
-        error = transfers.upload(initialization.data.data(), impl.transient_buffer,
+        const std::string upload_error = transfers.upload(initialization.data.data(), impl.transient_buffer,
             allocation->arena_offset, initialization.data.size());
-        if (!error.empty()) { impl.errors.push_back("upload " + initialization.label + ": " + error); return result; }
+        if (!upload_error.empty()) {
+            result.errors_.push_back("upload " + initialization.label + ": " + upload_error);
+            return false;
+        }
     }
+    return true;
+}
 
-    ggml_hrx_loom_jit_amdgpu_options_t jit_options = {};
-    jit_options.structure_size = sizeof(jit_options);
+bool ExecutableProgramPreparer::compile_artifacts() {
+    ggml_hrx_loom_jit_amdgpu_options jit_options;
     jit_options.processor = options.target.c_str();
     jit_options.identifier = options.target.c_str();
     jit_options.sanitizer = options.sanitizer.empty() ? nullptr : options.sanitizer.c_str();
     jit_options.sanitizer_reporting = options.sanitizer_reporting.empty() ? nullptr : options.sanitizer_reporting.c_str();
-    ggml_hrx_loom_jit_amdgpu_t jit = nullptr;
+    ggml_hrx_loom_jit_amdgpu * jit = nullptr;
     error = take_status(ggml_hrx_loom_jit_amdgpu_create(&jit_options, &jit));
-    if (!error.empty()) { impl.errors.push_back("create Loom JIT: " + error); return result; }
+    if (error) { result.errors_.push_back("create Loom JIT: " + *error); return false; }
 
     // Compilation and executable publication are serialized per device. This is
     // startup work; steady execution only queries the retained repository.
     std::unique_lock<std::mutex> artifact_lock(artifact_repository.impl_->mutex);
     auto & artifact_cache = artifact_repository.impl_->artifacts;
-    std::vector<std::shared_ptr<Artifact>> command_artifacts(commands.commands.size());
-    std::vector<std::vector<uint8_t>> command_constants(commands.commands.size());
     std::set<std::string> program_artifact_keys;
     for (const Command & command : commands.commands) {
         if (command.ordinal >= record_command_count) break;
         if (command.kind != CommandKind::Kernel) continue;
         const KernelDefinition * definition = find_kernel(corpus, command.kernel_id);
-        if (definition == nullptr) { impl.errors.push_back("missing kernel " + command.kernel_id); break; }
+        if (definition == nullptr) { result.errors_.push_back("missing kernel " + command.kernel_id); break; }
         const PackedKernelConstants constants = pack_kernel_constants(*definition, command);
         if (!constants.valid()) {
-            for (const std::string & item : constants.errors) impl.errors.push_back(command.kernel_id + ": " + item);
+            for (const std::string & item : constants.errors) result.errors_.push_back(command.kernel_id + ": " + item);
             break;
         }
         command_constants[command.ordinal] = constants.bytes;
@@ -345,7 +344,7 @@ PreparedExecutableProgram prepare_executable_program(
             command_artifacts[command.ordinal] = found->second;
             if (program_artifact_keys.insert(key).second) {
                 impl.retained_artifacts.push_back(found->second);
-                impl.artifacts.push_back(found->second->diagnostic);
+                result.artifacts_.push_back(found->second->diagnostic);
             }
             continue;
         }
@@ -353,25 +352,25 @@ PreparedExecutableProgram prepare_executable_program(
         const std::filesystem::path source_path = std::filesystem::path(options.corpus_directory) /
             definition->compile_recipe.primary_sources.front();
         const std::string source = read_file(source_path);
-        if (source.empty()) { impl.errors.push_back("cannot read Loom source " + source_path.string()); break; }
+        if (source.empty()) { result.errors_.push_back("cannot read Loom source " + source_path.string()); break; }
         std::vector<std::string> dependency_text;
         std::vector<std::string> dependency_paths;
-        std::vector<ggml_hrx_loom_jit_source_t> dependencies;
+        std::vector<ggml_hrx_loom_jit_source> dependencies;
         dependency_text.reserve(definition->compile_recipe.library_sources.size());
         dependency_paths.reserve(definition->compile_recipe.library_sources.size());
         dependencies.reserve(definition->compile_recipe.library_sources.size());
         for (const std::string & relative : definition->compile_recipe.library_sources) {
             dependency_paths.push_back((std::filesystem::path(options.corpus_directory) / relative).string());
             dependency_text.push_back(read_file(dependency_paths.back()));
-            if (dependency_text.back().empty()) { impl.errors.push_back("cannot read Loom dependency " + dependency_paths.back()); break; }
+            if (dependency_text.back().empty()) { result.errors_.push_back("cannot read Loom dependency " + dependency_paths.back()); break; }
         }
-        if (!impl.errors.empty()) break;
+        if (!result.errors_.empty()) break;
         for (size_t i = 0; i < dependency_text.size(); ++i) dependencies.push_back({
             dependency_text[i].data(), dependency_text[i].size(), GGML_HRX_LOOM_JIT_SOURCE_FORMAT_TEXT,
             dependency_paths[i].c_str() });
         std::vector<std::string> config_keys;
         std::vector<std::string> config_values;
-        std::vector<ggml_hrx_loom_jit_config_binding_t> configs;
+        std::vector<ggml_hrx_loom_jit_config_binding> configs;
         for (const auto & item : command.compile_parameters) {
             config_keys.push_back(item.first);
             config_values.push_back(item.second);
@@ -381,14 +380,13 @@ PreparedExecutableProgram prepare_executable_program(
         for (const KernelScalarDefinition & parameter : definition->workload_parameters) {
             const auto value = command.scalar_parameters.find(parameter.name);
             if (value == command.scalar_parameters.end() || parameter.type != "index") {
-                impl.errors.push_back("invalid workload ABI for " + command.kernel_id + " parameter " + parameter.name);
+                result.errors_.push_back("invalid workload ABI for " + command.kernel_id + " parameter " + parameter.name);
                 break;
             }
             workload.push_back(value->second);
         }
-        if (!impl.errors.empty()) break;
-        ggml_hrx_loom_jit_compile_options_t compile_options = {};
-        compile_options.structure_size = sizeof(compile_options);
+        if (!result.errors_.empty()) break;
+        ggml_hrx_loom_jit_compile_options compile_options;
         compile_options.source_data = source.data();
         compile_options.source_size = source.size();
         compile_options.source_format = GGML_HRX_LOOM_JIT_SOURCE_FORMAT_TEXT;
@@ -403,9 +401,9 @@ PreparedExecutableProgram prepare_executable_program(
         compile_options.workload_arguments = workload.data();
         compile_options.workload_argument_count = workload.size();
         compile_options.evaluate_launch_config = true;
-        ggml_hrx_loom_jit_compile_result_t compiled = {};
+        ggml_hrx_loom_jit_compile_result compiled;
         error = take_status(ggml_hrx_loom_jit_amdgpu_compile(jit, &compile_options, &compiled));
-        if (!error.empty()) { impl.errors.push_back("compile " + key + ": " + error); break; }
+        if (error) { result.errors_.push_back("compile " + key + ": " + *error); break; }
 
         auto artifact = std::make_shared<Artifact>();
         artifact->launch = compiled.launch_config;
@@ -422,17 +420,16 @@ PreparedExecutableProgram prepare_executable_program(
         }
         error = take_status(hrx_executable_load_data(device, compiled.hsaco_data, compiled.hsaco_size,
             "amdgpu", options.target.c_str(), &artifact->executable));
-        ggml_hrx_loom_jit_compile_result_deinitialize(&compiled);
-        if (!error.empty()) { impl.errors.push_back("load " + key + ": " + error); break; }
+        if (error) { result.errors_.push_back("load " + key + ": " + *error); break; }
         error = take_status(hrx_executable_lookup_export_by_name(artifact->executable, definition->symbol.c_str(),
             &artifact->export_ordinal));
-        if (error.empty()) error = take_status(hrx_executable_export_info(artifact->executable,
+        if (!error) error = take_status(hrx_executable_export_info(artifact->executable,
             artifact->export_ordinal, &artifact->export_info));
-        if (!error.empty()) { impl.errors.push_back("inspect " + key + ": " + error); break; }
+        if (error) { result.errors_.push_back("inspect " + key + ": " + *error); break; }
         if (artifact->export_info.binding_count != definition->bindings.size() ||
             artifact->export_info.constant_byte_length != constants.bytes.size() ||
             artifact->export_info.parameter_count != definition->bindings.size() + definition->launch_parameters.size()) {
-            impl.errors.push_back("compiled ABI does not match manifest for " + key +
+            result.errors_.push_back("compiled ABI does not match manifest for " + key +
                 ": bindings=" + std::to_string(artifact->export_info.binding_count) + "/" +
                 std::to_string(definition->bindings.size()) + " constants=" +
                 std::to_string(artifact->export_info.constant_byte_length) + "/" +
@@ -444,11 +441,11 @@ PreparedExecutableProgram prepare_executable_program(
         if (artifact->launch.workgroup_count[0] == 0 || artifact->launch.workgroup_count[1] == 0 ||
             artifact->launch.workgroup_count[2] == 0 || artifact->launch.workgroup_size[0] == 0 ||
             artifact->launch.workgroup_size[1] == 0 || artifact->launch.workgroup_size[2] == 0) {
-            impl.errors.push_back("compiled launch geometry is empty for " + key);
+            result.errors_.push_back("compiled launch geometry is empty for " + key);
             break;
         }
         if (artifact->launch.workgroup_storage_bytes != 0) {
-            impl.errors.push_back("HRX graph ABI cannot encode dynamic workgroup storage for " + key);
+            result.errors_.push_back("HRX graph ABI cannot encode dynamic workgroup storage for " + key);
             break;
         }
         artifact->diagnostic.key = key;
@@ -463,18 +460,16 @@ PreparedExecutableProgram prepare_executable_program(
         artifact_cache.emplace(key, artifact);
         if (program_artifact_keys.insert(key).second) {
             impl.retained_artifacts.push_back(artifact);
-            impl.artifacts.push_back(artifact->diagnostic);
+            result.artifacts_.push_back(artifact->diagnostic);
         }
         command_artifacts[command.ordinal] = std::move(artifact);
     }
     ggml_hrx_loom_jit_amdgpu_release(jit);
     artifact_lock.unlock();
-    if (!impl.errors.empty()) return result;
+    return result.errors_.empty();
+}
 
-    error = take_status(hrx_graph_create(device, 0, &impl.graph));
-    if (!error.empty()) { impl.errors.push_back("create HRX graph: " + error); return result; }
-
-    std::unordered_map<StorageId, hrx_buffer_ref_t> storage_refs;
+bool ExecutableProgramPreparer::bind_storage() {
     std::set<hrx_buffer_t> retained;
     for (const ExecutableBufferBinding & binding : bindings.storages) {
         const auto snapshot_it = std::find_if(bindings.snapshot.bindings.begin(), bindings.snapshot.bindings.end(),
@@ -486,17 +481,17 @@ PreparedExecutableProgram prepare_executable_program(
             snapshot_it->length != binding.length || binding.length == 0 ||
             binding.offset > binding.capacity || binding.length > binding.capacity - binding.offset ||
             !storage_refs.emplace(binding.storage, hrx_buffer_ref_t {}).second) {
-            impl.errors.push_back("concrete binding table disagrees with snapshot for storage " +
+            result.errors_.push_back("concrete binding table disagrees with snapshot for storage " +
                                   std::to_string(binding.storage));
-            return result;
+            return false;
         }
         hrx_buffer_t concrete_buffer = binding.buffer;
         size_t concrete_offset = binding.offset;
         const ResourceContract & resource = plan.resources.resources[binding.storage];
         if (concrete_buffer == nullptr) {
             if (binding.host_data == nullptr) {
-                impl.errors.push_back("storage " + std::to_string(binding.storage) + " has no device or host allocation");
-                return result;
+                result.errors_.push_back("storage " + std::to_string(binding.storage) + " has no device or host allocation");
+                return false;
             }
             if (resource.weight) {
                 WeightSource source;
@@ -509,12 +504,12 @@ PreparedExecutableProgram prepare_executable_program(
                 source.layout = binding.layout;
                 WeightResidencyResult resident = weights.acquire(stream, transfers, source);
                 if (!resident.valid()) {
-                    impl.errors.push_back("materialize host weight storage " + std::to_string(binding.storage) + ": " + resident.error);
-                    return result;
+                    result.errors_.push_back("materialize host weight storage " + std::to_string(binding.storage) + ": " + *resident.error);
+                    return false;
                 }
                 concrete_buffer = resident.lease.buffer();
                 concrete_offset = 0;
-                impl.resident_host_weight_bytes += binding.length;
+                result.resident_host_weight_bytes_ += binding.length;
                 impl.resident_weights.push_back(std::move(resident.lease));
             } else {
                 PreparedExecutableProgram::Impl::HostStaging staging;
@@ -526,14 +521,14 @@ PreparedExecutableProgram prepare_executable_program(
                 staging.download = binding.download_after_completion;
                 error = take_status(hrx_buffer_allocate(stream, binding.length, HRX_MEMORY_TYPE_DEVICE_LOCAL,
                     HRX_BUFFER_USAGE_DEFAULT, &staging.buffer));
-                if (!error.empty()) {
-                    impl.errors.push_back("allocate host staging for storage " + std::to_string(binding.storage) + ": " + error);
-                    return result;
+                if (error) {
+                    result.errors_.push_back("allocate host staging for storage " + std::to_string(binding.storage) + ": " + *error);
+                    return false;
                 }
                 concrete_buffer = staging.buffer;
                 concrete_offset = 0;
-                impl.host_staging_bytes += binding.length;
-                impl.retained_bytes += binding.length;
+                result.host_staging_bytes_ += binding.length;
+                result.retained_bytes_ += binding.length;
                 impl.host_staging.push_back(staging);
             }
         } else if (retained.insert(concrete_buffer).second) {
@@ -541,45 +536,52 @@ PreparedExecutableProgram prepare_executable_program(
             impl.retained_buffers.push_back(concrete_buffer);
         }
         if (concrete_buffer != nullptr && binding.buffer != nullptr && resource.weight) {
-            impl.borrowed_device_weight_bytes += binding.length;
+            result.borrowed_device_weight_bytes_ += binding.length;
         }
         storage_refs[binding.storage] = { concrete_buffer, concrete_offset, binding.length };
     }
-    impl.retained_bytes += commands.transients.arena_size;
+    result.retained_bytes_ += commands.transients.arena_size;
     for (const PreparedExecutableProgram::Impl::HostStaging & staging : impl.host_staging) {
         if (!staging.initialize) continue;
-        error = transfers.upload(staging.host_data, staging.buffer, 0, staging.length);
-        if (!error.empty()) {
-            impl.errors.push_back("initialize retained host staging: " + error);
-            return result;
+        const std::string upload_error = transfers.upload(staging.host_data, staging.buffer, 0, staging.length);
+        if (!upload_error.empty()) {
+            result.errors_.push_back("initialize retained host staging: " + upload_error);
+            return false;
         }
     }
-    error = transfers.join(stream);
-    if (!error.empty()) {
-        impl.errors.push_back("join executable initialization transfers: " + error);
-        return result;
+    const std::string join_error = transfers.join(stream);
+    if (!join_error.empty()) {
+        result.errors_.push_back("join executable initialization transfers: " + join_error);
+        return false;
     }
+    return true;
+}
 
-    auto resolve_binding = [&](const CommandBinding & binding, hrx_buffer_ref_t & result_ref) -> bool {
-        if (binding.origin == BindingOrigin::Transient) {
-            const TransientAllocation * allocation = find_transient(commands, binding.transient);
-            if (allocation == nullptr || impl.transient_buffer == nullptr ||
-                binding.offset > allocation->size || binding.length > allocation->size - binding.offset) {
-                impl.errors.push_back("invalid concrete transient binding");
-                return false;
-            }
-            result_ref = { impl.transient_buffer, allocation->arena_offset + binding.offset, binding.length };
-        } else {
-            const auto concrete = storage_refs.find(binding.storage);
-            if (concrete == storage_refs.end() || binding.offset > concrete->second.length ||
-                binding.length > concrete->second.length - binding.offset) {
-                impl.errors.push_back("graph storage " + std::to_string(binding.storage) + " has no valid concrete range");
-                return false;
-            }
-            result_ref = { concrete->second.buffer, concrete->second.offset + binding.offset, binding.length };
+bool ExecutableProgramPreparer::resolve_binding(
+    const CommandBinding & binding, hrx_buffer_ref_t & result_ref) {
+    if (binding.origin == BindingOrigin::Transient) {
+        const TransientAllocation * allocation = find_transient(commands, binding.transient);
+        if (allocation == nullptr || impl.transient_buffer == nullptr ||
+            binding.offset > allocation->size || binding.length > allocation->size - binding.offset) {
+            result.errors_.push_back("invalid concrete transient binding");
+            return false;
         }
-        return true;
-    };
+        result_ref = { impl.transient_buffer, allocation->arena_offset + binding.offset, binding.length };
+    } else {
+        const auto concrete = storage_refs.find(binding.storage);
+        if (concrete == storage_refs.end() || binding.offset > concrete->second.length ||
+            binding.length > concrete->second.length - binding.offset) {
+            result.errors_.push_back("graph storage " + std::to_string(binding.storage) + " has no valid concrete range");
+            return false;
+        }
+        result_ref = { concrete->second.buffer, concrete->second.offset + binding.offset, binding.length };
+    }
+    return true;
+}
+
+bool ExecutableProgramPreparer::record_graph() {
+    error = take_status(hrx_graph_create(device, 0, &impl.graph));
+    if (error) { result.errors_.push_back("create HRX graph: " + *error); return false; }
 
     std::vector<hrx_graph_node_t> nodes(record_command_count, nullptr);
     size_t expected_node_count = 0;
@@ -588,8 +590,8 @@ PreparedExecutableProgram prepare_executable_program(
         std::vector<hrx_graph_node_t> deps;
         for (uint32_t dependency : command.dependencies) {
             if (dependency >= nodes.size() || nodes[dependency] == nullptr) {
-                impl.errors.push_back("command dependency was not recorded");
-                return result;
+                result.errors_.push_back("command dependency was not recorded");
+                return false;
             }
             deps.push_back(nodes[dependency]);
         }
@@ -611,7 +613,7 @@ PreparedExecutableProgram prepare_executable_program(
             std::vector<hrx_buffer_ref_t> bindings;
             for (const CommandBinding & binding : command.bindings) {
                 hrx_buffer_ref_t concrete = {};
-                if (!resolve_binding(binding, concrete)) return result;
+                if (!resolve_binding(binding, concrete)) return false;
                 bindings.push_back(concrete);
             }
             const auto & constants = command_constants[command.ordinal];
@@ -629,13 +631,13 @@ PreparedExecutableProgram prepare_executable_program(
         } else if (command.kind == CommandKind::Copy) {
             hrx_graph_copy_buffer_node_attrs_t attrs = {};
             if (!resolve_binding(command.bindings[0], attrs.src) ||
-                !resolve_binding(command.bindings[1], attrs.dst)) return result;
+                !resolve_binding(command.bindings[1], attrs.dst)) return false;
             error = take_status(hrx_graph_add_copy_buffer_node(impl.graph, deps.data(), deps.size(), &attrs,
                 &nodes[command.ordinal]));
         } else if (command.kind == CommandKind::Fill) {
             const uint32_t fill_byte = static_cast<uint32_t>(command.scalar_parameters.at("fill_byte")) & 0xffu;
             hrx_graph_fill_buffer_node_attrs_t attrs = {};
-            if (!resolve_binding(command.bindings[0], attrs.dst)) return result;
+            if (!resolve_binding(command.bindings[0], attrs.dst)) return false;
             attrs.pattern = fill_byte;
             attrs.pattern_size = 1;
             error = take_status(hrx_graph_add_fill_buffer_node(impl.graph, deps.data(), deps.size(), &attrs,
@@ -643,31 +645,53 @@ PreparedExecutableProgram prepare_executable_program(
         } else {
             error = take_status(hrx_graph_add_empty_node(impl.graph, deps.data(), deps.size(), &nodes[command.ordinal]));
         }
-        if (!error.empty()) { impl.errors.push_back("record command " + std::to_string(command.ordinal) + ": " + error); return result; }
+        if (error) { result.errors_.push_back("record command " + std::to_string(command.ordinal) + ": " + *error); return false; }
         ++expected_node_count;
         if (options.split_commands) {
             const hrx_graph_node_t command_node = nodes[command.ordinal];
             error = take_status(hrx_graph_add_empty_node(impl.graph, &command_node, 1, &nodes[command.ordinal]));
-            if (!error.empty()) {
-                impl.errors.push_back("record split after command " + std::to_string(command.ordinal) + ": " + error);
-                return result;
+            if (error) {
+                result.errors_.push_back("record split after command " + std::to_string(command.ordinal) + ": " + *error);
+                return false;
             }
             ++expected_node_count;
         }
-        impl.commands.push_back(std::move(diagnostic));
+        result.commands_.push_back(std::move(diagnostic));
     }
-    error = take_status(hrx_graph_size(impl.graph, &impl.node_count));
-    if (!error.empty()) { impl.errors.push_back("query HRX graph size: " + error); return result; }
-    if (impl.node_count != expected_node_count) {
-        impl.errors.push_back("recorded HRX graph node count does not match command program");
-        return result;
+    error = take_status(hrx_graph_size(impl.graph, &result.node_count_));
+    if (error) { result.errors_.push_back("query HRX graph size: " + *error); return false; }
+    if (result.node_count_ != expected_node_count) {
+        result.errors_.push_back("recorded HRX graph node count does not match command program");
+        return false;
     }
     error = take_status(hrx_graph_instantiate(impl.graph, 0, &impl.graph_exec));
-    if (!error.empty()) impl.errors.push_back("instantiate HRX graph: " + error);
-    return result;
+    if (error) result.errors_.push_back("instantiate HRX graph: " + *error);
+    result.prepared_ = result.errors_.empty() && impl.graph_exec != nullptr;
+    return result.prepared_;
 }
 
-std::string format_prepared_executable_program(const PreparedExecutableProgram & program) {
+PreparedExecutableProgram ExecutableProgramPreparer::run() {
+    if (!validate_and_initialize()) return std::move(result);
+    if (!allocate_transients()) return std::move(result);
+    if (!compile_artifacts()) return std::move(result);
+    if (!bind_storage()) return std::move(result);
+    record_graph();
+    return std::move(result);
+}
+
+PreparedExecutableProgram prepare_executable_program(
+    hrx_device_t device, hrx_stream_t stream, TransferManager & transfers,
+    WeightResidencyCache & weights,
+    ExecutableArtifactRepository & artifact_repository,
+    const ProgramPlan & plan, const KernelCorpus & corpus, const CommandProgram & commands,
+    const ExecutableBindings & bindings,
+    const ExecutablePreparationOptions & options) {
+    return ExecutableProgramPreparer(device, stream, transfers, weights, artifact_repository,
+                                     plan, corpus, commands, bindings, options).run();
+}
+
+std::string PreparedExecutableProgram::format() const {
+    const PreparedExecutableProgram & program = *this;
     std::ostringstream out;
     out << "prepared executable program\n"
         << "valid=" << (program.valid() ? "true" : "false") << '\n'
@@ -701,7 +725,8 @@ std::string format_prepared_executable_program(const PreparedExecutableProgram &
     return out.str();
 }
 
-std::string serialize_prepared_executable_program_json(const PreparedExecutableProgram & program) {
+std::string PreparedExecutableProgram::serialize_json() const {
+    const PreparedExecutableProgram & program = *this;
     nlohmann::json root = {
         { "schema", "ggml-hrx-prepared-executable-v1" },
         { "valid", program.valid() }, { "node_count", program.node_count() },
@@ -732,7 +757,8 @@ std::string serialize_prepared_executable_program_json(const PreparedExecutableP
     return root.dump(2);
 }
 
-std::string format_executable_bindings(const ExecutableBindings & bindings) {
+std::string ExecutableBindings::format() const {
+    const ExecutableBindings & bindings = *this;
     std::ostringstream out;
     out << "executable bindings count=" << bindings.storages.size() << '\n';
     for (const ExecutableBufferBinding & binding : bindings.storages) {
@@ -744,7 +770,8 @@ std::string format_executable_bindings(const ExecutableBindings & bindings) {
     return out.str();
 }
 
-std::string serialize_executable_bindings_json(const ExecutableBindings & bindings) {
+std::string ExecutableBindings::serialize_json() const {
+    const ExecutableBindings & bindings = *this;
     nlohmann::ordered_json root = {
         { "schema", "ggml-hrx-executable-bindings-v1" }, { "bindings", nlohmann::ordered_json::array() },
     };

@@ -1,24 +1,11 @@
 #include "hrx_runtime.h"
+#include "tool-utils.h"
 
 #include <cstdint>
 #include <iostream>
 #include <string>
 
-namespace {
-
-static bool check(hrx_status_t status, const char * operation) {
-    if (hrx_status_is_ok(status)) return true;
-    char * message = nullptr;
-    size_t length = 0;
-    hrx_status_t format_status = hrx_status_to_string(status, &message, &length);
-    if (!hrx_status_is_ok(format_status)) hrx_status_ignore(format_status);
-    std::cerr << operation << ": " << (message ? message : "unknown HRX error") << '\n';
-    hrx_status_free_message(message);
-    hrx_status_ignore(status);
-    return false;
-}
-
-} // namespace
+using ggml::hrx::tool::report_status;
 
 int main(int argc, char ** argv) {
     if (argc != 3) {
@@ -26,7 +13,7 @@ int main(int argc, char ** argv) {
         return 2;
     }
     const std::string target = argv[1];
-    if (!check(hrx_gpu_initialize(0), "initialize GPU")) return 1;
+    if (!report_status(hrx_gpu_initialize(0), "initialize GPU")) return 1;
     hrx_device_t device = nullptr;
     hrx_stream_t stream = nullptr;
     hrx_executable_t executable = nullptr;
@@ -35,18 +22,18 @@ int main(int argc, char ** argv) {
     hrx_buffer_t output = nullptr;
     hrx_graph_t graph = nullptr;
     hrx_graph_exec_t graph_exec = nullptr;
-    bool ok = check(hrx_gpu_device_get(0, &device), "get GPU") &&
-        check(hrx_stream_create(device, 0, &stream), "create stream") &&
-        check(hrx_executable_load_file(device, argv[2], "amdgpu", target.c_str(), &executable), "load HSACO");
+    bool ok = report_status(hrx_gpu_device_get(0, &device), "get GPU") &&
+        report_status(hrx_stream_create(device, 0, &stream), "create stream") &&
+        report_status(hrx_executable_load_file(device, argv[2], "amdgpu", target.c_str(), &executable), "load HSACO");
     uint32_t export_ordinal = 0;
-    ok = ok && check(hrx_executable_lookup_export_by_name(
+    ok = ok && report_status(hrx_executable_lookup_export_by_name(
         executable, "qwen3_moe_router_projection_f32_one_row_wave64", &export_ordinal), "lookup export");
     if (ok) {
-        ok = check(hrx_buffer_allocate(stream, 2048 * sizeof(float), HRX_MEMORY_TYPE_DEVICE_LOCAL,
+        ok = report_status(hrx_buffer_allocate(stream, 2048 * sizeof(float), HRX_MEMORY_TYPE_DEVICE_LOCAL,
                                       HRX_BUFFER_USAGE_DEFAULT, &input), "allocate input") &&
-             check(hrx_buffer_allocate(stream, 128 * 2048 * sizeof(float), HRX_MEMORY_TYPE_DEVICE_LOCAL,
+             report_status(hrx_buffer_allocate(stream, 128 * 2048 * sizeof(float), HRX_MEMORY_TYPE_DEVICE_LOCAL,
                                       HRX_BUFFER_USAGE_DEFAULT, &weight), "allocate weight") &&
-             check(hrx_buffer_allocate(stream, 128 * sizeof(float), HRX_MEMORY_TYPE_DEVICE_LOCAL,
+             report_status(hrx_buffer_allocate(stream, 128 * sizeof(float), HRX_MEMORY_TYPE_DEVICE_LOCAL,
                                       HRX_BUFFER_USAGE_DEFAULT, &output), "allocate output");
     }
     if (ok) {
@@ -63,10 +50,10 @@ int main(int argc, char ** argv) {
         };
         hrx_graph_node_t node = nullptr;
         size_t graph_size = 0;
-        ok = check(hrx_graph_create(device, 0, &graph), "create graph") &&
-             check(hrx_graph_add_kernel_node(graph, nullptr, 0, &attrs, &node), "record kernel node") &&
-             check(hrx_graph_size(graph, &graph_size), "query graph size") && graph_size == 1 &&
-             check(hrx_graph_instantiate(graph, 0, &graph_exec), "instantiate graph");
+        ok = report_status(hrx_graph_create(device, 0, &graph), "create graph") &&
+             report_status(hrx_graph_add_kernel_node(graph, nullptr, 0, &attrs, &node), "record kernel node") &&
+             report_status(hrx_graph_size(graph, &graph_size), "query graph size") && graph_size == 1 &&
+             report_status(hrx_graph_instantiate(graph, 0, &graph_exec), "instantiate graph");
         if (ok) std::cout << "recorded target=" << target << " nodes=" << graph_size << " instantiated=true launched=false\n";
     }
     if (graph_exec) hrx_graph_exec_release(graph_exec);
@@ -77,6 +64,6 @@ int main(int argc, char ** argv) {
     if (executable) hrx_executable_release(executable);
     if (stream) hrx_stream_release(stream);
     if (device) hrx_device_release(device);
-    if (!check(hrx_gpu_shutdown(), "shutdown GPU")) ok = false;
+    if (!report_status(hrx_gpu_shutdown(), "shutdown GPU")) ok = false;
     return ok ? 0 : 1;
 }

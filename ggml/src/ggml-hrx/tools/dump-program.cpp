@@ -3,26 +3,15 @@
 #include "qwen-program.h"
 #include "reactive-plan.h"
 #include "schedule.h"
+#include "tool-utils.h"
 
 #include <filesystem>
-#include <fstream>
 #include <iostream>
-#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
 
-namespace {
-
-void write_file(const std::filesystem::path & path, const std::string & contents) {
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    if (!output) throw std::runtime_error("cannot create " + path.string());
-    output << contents;
-    if (contents.empty() || contents.back() != '\n') output << '\n';
-    if (!output) throw std::runtime_error("cannot write " + path.string());
-}
-
-} // namespace
+using ggml::hrx::tool::write_file;
 
 int main(int argc, char ** argv) {
     if (argc != 5) {
@@ -36,10 +25,8 @@ int main(int argc, char ** argv) {
         const std::filesystem::path corpus_path = argv[3];
         const std::filesystem::path output_directory = argv[4];
 
-        std::ifstream graph_file(graph_path, std::ios::binary);
-        if (!graph_file) throw std::runtime_error("cannot read " + graph_path.string());
-        const std::string graph_text {
-            std::istreambuf_iterator<char>(graph_file), std::istreambuf_iterator<char>() };
+        const std::string graph_text = ggml::hrx::tool::read_file(graph_path);
+        if (graph_text.empty()) throw std::runtime_error("cannot read " + graph_path.string());
         const ggml::hrx::Graph graph = ggml::hrx::deserialize_graph_json(graph_text);
         if (!graph.valid()) throw std::runtime_error(
             "invalid normalized graph: " + (graph.errors.empty() ? std::string("unknown error") : graph.errors.front()));

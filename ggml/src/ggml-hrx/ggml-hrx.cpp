@@ -12,11 +12,9 @@
 #include "hrx_runtime.h"
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <cerrno>
 #include <cctype>
-#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -24,15 +22,25 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
 
 static constexpr size_t GGML_HRX_ALIGNMENT = 256;
+// GGML represents tensor locations as host pointers and derives view/arena
+// offsets with ordinary pointer arithmetic. Device-local HRX buffers have no
+// host address to return, so expose a non-null sentinel base solely as an
+// offset coordinate system. tensor->data is never dereferenced for an HRX
+// buffer: every upload, download, copy, and executable binding subtracts this
+// base and applies the resulting byte offset to the buffer's HRX handle. The
+// same sentinel can therefore be shared by allocations; the owning buffer
+// context supplies identity and bounds.
 static constexpr uintptr_t GGML_HRX_FAKE_PTR_BASE = 0x1000;
 static std::atomic<uint64_t> g_allocation_generation { 1 };
 
@@ -129,19 +137,30 @@ static bool hrx_check(hrx_status_t status, const char * expression, const char *
     return false;
 }
 
-static bool environment_enabled(const char * name) {
+static std::optional<std::string> environment_string(const char * name) {
     const char * value = std::getenv(name);
-    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    if (value == nullptr || value[0] == '\0') return std::nullopt;
+    return std::string(value);
+}
+
+static std::string environment_string(const char * name, std::string default_value) {
+    const std::optional<std::string> value = environment_string(name);
+    return value ? *value : std::move(default_value);
+}
+
+static bool environment_enabled(const char * name) {
+    const std::optional<std::string> value = environment_string(name);
+    return value && *value != "0";
 }
 
 static size_t environment_size(const char * name, size_t default_value) {
-    const char * value = std::getenv(name);
-    if (value == nullptr || value[0] == '\0') return default_value;
+    const std::optional<std::string> value = environment_string(name);
+    if (!value) return default_value;
     char * end = nullptr;
     errno = 0;
-    const unsigned long long parsed = std::strtoull(value, &end, 10);
-    if (errno != 0 || end == value || *end != '\0' || parsed > SIZE_MAX) {
-        GGML_LOG_ERROR("invalid %s='%s'; expected a non-negative command count\n", name, value);
+    const unsigned long long parsed = std::strtoull(value->c_str(), &end, 10);
+    if (errno != 0 || end == value->c_str() || *end != '\0' || parsed > SIZE_MAX) {
+        GGML_LOG_ERROR("invalid %s='%s'; expected a non-negative command count\n", name, value->c_str());
         return default_value;
     }
     return static_cast<size_t>(parsed);
@@ -157,6 +176,27 @@ static bool debug_applies_to_workload(
 }
 
 #define HRX_CHECK(expression) hrx_check((expression), #expression, __FILE__, __LINE__)
+
+static std::optional<std::string> device_string_property(
+        hrx_device_t device, hrx_device_property_t property, const char * property_name) {
+    // libhrx currently has no size-query form for string properties. Retry a
+    // bounded dynamic buffer on the one status that specifically means the
+    // destination was too small, rather than baking an ABI-dependent limit
+    // into backend registration.
+    std::vector<char> buffer(64);
+    while (buffer.size() <= 4096) {
+        hrx_status_t status = hrx_device_get_property(device, property, buffer.data(), buffer.size());
+        if (hrx_status_is_ok(status)) return std::string(buffer.data());
+        if (hrx_status_code(status) != HRX_STATUS_OUT_OF_RANGE) {
+            hrx_check(status, property_name, __FILE__, __LINE__);
+            return std::nullopt;
+        }
+        hrx_status_ignore(status);
+        buffer.resize(buffer.size() * 2);
+    }
+    GGML_LOG_ERROR("%s exceeds the maximum supported property string length\n", property_name);
+    return std::nullopt;
+}
 
 static ggml_guid_t ggml_backend_hrx_guid() {
     static ggml_guid guid = {
@@ -426,11 +466,11 @@ static void dump_execution_state(
              ggml::hrx::fingerprint_bindings(bindings.snapshot).value);
         write_atomic(directory / "bindings.txt", ggml::hrx::format_binding_snapshot(bindings.snapshot, false));
         write_atomic(directory / "bindings.json", ggml::hrx::serialize_binding_snapshot_json(bindings.snapshot, false));
-        write_atomic(directory / "bindings-detail.txt", ggml::hrx::format_executable_bindings(bindings));
-        write_atomic(directory / "bindings-detail.json", ggml::hrx::serialize_executable_bindings_json(bindings));
-        write_atomic(directory / "executable.txt", ggml::hrx::format_prepared_executable_program(executable));
-        write_atomic(directory / "executable.json", ggml::hrx::serialize_prepared_executable_program_json(executable));
-        write_atomic(directory / "transfers.txt", ggml::hrx::format_transfer_manager_stats(transfer_stats));
+        write_atomic(directory / "bindings-detail.txt", bindings.format());
+        write_atomic(directory / "bindings-detail.json", bindings.serialize_json());
+        write_atomic(directory / "executable.txt", executable.format());
+        write_atomic(directory / "executable.json", executable.serialize_json());
+        write_atomic(directory / "transfers.txt", transfer_stats.format());
         write_atomic(directory / "weights.txt", ggml::hrx::format_weight_residency_stats(weight_stats));
         std::ostringstream status;
         status << "schema=ggml-hrx-runtime-status-v1\nstate=" << state
@@ -556,8 +596,8 @@ static void backend_synchronize(ggml_backend_t backend) {
     if (!transfer_error.empty()) GGML_LOG_ERROR("%s: %s\n", __func__, transfer_error.c_str());
     std::lock_guard<std::mutex> lock(context->execution_mutex);
     for (ggml::hrx::PreparedExecutableProgram * executable : context->pending_completions) {
-        const std::string error = executable->complete_after_synchronize();
-        if (!error.empty()) GGML_LOG_ERROR("%s: %s\n", __func__, error.c_str());
+        const ggml::hrx::ErrorResult error = executable->complete_after_synchronize();
+        if (error) GGML_LOG_ERROR("%s: %s\n", __func__, error->c_str());
     }
     context->pending_completions.clear();
 }
@@ -631,23 +671,41 @@ static ggml::hrx::ExecutableBindings resolve_executable_bindings(
     return result;
 }
 
+// Converts one eagerly presented GGML graph into a cached, allocation-specific
+// executable and submits it asynchronously. Cold execution recovers and
+// verifies the semantic plan, compiles/records its command program, and caches
+// that frozen executable. Warm execution resolves current tensor allocations,
+// rebinds the cached commands, and launches with predictable host work.
 static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * graph) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
+
+    // Publish the compute stream used by this backend instance. Synchronous
+    // readback and device copies use it as the producer timeline.
     {
         std::lock_guard<std::mutex> lock(context->device->active_stream_mutex);
         context->device->active_stream = context->stream;
     }
+
+    // Buffer uploads and fills are recorded on TransferManager's dedicated
+    // stream, not this compute stream. Publish any pending transfer batch and
+    // insert its timeline point as a device-side wait here. join() does not
+    // wait on the host; it establishes the required cross-stream ordering.
     const std::string transfer_join_error = context->device->transfers->join(context->stream);
     if (!transfer_join_error.empty()) {
         GGML_LOG_ERROR("%s: cannot join pending transfers: %s\n", __func__, transfer_join_error.c_str());
         return GGML_STATUS_FAILED;
     }
+
+    // Normalize the eager graph and recover or look up its frozen schedule.
     dump_graph(context->diagnostics, graph, "execute", "reactive-split");
     ggml::hrx::ExecutionFrame frame = context->device->plan_cache.prepare(graph, context->device->architecture);
     if (!frame.valid()) {
         GGML_LOG_ERROR("%s: reactive plan preparation failed: %s\n", __func__, frame.errors.empty() ? "unknown error" : frame.errors.front().c_str());
         return GGML_STATUS_FAILED;
     }
+
+    // When the optional pre-placement oracle is enabled, require the eager
+    // graph to recover the exact semantic witness captured by that oracle.
     if (context->diagnostics.graph_oracle) {
         std::lock_guard<std::mutex> lock(context->oracle_mutex);
         auto oracle = context->oracle_witnesses.find(frame.plan->schedule.workload);
@@ -673,12 +731,19 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
             return GGML_STATUS_FAILED;
         }
     }
+
+    // Plan reports are cold-path diagnostics; dump_plan internally becomes a
+    // no-op unless a diagnostic directory was configured at initialization.
     const ggml::hrx::PlanCacheStats stats = context->device->plan_cache.stats();
     GGML_LOG_WARN("%s: verified reactive %s plan with %zu operations, %zu dispatches, cache builds=%llu hits=%llu\n",
         __func__, frame.plan->schedule.workload.c_str(), frame.plan->graph.operations.size(),
         ggml::hrx::schedule_dispatch_count(frame.plan->schedule),
         static_cast<unsigned long long>(stats.builds), static_cast<unsigned long long>(stats.hits));
     dump_plan(context->diagnostics, *frame.plan);
+
+    // Resolve semantic graph storages to this call's concrete HRX/host
+    // allocations. The fingerprint below prevents reusing an executable with
+    // stale buffer identities, generations, or offsets.
     std::vector<std::string> binding_errors;
     ggml::hrx::ExecutableBindings bindings = resolve_executable_bindings(*context, frame, binding_errors);
     if (!binding_errors.empty()) {
@@ -686,6 +751,9 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
         return GGML_STATUS_FAILED;
     }
     const ggml::hrx::AllocationFingerprint allocation = ggml::hrx::fingerprint_bindings(bindings.snapshot);
+
+    // Collapse initialization-time debug configuration to simple local values
+    // before constructing the executable cache key.
     const bool execution_debug_enabled = debug_applies_to_workload(
         context->execution_debug, frame.plan->schedule.workload);
     const size_t debug_command_limit = execution_debug_enabled ?
@@ -705,6 +773,9 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
         "|sanitizer=" + debug_sanitizer +
         "|sanitizer_reporting=" + debug_sanitizer_reporting;
 
+    // Serialize executable cache mutation and launch. Prepared programs retain
+    // mutable bindings and completion state, so they are not concurrently
+    // rebound or submitted from multiple callers.
     std::lock_guard<std::mutex> lock(context->execution_mutex);
     ggml::hrx::PreparedExecutableProgram * executable = nullptr;
     auto found = context->executables.find(executable_key);
@@ -748,20 +819,26 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
             executable->artifact_count(), executable->retained_bytes(),
             static_cast<unsigned long long>(context->executable_builds));
     }
-    const std::string rebind_error = executable->rebind(bindings);
-    if (!rebind_error.empty()) {
-        GGML_LOG_ERROR("%s: executable rebinding failed: %s\n", __func__, rebind_error.c_str());
+
+    // Patch allocation-dependent handles into the prepared commands, then
+    // submit the whole program asynchronously to the compute stream.
+    const ggml::hrx::ErrorResult rebind_error = executable->rebind(bindings);
+    if (rebind_error) {
+        GGML_LOG_ERROR("%s: executable rebinding failed: %s\n", __func__, rebind_error->c_str());
         return GGML_STATUS_FAILED;
     }
-    const std::string launch_error = executable->launch(context->stream);
-    if (!launch_error.empty()) {
+    const ggml::hrx::ErrorResult launch_error = executable->launch(context->stream);
+    if (launch_error) {
         dump_execution_state(context->diagnostics, *frame.plan, bindings, *executable,
             context->device->transfers->stats(),
             context->weights->stats(),
-            "launch_failed", launch_error, context->executable_builds, context->executable_hits, context->launches);
-        GGML_LOG_ERROR("%s: HRX graph launch failed: %s\n", __func__, launch_error.c_str());
+            "launch_failed", *launch_error, context->executable_builds, context->executable_hits, context->launches);
+        GGML_LOG_ERROR("%s: HRX graph launch failed: %s\n", __func__, launch_error->c_str());
         return GGML_STATUS_FAILED;
     }
+
+    // Debug prefix/synchronization modes deliberately replace the normal async
+    // contract so failures can be localized to a command boundary.
     if (debug_synchronize || executable->command_prefix()) {
         if (!HRX_CHECK(hrx_stream_synchronize(context->stream))) {
             dump_execution_state(context->diagnostics, *frame.plan, bindings, *executable,
@@ -781,6 +858,9 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
             return GGML_STATUS_ABORTED;
         }
     }
+
+    // Retain completion bookkeeping until backend_synchronize observes the
+    // stream, publishes host-visible results, and releases transient state.
     if (std::find(context->pending_completions.begin(), context->pending_completions.end(), executable) ==
         context->pending_completions.end()) {
         context->pending_completions.push_back(executable);
@@ -790,7 +870,7 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
         context->device->transfers->stats(),
         context->weights->stats(),
         "submitted", {}, context->executable_builds, context->executable_hits, context->launches);
-    GGML_LOG_WARN("%s: submitted %s launch=%llu cache_hits=%llu\n", __func__,
+    GGML_LOG_DEBUG("%s: submitted %s launch=%llu cache_hits=%llu\n", __func__,
         frame.plan->schedule.workload.c_str(), static_cast<unsigned long long>(context->launches),
         static_cast<unsigned long long>(context->executable_hits));
     return GGML_STATUS_SUCCESS;
@@ -840,12 +920,14 @@ static ggml_backend_t device_init(ggml_backend_dev_t device, const char * parame
     if (!HRX_CHECK(hrx_stream_create(device_ctx->device, 0, &stream))) {
         return nullptr;
     }
-    const char * oracle = std::getenv("GGML_HRX_GRAPH_ORACLE");
-    const char * dump_directory = std::getenv("GGML_HRX_DUMP_GRAPH_DIR");
-    const char * dump_level = std::getenv("GGML_HRX_DUMP_LEVEL");
-    const char * sanitizer = std::getenv("GGML_HRX_LOOM_SANITIZER");
-    const char * sanitizer_reporting = std::getenv("GGML_HRX_LOOM_SANITIZER_REPORTING");
-    const char * debug_workload = std::getenv("GGML_HRX_DEBUG_WORKLOAD");
+    // Snapshot environment configuration once. Steady-state graph execution
+    // only reads the parsed context fields below.
+    const std::optional<std::string> dump_directory = environment_string("GGML_HRX_DUMP_GRAPH_DIR");
+    const std::string dump_level = environment_string("GGML_HRX_DUMP_LEVEL", "summary");
+    const std::optional<std::string> sanitizer = environment_string("GGML_HRX_LOOM_SANITIZER");
+    const std::optional<std::string> sanitizer_reporting =
+        environment_string("GGML_HRX_LOOM_SANITIZER_REPORTING");
+    const std::optional<std::string> debug_workload = environment_string("GGML_HRX_DEBUG_WORKLOAD");
     auto * context = new (std::nothrow) ggml_backend_hrx_context;
     if (context != nullptr) {
         context->device = device_ctx;
@@ -871,16 +953,16 @@ static ggml_backend_t device_init(ggml_backend_dev_t device, const char * parame
         }
     }
     if (context != nullptr) {
-        context->diagnostics.graph_oracle = oracle != nullptr && std::string(oracle) == "1";
-        if (dump_directory != nullptr && dump_directory[0] != '\0') context->diagnostics.directory = dump_directory;
-        if (dump_level != nullptr && dump_level[0] != '\0') context->diagnostics.level = dump_level;
+        context->diagnostics.graph_oracle = environment_enabled("GGML_HRX_GRAPH_ORACLE");
+        if (dump_directory) context->diagnostics.directory = *dump_directory;
+        context->diagnostics.level = dump_level;
         context->execution_debug.command_limit = environment_size("GGML_HRX_DEBUG_COMMAND_LIMIT", SIZE_MAX);
         context->execution_debug.serialize_commands = environment_enabled("GGML_HRX_DEBUG_SERIALIZE_COMMANDS");
         context->execution_debug.split_commands = environment_enabled("GGML_HRX_DEBUG_SPLIT_COMMANDS");
         context->execution_debug.synchronize_launch = environment_enabled("GGML_HRX_DEBUG_SYNCHRONIZE");
-        if (debug_workload != nullptr) context->execution_debug.workload = debug_workload;
-        if (sanitizer != nullptr) context->execution_debug.sanitizer = sanitizer;
-        if (sanitizer_reporting != nullptr) context->execution_debug.sanitizer_reporting = sanitizer_reporting;
+        if (debug_workload) context->execution_debug.workload = *debug_workload;
+        if (sanitizer) context->execution_debug.sanitizer = *sanitizer;
+        if (sanitizer_reporting) context->execution_debug.sanitizer_reporting = *sanitizer_reporting;
         if (context->execution_debug.command_limit != SIZE_MAX || context->execution_debug.serialize_commands ||
             context->execution_debug.split_commands || context->execution_debug.synchronize_launch ||
             !context->execution_debug.sanitizer.empty()) {
@@ -970,15 +1052,23 @@ static std::unique_ptr<ggml_backend_hrx_reg_context> create_registry_context() {
         auto device_ctx = std::make_unique<ggml_backend_hrx_device_context>();
         device_ctx->device = hrx_device;
         device_ctx->name = "HRX" + std::to_string(i);
-        std::array<char, 128> name = {};
-        std::array<char, 128> architecture = {};
-        HRX_CHECK(hrx_device_get_property(hrx_device, HRX_DEVICE_PROPERTY_NAME, name.data(), name.size()));
-        HRX_CHECK(hrx_device_get_property(hrx_device, HRX_DEVICE_PROPERTY_ARCHITECTURE, architecture.data(), architecture.size()));
+        const std::optional<std::string> name = device_string_property(
+            hrx_device, HRX_DEVICE_PROPERTY_NAME, "query HRX device name");
+        const std::optional<std::string> architecture = device_string_property(
+            hrx_device, HRX_DEVICE_PROPERTY_ARCHITECTURE, "query HRX device architecture");
+        if (!name || !architecture) {
+            hrx_device_release(hrx_device);
+            continue;
+        }
         uint64_t memory = 0;
-        HRX_CHECK(hrx_device_get_property(hrx_device, HRX_DEVICE_PROPERTY_TOTAL_MEMORY, &memory, sizeof(memory)));
+        if (!HRX_CHECK(hrx_device_get_property(
+                hrx_device, HRX_DEVICE_PROPERTY_TOTAL_MEMORY, &memory, sizeof(memory)))) {
+            hrx_device_release(hrx_device);
+            continue;
+        }
         device_ctx->memory_total = static_cast<size_t>(memory);
-        device_ctx->description = std::string(name.data()) + " (" + architecture.data() + ")";
-        device_ctx->architecture = architecture.data();
+        device_ctx->description = *name + " (" + *architecture + ")";
+        device_ctx->architecture = *architecture;
         device_ctx->transfers = std::make_unique<ggml::hrx::TransferManager>(hrx_device);
         if (!device_ctx->transfers->valid()) {
             GGML_LOG_ERROR("%s: transfer manager initialization failed: %s\n", __func__,

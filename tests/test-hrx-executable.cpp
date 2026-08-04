@@ -92,11 +92,11 @@ void test_binding_diagnostics_are_explicit() {
     host_weight.length = 4096;
     host_weight.weight = true;
     bindings.storages.push_back(host_weight);
-    const std::string text = ggml::hrx::format_executable_bindings(bindings);
+    const std::string text = bindings.format();
     REQUIRE(text.find("borrowed_device_weight") != std::string::npos);
     REQUIRE(text.find("resident_host_weight") != std::string::npos);
     REQUIRE(text.find("layout=ggml-native") != std::string::npos);
-    const std::string json = ggml::hrx::serialize_executable_bindings_json(bindings);
+    const std::string json = bindings.serialize_json();
     REQUIRE(json.find("borrowed_device_weight") != std::string::npos);
     REQUIRE(json.find("resident_host_weight") != std::string::npos);
 }

@@ -1,7 +1,7 @@
 // Copyright 2026 The HRX Authors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "ggml-hrx-loom-jit.h"
+#include "loom-jit.h"
 
 #include "loomc/loomc.h"
 #include "loomc/launch_config.h"
@@ -15,9 +15,50 @@
 #include <memory>
 #include <new>
 #include <string>
+#include <utility>
 #include <vector>
 
-struct ggml_hrx_loom_jit_amdgpu_s {
+ggml_hrx_loom_jit_compile_result::~ggml_hrx_loom_jit_compile_result() { reset(); }
+
+ggml_hrx_loom_jit_compile_result::ggml_hrx_loom_jit_compile_result(
+    ggml_hrx_loom_jit_compile_result && other) noexcept {
+    *this = std::move(other);
+}
+
+ggml_hrx_loom_jit_compile_result & ggml_hrx_loom_jit_compile_result::operator=(
+    ggml_hrx_loom_jit_compile_result && other) noexcept {
+    if (this == &other) return *this;
+    reset();
+    hsaco_data = std::exchange(other.hsaco_data, nullptr);
+    hsaco_size = std::exchange(other.hsaco_size, 0);
+    manifest_json = std::exchange(other.manifest_json, nullptr);
+    manifest_json_size = std::exchange(other.manifest_json_size, 0);
+    compile_report_json = std::exchange(other.compile_report_json, nullptr);
+    compile_report_json_size = std::exchange(other.compile_report_json_size, 0);
+    final_module_text = std::exchange(other.final_module_text, nullptr);
+    final_module_text_size = std::exchange(other.final_module_text_size, 0);
+    launch_config = std::exchange(other.launch_config, {});
+    return *this;
+}
+
+void ggml_hrx_loom_jit_compile_result::reset() {
+    hrx_host_allocator_t allocator = hrx_host_allocator_system();
+    hrx_host_allocator_free(allocator, hsaco_data);
+    hrx_host_allocator_free(allocator, manifest_json);
+    hrx_host_allocator_free(allocator, compile_report_json);
+    hrx_host_allocator_free(allocator, final_module_text);
+    hsaco_data = nullptr;
+    hsaco_size = 0;
+    manifest_json = nullptr;
+    manifest_json_size = 0;
+    compile_report_json = nullptr;
+    compile_report_json_size = 0;
+    final_module_text = nullptr;
+    final_module_text_size = 0;
+    launch_config = {};
+}
+
+struct ggml_hrx_loom_jit_amdgpu {
     loomc_target_environment_t *        target_environment = nullptr;
     loomc_context_t *                   context            = nullptr;
     loomc_target_profile_t *            target_profile     = nullptr;
@@ -163,7 +204,7 @@ using LoomLinkIndex        = LoomHandle<loomc_link_index_t, loomc_link_index_rel
 using LoomLinker           = LoomHandle<loomc_linker_t, loomc_linker_release>;
 
 struct HrxLoomJitDeleter {
-    void operator()(ggml_hrx_loom_jit_amdgpu_s * jit) const { ggml_hrx_loom_jit_amdgpu_release(jit); }
+    void operator()(ggml_hrx_loom_jit_amdgpu * jit) const { ggml_hrx_loom_jit_amdgpu_release(jit); }
 };
 
 hrx_status_t ggml_hrx_loom_jit_make_status(hrx_status_code_t code, const char * message) {
@@ -348,7 +389,7 @@ hrx_status_t ggml_hrx_loom_jit_evaluate_launch_config(
         size_t config_binding_count,
         const int64_t * workload_arguments,
         size_t workload_argument_count,
-        ggml_hrx_loom_jit_launch_config_t * out_launch_config) {
+        ggml_hrx_loom_jit_launch_config * out_launch_config) {
     if (!out_launch_config) {
         return ggml_hrx_loom_jit_make_status(HRX_STATUS_INVALID_ARGUMENT, "out_launch_config is required");
     }
@@ -464,19 +505,19 @@ loomc_amdgpu_runtime_global_flags_t ggml_hrx_loom_jit_runtime_globals(loomc_sani
 
 }  // namespace
 
-hrx_status_t ggml_hrx_loom_jit_amdgpu_create(const ggml_hrx_loom_jit_amdgpu_options_t * options,
-                                              ggml_hrx_loom_jit_amdgpu_t *               out_jit) {
+hrx_status_t ggml_hrx_loom_jit_amdgpu_create(const ggml_hrx_loom_jit_amdgpu_options * options,
+                                              ggml_hrx_loom_jit_amdgpu ** out_jit) {
     if (!out_jit) {
         return ggml_hrx_loom_jit_make_status(HRX_STATUS_INVALID_ARGUMENT, "out_jit must not be NULL");
     }
     *out_jit = nullptr;
-    if (!options || options->structure_size < sizeof(*options) || !options->processor || options->processor[0] == 0) {
+    if (!options || !options->processor || options->processor[0] == 0) {
         return ggml_hrx_loom_jit_make_status(HRX_STATUS_INVALID_ARGUMENT,
                                               "valid ggml_hrx_loom_jit_amdgpu_options_t with processor is required");
     }
 
-    std::unique_ptr<ggml_hrx_loom_jit_amdgpu_s, HrxLoomJitDeleter> jit(new (std::nothrow)
-                                                                            ggml_hrx_loom_jit_amdgpu_s());
+    std::unique_ptr<ggml_hrx_loom_jit_amdgpu, HrxLoomJitDeleter> jit(
+        new (std::nothrow) ggml_hrx_loom_jit_amdgpu());
     if (!jit) {
         return ggml_hrx_loom_jit_make_status(HRX_STATUS_OUT_OF_MEMORY, "failed to allocate GGML HRX Loom JIT");
     }
@@ -553,7 +594,7 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_create(const ggml_hrx_loom_jit_amdgpu_opti
     return hrx_ok_status();
 }
 
-void ggml_hrx_loom_jit_amdgpu_release(ggml_hrx_loom_jit_amdgpu_t jit) {
+void ggml_hrx_loom_jit_amdgpu_release(ggml_hrx_loom_jit_amdgpu * jit) {
     if (!jit) {
         return;
     }
@@ -565,14 +606,14 @@ void ggml_hrx_loom_jit_amdgpu_release(ggml_hrx_loom_jit_amdgpu_t jit) {
     delete jit;
 }
 
-hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu_t                  jit,
-                                               const ggml_hrx_loom_jit_compile_options_t * options,
-                                               ggml_hrx_loom_jit_compile_result_t *        out_result) {
+hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu * jit,
+                                               const ggml_hrx_loom_jit_compile_options * options,
+                                               ggml_hrx_loom_jit_compile_result *        out_result) {
     if (!out_result) {
         return ggml_hrx_loom_jit_make_status(HRX_STATUS_INVALID_ARGUMENT, "out_result must not be NULL");
     }
-    std::memset(out_result, 0, sizeof(*out_result));
-    if (!jit || !options || options->structure_size < sizeof(*options) || !options->source_data ||
+    out_result->reset();
+    if (!jit || !options || !options->source_data ||
         options->source_size == 0 || !options->root_symbol || options->root_symbol[0] == 0) {
         return ggml_hrx_loom_jit_make_status(
             HRX_STATUS_INVALID_ARGUMENT, "valid GGML HRX Loom JIT compile options with source and root are required");
@@ -662,7 +703,7 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu_t        
     std::vector<loomc_source_t *> dependency_sources;
     dependency_sources.reserve(options->dependency_count);
     for (size_t i = 0; i < options->dependency_count; ++i) {
-        const ggml_hrx_loom_jit_source_t & dependency = options->dependencies[i];
+        const ggml_hrx_loom_jit_source & dependency = options->dependencies[i];
         if (!dependency.source_data || dependency.source_size == 0 || !dependency.source_identifier) {
             for (loomc_source_t * dependency_source : dependency_sources) loomc_source_release(dependency_source);
             return ggml_hrx_loom_jit_make_status(HRX_STATUS_INVALID_ARGUMENT, "invalid Loom JIT dependency source");
@@ -907,19 +948,19 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu_t        
     status = loomc_emit_module(jit->target_environment, workspace.get(), module.get(), &emit_options,
                                loomc_allocator_system(), result.out());
     if (!loomc_status_is_ok(status)) {
-        ggml_hrx_loom_jit_compile_result_deinitialize(out_result);
+        out_result->reset();
         return ggml_hrx_loom_jit_status_from_loom(status, "emit AMDGPU HSACO");
     }
     if (!loomc_result_succeeded(result.get())) {
         hrx_status = ggml_hrx_loom_jit_status_from_result(result.get(), "AMDGPU HSACO emission failed");
-        ggml_hrx_loom_jit_compile_result_deinitialize(out_result);
+        out_result->reset();
         return hrx_status;
     }
 
     const loomc_artifact_t * hsaco = ggml_hrx_loom_jit_find_artifact(
         result.get(), LOOMC_ARTIFACT_KIND_EXECUTABLE, loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_AMDGPU_HSACO));
     if (!hsaco) {
-        ggml_hrx_loom_jit_compile_result_deinitialize(out_result);
+        out_result->reset();
         return ggml_hrx_loom_jit_make_status(HRX_STATUS_NOT_FOUND, "Loom did not return an AMDGPU HSACO artifact");
     }
     hrx_status = ggml_hrx_loom_jit_copy_artifact_bytes(hsaco, &out_result->hsaco_data, &out_result->hsaco_size, false);
@@ -940,19 +981,7 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu_t        
     }
 
     if (!hrx_status_is_ok(hrx_status)) {
-        ggml_hrx_loom_jit_compile_result_deinitialize(out_result);
+        out_result->reset();
     }
     return hrx_status;
-}
-
-void ggml_hrx_loom_jit_compile_result_deinitialize(ggml_hrx_loom_jit_compile_result_t * result) {
-    if (!result) {
-        return;
-    }
-    hrx_host_allocator_t allocator = hrx_host_allocator_system();
-    hrx_host_allocator_free(allocator, result->hsaco_data);
-    hrx_host_allocator_free(allocator, result->manifest_json);
-    hrx_host_allocator_free(allocator, result->compile_report_json);
-    hrx_host_allocator_free(allocator, result->final_module_text);
-    std::memset(result, 0, sizeof(*result));
 }

@@ -1,10 +1,12 @@
 #pragma once
 
 #include "graph/command-program.h"
+#include "hrx-interop-utils.h"
 #include "weight-residency.h"
 
 #include "hrx_runtime.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -14,6 +16,7 @@
 namespace ggml::hrx {
 
 class TransferManager;
+class ExecutableProgramPreparer;
 
 struct PackedKernelConstants {
     std::vector<uint8_t> bytes;
@@ -81,6 +84,9 @@ struct ExecutableBufferBinding {
 struct ExecutableBindings {
     BindingSnapshot snapshot;
     std::vector<ExecutableBufferBinding> storages;
+
+    std::string format() const;
+    std::string serialize_json() const;
 };
 
 class PreparedExecutableProgram;
@@ -95,6 +101,7 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    friend class ExecutableProgramPreparer;
     friend PreparedExecutableProgram prepare_executable_program(
         hrx_device_t, hrx_stream_t, TransferManager &, WeightResidencyCache &,
         ExecutableArtifactRepository &, const ProgramPlan &,
@@ -111,30 +118,48 @@ public:
     PreparedExecutableProgram(const PreparedExecutableProgram &) = delete;
     PreparedExecutableProgram & operator=(const PreparedExecutableProgram &) = delete;
 
-    bool valid() const;
-    size_t node_count() const;
-    size_t artifact_count() const;
-    size_t retained_bytes() const;
-    size_t borrowed_device_weight_bytes() const;
-    size_t resident_host_weight_bytes() const;
-    size_t host_staging_bytes() const;
-    size_t transient_bytes() const;
-    size_t source_command_count() const;
-    bool command_prefix() const;
-    bool split_commands() const;
-    bool serialized_commands() const;
-    const AllocationFingerprint & allocation_fingerprint() const;
-    std::string rebind(const ExecutableBindings & bindings);
-    std::string launch(hrx_stream_t stream);
-    std::string complete_after_synchronize();
+    bool valid() const { return prepared_ && errors_.empty(); }
+    size_t node_count() const { return node_count_; }
+    size_t artifact_count() const { return artifacts_.size(); }
+    size_t retained_bytes() const { return retained_bytes_; }
+    size_t borrowed_device_weight_bytes() const { return borrowed_device_weight_bytes_; }
+    size_t resident_host_weight_bytes() const { return resident_host_weight_bytes_; }
+    size_t host_staging_bytes() const { return host_staging_bytes_; }
+    size_t transient_bytes() const { return transient_bytes_; }
+    size_t source_command_count() const { return source_command_count_; }
+    bool command_prefix() const { return command_prefix_; }
+    bool split_commands() const { return split_commands_; }
+    bool serialized_commands() const { return serialized_commands_; }
+    const AllocationFingerprint & allocation_fingerprint() const { return allocation_fingerprint_; }
+    ErrorResult rebind(const ExecutableBindings & bindings);
+    ErrorResult launch(hrx_stream_t stream);
+    ErrorResult complete_after_synchronize();
     void abandon_after_synchronize();
-    const std::vector<std::string> & errors() const;
-    const std::vector<PreparedArtifactDiagnostic> & artifacts() const;
-    const std::vector<PreparedCommandDiagnostic> & commands() const;
+    const std::vector<std::string> & errors() const { return errors_; }
+    const std::vector<PreparedArtifactDiagnostic> & artifacts() const { return artifacts_; }
+    const std::vector<PreparedCommandDiagnostic> & commands() const { return commands_; }
+    std::string format() const;
+    std::string serialize_json() const;
 
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    bool prepared_ = false;
+    size_t node_count_ = 0;
+    size_t retained_bytes_ = 0;
+    size_t borrowed_device_weight_bytes_ = 0;
+    size_t resident_host_weight_bytes_ = 0;
+    size_t host_staging_bytes_ = 0;
+    size_t transient_bytes_ = 0;
+    size_t source_command_count_ = 0;
+    bool command_prefix_ = false;
+    bool split_commands_ = false;
+    bool serialized_commands_ = false;
+    AllocationFingerprint allocation_fingerprint_;
+    std::vector<PreparedArtifactDiagnostic> artifacts_;
+    std::vector<PreparedCommandDiagnostic> commands_;
+    std::vector<std::string> errors_;
+    friend class ExecutableProgramPreparer;
     friend PreparedExecutableProgram prepare_executable_program(
         hrx_device_t, hrx_stream_t, TransferManager &, WeightResidencyCache &,
         ExecutableArtifactRepository &, const ProgramPlan &,
@@ -149,10 +174,5 @@ PreparedExecutableProgram prepare_executable_program(
     const ProgramPlan & plan, const KernelCorpus & corpus, const CommandProgram & commands,
     const ExecutableBindings & bindings,
     const ExecutablePreparationOptions & options);
-
-std::string format_prepared_executable_program(const PreparedExecutableProgram & program);
-std::string serialize_prepared_executable_program_json(const PreparedExecutableProgram & program);
-std::string format_executable_bindings(const ExecutableBindings & bindings);
-std::string serialize_executable_bindings_json(const ExecutableBindings & bindings);
 
 } // namespace ggml::hrx

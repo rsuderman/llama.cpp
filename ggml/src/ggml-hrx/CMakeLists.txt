@@ -27,6 +27,7 @@ target_link_libraries(ggml-hrx-graph PRIVATE ggml-base)
 set_target_properties(ggml-hrx-graph PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_library(ggml-hrx-transfer STATIC
+    hrx-interop-utils.h
     transfer-manager.cpp
     transfer-manager.h
     weight-residency.cpp
@@ -40,8 +41,8 @@ set_target_properties(ggml-hrx-transfer PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(ggml-hrx-executable STATIC
     executable-program.cpp
     executable-program.h
-    loom-jit/ggml-hrx-loom-jit.cpp
-    loom-jit/ggml-hrx-loom-jit.h
+    loom-jit.cpp
+    loom-jit.h
 )
 target_include_directories(ggml-hrx-executable PUBLIC . graph PRIVATE loom-jit .. ../../include ../../../vendor)
 target_compile_features(ggml-hrx-executable PRIVATE cxx_std_17)
@@ -59,22 +60,23 @@ target_compile_definitions(ggml-hrx PRIVATE
 
 add_executable(ggml-hrx-compile-kernel
     tools/compile-kernel.cpp
-    loom-jit/ggml-hrx-loom-jit.cpp
+    tools/tool-utils.h
+    loom-jit.cpp
 )
 target_link_libraries(ggml-hrx-compile-kernel PRIVATE hrx::hrx loomc::loomc)
-target_include_directories(ggml-hrx-compile-kernel PRIVATE loom-jit)
+target_include_directories(ggml-hrx-compile-kernel PRIVATE .)
 target_compile_features(ggml-hrx-compile-kernel PRIVATE cxx_std_17)
 
 add_executable(ggml-hrx-record-command-buffer-smoke tools/record-command-buffer-smoke.cpp)
 target_link_libraries(ggml-hrx-record-command-buffer-smoke PRIVATE hrx::hrx)
 target_compile_features(ggml-hrx-record-command-buffer-smoke PRIVATE cxx_std_17)
 
-add_executable(ggml-hrx-dump-program tools/dump-program.cpp)
-target_link_libraries(ggml-hrx-dump-program PRIVATE ggml-hrx-graph)
+add_executable(ggml-hrx-dump-program tools/dump-program.cpp tools/tool-utils.h)
+target_link_libraries(ggml-hrx-dump-program PRIVATE ggml-hrx-graph hrx::hrx)
 target_include_directories(ggml-hrx-dump-program PRIVATE graph .. ../../include ../../../vendor)
 target_compile_features(ggml-hrx-dump-program PRIVATE cxx_std_17)
 
-add_executable(ggml-hrx-record-program tools/record-program.cpp)
+add_executable(ggml-hrx-record-program tools/record-program.cpp tools/tool-utils.h)
 target_link_libraries(ggml-hrx-record-program PRIVATE ggml-hrx-executable hrx::hrx)
 target_include_directories(ggml-hrx-record-program PRIVATE . graph .. ../../include ../../../vendor)
 target_compile_features(ggml-hrx-record-program PRIVATE cxx_std_17)
