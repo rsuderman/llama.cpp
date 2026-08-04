@@ -61,6 +61,32 @@ else()
     find_package(loomc CONFIG REQUIRED)
 endif()
 
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+set(GGML_HRX_QWEN_KERNEL_CORPUS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernels/qwen_moe")
+set(GGML_HRX_QWEN_KERNEL_CORPUS_MANIFEST "${GGML_HRX_QWEN_KERNEL_CORPUS_DIR}/manifest.json")
+set(GGML_HRX_KERNEL_CORPUS_SOURCES_INC "${CMAKE_CURRENT_BINARY_DIR}/kernel-corpus-sources.inc")
+set(GGML_HRX_KERNEL_CORPUS_QWEN_INC "${CMAKE_CURRENT_BINARY_DIR}/kernel-corpus-qwen.inc")
+set(GGML_HRX_KERNEL_CORPUS_DEPFILE "${CMAKE_CURRENT_BINARY_DIR}/kernel-corpus.d")
+
+add_custom_command(
+    OUTPUT
+        "${GGML_HRX_KERNEL_CORPUS_SOURCES_INC}"
+        "${GGML_HRX_KERNEL_CORPUS_QWEN_INC}"
+    COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_kernel_corpus.py"
+        --source-output "${GGML_HRX_KERNEL_CORPUS_SOURCES_INC}"
+        --corpus-output "${GGML_HRX_KERNEL_CORPUS_QWEN_INC}"
+        --manifest "${GGML_HRX_QWEN_KERNEL_CORPUS_MANIFEST}"
+        --corpus-dir "${GGML_HRX_QWEN_KERNEL_CORPUS_DIR}"
+        --depfile "${GGML_HRX_KERNEL_CORPUS_DEPFILE}"
+    DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_kernel_corpus.py"
+        "${GGML_HRX_QWEN_KERNEL_CORPUS_MANIFEST}"
+    DEPFILE "${GGML_HRX_KERNEL_CORPUS_DEPFILE}"
+    VERBATIM
+)
+
 add_library(ggml-hrx-graph STATIC
     graph/command-program.cpp
     graph/command-program.h
@@ -78,10 +104,17 @@ add_library(ggml-hrx-graph STATIC
     graph/qwen-bindings.h
     graph/reactive-plan.cpp
     graph/reactive-plan.h
+    graph/resource-access.h
     graph/schedule.cpp
     graph/schedule.h
+    kernel-corpus-json.cpp
+    kernel-corpus-json.h
+    kernel-corpus.cpp
+    kernel-corpus.h
+    "${GGML_HRX_KERNEL_CORPUS_SOURCES_INC}"
+    "${GGML_HRX_KERNEL_CORPUS_QWEN_INC}"
 )
-target_include_directories(ggml-hrx-graph PUBLIC graph PRIVATE .. ../../include ../../../vendor)
+target_include_directories(ggml-hrx-graph PUBLIC . graph PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" .. ../../include ../../../vendor)
 target_compile_features(ggml-hrx-graph PRIVATE cxx_std_17)
 target_link_libraries(ggml-hrx-graph PRIVATE ggml-base)
 set_target_properties(ggml-hrx-graph PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -115,8 +148,6 @@ ggml_add_backend_library(ggml-hrx
 target_link_libraries(ggml-hrx PRIVATE hrx::hrx loomc::loomc)
 target_link_libraries(ggml-hrx PRIVATE ggml-hrx-executable)
 target_compile_definitions(ggml-hrx PRIVATE GGML_USE_HRX)
-target_compile_definitions(ggml-hrx PRIVATE
-    GGML_HRX_QWEN_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/kernels/qwen_moe")
 
 add_executable(ggml-hrx-compile-kernel
     tools/compile-kernel.cpp
@@ -133,7 +164,7 @@ target_compile_features(ggml-hrx-record-command-buffer-smoke PRIVATE cxx_std_17)
 
 add_executable(ggml-hrx-dump-program tools/dump-program.cpp tools/tool-utils.h)
 target_link_libraries(ggml-hrx-dump-program PRIVATE ggml-hrx-graph hrx::hrx)
-target_include_directories(ggml-hrx-dump-program PRIVATE graph .. ../../include ../../../vendor)
+target_include_directories(ggml-hrx-dump-program PRIVATE . graph .. ../../include ../../../vendor)
 target_compile_features(ggml-hrx-dump-program PRIVATE cxx_std_17)
 
 add_executable(ggml-hrx-record-program tools/record-program.cpp tools/tool-utils.h)

@@ -1,4 +1,5 @@
 #include "executable-program.h"
+#include "kernel-corpus.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -17,16 +18,52 @@
 namespace {
 
 ggml::hrx::KernelDefinition definition() {
+    static const char * primary_sources[1];
+    static ggml::hrx::KernelScalarDefinition workload_parameters[1];
+    static ggml::hrx::KernelScalarDefinition launch_parameters[2];
+    primary_sources[0] = "test.loom";
+    workload_parameters[0].name = "rows";
+    workload_parameters[0].type = "index";
+    launch_parameters[0].name = "rows";
+    launch_parameters[0].type = "index";
+    launch_parameters[1].name = "columns";
+    launch_parameters[1].type = "index";
+
     ggml::hrx::KernelDefinition result;
     result.id = "test_kernel";
-    result.symbol = "test_kernel";
     result.source = "test.loom";
-    result.source_digest = "source-digest";
+    result.symbol = "test_kernel";
     result.target = "gfx1151";
-    result.workload_parameters = { { "rows", "index" } };
-    result.launch_parameters = { { "rows", "index" }, { "columns", "index" } };
+    result.source_digest = "source-digest";
+    result.workload_parameters = { workload_parameters, 1 };
+    result.launch_parameters = { launch_parameters, 2 };
     result.compile_recipe.mode = "direct";
-    result.compile_recipe.primary_sources = { result.source };
+    result.compile_recipe.primary_sources = { primary_sources, 1 };
+    return result;
+}
+
+ggml::hrx::KernelDefinition unsupported_definition() {
+    static const char * primary_sources[1];
+    static ggml::hrx::KernelScalarDefinition workload_parameters[1];
+    static ggml::hrx::KernelScalarDefinition launch_parameters[2];
+    primary_sources[0] = "test.loom";
+    workload_parameters[0].name = "rows";
+    workload_parameters[0].type = "index";
+    launch_parameters[0].name = "rows";
+    launch_parameters[0].type = "i64";
+    launch_parameters[1].name = "columns";
+    launch_parameters[1].type = "index";
+
+    ggml::hrx::KernelDefinition result;
+    result.id = "test_kernel";
+    result.source = "test.loom";
+    result.symbol = "test_kernel";
+    result.target = "gfx1151";
+    result.source_digest = "source-digest";
+    result.workload_parameters = { workload_parameters, 1 };
+    result.launch_parameters = { launch_parameters, 2 };
+    result.compile_recipe.mode = "direct";
+    result.compile_recipe.primary_sources = { primary_sources, 1 };
     return result;
 }
 
@@ -55,10 +92,8 @@ void test_constant_packing() {
         static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) + 1;
     REQUIRE(!ggml::hrx::pack_kernel_constants(kernel, command).valid());
 
-    ggml::hrx::KernelDefinition unsupported = kernel;
-    unsupported.launch_parameters[0].type = "i64";
     command.scalar_parameters["columns"] = 1;
-    REQUIRE(!ggml::hrx::pack_kernel_constants(unsupported, command).valid());
+    REQUIRE(!ggml::hrx::pack_kernel_constants(unsupported_definition(), command).valid());
 }
 
 void test_artifact_key_uses_only_compilation_facts() {
@@ -101,11 +136,30 @@ void test_binding_diagnostics_are_explicit() {
     REQUIRE(json.find("resident_host_weight") != std::string::npos);
 }
 
+void test_kernel_source_lookup() {
+    const ggml::hrx::KernelSource * source = ggml::hrx::get_kernel_source("ggml/linear_q6k_f32.loom");
+    REQUIRE(source != nullptr);
+    REQUIRE(source->source.source != nullptr);
+    REQUIRE(source->source.length != 0);
+    REQUIRE(source->source.format == ggml::hrx::KERNEL_SOURCE_FORMAT_TEXT);
+    REQUIRE(source->dependency_count == 2);
+    REQUIRE(source->dependencies != nullptr);
+    REQUIRE(source->dependencies[0].source != nullptr);
+    REQUIRE(source->dependencies[0].length != 0);
+    REQUIRE(source->dependencies[0].format == ggml::hrx::KERNEL_SOURCE_FORMAT_TEXT);
+
+    const ggml::hrx::KernelSource * dependency_only = ggml::hrx::get_kernel_source("qwen3_moe/model_config.loom");
+    REQUIRE(dependency_only != nullptr);
+    REQUIRE(dependency_only->dependency_count == 0);
+    REQUIRE(ggml::hrx::get_kernel_source("missing.loom") == nullptr);
+}
+
 } // namespace
 
 int main() {
     test_constant_packing();
     test_artifact_key_uses_only_compilation_facts();
     test_binding_diagnostics_are_explicit();
+    test_kernel_source_lookup();
     return 0;
 }

@@ -5,7 +5,6 @@
 #include <cmath>
 #include <cstring>
 #include <iomanip>
-#include <fstream>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -155,7 +154,7 @@ static std::vector<Command> expand_synthetic_commands(const std::vector<Command>
 
 static const KernelDefinition * find_kernel(const KernelCorpus & corpus, const std::string & id) {
     const auto position = std::find_if(corpus.kernels.begin(), corpus.kernels.end(),
-        [&](const KernelDefinition & kernel) { return kernel.id == id; });
+        [&](const KernelDefinition & kernel) { return kernel.id != nullptr && id == kernel.id; });
     return position == corpus.kernels.end() ? nullptr : &*position;
 }
 
@@ -268,103 +267,6 @@ const char * resource_access_name(ResourceAccess access) {
         case ResourceAccess::ReadWrite: return "read_write";
     }
     return "unknown";
-}
-
-VerificationResult verify_kernel_corpus(const KernelCorpus & corpus) {
-    VerificationResult result;
-    if (corpus.schema != "ggml-hrx-kernel-corpus-v1") result.errors.push_back("unsupported kernel corpus schema");
-    if (corpus.upstream_revision.empty()) result.errors.push_back("kernel corpus has no upstream revision");
-    if (corpus.corpus_digest.empty()) result.errors.push_back("kernel corpus has no digest");
-    if (corpus.recipe_digest.empty()) result.errors.push_back("kernel corpus has no BUILD.bazel recipe digest");
-    if (corpus.plan_case_count == 0) result.errors.push_back("kernel corpus has no compile plan cases");
-    std::set<std::string> ids;
-    for (const KernelDefinition & kernel : corpus.kernels) {
-        if (kernel.id.empty() || kernel.source.empty() || kernel.symbol.empty() || kernel.target.empty() ||
-            kernel.source_digest.empty()) result.errors.push_back("kernel definition is incomplete");
-        const bool source_is_primary = std::find(kernel.compile_recipe.primary_sources.begin(),
-            kernel.compile_recipe.primary_sources.end(), kernel.source) != kernel.compile_recipe.primary_sources.end();
-        const bool source_is_library = std::find(kernel.compile_recipe.library_sources.begin(),
-            kernel.compile_recipe.library_sources.end(), kernel.source) != kernel.compile_recipe.library_sources.end();
-        if ((kernel.compile_recipe.mode != "direct" && kernel.compile_recipe.mode != "archive") ||
-            kernel.compile_recipe.primary_sources.empty() || (!source_is_primary && !source_is_library) ||
-            (kernel.compile_recipe.mode == "archive" && kernel.compile_recipe.link_module.empty())) {
-            result.errors.push_back("kernel " + kernel.id + " has an invalid BUILD compile recipe");
-        }
-        if (!ids.insert(kernel.id).second) result.errors.push_back("kernel corpus repeats id " + kernel.id);
-        std::set<std::string> names;
-        for (const KernelBindingDefinition & binding : kernel.bindings) {
-            if (binding.name.empty() || !names.insert(binding.name).second) {
-                result.errors.push_back("kernel " + kernel.id + " has invalid binding names");
-            }
-        }
-        if (kernel.bindings.size() == 0) result.errors.push_back("kernel " + kernel.id + " has no binding ABI");
-    }
-    return result;
-}
-
-KernelCorpus load_kernel_corpus_manifest(const std::string & path, const std::string & target,
-                                         std::vector<std::string> & errors) {
-    KernelCorpus corpus;
-    try {
-        std::ifstream input(path, std::ios::binary);
-        if (!input) throw std::runtime_error("cannot open corpus manifest");
-        const nlohmann::json root = nlohmann::json::parse(input);
-        if (root.at("schema") != "ggml-hrx-qwen-kernel-corpus-v1") throw std::runtime_error("unsupported source corpus schema");
-        corpus.upstream_revision = root.at("upstream_revision").get<std::string>();
-        corpus.corpus_digest = root.at("corpus_sha256").get<std::string>();
-        corpus.recipe_digest = root.at("build_bazel_sha256").get<std::string>();
-        corpus.plan_case_count = root.at("plan_cases").size();
-        std::map<std::string, std::string> digests;
-        for (const nlohmann::json & file : root.at("files")) {
-            digests[file.at("path").get<std::string>()] = file.at("sha256").get<std::string>();
-        }
-        for (const nlohmann::json & item : root.at("exports")) {
-            KernelDefinition kernel;
-            kernel.id = item.at("symbol").get<std::string>();
-            kernel.symbol = kernel.id;
-            kernel.source = item.at("source").get<std::string>();
-            kernel.target = target;
-            kernel.source_digest = digests.at(kernel.source);
-            kernel.dependencies = item.at("compile_dependencies").get<std::vector<std::string>>();
-            const nlohmann::json & recipe = item.at("compile_recipe");
-            kernel.compile_recipe.mode = recipe.at("mode").get<std::string>();
-            kernel.compile_recipe.link_module = recipe.value("link_module", std::string());
-            kernel.compile_recipe.primary_sources = recipe.at("primary_sources").get<std::vector<std::string>>();
-            kernel.compile_recipe.library_sources = recipe.at("library_sources").get<std::vector<std::string>>();
-            if (kernel.dependencies != kernel.compile_recipe.library_sources) {
-                throw std::runtime_error("legacy dependency closure disagrees with compile recipe");
-            }
-            for (const char * group : { "workload_parameters", "launch_parameters" }) {
-                for (const nlohmann::json & parameter : item.at(group)) {
-                    const std::string name = parameter.at("name").get<std::string>();
-                    if (std::find(kernel.scalar_parameters.begin(), kernel.scalar_parameters.end(), name) ==
-                        kernel.scalar_parameters.end()) kernel.scalar_parameters.push_back(name);
-                    KernelScalarDefinition definition { name, parameter.at("type").get<std::string>() };
-                    if (std::string(group) == "workload_parameters") kernel.workload_parameters.push_back(std::move(definition));
-                    else kernel.launch_parameters.push_back(std::move(definition));
-                }
-            }
-            const std::vector<std::string> binding_names = item.at("bindings").get<std::vector<std::string>>();
-            const std::vector<std::string> explicit_access = item.value("binding_access", std::vector<std::string>());
-            if (explicit_access.size() != binding_names.size()) {
-                throw std::runtime_error("kernel binding access metadata has the wrong arity");
-            }
-            for (size_t binding_index = 0; binding_index < binding_names.size(); ++binding_index) {
-                const std::string & name = binding_names[binding_index];
-                ResourceAccess access = ResourceAccess::Read;
-                if (explicit_access[binding_index] == "write") access = ResourceAccess::Write;
-                else if (explicit_access[binding_index] == "read_write") access = ResourceAccess::ReadWrite;
-                else if (explicit_access[binding_index] != "read") throw std::runtime_error("invalid kernel binding access metadata");
-                kernel.bindings.push_back({ name, access });
-            }
-            corpus.kernels.push_back(std::move(kernel));
-        }
-    } catch (const std::exception & error) {
-        errors.push_back(std::string("invalid kernel corpus manifest: ") + error.what());
-    }
-    const VerificationResult verification = verify_kernel_corpus(corpus);
-    errors.insert(errors.end(), verification.errors.begin(), verification.errors.end());
-    return corpus;
 }
 
 CommandProgram build_command_program(const ProgramPlan & plan, const KernelCorpus & corpus) {
@@ -495,10 +397,11 @@ VerificationResult verify_command_program(const ProgramPlan & plan, const Kernel
         if (command.kind == CommandKind::Kernel && definition == nullptr) {
             result.errors.push_back("command references an unknown kernel " + command.kernel_id);
         } else if (definition != nullptr) {
-            for (const std::string & scalar : definition->scalar_parameters) {
-                if (command.scalar_parameters.count(scalar) == 0) {
+            for (const char * scalar : definition->scalar_parameters) {
+                const std::string scalar_name = scalar != nullptr ? scalar : "";
+                if (command.scalar_parameters.count(scalar_name) == 0) {
                     result.errors.push_back("command " + std::to_string(command.ordinal) + " kernel " +
-                        command.kernel_id + " omits scalar " + scalar);
+                        command.kernel_id + " omits scalar " + scalar_name);
                 }
             }
             if (command.bindings.size() != definition->bindings.size()) {
@@ -588,35 +491,6 @@ AllocationFingerprint fingerprint_bindings(const BindingSnapshot & snapshot) {
                 << binding.capacity << ':' << binding.offset << ':' << binding.length << '\n';
     }
     return { stable_hash(witness.str()) };
-}
-
-std::string format_kernel_corpus(const KernelCorpus & corpus) {
-    std::ostringstream out;
-    out << "kernel-corpus " << corpus.schema << " revision=" << corpus.upstream_revision
-        << " digest=" << corpus.corpus_digest << " recipe=" << corpus.recipe_digest
-        << " kernels=" << corpus.kernels.size() << " plan_cases=" << corpus.plan_case_count << '\n';
-    for (const KernelDefinition & kernel : corpus.kernels) {
-        out << "  kernel " << kernel.id << " target=" << kernel.target << " symbol=@" << kernel.symbol
-            << " source=" << kernel.source << " sha256=" << kernel.source_digest << '\n';
-        out << "    recipe " << kernel.compile_recipe.mode;
-        if (!kernel.compile_recipe.link_module.empty()) out << " module=" << kernel.compile_recipe.link_module;
-        out << " primary=";
-        for (size_t i = 0; i < kernel.compile_recipe.primary_sources.size(); ++i)
-            out << (i ? "," : "") << kernel.compile_recipe.primary_sources[i];
-        out << " libraries=";
-        for (size_t i = 0; i < kernel.compile_recipe.library_sources.size(); ++i)
-            out << (i ? "," : "") << kernel.compile_recipe.library_sources[i];
-        out << '\n';
-        for (size_t i = 0; i < kernel.bindings.size(); ++i) {
-            out << "    binding[" << i << "] " << kernel.bindings[i].name << ' '
-                << resource_access_name(kernel.bindings[i].access) << '\n';
-        }
-        for (const KernelScalarDefinition & parameter : kernel.workload_parameters)
-            out << "    workload " << parameter.name << ' ' << parameter.type << '\n';
-        for (const KernelScalarDefinition & parameter : kernel.launch_parameters)
-            out << "    launch " << parameter.name << ' ' << parameter.type << '\n';
-    }
-    return out.str();
 }
 
 std::string format_resource_program(const ResourceProgram & resources) {
@@ -709,38 +583,6 @@ std::string format_binding_snapshot(const BindingSnapshot & snapshot, bool inclu
             << " range=" << binding.offset << "+" << binding.length << '\n';
     }
     return out.str();
-}
-
-std::string serialize_kernel_corpus_json(const KernelCorpus & corpus) {
-    nlohmann::ordered_json root = {
-        { "schema", corpus.schema }, { "upstream_revision", corpus.upstream_revision },
-        { "corpus_digest", corpus.corpus_digest }, { "recipe_digest", corpus.recipe_digest },
-        { "plan_case_count", corpus.plan_case_count }, { "kernels", nlohmann::ordered_json::array() },
-    };
-    for (const KernelDefinition & kernel : corpus.kernels) {
-        nlohmann::ordered_json item = {
-            { "id", kernel.id }, { "source", kernel.source }, { "dependencies", kernel.dependencies },
-            { "symbol", kernel.symbol }, { "target", kernel.target }, { "compile_config", kernel.compile_config },
-            { "scalar_parameters", kernel.scalar_parameters }, { "source_digest", kernel.source_digest },
-            { "compile_recipe", {
-                { "mode", kernel.compile_recipe.mode }, { "link_module", kernel.compile_recipe.link_module },
-                { "primary_sources", kernel.compile_recipe.primary_sources },
-                { "library_sources", kernel.compile_recipe.library_sources },
-            } },
-            { "workload_parameters", nlohmann::ordered_json::array() },
-            { "launch_parameters", nlohmann::ordered_json::array() },
-            { "bindings", nlohmann::ordered_json::array() },
-        };
-        for (const KernelScalarDefinition & parameter : kernel.workload_parameters)
-            item["workload_parameters"].push_back({ { "name", parameter.name }, { "type", parameter.type } });
-        for (const KernelScalarDefinition & parameter : kernel.launch_parameters)
-            item["launch_parameters"].push_back({ { "name", parameter.name }, { "type", parameter.type } });
-        for (const KernelBindingDefinition & binding : kernel.bindings) {
-            item["bindings"].push_back({ { "name", binding.name }, { "access", resource_access_name(binding.access) } });
-        }
-        root["kernels"].push_back(std::move(item));
-    }
-    return root.dump();
 }
 
 std::string serialize_command_program_json(const CommandProgram & program) {

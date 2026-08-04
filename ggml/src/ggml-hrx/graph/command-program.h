@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kernel-corpus.h"
 #include "reactive-plan.h"
 
 #include <array>
@@ -20,47 +21,6 @@ enum class CommandKind : uint8_t {
 enum class BindingOrigin : uint8_t {
     GraphValue,
     Transient,
-};
-
-struct KernelBindingDefinition {
-    std::string name;
-    ResourceAccess access = ResourceAccess::Read;
-};
-
-struct KernelScalarDefinition {
-    std::string name;
-    std::string type;
-};
-
-struct KernelCompileRecipe {
-    std::string mode;
-    std::string link_module;
-    std::vector<std::string> primary_sources;
-    std::vector<std::string> library_sources;
-};
-
-struct KernelDefinition {
-    std::string id;
-    std::string source;
-    std::vector<std::string> dependencies;
-    std::string symbol;
-    std::string target;
-    std::map<std::string, std::string> compile_config;
-    std::vector<std::string> scalar_parameters;
-    std::vector<KernelBindingDefinition> bindings;
-    std::string source_digest;
-    std::vector<KernelScalarDefinition> workload_parameters;
-    std::vector<KernelScalarDefinition> launch_parameters;
-    KernelCompileRecipe compile_recipe;
-};
-
-struct KernelCorpus {
-    std::string schema = "ggml-hrx-kernel-corpus-v1";
-    std::string upstream_revision;
-    std::string corpus_digest;
-    std::string recipe_digest;
-    size_t plan_case_count = 0;
-    std::vector<KernelDefinition> kernels;
 };
 
 struct CommandBinding {
@@ -148,9 +108,6 @@ struct AllocationFingerprint {
 };
 
 CommandProgram build_command_program(const ProgramPlan & plan, const KernelCorpus & corpus);
-KernelCorpus load_kernel_corpus_manifest(const std::string & path, const std::string & target,
-                                         std::vector<std::string> & errors);
-VerificationResult verify_kernel_corpus(const KernelCorpus & corpus);
 VerificationResult verify_command_program(const ProgramPlan & plan, const KernelCorpus & corpus,
                                           const CommandProgram & commands);
 VerificationResult verify_binding_snapshot(const ProgramPlan & plan, const BindingSnapshot & snapshot);
@@ -158,13 +115,11 @@ AllocationFingerprint fingerprint_bindings(const BindingSnapshot & snapshot);
 
 const char * command_kind_name(CommandKind kind);
 const char * resource_access_name(ResourceAccess access);
-std::string format_kernel_corpus(const KernelCorpus & corpus);
 std::string format_resource_program(const ResourceProgram & resources);
 std::string format_command_program(const CommandProgram & program);
 std::string format_verification_errors(const std::vector<std::string> & errors);
 std::string format_verification_summary(const std::vector<std::string> & errors);
 std::string format_binding_snapshot(const BindingSnapshot & snapshot, bool include_runtime_identities = false);
-std::string serialize_kernel_corpus_json(const KernelCorpus & corpus);
 std::string serialize_command_program_json(const CommandProgram & program);
 std::string serialize_binding_snapshot_json(const BindingSnapshot & snapshot, bool include_runtime_identities = false);
 std::string command_program_dot(const CommandProgram & program);

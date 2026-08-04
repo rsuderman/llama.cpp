@@ -3,6 +3,7 @@
 #include "transfer-manager.h"
 #include "weight-residency.h"
 #include "graph-ir.h"
+#include "kernel-corpus.h"
 #include "reactive-plan.h"
 #include "tool-utils.h"
 
@@ -21,8 +22,8 @@ using ggml::hrx::tool::check_status;
 using ggml::hrx::tool::write_file;
 
 int main(int argc, char ** argv) {
-    if (argc != 6) {
-        std::cerr << "usage: ggml-hrx-record-program normalized-graph.json target corpus-manifest.json corpus-dir output-dir\n";
+    if (argc != 4) {
+        std::cerr << "usage: ggml-hrx-record-program normalized-graph.json target output-dir\n";
         return 2;
     }
     hrx_device_t device = nullptr;
@@ -31,19 +32,14 @@ int main(int argc, char ** argv) {
     try {
         const std::filesystem::path graph_path = argv[1];
         const std::string target = argv[2];
-        const std::filesystem::path manifest_path = argv[3];
-        const std::filesystem::path corpus_directory = argv[4];
-        const std::filesystem::path output_directory = argv[5];
+        const std::filesystem::path output_directory = argv[3];
         const std::string graph_text = ggml::hrx::tool::read_file(graph_path);
         if (graph_text.empty()) throw std::runtime_error("cannot read " + graph_path.string());
         const ggml::hrx::Graph graph = ggml::hrx::deserialize_graph_json(graph_text);
         if (!graph.valid()) throw std::runtime_error("normalized graph is invalid");
         const ggml::hrx::ProgramPlan plan = ggml::hrx::build_reactive_plan(graph, target);
         if (!plan.valid()) throw std::runtime_error("reactive plan is invalid");
-        std::vector<std::string> corpus_errors;
-        const ggml::hrx::KernelCorpus corpus = ggml::hrx::load_kernel_corpus_manifest(
-            manifest_path.string(), target, corpus_errors);
-        if (!corpus_errors.empty()) throw std::runtime_error(corpus_errors.front());
+        const ggml::hrx::KernelCorpus & corpus = ggml::hrx::get_qwen_kernel_corpus(target.c_str());
         const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(plan, corpus);
         if (!commands.valid()) throw std::runtime_error(commands.errors.front());
 
@@ -52,7 +48,6 @@ int main(int argc, char ** argv) {
         check_status(hrx_gpu_device_get(0, &device), "get GPU device");
         check_status(hrx_stream_create(device, 0, &stream), "create stream");
         ggml::hrx::ExecutablePreparationOptions options;
-        options.corpus_directory = corpus_directory.string();
         options.target = target;
         size_t recorder_size = 1;
         for (const ggml::hrx::ResourceContract & resource : plan.resources.resources) {
