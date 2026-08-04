@@ -264,6 +264,7 @@ Schedule deserialize_schedule_json(const std::string & text, std::vector<std::st
             invocation.kernel.execution_kind = parse_execution_kind(kernel.at("execution").get<std::string>());
             invocation.kernel.family = kernel.at("family").get<std::string>();
             invocation.kernel.variant = kernel.at("variant").get<std::string>();
+            invocation.kernel.kernel_id = kernel.value("id", uint64_t { 0 });
             invocation.kernel.integer_parameters = kernel.at("parameters").get<std::map<std::string, int64_t>>();
             invocation.covered_operations = item.at("operations").get<std::vector<OperationId>>();
             if (version >= 3) {
@@ -287,6 +288,7 @@ Schedule deserialize_schedule_json(const std::string & text, std::vector<std::st
                     dispatch.kernel.execution_kind = parse_execution_kind(dispatch_kernel.at("execution").get<std::string>());
                     dispatch.kernel.family = dispatch_kernel.at("family").get<std::string>();
                     dispatch.kernel.variant = dispatch_kernel.at("variant").get<std::string>();
+                    dispatch.kernel.kernel_id = dispatch_kernel.value("id", uint64_t { 0 });
                     dispatch.kernel.integer_parameters = dispatch_kernel.at("parameters").get<std::map<std::string, int64_t>>();
                     dispatch.kernel.compile_parameters = dispatch_kernel.value(
                         "compile_parameters", std::map<std::string, std::string>());
@@ -328,7 +330,8 @@ std::string serialize_schedule_json(const Schedule & schedule) {
         out << "{\"stage\":\"" << escape_json(invocation.stage) << "\",\"layer\":" << invocation.layer
             << ",\"kernel\":{\"execution\":\"" << execution_kind_name(invocation.kernel.execution_kind)
             << "\",\"family\":\"" << escape_json(invocation.kernel.family)
-            << "\",\"variant\":\"" << escape_json(invocation.kernel.variant) << "\",\"parameters\":{";
+            << "\",\"variant\":\"" << escape_json(invocation.kernel.variant) << "\",\"id\":"
+            << invocation.kernel.kernel_id << ",\"parameters\":{";
         size_t parameter_index = 0;
         for (const auto & parameter : invocation.kernel.integer_parameters) {
             if (parameter_index++ != 0) out << ',';
@@ -354,7 +357,8 @@ std::string serialize_schedule_json(const Schedule & schedule) {
             if (j != 0) out << ',';
             out << "{\"kernel\":{\"execution\":\"" << execution_kind_name(dispatch.kernel.execution_kind)
                 << "\",\"family\":\"" << escape_json(dispatch.kernel.family) << "\",\"variant\":\""
-                << escape_json(dispatch.kernel.variant) << "\",\"parameters\":{";
+                << escape_json(dispatch.kernel.variant) << "\",\"id\":" << dispatch.kernel.kernel_id
+                << ",\"parameters\":{";
             size_t dispatch_parameter_index = 0;
             for (const auto & parameter : dispatch.kernel.integer_parameters) {
                 if (dispatch_parameter_index++ != 0) out << ',';
@@ -397,6 +401,10 @@ size_t schedule_execution_kind_count(const Schedule & schedule, KernelSpecializa
         for (const Dispatch & dispatch : invocation.dispatches) result += dispatch.kernel.execution_kind == kind;
     }
     return result;
+}
+
+std::string kernel_specialization_name(const KernelSpecialization & kernel) {
+    return kernel.family + ":" + kernel.variant;
 }
 
 const char * execution_kind_name(KernelSpecialization::ExecutionKind kind) {

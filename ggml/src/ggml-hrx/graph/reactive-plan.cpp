@@ -38,6 +38,7 @@ static Schedule eager_schedule(const Graph & graph) {
             invocation.kernel.execution_kind = KernelSpecialization::ExecutionKind::NativeEager;
             invocation.kernel.family = "hrx_eager";
             invocation.kernel.variant = ggml_op_name(graph.operations[invocation.covered_operations.front()].op);
+            invocation.kernel.kernel_id = kernel_catalog_id(invocation.kernel.family.c_str(), invocation.kernel.variant.c_str());
         }
         for (Dispatch & dispatch : invocation.dispatches) {
             if (dispatch.kernel.execution_kind == KernelSpecialization::ExecutionKind::CpuFallback) {
@@ -247,7 +248,7 @@ std::string schedule_semantic_witness(const Graph & graph, const Schedule & sche
         for (const TensorBinding & input : invocation.inputs) out << "in:" << input.role << ':' << value_witness(input.value) << '\n';
         for (const TensorBinding & output : invocation.outputs) out << "out:" << output.role << ':' << value_witness(output.value) << '\n';
         for (const Dispatch & dispatch : invocation.dispatches) {
-            out << execution_kind_name(dispatch.kernel.execution_kind) << ':' << dispatch.kernel.family << ':' << dispatch.kernel.variant;
+            out << execution_kind_name(dispatch.kernel.execution_kind) << ':' << kernel_specialization_name(dispatch.kernel);
             for (const auto & parameter : dispatch.kernel.integer_parameters) out << ':' << parameter.first << '=' << parameter.second;
             out << ':';
             for (uint32_t dependency : dispatch.dependencies) out << dependency << ',';

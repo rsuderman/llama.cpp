@@ -110,7 +110,7 @@ static std::vector<Command> expand_synthetic_commands(const std::vector<Command>
     for (const Command & original : kernels) {
         std::vector<uint32_t> dependencies = mapped_dependencies(original);
         uint32_t synthetic = UINT32_MAX;
-        if (original.kernel_id == "qwen_attention_metadata_bringup_workaround" && original.bindings.size() >= 2) {
+        if (original.kernel.variant == "qwen_attention_metadata_bringup_workaround" && original.bindings.size() >= 2) {
             Command copy;
             copy.ordinal = static_cast<uint32_t>(result.size());
             copy.kind = CommandKind::Copy;
@@ -127,13 +127,13 @@ static std::vector<Command> expand_synthetic_commands(const std::vector<Command>
             copy.bindings = { source, destination };
             result.push_back(std::move(copy));
             synthetic = result.back().ordinal;
-        } else if (original.kernel_id == "qwen3_moe_flash_attention_decode_split_f32_f16_wmma" &&
+        } else if (original.kernel.variant == "qwen3_moe_flash_attention_decode_split_f32_f16_wmma" &&
                    original.bindings.size() >= 8) {
             Command fill;
             fill.ordinal = static_cast<uint32_t>(result.size());
             fill.kind = CommandKind::Fill;
             fill.label = original.label + ".clear_completion_counter";
-            fill.scalar_parameters["fill_byte"] = 0;
+            fill.kernel.integer_parameters["fill_byte"] = 0;
             fill.dependencies = dependencies;
             CommandBinding destination = original.bindings[7];
             destination.name = "destination";
@@ -150,12 +150,6 @@ static std::vector<Command> expand_synthetic_commands(const std::vector<Command>
         remap[original.ordinal] = result.back().ordinal;
     }
     return result;
-}
-
-static const KernelDefinition * find_kernel(const KernelCorpus & corpus, const std::string & id) {
-    const auto position = std::find_if(corpus.kernels.begin(), corpus.kernels.end(),
-        [&](const KernelDefinition & kernel) { return kernel.id != nullptr && id == kernel.id; });
-    return position == corpus.kernels.end() ? nullptr : &*position;
 }
 
 static std::string stable_hash(const std::string & text) {
@@ -291,13 +285,12 @@ CommandProgram build_command_program(const ProgramPlan & plan, const KernelCorpu
             command.ordinal = ordinal++;
             command.kind = CommandKind::Kernel;
             command.label = invocation.stage + (invocation.layer >= 0 ? "." + std::to_string(invocation.layer) : "");
-            command.kernel_id = dispatch.kernel.variant;
-            command.scalar_parameters = dispatch.kernel.integer_parameters;
-            command.compile_parameters = dispatch.kernel.compile_parameters;
+            command.kernel = dispatch.kernel;
             command.dependencies = dispatch.dependencies;
-            const KernelDefinition * definition = find_kernel(corpus, command.kernel_id);
-            if (definition == nullptr) {
-                result.errors.push_back("no kernel definition for " + command.kernel_id);
+            const KernelResolveResult resolved = resolve_kernel_definition(corpus, command.kernel);
+            const KernelDefinition * definition = resolved.definition;
+            if (!resolved.found()) {
+                result.errors.push_back(format_kernel_resolve_error(resolved, command.kernel));
             }
             for (size_t binding_index = 0; binding_index < dispatch.bindings.size(); ++binding_index) {
                 const TensorBinding & tensor_binding = dispatch.bindings[binding_index];
@@ -392,20 +385,26 @@ VerificationResult verify_command_program(const ProgramPlan & plan, const Kernel
     for (size_t i = 0; i < commands.commands.size(); ++i) {
         const Command & command = commands.commands[i];
         if (command.ordinal != i) result.errors.push_back("command ordinals are not contiguous");
-        const KernelDefinition * definition = command.kind == CommandKind::Kernel
-            ? find_kernel(corpus, command.kernel_id) : nullptr;
-        if (command.kind == CommandKind::Kernel && definition == nullptr) {
-            result.errors.push_back("command references an unknown kernel " + command.kernel_id);
+        KernelResolveResult resolved;
+        const KernelDefinition * definition = nullptr;
+        if (command.kind == CommandKind::Kernel) {
+            resolved = resolve_kernel_definition(corpus, command.kernel);
+            definition = resolved.definition;
+        }
+        if (command.kind == CommandKind::Kernel && !resolved.found()) {
+            result.errors.push_back("command " + std::to_string(command.ordinal) + ": " +
+                                    format_kernel_resolve_error(resolved, command.kernel));
         } else if (definition != nullptr) {
             for (const char * scalar : definition->scalar_parameters) {
                 const std::string scalar_name = scalar != nullptr ? scalar : "";
-                if (command.scalar_parameters.count(scalar_name) == 0) {
+                if (command.kernel.integer_parameters.count(scalar_name) == 0) {
                     result.errors.push_back("command " + std::to_string(command.ordinal) + " kernel " +
-                        command.kernel_id + " omits scalar " + scalar_name);
+                        kernel_specialization_name(command.kernel) + " omits scalar " + scalar_name);
                 }
             }
             if (command.bindings.size() != definition->bindings.size()) {
-                result.errors.push_back("command " + std::to_string(command.ordinal) + " kernel " + command.kernel_id +
+                result.errors.push_back("command " + std::to_string(command.ordinal) + " kernel " +
+                    kernel_specialization_name(command.kernel) +
                     " has " + std::to_string(command.bindings.size()) + " bindings but its ABI requires " +
                     std::to_string(definition->bindings.size()));
             }
@@ -414,7 +413,7 @@ VerificationResult verify_command_program(const ProgramPlan & plan, const Kernel
                 if (command.bindings[binding_index].name != definition->bindings[binding_index].name ||
                     command.bindings[binding_index].access != definition->bindings[binding_index].access) {
                     result.errors.push_back("command " + std::to_string(command.ordinal) + " kernel " +
-                        command.kernel_id + " binding " + std::to_string(binding_index) +
+                        kernel_specialization_name(command.kernel) + " binding " + std::to_string(binding_index) +
                         " does not match the kernel ABI");
                 }
             }
@@ -514,15 +513,17 @@ std::string format_command_program(const CommandProgram & program) {
         << " graph=" << program.graph_fingerprint << " recipe=" << program.recipe_revision
         << " corpus=" << program.corpus_digest << " commands=" << program.commands.size() << '\n';
     for (const Command & command : program.commands) {
-        out << "  command " << command.ordinal << ' ' << command_kind_name(command.kind) << ' ' << command.kernel_id
+        out << "  command " << command.ordinal << ' ' << command_kind_name(command.kind) << ' '
+            << kernel_specialization_name(command.kernel)
+            << " execution=" << execution_kind_name(command.kernel.execution_kind)
             << " label=" << command.label << " deps=[";
         for (size_t i = 0; i < command.dependencies.size(); ++i) out << (i ? "," : "") << command.dependencies[i];
         out << "] scalars={";
         size_t scalar_index = 0;
-        for (const auto & scalar : command.scalar_parameters) out << (scalar_index++ ? "," : "") << scalar.first << '=' << scalar.second;
+        for (const auto & scalar : command.kernel.integer_parameters) out << (scalar_index++ ? "," : "") << scalar.first << '=' << scalar.second;
         out << "} configs={";
         size_t config_index = 0;
-        for (const auto & config : command.compile_parameters) out << (config_index++ ? "," : "") << config.first << '=' << config.second;
+        for (const auto & config : command.kernel.compile_parameters) out << (config_index++ ? "," : "") << config.first << '=' << config.second;
         out << "}\n";
         for (size_t i = 0; i < command.bindings.size(); ++i) {
             const CommandBinding & binding = command.bindings[i];
@@ -597,8 +598,9 @@ std::string serialize_command_program_json(const CommandProgram & program) {
     for (const Command & command : program.commands) {
         nlohmann::ordered_json item = {
             { "ordinal", command.ordinal }, { "kind", command_kind_name(command.kind) }, { "label", command.label },
-            { "kernel", command.kernel_id }, { "scalars", command.scalar_parameters },
-            { "compile_parameters", command.compile_parameters },
+            { "family", command.kernel.family }, { "kernel", command.kernel.variant }, { "scalars", command.kernel.integer_parameters },
+            { "execution", execution_kind_name(command.kernel.execution_kind) },
+            { "compile_parameters", command.kernel.compile_parameters },
             { "workgroup_count", command.workgroup_count }, { "workgroup_size", command.workgroup_size },
             { "subgroup_size", command.subgroup_size }, { "dependencies", command.dependencies },
             { "bindings", nlohmann::ordered_json::array() },
@@ -648,7 +650,8 @@ std::string command_program_dot(const CommandProgram & program) {
     out << "digraph hrx_commands {\n  rankdir=LR;\n  node [shape=box,fontname=monospace];\n";
     std::vector<std::set<uint32_t>> ancestors(program.commands.size());
     for (const Command & command : program.commands) {
-        out << "  c" << command.ordinal << " [label=\"" << command.ordinal << ": " << command.kernel_id
+        out << "  c" << command.ordinal << " [label=\"" << command.ordinal << ": "
+            << kernel_specialization_name(command.kernel)
             << "\\n" << command.label << "\"];\n";
         for (uint32_t dependency : command.dependencies) {
             bool redundant = false;

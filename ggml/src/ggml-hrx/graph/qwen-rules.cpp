@@ -1,5 +1,7 @@
 #include "qwen-rules.h"
 
+#include "kernel-corpus-catalog-verify.h"
+
 #include <utility>
 
 namespace ggml::hrx {
@@ -118,6 +120,16 @@ static MatchAutomaton routed_down() {
     return result;
 }
 
+static KernelSpecialization specialization(KernelCatalogRef ref) {
+    KernelSpecialization result;
+    result.family = ref.family != nullptr ? ref.family : "";
+    result.variant = ref.name != nullptr ? ref.name : "";
+    result.kernel_id = ref.id;
+    return result;
+}
+
+#define K(name_literal) GGML_HRX_KERNEL_REF("qwen3_moe", name_literal)
+
 } // namespace
 
 std::vector<FusionRule> canonical_qwen3_moe_rules() {
@@ -146,17 +158,19 @@ std::vector<FusionRule> canonical_qwen3_moe_rules() {
               { { 0, { GGML_TYPE_Q6_K } } }), {} },
     };
     return {
-        { attention_projection(false, true), { "qwen3_moe", "attention_postprocess_f32_f16", {} }, 900 },
-        { attention_projection(true, false), { "qwen3_moe", "attention_qkv_quantized", {} }, 850 },
-        { flash_attention(), { "qwen3_moe", "flash_attention_f32_f16_wmma", {} }, 800 },
-        { prepare, { "qwen3_moe", "attention_prepare_quantized", {} }, 750 },
-        { router_top8(), { "qwen3_moe", "router_top8_f32", {} }, 700 },
-        { routed_gate_up(), { "qwen3_moe", "routed_gate_up_swiglu_q4k", {} }, 650 },
-        { routed_down(), { "qwen3_moe", "routed_down_q6k", {} }, 600 },
-        { router_projection, { "qwen3_moe", "router_projection_f32", {} }, 550 },
-        { dense_output, { "qwen3_moe", "dense_linear_quantized_f16_wmma", {} }, 500 },
-        { dense_output_q6, { "qwen3_moe", "dense_linear_q6k_f16_wmma", {} }, 500 },
+        { attention_projection(false, true), specialization(K("qwen3_moe_attention_postprocess_f32_f16")), 900 },
+        { attention_projection(true, false), specialization(K("qwen3_moe_attention_qkv_quantized")), 850 },
+        { flash_attention(), specialization(K("qwen3_moe_flash_attention_f32_f16_wmma")), 800 },
+        { prepare, specialization(K("qwen3_moe_attention_rmsnorm_quantize_q8_1_x4")), 750 },
+        { router_top8(), specialization(K("qwen3_moe_router_top8_f32")), 700 },
+        { routed_gate_up(), specialization(K("qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma")), 650 },
+        { routed_down(), specialization(K("qwen3_moe_routed_down_q6k_f32_wave64")), 600 },
+        { router_projection, specialization(K("qwen3_moe_router_projection_f32_reference")), 550 },
+        { dense_output, specialization(K("qwen3_moe_dense_linear_q4k_f16_wmma")), 500 },
+        { dense_output_q6, specialization(K("qwen3_moe_dense_linear_q6k_f16_wmma")), 500 },
     };
 }
+
+#undef K
 
 } // namespace ggml::hrx

@@ -2,8 +2,10 @@
 
 #include "graph/resource-access.h"
 #include "graph/schedule.h"
+#include "kernel-corpus-catalog.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 namespace ggml::hrx {
@@ -72,7 +74,9 @@ struct KernelCompileRecipe {
 };
 
 struct KernelDefinition {
-    const char *                        id     = "";
+    const char *                        family = "";
+    const char *                        name   = "";
+    uint64_t                            id     = kUncatalogedKernelId;
     const char *                        source = "";
     KernelSpan<const char *>            dependencies;
     const char *                        symbol = "";
@@ -95,8 +99,32 @@ struct KernelCorpus {
     KernelSpan<KernelDefinition> kernels;
 };
 
+enum class KernelResolveStatus : uint8_t {
+    Found,
+    NativeGap,
+    UncatalogedNative,
+    MissingActiveCorpusEntry,
+    HashCollision,
+    InvalidNativeGap,
+};
+
+struct KernelResolveResult {
+    KernelResolveStatus      status     = KernelResolveStatus::MissingActiveCorpusEntry;
+    const KernelDefinition * definition = nullptr;
+
+    bool found() const { return status == KernelResolveStatus::Found && definition != nullptr; }
+};
+
 const KernelSource * get_kernel_source(const char * source_path);
 const KernelCorpus & get_qwen_kernel_corpus(const char * target);
+KernelResolveResult resolve_kernel_definition(const KernelCorpus & corpus, const std::string & family,
+                                              const std::string & name, uint64_t id,
+                                              KernelSpecialization::ExecutionKind execution_kind);
+KernelResolveResult resolve_kernel_definition(const KernelCorpus & corpus, const KernelSpecialization & kernel);
+const char *         kernel_resolve_status_name(KernelResolveStatus status);
+std::string          format_kernel_resolve_error(const KernelResolveResult & result, const std::string & family,
+                                                 const std::string & name);
+std::string          format_kernel_resolve_error(const KernelResolveResult & result, const KernelSpecialization & kernel);
 VerificationResult   verify_kernel_corpus(const KernelCorpus & corpus);
 std::string          format_kernel_corpus(const KernelCorpus & corpus);
 

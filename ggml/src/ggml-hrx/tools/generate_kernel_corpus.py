@@ -9,6 +9,8 @@ import sys
 from typing import Dict, Iterable, List, Tuple
 
 
+DEFAULT_KERNEL_FAMILY = "qwen3_moe"
+
 SOURCE_ARRAY_TEMPLATE = """static const unsigned char {symbol}[] = {{
 {bytes}
 }};
@@ -33,7 +35,9 @@ CORPUS_ARRAY_TEMPLATE = """static {type} {symbol}[] = {{
 """
 
 KERNEL_RECORD_TEMPLATE = """    {{
+        {family},
         {id},
+        kernel_catalog_id({family}, {id}),
         {source},
         {dependencies},
         {id},
@@ -75,11 +79,45 @@ static const KernelCorpus kQwenKernelCorpus = {{
 }};
 """
 
+CATALOG_DATA_TEMPLATE = """struct KernelCatalogEntry {{
+    const char * family;
+    const char * name;
+}};
+
+static constexpr KernelCatalogEntry kKernelCatalogEntries[] = {{
+{kernel_entries}
+}};
+
+constexpr bool kernel_catalog_entry_exists(const char * family, const char * name) {{
+    for (const KernelCatalogEntry & known : kKernelCatalogEntries) {{
+        if (kernel_catalog_name_equal(family, known.family) && kernel_catalog_name_equal(name, known.name)) {{
+            return true;
+        }}
+    }}
+    return false;
+}}
+
+constexpr bool kernel_catalog_ids_are_unique() {{
+    for (size_t i = 0; i < sizeof(kKernelCatalogEntries) / sizeof(kKernelCatalogEntries[0]); ++i) {{
+        for (size_t j = i + 1; j < sizeof(kKernelCatalogEntries) / sizeof(kKernelCatalogEntries[0]); ++j) {{
+            if (kernel_catalog_id(kKernelCatalogEntries[i].family, kKernelCatalogEntries[i].name) ==
+                kernel_catalog_id(kKernelCatalogEntries[j].family, kKernelCatalogEntries[j].name)) {{
+                return false;
+            }}
+        }}
+    }}
+    return true;
+}}
+
+static_assert(kernel_catalog_ids_are_unique(), "kernel catalog ids must be unique");
+"""
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate embedded kernel corpus data includes.")
     parser.add_argument("--source-output", type=pathlib.Path, required=True)
     parser.add_argument("--corpus-output", type=pathlib.Path, required=True)
+    parser.add_argument("--catalog-output", type=pathlib.Path, required=True)
     parser.add_argument("--manifest", type=pathlib.Path, required=True)
     parser.add_argument("--corpus-dir", type=pathlib.Path, required=True)
     parser.add_argument("--depfile", type=pathlib.Path)
@@ -267,6 +305,7 @@ def generate_corpus_records(manifest: dict, source_records: Dict[str, str]) -> T
         )
         records.append(
             KERNEL_RECORD_TEMPLATE.format(
+                family=cpp_string(export.get("family", DEFAULT_KERNEL_FAMILY)),
                 id=cpp_string(export["symbol"]),
                 source=cpp_string(export["source"]),
                 dependencies=dependencies_span,
@@ -284,7 +323,17 @@ def generate_corpus_records(manifest: dict, source_records: Dict[str, str]) -> T
     return "\n".join(arrays), "\n".join(records), len(exports)
 
 
-def generate_includes(args: argparse.Namespace, manifest: dict) -> Tuple[str, str, List[pathlib.Path], int]:
+def generate_catalog_verifier(manifest: dict) -> str:
+    kernel_entries = sorted((export.get("family", DEFAULT_KERNEL_FAMILY), export["symbol"]) for export in manifest.get("exports", []))
+    return CATALOG_DATA_TEMPLATE.format(
+        kernel_entries="\n".join(
+            "    { " + cpp_string(family) + ", " + cpp_string(kernel_name) + " },"
+            for family, kernel_name in kernel_entries
+        ),
+    )
+
+
+def generate_includes(args: argparse.Namespace, manifest: dict) -> Tuple[str, str, str, List[pathlib.Path], int]:
     corpus_dir = args.corpus_dir
     sources, source_dependencies = collect_sources(manifest)
     digests = manifest_file_digests(manifest)
@@ -374,6 +423,7 @@ def generate_includes(args: argparse.Namespace, manifest: dict) -> Tuple[str, st
             plan_case_count=len(manifest["plan_cases"]),
             kernel_count=kernel_count,
         ),
+        generate_catalog_verifier(manifest),
         input_files,
         sum(len(data) for data in source_bytes.values()),
     )
@@ -389,14 +439,17 @@ def main() -> int:
     args = parse_args()
     try:
         manifest = json.loads(read_text(args.manifest))
-        source_include, corpus_include, input_files, byte_count = generate_includes(args, manifest)
+        source_include, corpus_include, catalog_include, input_files, byte_count = generate_includes(args, manifest)
         args.source_output.parent.mkdir(parents=True, exist_ok=True)
         args.corpus_output.parent.mkdir(parents=True, exist_ok=True)
+        args.catalog_output.parent.mkdir(parents=True, exist_ok=True)
         args.source_output.write_text(source_include)
         args.corpus_output.write_text(corpus_include)
+        args.catalog_output.write_text(catalog_include)
         if args.depfile is not None:
             args.depfile.parent.mkdir(parents=True, exist_ok=True)
-            write_depfile(args.depfile, [args.source_output, args.corpus_output], [args.manifest, *input_files])
+            write_depfile(args.depfile, [args.source_output, args.corpus_output, args.catalog_output],
+                          [args.manifest, *input_files])
     except Exception as exc:
         print(f"generate_kernel_corpus.py: {exc}", file=sys.stderr)
         return 1

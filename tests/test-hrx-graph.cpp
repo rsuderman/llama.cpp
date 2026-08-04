@@ -446,7 +446,8 @@ static ggml::hrx::KernelCorpus make_test_corpus(const ggml::hrx::ProgramPlan & p
     for (const ggml::hrx::Invocation & invocation : plan.schedule.invocations) {
         for (const ggml::hrx::Dispatch & dispatch : invocation.dispatches) {
             if (std::find_if(kernels.begin(), kernels.end(), [&](const ggml::hrx::KernelDefinition & item) {
-                    return item.id != nullptr && dispatch.kernel.variant == item.id;
+                    return item.family != nullptr && item.name != nullptr &&
+                        dispatch.kernel.family == item.family && dispatch.kernel.variant == item.name;
                 }) != kernels.end()) continue;
             sources.push_back("test/" + dispatch.kernel.variant + ".loom");
             digests.push_back("sha256-" + dispatch.kernel.variant);
@@ -465,7 +466,9 @@ static ggml::hrx::KernelCorpus make_test_corpus(const ggml::hrx::ProgramPlan & p
                 bindings.back().push_back({ binding.role.c_str(), ggml::hrx::ResourceAccess::ReadWrite });
             }
             ggml::hrx::KernelDefinition kernel;
-            kernel.id = dispatch.kernel.variant.c_str();
+            kernel.family = dispatch.kernel.family.c_str();
+            kernel.name = dispatch.kernel.variant.c_str();
+            kernel.id = ggml::hrx::kernel_catalog_id(kernel.family, kernel.name);
             kernel.source = sources.back().c_str();
             kernel.symbol = dispatch.kernel.variant.c_str();
             kernel.target = plan.target.c_str();

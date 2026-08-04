@@ -54,6 +54,8 @@ std::string serialize_kernel_corpus_json(const KernelCorpus & corpus) {
     };
     for (const KernelDefinition & kernel : corpus.kernels) {
         nlohmann::ordered_json item = {
+            { "family",              kernel.family                              },
+            { "name",                kernel.name                                },
             { "id",                  kernel.id                                  },
             { "source",              kernel.source                              },
             { "dependencies",        string_span_json(kernel.dependencies)      },

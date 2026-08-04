@@ -67,16 +67,19 @@ set(GGML_HRX_QWEN_KERNEL_CORPUS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernels/qwen_mo
 set(GGML_HRX_QWEN_KERNEL_CORPUS_MANIFEST "${GGML_HRX_QWEN_KERNEL_CORPUS_DIR}/manifest.json")
 set(GGML_HRX_KERNEL_CORPUS_SOURCES_INC "${CMAKE_CURRENT_BINARY_DIR}/kernel-corpus-sources.inc")
 set(GGML_HRX_KERNEL_CORPUS_QWEN_INC "${CMAKE_CURRENT_BINARY_DIR}/kernel-corpus-qwen.inc")
+set(GGML_HRX_KERNEL_CORPUS_CATALOG_INC "${CMAKE_CURRENT_BINARY_DIR}/kernel-corpus-catalog.inc")
 set(GGML_HRX_KERNEL_CORPUS_DEPFILE "${CMAKE_CURRENT_BINARY_DIR}/kernel-corpus.d")
 
 add_custom_command(
     OUTPUT
         "${GGML_HRX_KERNEL_CORPUS_SOURCES_INC}"
         "${GGML_HRX_KERNEL_CORPUS_QWEN_INC}"
+        "${GGML_HRX_KERNEL_CORPUS_CATALOG_INC}"
     COMMAND ${Python3_EXECUTABLE}
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_kernel_corpus.py"
         --source-output "${GGML_HRX_KERNEL_CORPUS_SOURCES_INC}"
         --corpus-output "${GGML_HRX_KERNEL_CORPUS_QWEN_INC}"
+        --catalog-output "${GGML_HRX_KERNEL_CORPUS_CATALOG_INC}"
         --manifest "${GGML_HRX_QWEN_KERNEL_CORPUS_MANIFEST}"
         --corpus-dir "${GGML_HRX_QWEN_KERNEL_CORPUS_DIR}"
         --depfile "${GGML_HRX_KERNEL_CORPUS_DEPFILE}"
@@ -109,10 +112,13 @@ add_library(ggml-hrx-graph STATIC
     graph/schedule.h
     kernel-corpus-json.cpp
     kernel-corpus-json.h
+    kernel-corpus-catalog-verify.h
+    kernel-corpus-catalog.h
     kernel-corpus.cpp
     kernel-corpus.h
     "${GGML_HRX_KERNEL_CORPUS_SOURCES_INC}"
     "${GGML_HRX_KERNEL_CORPUS_QWEN_INC}"
+    "${GGML_HRX_KERNEL_CORPUS_CATALOG_INC}"
 )
 target_include_directories(ggml-hrx-graph PUBLIC . graph PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" .. ../../include ../../../vendor)
 target_compile_features(ggml-hrx-graph PRIVATE cxx_std_17)
