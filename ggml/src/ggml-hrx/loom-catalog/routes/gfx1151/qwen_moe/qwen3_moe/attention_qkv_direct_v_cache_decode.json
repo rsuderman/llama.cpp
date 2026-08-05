@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "attention_qkv_direct_v_cache_decode",
   "format": "loom",
-  "priority": 740,
+  "priority": 903296,
   "tensors": {
     "q_weight": {"type": "Q8_0", "shape": ["projection_k", "q_rows", 1, 1]},
     "k_weight": {"type": "Q8_0", "shape": ["projection_k", "k_rows", 1, 1]},

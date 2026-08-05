@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "gated_delta_net_f32_state_cache_decode_token1_compound_shared_empty_index",
   "format": "loom",
-  "priority": 949,
+  "priority": 903531,
   "tensors": {
     "conv_cache_base": {"type": "F32"},
     "conv_cache_read": {"type": "F32", "shape": ["conv_cache_d0", 1, 1, 1]},

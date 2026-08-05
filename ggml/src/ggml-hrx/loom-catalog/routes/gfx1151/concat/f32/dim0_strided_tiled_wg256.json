@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "concat_f32_dim0_strided_tiled_wg256",
   "format": "loom",
-  "priority": 120,
+  "priority": 800050,
   "match": {
     "op": "GGML_OP_CONCAT",
     "tensors": {

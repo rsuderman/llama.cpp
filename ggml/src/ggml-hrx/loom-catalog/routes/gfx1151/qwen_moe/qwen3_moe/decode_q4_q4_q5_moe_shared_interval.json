@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "decode_q4_q4_q5_moe_shared_interval",
   "format": "loom",
-  "priority": 550,
+  "priority": 903520,
   "tensors": {
     "logits": {
       "type": "F32",

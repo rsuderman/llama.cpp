@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "flash_attn_ext_f32_f16_wave256",
   "format": "loom",
-  "priority": 90,
+  "priority": 700076,
   "match": {
     "op": "GGML_OP_FLASH_ATTN_EXT",
     "tensors": {
@@ -81,7 +81,7 @@
       },
       {
         "field": "shape.src0.ntokens",
-        "min": 1
+        "min": 2
       },
       {
         "field": "shape.src0.ntokens",

@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "topk_moe_softmax_norm_pp512",
   "format": "loom",
-  "priority": 500,
+  "priority": 702163,
   "tensors": {
     "logits": {
       "type": "F32",

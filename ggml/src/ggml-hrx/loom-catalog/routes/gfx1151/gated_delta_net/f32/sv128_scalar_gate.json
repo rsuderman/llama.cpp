@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "gated_delta_net_f32_sv128_wg128",
   "format": "loom",
-  "priority": 100,
+  "priority": 800079,
   "match": {
     "op": "GGML_OP_GATED_DELTA_NET",
     "tensors": {

@@ -1,11 +1,11 @@
 {
   "schema": "ggml-hrx-loom-fusion-route-v2",
-  "id": "mul_mat_id_q5_k_gate_up_swiglu_shared_qact_pp512",
+  "id": "mul_mat_id_q4_k_gate_up_swiglu_shared_qact_pp512",
   "format": "loom",
-  "priority": 520,
+  "priority": 902099,
   "tensors": {
     "gate_weight": {
-      "type": "Q5_K",
+      "type": "Q4_K",
       "shape": [
         "up_k",
         "up_rows",
@@ -15,7 +15,7 @@
       "layout": "contiguous"
     },
     "up_weight": {
-      "type": "Q5_K",
+      "type": "Q4_K",
       "shape": [
         "up_k",
         "up_rows",
@@ -514,8 +514,8 @@
       }
     },
     {
-      "name": "mul_mat_id_q5_k_gate",
-      "definition": "../../../../defs/gfx1151/mul_mat_id/q5_k_f32/mul_mat_id_q5_k_f32_mmq_gfx1151_wg256_pre_tbl.json",
+      "name": "mul_mat_id_q4_k_gate",
+      "definition": "../../../../defs/gfx1151/mul_mat_id/q4_k_f32/mul_mat_id_q4_k_f32_mmq_gfx1151_wg256_pre_tbl.json",
       "config": {
         "mode": "compile",
         "bindings": [
@@ -631,8 +631,8 @@
       }
     },
     {
-      "name": "mul_mat_id_q5_k_swiglu_up",
-      "definition": "../../../../defs/gfx1151/mul_mat_id/q5_k_f32/mul_mat_id_q5_k_f32_swiglu.json",
+      "name": "mul_mat_id_q4_k_swiglu_up",
+      "definition": "../../../../defs/gfx1151/mul_mat_id/q4_k_f32/mul_mat_id_q4_k_f32_swiglu.json",
       "config": {
         "mode": "compile",
         "bindings": [

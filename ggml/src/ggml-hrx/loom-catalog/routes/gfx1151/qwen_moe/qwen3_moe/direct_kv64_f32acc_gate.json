@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "flash_attn_ext_f32_f16_direct_kv64_f32acc_gate",
   "format": "loom",
-  "priority": 301,
+  "priority": 902186,
   "tensors": {
     "q": {
       "type": "F32",
@@ -708,7 +708,7 @@
   "dispatches": [
     {
       "name": "main",
-      "definition": "../../../../defs/gfx1151/flash_attn_ext/f32_f16/direct_kv64_f32acc_gate.json",
+      "definition": "../../../../defs/gfx11-generic/flash_attn_ext/f32_f16/direct_kv64_f32acc_gate.json",
       "config": {
         "mode": "compile",
         "bindings": [
@@ -726,6 +726,11 @@
             "name": "hrx2_shape_fa_nheads",
             "type": "i64",
             "source": "shape.q.nheads"
+          },
+          {
+            "name": "hrx2_shape_fa_nkv",
+            "type": "i64",
+            "source": "shape.k.nkv"
           },
           {
             "name": "hrx2_shape_fa_gqa",
@@ -761,6 +766,11 @@
             "name": "hrx2_shape_fa_v_stride_head",
             "type": "i64",
             "source": "tensor.v.element_strides.2"
+          },
+          {
+            "name": "hrx2_shape_fa_mask_stride_token",
+            "type": "i64",
+            "source": "tensor.mask.element_strides.1"
           },
           {
             "name": "hrx2_shape_fa_dst_stride_head",
@@ -825,21 +835,9 @@
       ],
       "scalars": [
         {
-          "name": "key_value_token_count",
-          "type": "index",
-          "position": 0,
-          "source": "shape.k.nkv"
-        },
-        {
-          "name": "mask_stride_token",
-          "type": "index",
-          "position": 1,
-          "source": "tensor.mask.element_strides.1"
-        },
-        {
           "name": "scale",
           "type": "f32",
-          "position": 2,
+          "position": 0,
           "source": "attribute.fa.scale"
         }
       ],

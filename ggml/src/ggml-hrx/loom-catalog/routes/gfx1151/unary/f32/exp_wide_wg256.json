@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "exp_f32_wide_wg256",
   "format": "loom",
-  "priority": 200,
+  "priority": 800016,
   "match": {
     "op": "GGML_OP_UNARY",
     "tensors": {

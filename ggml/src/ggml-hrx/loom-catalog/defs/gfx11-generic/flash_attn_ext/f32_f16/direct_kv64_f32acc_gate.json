@@ -2,13 +2,13 @@
   "schema": "ggml-hrx-loom-def-v1",
   "id": "flash_attn_ext_f32_f16_direct_kv64_f32acc_gate",
   "op": "GGML_OP_FLASH_ATTN_EXT",
-  "source": "sources/gfx1151/flash_attn_ext/f32_f16/direct_kv64_f32acc_gate.loom",
+  "source": "sources/gfx11-generic/flash_attn_ext/f32_f16/direct_kv64_f32acc_gate.loom",
   "source_format": "loom-text",
   "symbol": "hrx2_flash_attn_ext_f32_f16_direct_kv64_f32acc_gate",
   "abi": {
     "binding_count": 6,
-    "parameter_count": 9,
-    "constant_byte_length": 12
+    "parameter_count": 7,
+    "constant_byte_length": 4
   },
   "workgroup_size": [
     256,
@@ -16,14 +16,6 @@
     1
   ],
   "parameters": [
-    {
-      "name": "key_value_token_count",
-      "type": "index"
-    },
-    {
-      "name": "mask_stride_token",
-      "type": "index"
-    },
     {
       "name": "scale",
       "type": "f32"

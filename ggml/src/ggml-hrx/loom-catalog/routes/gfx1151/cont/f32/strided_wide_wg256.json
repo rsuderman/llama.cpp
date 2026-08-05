@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "cont_strided_f32_wide_wg256",
   "format": "loom",
-  "priority": 200,
+  "priority": 800016,
   "match": {
     "op": "GGML_OP_CONT",
     "tensors": {

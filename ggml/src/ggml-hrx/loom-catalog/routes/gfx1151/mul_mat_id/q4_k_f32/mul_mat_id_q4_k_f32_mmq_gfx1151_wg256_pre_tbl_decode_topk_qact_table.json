@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "mul_mat_id_q4_k_f32_mmq_gfx1151_wg256_pre_tbl_decode_topk_qact_table",
   "format": "loom",
-  "priority": 510,
+  "priority": 803247,
   "tensors": {
     "logits": {
       "type": "F32",

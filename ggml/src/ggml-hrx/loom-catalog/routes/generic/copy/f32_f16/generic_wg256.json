@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "copy_f32_f16_generic_wg256",
   "format": "loom",
-  "priority": 140,
+  "priority": 600008,
   "match": {
     "op": "GGML_OP_CPY",
     "tensors": {
@@ -68,7 +68,7 @@
     }
   },
   "architectures": [
-    "gfx1151"
+    "*"
   ],
   "dispatches": [
     {

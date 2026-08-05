@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-route-v1",
   "id": "get_rows_q8_0_n2048_rany",
   "format": "loom",
-  "priority": 210,
+  "priority": 700026,
   "match": {
     "op": "GGML_OP_GET_ROWS",
     "tensors": {

@@ -1,11 +1,11 @@
 {
   "schema": "ggml-hrx-loom-fusion-route-v2",
-  "id": "mul_mat_id_q4_k_gate_up_swiglu_q5_down_shared_qact_pp512",
+  "id": "mul_mat_id_q5_k_gate_up_swiglu_shared_qact_pp512",
   "format": "loom",
-  "priority": 530,
+  "priority": 902100,
   "tensors": {
     "gate_weight": {
-      "type": "Q4_K",
+      "type": "Q5_K",
       "shape": [
         "up_k",
         "up_rows",
@@ -15,7 +15,7 @@
       "layout": "contiguous"
     },
     "up_weight": {
-      "type": "Q4_K",
+      "type": "Q5_K",
       "shape": [
         "up_k",
         "up_rows",
@@ -72,27 +72,6 @@
         1
       ],
       "layout": "contiguous"
-    },
-    "down_weight": {
-      "type": "Q5_K",
-      "storage": "q5_k_expert_down_group4",
-      "shape": [
-        "down_k",
-        "down_rows",
-        "nexperts",
-        1
-      ],
-      "layout": "contiguous"
-    },
-    "down_dst": {
-      "type": "F32",
-      "shape": [
-        "down_rows",
-        "nselected",
-        "ntokens",
-        1
-      ],
-      "layout": "contiguous"
     }
   },
   "match": {
@@ -133,16 +112,6 @@
             "source": "op_param.0"
           }
         }
-      },
-      "down": {
-        "op": "GGML_OP_MUL_MAT_ID",
-        "tensors": {
-          "src0": "down_weight",
-          "src1": "swiglu_dst",
-          "src2": "idx",
-          "dst": "down_dst"
-        },
-        "attributes": {}
       }
     },
     "predicates": [
@@ -177,18 +146,6 @@
         "equals": 512
       },
       {
-        "field": "shape.down_weight.down_k",
-        "equals": 512
-      },
-      {
-        "field": "shape.down_weight.down_rows",
-        "equals": 2048
-      },
-      {
-        "field": "shape.down_weight.nexperts",
-        "equals": "shape.up_weight.nexperts"
-      },
-      {
         "field": "shape.input.up_k",
         "equals": "shape.up_weight.up_k"
       },
@@ -216,28 +173,8 @@
         "equals": "shape.idx.ntokens"
       },
       {
-        "field": "shape.down_dst.down_rows",
-        "equals": "shape.down_weight.down_rows"
-      },
-      {
-        "field": "shape.down_dst.nselected",
-        "equals": "shape.idx.nselected"
-      },
-      {
-        "field": "shape.down_dst.ntokens",
-        "equals": "shape.idx.ntokens"
-      },
-      {
         "field": "shape.up_weight.up_k",
         "multiple_of": 256
-      },
-      {
-        "field": "shape.down_weight.down_k",
-        "multiple_of": 256
-      },
-      {
-        "field": "shape.down_weight.down_k",
-        "equals": "shape.swiglu_dst.up_rows"
       },
       {
         "field": "tensor.input.element_strides.0",
@@ -276,14 +213,6 @@
         "max": 1048576
       },
       {
-        "field": "tensor.down_dst.element_strides.2",
-        "min": 1
-      },
-      {
-        "field": "tensor.down_dst.element_strides.2",
-        "max": 1048576
-      },
-      {
         "elided": [
           "up_dst"
         ]
@@ -297,12 +226,6 @@
       {
         "no_overlap": [
           "gate_weight",
-          "down_weight"
-        ]
-      },
-      {
-        "no_overlap": [
-          "gate_weight",
           "input"
         ]
       },
@@ -322,18 +245,6 @@
         "no_overlap": [
           "gate_weight",
           "swiglu_dst"
-        ]
-      },
-      {
-        "no_overlap": [
-          "gate_weight",
-          "down_dst"
-        ]
-      },
-      {
-        "no_overlap": [
-          "up_weight",
-          "down_weight"
         ]
       },
       {
@@ -362,42 +273,6 @@
       },
       {
         "no_overlap": [
-          "up_weight",
-          "down_dst"
-        ]
-      },
-      {
-        "no_overlap": [
-          "down_weight",
-          "input"
-        ]
-      },
-      {
-        "no_overlap": [
-          "down_weight",
-          "idx"
-        ]
-      },
-      {
-        "no_overlap": [
-          "down_weight",
-          "gate_dst"
-        ]
-      },
-      {
-        "no_overlap": [
-          "down_weight",
-          "swiglu_dst"
-        ]
-      },
-      {
-        "no_overlap": [
-          "down_weight",
-          "down_dst"
-        ]
-      },
-      {
-        "no_overlap": [
           "input",
           "idx"
         ]
@@ -416,12 +291,6 @@
       },
       {
         "no_overlap": [
-          "input",
-          "down_dst"
-        ]
-      },
-      {
-        "no_overlap": [
           "idx",
           "gate_dst"
         ]
@@ -430,30 +299,12 @@
         "no_overlap": [
           "idx",
           "swiglu_dst"
-        ]
-      },
-      {
-        "no_overlap": [
-          "idx",
-          "down_dst"
         ]
       },
       {
         "no_overlap": [
           "gate_dst",
           "swiglu_dst"
-        ]
-      },
-      {
-        "no_overlap": [
-          "gate_dst",
-          "down_dst"
-        ]
-      },
-      {
-        "no_overlap": [
-          "swiglu_dst",
-          "down_dst"
         ]
       }
     ]
@@ -474,18 +325,6 @@
     "up_dst_token_stride": {
       "type": "i64",
       "field": "tensor.swiglu_dst.element_strides.2"
-    },
-    "down_src1_selected_stride": {
-      "type": "i64",
-      "field": "tensor.swiglu_dst.element_strides.1"
-    },
-    "down_src1_token_stride": {
-      "type": "i64",
-      "field": "tensor.swiglu_dst.element_strides.2"
-    },
-    "down_dst_token_stride": {
-      "type": "i64",
-      "field": "tensor.down_dst.element_strides.2"
     },
     "qact_elements": {
       "type": "i64",
@@ -534,13 +373,6 @@
         128
       ]
     },
-    "down_row_workgroups": {
-      "type": "i64",
-      "ceil_div": [
-        "shape.down_weight.down_rows",
-        128
-      ]
-    },
     "qact_workgroups": {
       "type": "i64",
       "ceil_div": [
@@ -560,7 +392,7 @@
       "size": "derived.qact_sum_bytes"
     },
     "mmid_all": {
-      "size": 11026432
+      "size": "derived.mmid_bytes"
     }
   },
   "architectures": [
@@ -682,8 +514,8 @@
       }
     },
     {
-      "name": "mul_mat_id_q4_k_gate",
-      "definition": "../../../../defs/gfx1151/mul_mat_id/q4_k_f32/mul_mat_id_q4_k_f32_mmq_gfx1151_wg256_pre_tbl.json",
+      "name": "mul_mat_id_q5_k_gate",
+      "definition": "../../../../defs/gfx1151/mul_mat_id/q5_k_f32/mul_mat_id_q5_k_f32_mmq_gfx1151_wg256_pre_tbl.json",
       "config": {
         "mode": "compile",
         "bindings": [
@@ -799,8 +631,8 @@
       }
     },
     {
-      "name": "mul_mat_id_q4_k_swiglu_q5_down_qact_up",
-      "definition": "../../../../defs/gfx1151/mul_mat_id/q4_k_f32/mul_mat_id_q4_k_f32_mmq_gfx1151_wg256_pre_tbl_swiglu_q5_down_qact.json",
+      "name": "mul_mat_id_q5_k_swiglu_up",
+      "definition": "../../../../defs/gfx1151/mul_mat_id/q5_k_f32/mul_mat_id_q5_k_f32_swiglu.json",
       "config": {
         "mode": "compile",
         "bindings": [
@@ -904,7 +736,7 @@
           "name": "tbl",
           "transient": "mmid_all",
           "position": 8,
-          "kind": "inout"
+          "kind": "input"
         }
       ],
       "scalars": [],
@@ -912,105 +744,6 @@
         "workgroups": [
           "derived.up_row_workgroups",
           "shape.up_weight.nexperts",
-          1
-        ],
-        "workgroup_size": [
-          256,
-          1,
-          1
-        ]
-      }
-    },
-    {
-      "name": "main",
-      "definition": "../../../../defs/gfx1151/mul_mat_id/q4_k_f32/mul_mat_id_q4_k_swiglu_q5_down_qact.json",
-      "config": {
-        "mode": "compile",
-        "bindings": [
-          {
-            "name": "hrx2_shape_mul_mat_id_k",
-            "type": "i64",
-            "source": "shape.down_weight.down_k"
-          },
-          {
-            "name": "hrx2_shape_mul_mat_id_rows",
-            "type": "i64",
-            "source": "shape.down_weight.down_rows"
-          },
-          {
-            "name": "hrx2_shape_mul_mat_id_nexperts",
-            "type": "i64",
-            "source": "shape.down_weight.nexperts"
-          },
-          {
-            "name": "hrx2_shape_mul_mat_id_nselected",
-            "type": "i64",
-            "source": "shape.idx.nselected"
-          },
-          {
-            "name": "hrx2_shape_mul_mat_id_ntokens",
-            "type": "i64",
-            "source": "shape.idx.ntokens"
-          },
-          {
-            "name": "hrx2_shape_mul_mat_id_src1_selected_stride",
-            "type": "i64",
-            "source": "derived.down_src1_selected_stride"
-          },
-          {
-            "name": "hrx2_shape_mul_mat_id_src1_token_stride",
-            "type": "i64",
-            "source": "derived.down_src1_token_stride"
-          },
-          {
-            "name": "hrx2_shape_mul_mat_id_idx_token_stride",
-            "type": "i64",
-            "source": "derived.idx_token_stride"
-          },
-          {
-            "name": "hrx2_shape_mul_mat_id_dst_token_stride",
-            "type": "i64",
-            "source": "derived.down_dst_token_stride"
-          }
-        ]
-      },
-      "buffers": [
-        {
-          "name": "src0",
-          "tensor": "down_weight",
-          "position": 0,
-          "kind": "input"
-        },
-        {
-          "name": "src1",
-          "tensor": "swiglu_dst",
-          "position": 1,
-          "kind": "input"
-        },
-        {
-          "name": "idx",
-          "tensor": "idx",
-          "position": 2,
-          "kind": "input"
-        },
-        {
-          "name": "dst",
-          "tensor": "down_dst",
-          "position": 3,
-          "kind": "output"
-        },
-        {
-          "name": "tbl",
-          "transient": "mmid_all",
-          "position": 4,
-          "kind": "input"
-        }
-      ],
-      "scalars": [],
-      "dispatch": {
-        "workgroups": [
-          "derived.down_row_workgroups",
-          "shape.down_weight.nexperts",
           1
         ],
         "workgroup_size": [

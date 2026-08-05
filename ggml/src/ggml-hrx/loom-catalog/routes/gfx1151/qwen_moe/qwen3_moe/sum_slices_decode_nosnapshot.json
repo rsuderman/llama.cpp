@@ -2,7 +2,7 @@
   "schema": "ggml-hrx-loom-fusion-route-v2",
   "id": "sum_slices_f32_decode_nosnapshot",
   "format": "loom",
-  "priority": 511,
+  "priority": 903210,
   "tensors": {
     "selected": {
       "type": "F32",
