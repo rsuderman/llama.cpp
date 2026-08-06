@@ -165,7 +165,65 @@ static std::string stable_hash(const std::string & text) {
     return out.str();
 }
 
-static void pack_transient_plan(TransientPlan & result) {
+struct TransientExecutionOrder {
+    std::vector<std::vector<uint64_t>> uses;
+    std::vector<std::vector<uint64_t>> common_ancestors;
+    std::vector<bool> used;
+
+    bool ordered_before(uint32_t before, uint32_t after) const {
+        if (before >= uses.size() || after >= uses.size() || !used[before] || !used[after]) return false;
+        for (size_t word = 0; word < uses[before].size(); ++word) {
+            if ((uses[before][word] & ~common_ancestors[after][word]) != 0) return false;
+        }
+        return true;
+    }
+
+    bool lifetimes_overlap(uint32_t a, uint32_t b) const {
+        if (a >= uses.size() || b >= uses.size() || !used[a] || !used[b]) return false;
+        return !ordered_before(a, b) && !ordered_before(b, a);
+    }
+};
+
+static TransientExecutionOrder analyze_transient_execution(
+        const std::vector<Command> & commands, size_t transient_count) {
+    const size_t word_count = (commands.size() + 63) / 64;
+    std::vector<std::vector<uint64_t>> command_ancestors(
+        commands.size(), std::vector<uint64_t>(word_count));
+    for (size_t command_index = 0; command_index < commands.size(); ++command_index) {
+        for (uint32_t dependency : commands[command_index].dependencies) {
+            if (dependency >= command_index) continue;
+            command_ancestors[command_index][dependency / 64] |= UINT64_C(1) << (dependency % 64);
+            for (size_t word = 0; word < word_count; ++word) {
+                command_ancestors[command_index][word] |= command_ancestors[dependency][word];
+            }
+        }
+    }
+
+    TransientExecutionOrder result;
+    result.uses.assign(transient_count, std::vector<uint64_t>(word_count));
+    result.common_ancestors.assign(transient_count, std::vector<uint64_t>(word_count, UINT64_MAX));
+    result.used.assign(transient_count, false);
+    for (size_t command_index = 0; command_index < commands.size(); ++command_index) {
+        for (const CommandBinding & binding : commands[command_index].bindings) {
+            if (binding.origin != BindingOrigin::Transient || binding.transient >= transient_count) continue;
+            result.uses[binding.transient][command_index / 64] |= UINT64_C(1) << (command_index % 64);
+        }
+    }
+    for (size_t transient = 0; transient < transient_count; ++transient) {
+        for (size_t command_index = 0; command_index < commands.size(); ++command_index) {
+            if ((result.uses[transient][command_index / 64] &
+                 (UINT64_C(1) << (command_index % 64))) == 0) continue;
+            result.used[transient] = true;
+            for (size_t word = 0; word < word_count; ++word) {
+                result.common_ancestors[transient][word] &= command_ancestors[command_index][word];
+            }
+        }
+    }
+    return result;
+}
+
+static void pack_transient_plan(
+        TransientPlan & result, const TransientExecutionOrder & execution_order) {
     result.arena_size = 0;
     for (TransientAllocation & allocation : result.allocations) allocation.arena_offset = 0;
     std::vector<size_t> order(result.allocations.size());
@@ -188,11 +246,9 @@ static void pack_transient_plan(TransientPlan & result) {
             for (size_t placed_index = 0; placed_index < result.allocations.size(); ++placed_index) {
                 if (!is_placed[placed_index]) continue;
                 const TransientAllocation & placed = result.allocations[placed_index];
-                const bool lifetime_overlap = allocation.first_command <= placed.last_command &&
-                    placed.first_command <= allocation.last_command;
                 const bool range_overlap = candidate < placed.arena_offset + placed.size &&
                     placed.arena_offset < candidate + allocation.size;
-                if (lifetime_overlap && range_overlap) {
+                if (execution_order.lifetimes_overlap(allocation.id, placed.id) && range_overlap) {
                     conflict = true;
                     next_candidate = std::max(next_candidate, placed.arena_offset + placed.size);
                 }
@@ -231,10 +287,8 @@ static PersistentConstantPlan build_persistent_constant_plan(
     return result;
 }
 
-static TransientPlan build_transient_plan(const ProgramPlan & plan,
-                                          const std::vector<uint32_t> & invocation_first_command,
-                                          const std::vector<uint32_t> & invocation_last_command,
-                                          const PersistentConstantPlan & persistent_constants) {
+static TransientPlan build_transient_plan(
+        const ProgramPlan & plan, const PersistentConstantPlan & persistent_constants) {
     TransientPlan result;
     result.arena_alignment = 256;
     for (const ResourceContract & resource : plan.resources.resources) {
@@ -248,11 +302,8 @@ static TransientPlan build_transient_plan(const ProgramPlan & plan,
         allocation.storage = resource.storage;
         allocation.size = resource.size;
         allocation.alignment = 256;
-        allocation.first_command = invocation_first_command[resource.first_invocation];
-        allocation.last_command = invocation_last_command[resource.last_invocation];
         result.allocations.push_back(allocation);
     }
-    pack_transient_plan(result);
     return result;
 }
 
@@ -305,12 +356,8 @@ CommandProgram build_command_program(const ProgramPlan & plan, const KernelCorpu
     const VerificationResult corpus_verification = verify_kernel_corpus(corpus);
     result.errors.insert(result.errors.end(), corpus_verification.errors.begin(), corpus_verification.errors.end());
 
-    std::vector<uint32_t> invocation_first(plan.schedule.invocations.size(), UINT32_MAX);
-    std::vector<uint32_t> invocation_last(plan.schedule.invocations.size(), 0);
     uint32_t ordinal = 0;
-    for (size_t invocation_id = 0; invocation_id < plan.schedule.invocations.size(); ++invocation_id) {
-        const Invocation & invocation = plan.schedule.invocations[invocation_id];
-        invocation_first[invocation_id] = ordinal;
+    for (const Invocation & invocation : plan.schedule.invocations) {
         for (const Dispatch & dispatch : invocation.dispatches) {
             Command command;
             command.ordinal = ordinal++;
@@ -341,13 +388,11 @@ CommandProgram build_command_program(const ProgramPlan & plan, const KernelCorpu
             }
             result.commands.push_back(std::move(command));
         }
-        invocation_last[invocation_id] = ordinal == 0 ? 0 : ordinal - 1;
     }
     result.commands = expand_synthetic_commands(result.commands, result.errors);
     append_rope_initialization(plan, result);
     result.persistent_constants = build_persistent_constant_plan(plan, result.initializations);
-    result.transients = build_transient_plan(
-        plan, invocation_first, invocation_last, result.persistent_constants);
+    result.transients = build_transient_plan(plan, result.persistent_constants);
     for (Command & command : result.commands) {
         for (CommandBinding & binding : command.bindings) {
             const auto persistent = std::find_if(
@@ -378,7 +423,6 @@ CommandProgram build_command_program(const ProgramPlan & plan, const KernelCorpu
             allocation.last_command = std::max(allocation.last_command, command.ordinal);
         }
     }
-    pack_transient_plan(result.transients);
     // Schedule dependencies describe authored ordering. Add the conservative
     // resource hazards required by concrete command recording so a future
     // recipe may expose independent commands without weakening mutation or
@@ -406,6 +450,8 @@ CommandProgram build_command_program(const ProgramPlan & plan, const KernelCorpu
             }
         }
     }
+    pack_transient_plan(
+        result.transients, analyze_transient_execution(result.commands, result.transients.allocations.size()));
     return result;
 }
 
@@ -485,6 +531,15 @@ VerificationResult verify_command_program(const ProgramPlan & plan, const Kernel
                 if (binding.access != ResourceAccess::Read) {
                     result.errors.push_back("command writes persistent constant storage");
                 }
+            } else if (binding.origin == BindingOrigin::Transient) {
+                const auto allocation = std::find_if(
+                    commands.transients.allocations.begin(), commands.transients.allocations.end(),
+                    [&](const TransientAllocation & item) {
+                        return item.id == binding.transient && item.storage == binding.storage;
+                    });
+                if (allocation == commands.transients.allocations.end()) {
+                    result.errors.push_back("command has an invalid transient binding");
+                }
             }
         }
     }
@@ -523,10 +578,14 @@ VerificationResult verify_command_program(const ProgramPlan & plan, const Kernel
             if (overlap) result.errors.push_back("persistent constant allocations overlap");
         }
     }
-    for (const TransientAllocation & a : commands.transients.allocations) {
+    const TransientExecutionOrder execution_order = analyze_transient_execution(
+        commands.commands, commands.transients.allocations.size());
+    for (size_t allocation_index = 0; allocation_index < commands.transients.allocations.size(); ++allocation_index) {
+        const TransientAllocation & a = commands.transients.allocations[allocation_index];
         if (a.storage >= plan.graph.storages.size() || !plan.resources.resources[a.storage].elidable ||
-            a.size != plan.graph.storages[a.storage].size || a.arena_offset % a.alignment != 0 ||
-            a.arena_offset + a.size > commands.transients.arena_size) {
+            a.size != plan.graph.storages[a.storage].size || a.alignment == 0 ||
+            a.arena_offset % a.alignment != 0 ||
+            a.arena_offset + a.size > commands.transients.arena_size || a.id != allocation_index) {
             result.errors.push_back("invalid transient allocation");
         }
         if (persistent_storages.count(a.storage) != 0) {
@@ -534,9 +593,10 @@ VerificationResult verify_command_program(const ProgramPlan & plan, const Kernel
         }
         for (const TransientAllocation & b : commands.transients.allocations) {
             if (a.id >= b.id) continue;
-            const bool lifetime_overlap = a.first_command <= b.last_command && b.first_command <= a.last_command;
             const bool range_overlap = a.arena_offset < b.arena_offset + b.size && b.arena_offset < a.arena_offset + a.size;
-            if (lifetime_overlap && range_overlap) result.errors.push_back("live transients overlap");
+            if (range_overlap && execution_order.lifetimes_overlap(a.id, b.id)) {
+                result.errors.push_back("aliased transient lifetimes overlap in the command dependency graph");
+            }
         }
     }
     return result;

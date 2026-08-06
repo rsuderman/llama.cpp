@@ -78,6 +78,25 @@ static ggml_tensor * build_arithmetic_graph(Fixture & fixture, const char * pref
     return mul;
 }
 
+static void build_fork_join_graph(Fixture & fixture, const char * prefix) {
+    ggml_tensor * x = ggml_new_tensor_2d(fixture.context, GGML_TYPE_F32, 4, 8);
+    ggml_tensor * y = ggml_new_tensor_2d(fixture.context, GGML_TYPE_F32, 4, 8);
+    ggml_tensor * z = ggml_new_tensor_2d(fixture.context, GGML_TYPE_F32, 4, 8);
+    ggml_tensor * w = ggml_new_tensor_2d(fixture.context, GGML_TYPE_F32, 4, 8);
+    ggml_set_input(x);
+    ggml_set_input(y);
+    ggml_set_input(z);
+    ggml_set_input(w);
+    ggml_tensor * left = ggml_add(fixture.context, x, y);
+    ggml_tensor * right = ggml_mul(fixture.context, z, w);
+    ggml_tensor * result = ggml_add(fixture.context, left, right);
+    ggml_set_name(left, (std::string(prefix) + "-left").c_str());
+    ggml_set_name(right, (std::string(prefix) + "-right").c_str());
+    ggml_set_name(result, (std::string(prefix) + "-result").c_str());
+    ggml_set_output(result);
+    ggml_build_forward_expand(fixture.graph, result);
+}
+
 static void test_deterministic_import_and_schedule() {
     const ggml::hrx::Graph first = make_arithmetic_graph("first");
     const ggml::hrx::Graph second = make_arithmetic_graph("second");
@@ -459,6 +478,44 @@ static void test_command_program_and_diagnostics() {
     REQUIRE(ggml::hrx::fingerprint_bindings(snapshot) != first);
     snapshot.bindings.pop_back();
     REQUIRE(!ggml::hrx::verify_binding_snapshot(plan, snapshot).valid());
+
+    Fixture fork_join_fixture;
+    build_fork_join_graph(fork_join_fixture, "unordered-alias");
+    const ggml::hrx::ImportedGraph fork_join_graph = ggml::hrx::ImportedGraph::import(fork_join_fixture.graph);
+    ggml::hrx::ProgramPlan fork_join_plan = ggml::hrx::build_reactive_plan(fork_join_graph.graph, "gfx1151");
+    REQUIRE(fork_join_plan.valid());
+    REQUIRE(fork_join_plan.schedule.invocations.size() == 3);
+    fork_join_plan.schedule.invocations[0].dispatches[0].dependencies.clear();
+    fork_join_plan.schedule.invocations[1].dispatches[0].dependencies.clear();
+    fork_join_plan.schedule.invocations[2].dispatches[0].dependencies = { 0, 1 };
+    REQUIRE(ggml::hrx::verify_schedule(fork_join_plan.graph, fork_join_plan.schedule).valid());
+    const ggml::hrx::KernelCorpus fork_join_corpus = make_test_corpus(fork_join_plan);
+    const ggml::hrx::CommandProgram fork_join_commands =
+        ggml::hrx::build_command_program(fork_join_plan, fork_join_corpus);
+    REQUIRE(fork_join_commands.valid());
+    REQUIRE(fork_join_commands.commands[0].dependencies.empty());
+    REQUIRE(fork_join_commands.commands[1].dependencies.empty());
+    REQUIRE(fork_join_commands.commands[2].dependencies == std::vector<uint32_t>({ 0, 1 }));
+    REQUIRE(fork_join_commands.transients.allocations.size() == 2);
+    const ggml::hrx::TransientAllocation & left = fork_join_commands.transients.allocations[0];
+    const ggml::hrx::TransientAllocation & right = fork_join_commands.transients.allocations[1];
+    REQUIRE(left.arena_offset + left.size <= right.arena_offset ||
+            right.arena_offset + right.size <= left.arena_offset);
+    REQUIRE(ggml::hrx::verify_command_program(fork_join_plan, fork_join_corpus, fork_join_commands).valid());
+
+    ggml::hrx::CommandProgram unordered_alias = fork_join_commands;
+    unordered_alias.transients.allocations[0].first_command = 0;
+    unordered_alias.transients.allocations[0].last_command = 0;
+    unordered_alias.transients.allocations[1].first_command = 1;
+    unordered_alias.transients.allocations[1].last_command = 1;
+    unordered_alias.transients.allocations[1].arena_offset =
+        unordered_alias.transients.allocations[0].arena_offset;
+    const ggml::hrx::VerificationResult unordered_alias_verification =
+        ggml::hrx::verify_command_program(fork_join_plan, fork_join_corpus, unordered_alias);
+    REQUIRE(!unordered_alias_verification.valid());
+    REQUIRE(std::find(unordered_alias_verification.errors.begin(), unordered_alias_verification.errors.end(),
+        "aliased transient lifetimes overlap in the command dependency graph") !=
+        unordered_alias_verification.errors.end());
 }
 
 static void test_pinned_kernel_corpus_manifest() {
