@@ -175,8 +175,10 @@ struct RoutedCandidatePayload final : CandidatePayload {
     RoutedTransformerComponentKind component_kind = RoutedTransformerComponentKind::Atom;
     bool decode = false;
     bool terminal = false;
+    LogicalComponentId following_component = kInvalidId;
+    std::vector<OperationId> following_component_operations;
+    LogicalComponentId following_prepare_component = kInvalidId;
     std::vector<OperationId> following_prepare_operations;
-    std::vector<OperationId> endpoint_operations;
 };
 
 } // namespace
@@ -933,7 +935,8 @@ void RoutedTransformerProvider::seed(const GraphIndex & index, const FactDatabas
                decode ? 3 : 2, true);
     }
     for (const RoutedTransformerBlock & block : model.blocks) {
-        for (const RoutedTransformerComponent & component : block.components) {
+        for (size_t component_ordinal = 0; component_ordinal < block.components.size(); ++component_ordinal) {
+            const RoutedTransformerComponent & component = block.components[component_ordinal];
             const std::string role = RoutedTransformerModel::component_kind_name(component.kind);
             append(role, "block." + std::to_string(block.ordinal) + '.' + role, component.id,
                    component.hero, component.operations, 1);
@@ -942,10 +945,16 @@ void RoutedTransformerProvider::seed(const GraphIndex & index, const FactDatabas
             payload->component_kind = component.kind;
             payload->decode = decode;
             payload->terminal = block.ordinal + 1 == model.blocks.size();
+            if (component_ordinal + 1 < block.components.size()) {
+                const RoutedTransformerComponent & following = block.components[component_ordinal + 1];
+                payload->following_component = following.id;
+                payload->following_component_operations = following.operations;
+            }
             if (!payload->terminal) {
-                payload->following_prepare_operations = model.blocks[block.ordinal + 1].components.front().operations;
-            } else {
-                payload->endpoint_operations = model.endpoint_operations;
+                const RoutedTransformerComponent & following_prepare =
+                    model.blocks[block.ordinal + 1].components.front();
+                payload->following_prepare_component = following_prepare.id;
+                payload->following_prepare_operations = following_prepare.operations;
             }
             candidates.back().payload = std::move(payload);
             candidates.back().economics.reference_dispatches = dispatches_for(component.kind);
@@ -998,25 +1007,24 @@ void RoutedTransformerProvider::expand(const GraphIndex & index, const FactDatab
     const RoutedTransformerComponentKind kind = payload->component_kind;
     if (payload->decode) {
         if (kind == RoutedTransformerComponentKind::AttentionQkvPublication) alternative(routed_transformer_recipes::kDecodeQkvPostprocess, 1);
-        if (kind == RoutedTransformerComponentKind::AttentionOutputPrepare) alternative(routed_transformer_recipes::kDecodeOutputNextQ8, 2);
+        if (kind == RoutedTransformerComponentKind::Attention &&
+            payload->following_component != kInvalidId &&
+            catalog_.contains(routed_transformer_recipes::kDecodeAttentionNextQ8)) {
+            std::vector<OperationId> grown = union_operations(
+                candidate.operations, payload->following_component_operations);
+            alternative(routed_transformer_recipes::kDecodeAttentionNextQ8, 2, std::move(grown));
+            FusionCandidate & result = expansions.back();
+            result.logical_components.push_back(payload->following_component);
+            result.economics.reference_dispatches += 3;
+        }
         if (kind == RoutedTransformerComponentKind::RouterSelection) alternative(routed_transformer_recipes::kDecodeRouterTopK, 1);
         if (kind == RoutedTransformerComponentKind::ExpertGateUp) alternative(routed_transformer_recipes::kDecodeGateUpNextQ8, 1);
-        if (kind == RoutedTransformerComponentKind::ExpertDownPublication && catalog_.contains(routed_transformer_recipes::kDecodeDownNextQ8)) {
-            std::vector<OperationId> grown = candidate.operations;
-            if (!payload->terminal) {
-                grown = union_operations(grown, payload->following_prepare_operations);
-            } else {
-                grown = union_operations(grown, payload->endpoint_operations);
-            }
+        if (kind == RoutedTransformerComponentKind::ExpertDownPublication && !payload->terminal &&
+            catalog_.contains(routed_transformer_recipes::kDecodeDownNextQ8)) {
+            std::vector<OperationId> grown = union_operations(
+                candidate.operations, payload->following_prepare_operations);
             alternative(routed_transformer_recipes::kDecodeDownNextQ8, 1, std::move(grown));
-            expansions.back().logical_components.push_back(candidate.logical_components.front() + 1);
-            // The grown candidate replaces the neighboring zero/one-dispatch
-            // baseline as well. Include that cost in its comparison.
-            FusionCandidate & result = expansions.back();
-            if (payload->terminal) {
-                result.economics.reference_dispatches += 1;
-                result.economics.planned_dispatches += 1; // endpoint projection remains separate
-            }
+            expansions.back().logical_components.push_back(payload->following_prepare_component);
         }
     } else {
         if (kind == RoutedTransformerComponentKind::RouterSelection && !payload->terminal) {
@@ -1027,7 +1035,7 @@ void RoutedTransformerProvider::expand(const GraphIndex & index, const FactDatab
             std::vector<OperationId> grown = union_operations(
                 candidate.operations, payload->following_prepare_operations);
             alternative(routed_transformer_recipes::kPrefillDownNextNorm, 2, std::move(grown));
-            expansions.back().logical_components.push_back(candidate.logical_components.front() + 1);
+            expansions.back().logical_components.push_back(payload->following_prepare_component);
             expansions.back().economics.reference_dispatches = 3;
         }
     }

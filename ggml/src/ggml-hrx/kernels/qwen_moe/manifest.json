@@ -3,9 +3,9 @@
   "upstream_repository": "https://github.com/ROCm/hrx-system.git",
   "upstream_revision": "c09218e7ca354654b6c66dddaf80f6294e4748bb",
   "source_subdirectory": "experimental/qwen_moe/kernels",
-  "corpus_sha256": "bb01a7178e5d1cced20f0de5e8b55de8f2afb1bdcdf119a3951ad6502f4ac165",
+  "corpus_sha256": "3e983f48e7145b71de535dc1bc7637beccfec328af992584b08708ffa2953a1f",
   "upstream_corpus_sha256": "041ca934d5cc0eebacce49615825bba7e8fdb5c2c877bde7894abd4d5d534a3c",
-  "owned_corpus_sha256": "f198ce99c259ed35277451ff6185199654eb7ecbf009dcdbd2c00af2c187886b",
+  "owned_corpus_sha256": "f563fbb2309f886e20744f5a9d6460ea0095688b844f3357c254027cfa313491",
   "build_bazel_sha256": "598eeb34f8606182a732299c989387dd450c0d8f33e4275635b4a679c0f986d0",
   "files": [
     {
@@ -132,6 +132,12 @@
       "path": "../qwen_owned/token_embedding_bringup_workaround.loom",
       "sha256": "2c6f6dadb7d98c6e9f5d00481da3160917bee1940bc1a5db9860fba914cb0f80",
       "size": 15153,
+      "owner": "ggml-hrx"
+    },
+    {
+      "path": "../qwen_owned/attention_state_initialize.loom",
+      "sha256": "b586e8ec532af23a0c3a5409d6ccf5d9c88f2d040d2ca7167cee1dee1305ec53",
+      "size": 7334,
       "owner": "ggml-hrx"
     },
     {
@@ -3168,6 +3174,78 @@
       ]
     },
     {
+      "name": "qwen_attention_context_base_capture",
+      "symbol": "qwen_attention_context_base_capture",
+      "source": "../qwen_owned/attention_state_initialize.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "positions",
+        "control"
+      ],
+      "binding_access": [
+        "read",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "../qwen_owned/attention_state_initialize.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
+      "name": "qwen_attention_decode_state_initialize",
+      "symbol": "qwen_attention_decode_state_initialize",
+      "source": "../qwen_owned/attention_state_initialize.loom",
+      "workload_parameters": [
+        {
+          "name": "context_capacity",
+          "type": "index"
+        },
+        {
+          "name": "completion_counter_count",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "context_capacity",
+          "type": "index"
+        },
+        {
+          "name": "completion_counter_count",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "positions",
+        "key_cache_indices",
+        "value_cache_indices",
+        "attention_mask",
+        "completion_counters"
+      ],
+      "binding_access": [
+        "read",
+        "write",
+        "write",
+        "write",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "../qwen_owned/attention_state_initialize.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
       "name": "qwen_attention_metadata_bringup_workaround",
       "symbol": "qwen_attention_metadata_bringup_workaround",
       "source": "../qwen_owned/attention_metadata_bringup_workaround.loom",
@@ -3827,6 +3905,30 @@
         "--sample-compilation=per_sample"
       ],
       "source": "../qwen_owned/token_embedding_bringup_workaround.loom",
+      "owner": "ggml-hrx"
+    },
+    {
+      "name": "owned_attention_context_base_capture_plan_test",
+      "args": [
+        "$(location ../qwen_owned/attention_state_initialize.loom)",
+        "--benchmark=@qwen_attention_context_base_capture_benchmark",
+        "--dry-run",
+        "--output-format=jsonl",
+        "--sample-compilation=per_sample"
+      ],
+      "source": "../qwen_owned/attention_state_initialize.loom",
+      "owner": "ggml-hrx"
+    },
+    {
+      "name": "owned_attention_decode_state_initialize_plan_test",
+      "args": [
+        "$(location ../qwen_owned/attention_state_initialize.loom)",
+        "--benchmark=@qwen_attention_decode_state_initialize_benchmark",
+        "--dry-run",
+        "--output-format=jsonl",
+        "--sample-compilation=per_sample"
+      ],
+      "source": "../qwen_owned/attention_state_initialize.loom",
       "owner": "ggml-hrx"
     },
     {

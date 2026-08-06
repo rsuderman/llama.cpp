@@ -120,7 +120,7 @@ struct RoutedTransformerRecipeCatalog {
 
 namespace routed_transformer_recipes {
 inline constexpr const char * kDecodeQkvPostprocess = "decode.attention.qkv_postprocess";
-inline constexpr const char * kDecodeOutputNextQ8 = "decode.attention.output_next_q8";
+inline constexpr const char * kDecodeAttentionNextQ8 = "decode.attention.flash_output_next_q8";
 inline constexpr const char * kDecodeRouterTopK = "decode.router.projection_topk";
 inline constexpr const char * kDecodeGateUpNextQ8 = "decode.experts.gate_up_next_q8";
 inline constexpr const char * kDecodeDownNextQ8 = "decode.experts.down_next_q8";

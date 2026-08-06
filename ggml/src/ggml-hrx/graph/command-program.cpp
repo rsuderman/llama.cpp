@@ -110,24 +110,7 @@ static std::vector<Command> expand_synthetic_commands(const std::vector<Command>
     for (const Command & original : kernels) {
         std::vector<uint32_t> dependencies = mapped_dependencies(original);
         uint32_t synthetic = UINT32_MAX;
-        if (original.kernel.variant == "qwen_attention_metadata_bringup_workaround" && original.bindings.size() >= 2) {
-            Command copy;
-            copy.ordinal = static_cast<uint32_t>(result.size());
-            copy.kind = CommandKind::Copy;
-            copy.label = original.label + ".capture_context_base";
-            copy.dependencies = dependencies;
-            CommandBinding source = original.bindings[1];
-            source.name = "source";
-            source.length = sizeof(int32_t);
-            source.access = ResourceAccess::Read;
-            CommandBinding destination = original.bindings[0];
-            destination.name = "destination";
-            destination.length = sizeof(int32_t);
-            destination.access = ResourceAccess::Write;
-            copy.bindings = { source, destination };
-            result.push_back(std::move(copy));
-            synthetic = result.back().ordinal;
-        } else if (original.kernel.variant == "qwen3_moe_flash_attention_decode_split_f32_f16_wmma" &&
+        if (original.kernel.variant == "qwen3_moe_flash_attention_decode_split_f32_f16_wmma" &&
                    original.bindings.size() >= 8) {
             Command fill;
             fill.ordinal = static_cast<uint32_t>(result.size());

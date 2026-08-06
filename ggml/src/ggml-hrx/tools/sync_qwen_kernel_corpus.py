@@ -49,6 +49,7 @@ CORPUS_FILES = (
 OWNED_KERNEL_DIR = pathlib.Path(__file__).resolve().parent.parent / "kernels"
 OWNED_FILES = (
     "qwen_owned/token_embedding_bringup_workaround.loom",
+    "qwen_owned/attention_state_initialize.loom",
     "qwen_owned/attention_metadata_bringup_workaround.loom",
     "hrx_owned/gather_add_f32.loom",
 )
@@ -69,6 +70,10 @@ AMDGPU_TARGET_RE = re.compile(
 
 def binding_access(symbol: str, name: str) -> str:
     """Authoritative launch ABI access contract; no name inference at runtime."""
+    if symbol == "qwen_attention_context_base_capture":
+        return "read" if name == "positions" else "write"
+    if symbol == "qwen_attention_decode_state_initialize":
+        return "read" if name == "positions" else "write"
     if symbol == "qwen_attention_metadata_bringup_workaround" and name != "control":
         return "read_write"
     if symbol == "qwen3_moe_router_top8_f32" and name in ("route_ids", "route_weights"):
@@ -425,6 +430,22 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
                      "--benchmark=@qwen_token_embedding_q4k_prefill_512", "--dry-run",
                      "--output-format=jsonl", "--sample-compilation=per_sample"],
             "source": "../qwen_owned/token_embedding_bringup_workaround.loom",
+            "owner": "ggml-hrx",
+        },
+        {
+            "name": "owned_attention_context_base_capture_plan_test",
+            "args": ["$(location ../qwen_owned/attention_state_initialize.loom)",
+                     "--benchmark=@qwen_attention_context_base_capture_benchmark", "--dry-run",
+                     "--output-format=jsonl", "--sample-compilation=per_sample"],
+            "source": "../qwen_owned/attention_state_initialize.loom",
+            "owner": "ggml-hrx",
+        },
+        {
+            "name": "owned_attention_decode_state_initialize_plan_test",
+            "args": ["$(location ../qwen_owned/attention_state_initialize.loom)",
+                     "--benchmark=@qwen_attention_decode_state_initialize_benchmark", "--dry-run",
+                     "--output-format=jsonl", "--sample-compilation=per_sample"],
+            "source": "../qwen_owned/attention_state_initialize.loom",
             "owner": "ggml-hrx",
         },
         {

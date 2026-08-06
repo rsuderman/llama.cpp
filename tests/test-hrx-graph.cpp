@@ -523,8 +523,8 @@ static void test_pinned_kernel_corpus_manifest() {
     REQUIRE(ggml::hrx::verify_kernel_corpus(corpus).valid());
     REQUIRE(std::string(corpus.upstream_revision) == "c09218e7ca354654b6c66dddaf80f6294e4748bb");
     REQUIRE(std::string(corpus.recipe_digest) == "598eeb34f8606182a732299c989387dd450c0d8f33e4275635b4a679c0f986d0");
-    REQUIRE(corpus.kernels.size() == 55);
-    REQUIRE(corpus.plan_case_count == 30);
+    REQUIRE(corpus.kernels.size() == 57);
+    REQUIRE(corpus.plan_case_count == 32);
     const char * family = "qwen3_moe";
     const char * name = "ggml_linear_q6k_q8_1_x4";
     const uint64_t id = ggml::hrx::kernel_catalog_id(family, name);
@@ -581,14 +581,15 @@ int main(int argc, char ** argv) {
             size_t qkv_dispatch_count = 0;
             for (const ggml::hrx::Invocation & invocation : reactive.schedule.invocations) {
                 for (const ggml::hrx::Dispatch & dispatch : invocation.dispatches) {
-                    if (dispatch.kernel.variant == "qwen3_moe_attention_qkv_quantized") {
+                    if (dispatch.kernel.variant == "qwen3_moe_attention_qkv_postprocess_fused_decode") {
                         ++qkv_dispatch_count;
                         REQUIRE(dispatch.kernel.integer_parameters.at("query_weight_type") == GGML_TYPE_Q4_K);
                         REQUIRE(dispatch.kernel.integer_parameters.at("key_weight_type") == GGML_TYPE_Q4_K);
                         const int64_t value_type = dispatch.kernel.integer_parameters.at("value_weight_type");
                         REQUIRE((value_type == GGML_TYPE_Q4_K || value_type == GGML_TYPE_Q6_K));
                     }
-                    if (dispatch.kernel.variant != "qwen3_moe_flash_attention_decode_split_f32_f16_wmma") continue;
+                    if (dispatch.kernel.variant !=
+                            "qwen3_moe_flash_attention_decode_split_f32_f16_wmma_next_q8") continue;
                     ++split_dispatch_count;
                     const int64_t tile_size = dispatch.kernel.integer_parameters.at("key_value_tile_size");
                     REQUIRE(tile_size > 0);
@@ -599,6 +600,27 @@ int main(int argc, char ** argv) {
             }
             REQUIRE(qkv_dispatch_count == model.blocks.size());
             REQUIRE(split_dispatch_count == model.blocks.size());
+            REQUIRE(ggml::hrx::schedule_dispatch_count(reactive.schedule) == model.blocks.size() * 6 + 5);
+        } else {
+            size_t dispatch_ordinal = 0;
+            size_t qkv_fork_count = 0;
+            for (const ggml::hrx::Invocation & invocation : reactive.schedule.invocations) {
+                if (invocation.stage == "attention.qkv_publication") {
+                    REQUIRE(invocation.dispatches.size() == 4);
+                    const std::vector<uint32_t> & predecessor = invocation.dispatches[0].dependencies;
+                    REQUIRE(predecessor.size() == 1);
+                    REQUIRE(invocation.dispatches[1].dependencies == predecessor);
+                    REQUIRE(invocation.dispatches[2].dependencies == predecessor);
+                    REQUIRE(invocation.dispatches[3].dependencies == std::vector<uint32_t>({
+                        static_cast<uint32_t>(dispatch_ordinal),
+                        static_cast<uint32_t>(dispatch_ordinal + 1),
+                        static_cast<uint32_t>(dispatch_ordinal + 2),
+                    }));
+                    ++qkv_fork_count;
+                }
+                dispatch_ordinal += invocation.dispatches.size();
+            }
+            REQUIRE(qkv_fork_count == model.blocks.size());
         }
         const std::string serialized = ggml::hrx::serialize_schedule_json(reactive.schedule);
         std::vector<std::string> round_trip_errors;
@@ -627,6 +649,7 @@ int main(int argc, char ** argv) {
         const size_t route_count = route_ids.access.shape[0];
         const size_t route_stride = route_ids.access.strides[1] / ggml_type_size(route_ids.type);
         size_t checked_routes = 0;
+        size_t checked_expert_tables = 0;
         for (const ggml::hrx::Invocation & invocation : reactive.schedule.invocations) {
             for (const ggml::hrx::Dispatch & dispatch : invocation.dispatches) {
                 const auto & config = dispatch.kernel.compile_parameters;
@@ -645,9 +668,17 @@ int main(int argc, char ** argv) {
                     REQUIRE(stride->second == static_cast<int64_t>(route_stride));
                     ++checked_routes;
                 }
+                if (dispatch.kernel.variant == "qwen3_moe_build_expert_table") {
+                    REQUIRE(config.at("qwen3_moe.routed_gate_up.route_count") == std::to_string(route_count));
+                    REQUIRE(config.at("qwen3_moe.routed_gate_up.expert_count") == std::to_string(expert_count));
+                    ++checked_expert_tables;
+                }
             }
         }
         REQUIRE(checked_routes != 0);
+        if (reactive.schedule.workload.rfind("prefill-", 0) == 0) {
+            REQUIRE(checked_expert_tables == model.blocks.size());
+        }
         const ggml::hrx::KernelCorpus & executable_corpus = ggml::hrx::get_qwen_kernel_corpus();
         const ggml::hrx::CommandProgram executable_commands =
             ggml::hrx::build_command_program(reactive, executable_corpus);
@@ -667,8 +698,8 @@ int main(int argc, char ** argv) {
                 return command.kind == ggml::hrx::CommandKind::Fill;
             });
         REQUIRE(kernel_command_count == ggml::hrx::schedule_dispatch_count(reactive.schedule));
-        REQUIRE(copy_command_count == 1);
-        REQUIRE(fill_command_count == (reactive.schedule.workload.rfind("decode", 0) == 0 ? model.blocks.size() : 0));
+        REQUIRE(copy_command_count == 0);
+        REQUIRE(fill_command_count == 0);
         REQUIRE(executable_commands.initializations.size() == 1);
         REQUIRE(executable_commands.initializations[0].data.size() == 256);
         const auto initialized_allocation = std::find_if(
