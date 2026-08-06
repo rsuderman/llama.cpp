@@ -54,11 +54,17 @@ OWNED_FILES = (
 )
 
 KERNEL_RE = re.compile(
-    r"kernel\.def(?:\s+target\([^)]*\))?(?:\s+export\(\"[^\"]+\"\))?\s+@(?P<symbol>[A-Za-z0-9_]+)"
+    r"kernel\.def(?P<modifiers>(?:\s+(?:target\([^)]*\)|export\(\"[^\"]+\"\)))*)"
+    r"\s+@(?P<symbol>[A-Za-z0-9_]+)"
     r"\((?P<workload>.*?)\)\s*\{.*?\}\s*launch\((?P<launch>.*?)\)\s*\{",
     re.DOTALL,
 )
 ARG_RE = re.compile(r"%(?P<name>[A-Za-z0-9_]+)\s*:\s*(?P<type>[A-Za-z0-9<>?]+)")
+TARGET_MODIFIER_RE = re.compile(r"target\(@(?P<symbol>[A-Za-z0-9_]+)\)")
+EXPORT_MODIFIER_RE = re.compile(r"export\(\"(?P<name>[^\"]+)\"\)")
+AMDGPU_TARGET_RE = re.compile(
+    r"amdgpu\.target<(?P<selector>[A-Za-z0-9_.-]+)>\s+@(?P<symbol>[A-Za-z0-9_]+)"
+)
 
 
 def binding_access(symbol: str, name: str) -> str:
@@ -203,12 +209,17 @@ def sha256(data: bytes) -> str:
 def parse_exports(text: str, source: str) -> list[dict[str, object]]:
     exports: list[dict[str, object]] = []
     for match in KERNEL_RE.finditer(text):
+        modifiers = match.group("modifiers")
+        target_match = TARGET_MODIFIER_RE.search(modifiers)
+        export_match = EXPORT_MODIFIER_RE.search(modifiers)
         workload = [item.groupdict() for item in ARG_RE.finditer(match.group("workload"))]
         launch = [item.groupdict() for item in ARG_RE.finditer(match.group("launch"))]
         bindings = [item["name"] for item in launch if item["type"] == "buffer"]
         exports.append(
             {
+                "name": export_match.group("name") if export_match else match.group("symbol"),
                 "symbol": match.group("symbol"),
+                "target_symbol": target_match.group("symbol") if target_match else "",
                 "source": source,
                 "workload_parameters": workload,
                 "launch_parameters": [item for item in launch if item["type"] != "buffer"],
@@ -217,6 +228,49 @@ def parse_exports(text: str, source: str) -> list[dict[str, object]]:
             }
         )
     return exports
+
+
+def parse_amdgpu_targets(text: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for match in AMDGPU_TARGET_RE.finditer(text):
+        symbol = match.group("symbol")
+        selector = match.group("selector")
+        if symbol in result and result[symbol] != selector:
+            raise RuntimeError(
+                f"AMDGPU target @{symbol} is declared as both {result[symbol]} and {selector}")
+        result[symbol] = selector
+    return result
+
+
+def merge_amdgpu_targets(target_selectors: dict[str, str], additions: dict[str, str]) -> None:
+    for symbol, selector in additions.items():
+        if symbol in target_selectors and target_selectors[symbol] != selector:
+            raise RuntimeError(
+                f"AMDGPU target @{symbol} is declared as both {target_selectors[symbol]} and {selector}")
+        target_selectors[symbol] = selector
+
+
+def resolve_export_variants(exports: list[dict[str, object]], target_selectors: dict[str, str]) -> None:
+    groups: dict[str, list[dict[str, object]]] = {}
+    for item in exports:
+        groups.setdefault(str(item["name"]), []).append(item)
+
+    for name, variants in groups.items():
+        selectors: set[str] = set()
+        for item in variants:
+            target_symbol = str(item.pop("target_symbol"))
+            selector = ""
+            if target_symbol:
+                if target_symbol not in target_selectors:
+                    raise RuntimeError(f"kernel export {name} references unknown target @{target_symbol}")
+                selector = target_selectors[target_symbol]
+                if selector.endswith("-generic"):
+                    selector = ""
+            if selector in selectors:
+                label = selector or "default"
+                raise RuntimeError(f"kernel export {name} repeats target variant {label}")
+            selectors.add(selector)
+            item["target_selector"] = selector
 
 
 def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_revision: str | None) -> None:
@@ -263,6 +317,7 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
         }
     file_rows: list[dict[str, object]] = []
     exports: list[dict[str, object]] = []
+    target_selectors: dict[str, str] = {}
     upstream_aggregate = hashlib.sha256()
     for relative_text in CORPUS_FILES:
         relative = pathlib.Path(relative_text)
@@ -278,7 +333,9 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         file_rows.append({"path": relative_text, "sha256": digest, "size": len(data)})
-        exports.extend(parse_exports(data.decode("utf-8"), relative_text))
+        source_text = data.decode("utf-8")
+        exports.extend(parse_exports(source_text, relative_text))
+        merge_amdgpu_targets(target_selectors, parse_amdgpu_targets(source_text))
 
     owned_aggregate = hashlib.sha256()
     for filename in OWNED_FILES:
@@ -292,7 +349,11 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
         owned_aggregate.update(b"\0")
         owned_aggregate.update(bytes.fromhex(digest))
         file_rows.append({"path": relative_text, "sha256": digest, "size": len(data), "owner": "ggml-hrx"})
-        exports.extend(parse_exports(data.decode("utf-8"), relative_text))
+        source_text = data.decode("utf-8")
+        exports.extend(parse_exports(source_text, relative_text))
+        merge_amdgpu_targets(target_selectors, parse_amdgpu_targets(source_text))
+
+    resolve_export_variants(exports, target_selectors)
 
     for item in exports:
         recipe = compile_recipe(str(item["source"]))
@@ -399,7 +460,7 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
     combined_aggregate.update(bytes.fromhex(owned_digest))
 
     manifest = {
-        "schema": "ggml-hrx-qwen-kernel-corpus-v1",
+        "schema": "ggml-hrx-qwen-kernel-corpus-v2",
         "upstream_repository": upstream_repository(source_root),
         "upstream_revision": revision,
         "source_subdirectory": SOURCE_SUBDIR.as_posix(),

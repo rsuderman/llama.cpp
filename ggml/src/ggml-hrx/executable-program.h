@@ -28,8 +28,6 @@ struct PackedKernelConstants {
 PackedKernelConstants pack_kernel_constants(const KernelDefinition & definition,
                                              const Command & command);
 std::string kernel_artifact_key(const KernelDefinition & definition,
-                                const Command & command);
-std::string kernel_artifact_key(const KernelDefinition & definition,
                                 const Command & command,
                                 const std::string & target);
 

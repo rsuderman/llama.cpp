@@ -410,7 +410,7 @@ static ggml::hrx::KernelCorpus make_test_corpus(const ggml::hrx::ProgramPlan & p
             kernel.id = ggml::hrx::kernel_catalog_id(kernel.family, kernel.name);
             kernel.source = sources.back().c_str();
             kernel.symbol = dispatch.kernel.variant.c_str();
-            kernel.target = plan.target.c_str();
+            kernel.backend = "amdgpu";
             kernel.source_digest = digests.back().c_str();
             kernel.bindings = { bindings.back().data(), bindings.back().size() };
             kernel.compile_recipe.mode = "direct";
@@ -519,12 +519,38 @@ static void test_command_program_and_diagnostics() {
 }
 
 static void test_pinned_kernel_corpus_manifest() {
-    const ggml::hrx::KernelCorpus & corpus = ggml::hrx::get_qwen_kernel_corpus("gfx1151");
+    const ggml::hrx::KernelCorpus & corpus = ggml::hrx::get_qwen_kernel_corpus();
     REQUIRE(ggml::hrx::verify_kernel_corpus(corpus).valid());
-    REQUIRE(std::string(corpus.upstream_revision) == "87206d1c97ec3d83a693e7ec0f4ce543b9bee77a");
+    REQUIRE(std::string(corpus.upstream_revision) == "c09218e7ca354654b6c66dddaf80f6294e4748bb");
     REQUIRE(std::string(corpus.recipe_digest) == "598eeb34f8606182a732299c989387dd450c0d8f33e4275635b4a679c0f986d0");
     REQUIRE(corpus.kernels.size() == 55);
     REQUIRE(corpus.plan_case_count == 30);
+    const char * family = "qwen3_moe";
+    const char * name = "ggml_linear_q6k_q8_1_x4";
+    const uint64_t id = ggml::hrx::kernel_catalog_id(family, name);
+    const ggml::hrx::KernelResolveResult gfx1100 = ggml::hrx::resolve_kernel_definition(
+        corpus, "gfx1100", family, name, id, ggml::hrx::KernelSpecialization::ExecutionKind::Native);
+    const ggml::hrx::KernelResolveResult gfx1151 = ggml::hrx::resolve_kernel_definition(
+        corpus, "gfx1151", family, name, id, ggml::hrx::KernelSpecialization::ExecutionKind::Native);
+    REQUIRE(gfx1100.found());
+    REQUIRE(gfx1151.found());
+    REQUIRE(std::string(gfx1100.definition->symbol) == "ggml_linear_q6k_q8_1_x4");
+    REQUIRE(std::string(gfx1151.definition->symbol) == "ggml_linear_q6k_q8_1_x4_wave64_block4");
+
+    std::vector<ggml::hrx::KernelDefinition> mismatched_variants(corpus.kernels.begin(), corpus.kernels.end());
+    const auto mismatched = std::find_if(mismatched_variants.begin(), mismatched_variants.end(),
+        [](const ggml::hrx::KernelDefinition & definition) {
+            return std::string(definition.name) == "ggml_linear_q6k_q8_1_x4" &&
+                std::string(definition.target_selector) == "gfx1151";
+        });
+    REQUIRE(mismatched != mismatched_variants.end());
+    mismatched->backend = "other-backend";
+    ggml::hrx::KernelCorpus mismatched_corpus = corpus;
+    mismatched_corpus.kernels = { mismatched_variants.data(), mismatched_variants.size() };
+    const ggml::hrx::VerificationResult mismatch = ggml::hrx::verify_kernel_corpus(mismatched_corpus);
+    REQUIRE(std::find(mismatch.errors.begin(), mismatch.errors.end(),
+        "kernel target variants disagree on ABI for qwen3_moe:ggml_linear_q6k_q8_1_x4") !=
+        mismatch.errors.end());
 }
 
 } // namespace
@@ -622,7 +648,7 @@ int main(int argc, char ** argv) {
             }
         }
         REQUIRE(checked_routes != 0);
-        const ggml::hrx::KernelCorpus & executable_corpus = ggml::hrx::get_qwen_kernel_corpus("gfx1151");
+        const ggml::hrx::KernelCorpus & executable_corpus = ggml::hrx::get_qwen_kernel_corpus();
         const ggml::hrx::CommandProgram executable_commands =
             ggml::hrx::build_command_program(reactive, executable_corpus);
         const size_t kernel_command_count = std::count_if(

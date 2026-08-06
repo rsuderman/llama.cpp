@@ -43,7 +43,8 @@ ggml::hrx::KernelDefinition definition() {
     result.id = ggml::hrx::kernel_catalog_id(result.family, result.name);
     result.source = "test.loom";
     result.symbol = "test_kernel";
-    result.target = "gfx1151";
+    result.backend = "amdgpu";
+    result.target_selector = "gfx1151";
     result.source_digest = "source-digest";
     result.workload_parameters = { workload_parameters, 1 };
     result.launch_parameters = { launch_parameters, 2 };
@@ -78,7 +79,8 @@ ggml::hrx::KernelDefinition unsupported_definition() {
     result.id = ggml::hrx::kernel_catalog_id(result.family, result.name);
     result.source = "test.loom";
     result.symbol = "test_kernel";
-    result.target = "gfx1151";
+    result.backend = "amdgpu";
+    result.target_selector = "gfx1151";
     result.source_digest = "source-digest";
     result.workload_parameters = { workload_parameters, 1 };
     result.launch_parameters = { launch_parameters, 2 };
@@ -121,14 +123,14 @@ void test_artifact_key_uses_only_compilation_facts() {
     ggml::hrx::Command command;
     command.kernel.integer_parameters = { { "rows", 7 }, { "columns", 32 }, { "layer", 4 } };
     command.kernel.compile_parameters = { { "mode", "fast" } };
-    const std::string first = ggml::hrx::kernel_artifact_key(kernel, command);
+    const std::string first = ggml::hrx::kernel_artifact_key(kernel, command, "gfx1151");
     command.kernel.integer_parameters["layer"] = 47;
-    REQUIRE(ggml::hrx::kernel_artifact_key(kernel, command) == first);
+    REQUIRE(ggml::hrx::kernel_artifact_key(kernel, command, "gfx1151") == first);
     command.kernel.integer_parameters["rows"] = 8;
-    REQUIRE(ggml::hrx::kernel_artifact_key(kernel, command) != first);
+    REQUIRE(ggml::hrx::kernel_artifact_key(kernel, command, "gfx1151") != first);
     command.kernel.integer_parameters["rows"] = 7;
     command.kernel.compile_parameters["mode"] = "precise";
-    REQUIRE(ggml::hrx::kernel_artifact_key(kernel, command) != first);
+    REQUIRE(ggml::hrx::kernel_artifact_key(kernel, command, "gfx1151") != first);
 }
 
 void test_binding_diagnostics_are_explicit() {
@@ -180,31 +182,52 @@ void test_kernel_resolution_classifies_catalog_misses() {
     corpus.kernels = { &kernel, 1 };
 
     ggml::hrx::KernelResolveResult resolved = ggml::hrx::resolve_kernel_definition(
-        corpus, "test_family", "test_kernel", kernel.id, ggml::hrx::KernelSpecialization::ExecutionKind::Native);
+        corpus, "gfx1151", "test_family", "test_kernel", kernel.id,
+        ggml::hrx::KernelSpecialization::ExecutionKind::Native);
     REQUIRE(resolved.status == ggml::hrx::KernelResolveStatus::Found);
     REQUIRE(resolved.definition == &kernel);
 
     const uint64_t other_family_id = ggml::hrx::kernel_catalog_id("other_family", "test_kernel");
     REQUIRE(other_family_id != kernel.id);
     resolved = ggml::hrx::resolve_kernel_definition(
-        corpus, "other_family", "test_kernel", other_family_id,
+        corpus, "gfx1151", "other_family", "test_kernel", other_family_id,
         ggml::hrx::KernelSpecialization::ExecutionKind::Native);
     REQUIRE(resolved.status == ggml::hrx::KernelResolveStatus::MissingActiveCorpusEntry);
 
     resolved = ggml::hrx::resolve_kernel_definition(
-        corpus, "test_family", "test_kernel", ggml::hrx::kUncatalogedKernelId,
+        corpus, "gfx1151", "test_family", "test_kernel", ggml::hrx::kUncatalogedKernelId,
         ggml::hrx::KernelSpecialization::ExecutionKind::Native);
     REQUIRE(resolved.status == ggml::hrx::KernelResolveStatus::UncatalogedNative);
 
     resolved = ggml::hrx::resolve_kernel_definition(
-        corpus, "test_family", "missing_kernel", ggml::hrx::kernel_catalog_id("test_family", "missing_kernel"),
+        corpus, "gfx1151", "test_family", "missing_kernel",
+        ggml::hrx::kernel_catalog_id("test_family", "missing_kernel"),
         ggml::hrx::KernelSpecialization::ExecutionKind::Native);
     REQUIRE(resolved.status == ggml::hrx::KernelResolveStatus::MissingActiveCorpusEntry);
 
     resolved = ggml::hrx::resolve_kernel_definition(
-        corpus, "test_family", "missing_kernel", ggml::hrx::kUncatalogedKernelId,
+        corpus, "gfx1151", "test_family", "missing_kernel", ggml::hrx::kUncatalogedKernelId,
         ggml::hrx::KernelSpecialization::ExecutionKind::NativeGap);
     REQUIRE(resolved.status == ggml::hrx::KernelResolveStatus::NativeGap);
+
+    ggml::hrx::KernelDefinition default_variant = kernel;
+    default_variant.symbol = "test_kernel_default";
+    default_variant.target_selector = "";
+    const ggml::hrx::KernelDefinition variants[] = { default_variant, kernel };
+    corpus.kernels = { variants, 2 };
+    resolved = ggml::hrx::resolve_kernel_definition(
+        corpus, "gfx1151", "test_family", "test_kernel", kernel.id,
+        ggml::hrx::KernelSpecialization::ExecutionKind::Native);
+    REQUIRE(resolved.definition == &variants[1]);
+    resolved = ggml::hrx::resolve_kernel_definition(
+        corpus, "gfx1100", "test_family", "test_kernel", kernel.id,
+        ggml::hrx::KernelSpecialization::ExecutionKind::Native);
+    REQUIRE(resolved.definition == &variants[0]);
+    corpus.kernels = { &kernel, 1 };
+    resolved = ggml::hrx::resolve_kernel_definition(
+        corpus, "gfx1100", "test_family", "test_kernel", kernel.id,
+        ggml::hrx::KernelSpecialization::ExecutionKind::Native);
+    REQUIRE(resolved.status == ggml::hrx::KernelResolveStatus::UnsupportedTarget);
 }
 
 } // namespace

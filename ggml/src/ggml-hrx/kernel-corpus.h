@@ -80,7 +80,8 @@ struct KernelDefinition {
     const char *                        source = "";
     KernelSpan<const char *>            dependencies;
     const char *                        symbol = "";
-    const char *                        target = "";
+    const char *                        backend = "";
+    const char *                        target_selector = "";
     KernelSpan<KernelCompileConfig>     compile_config;
     KernelSpan<const char *>            scalar_parameters;
     KernelSpan<KernelBindingDefinition> bindings;
@@ -91,7 +92,7 @@ struct KernelDefinition {
 };
 
 struct KernelCorpus {
-    const char *                 schema            = "ggml-hrx-kernel-corpus-v1";
+    const char *                 schema            = "ggml-hrx-kernel-corpus-v2";
     const char *                 upstream_revision = "";
     const char *                 corpus_digest     = "";
     const char *                 recipe_digest     = "";
@@ -106,6 +107,7 @@ enum class KernelResolveStatus : uint8_t {
     MissingActiveCorpusEntry,
     HashCollision,
     InvalidNativeGap,
+    UnsupportedTarget,
 };
 
 struct KernelResolveResult {
@@ -116,11 +118,13 @@ struct KernelResolveResult {
 };
 
 const KernelSource * get_kernel_source(const char * source_path);
-const KernelCorpus & get_qwen_kernel_corpus(const char * target);
-KernelResolveResult resolve_kernel_definition(const KernelCorpus & corpus, const std::string & family,
+const KernelCorpus & get_qwen_kernel_corpus();
+KernelResolveResult resolve_kernel_definition(const KernelCorpus & corpus, const std::string & target,
+                                              const std::string & family,
                                               const std::string & name, uint64_t id,
                                               KernelSpecialization::ExecutionKind execution_kind);
-KernelResolveResult resolve_kernel_definition(const KernelCorpus & corpus, const KernelSpecialization & kernel);
+KernelResolveResult resolve_kernel_definition(const KernelCorpus & corpus, const std::string & target,
+                                              const KernelSpecialization & kernel);
 const char *         kernel_resolve_status_name(KernelResolveStatus status);
 std::string          format_kernel_resolve_error(const KernelResolveResult & result, const std::string & family,
                                                  const std::string & name);

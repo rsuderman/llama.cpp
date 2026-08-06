@@ -1,10 +1,10 @@
 {
-  "schema": "ggml-hrx-qwen-kernel-corpus-v1",
+  "schema": "ggml-hrx-qwen-kernel-corpus-v2",
   "upstream_repository": "https://github.com/ROCm/hrx-system.git",
-  "upstream_revision": "87206d1c97ec3d83a693e7ec0f4ce543b9bee77a",
+  "upstream_revision": "c09218e7ca354654b6c66dddaf80f6294e4748bb",
   "source_subdirectory": "experimental/qwen_moe/kernels",
-  "corpus_sha256": "47feaa0e6fd5778b4ef8641a6c33efdb311377052afa821dd6b031f1ec65c740",
-  "upstream_corpus_sha256": "7b50e26fc8cb73423290f65bc9990786234dbab8e9420f2104e462964b3d2fa5",
+  "corpus_sha256": "bb01a7178e5d1cced20f0de5e8b55de8f2afb1bdcdf119a3951ad6502f4ac165",
+  "upstream_corpus_sha256": "041ca934d5cc0eebacce49615825bba7e8fdb5c2c877bde7894abd4d5d534a3c",
   "owned_corpus_sha256": "f198ce99c259ed35277451ff6185199654eb7ecbf009dcdbd2c00af2c187886b",
   "build_bazel_sha256": "598eeb34f8606182a732299c989387dd450c0d8f33e4275635b4a679c0f986d0",
   "files": [
@@ -15,8 +15,8 @@
     },
     {
       "path": "ggml/linear_q6k_q8_1_x4.loom",
-      "sha256": "8547cb010c032d6073d9b12abd14be855d67d696bd83092a426c85f5960c42d0",
-      "size": 31957
+      "sha256": "fe4db2d91fc9b13f04285e70c26fb3e46f6590c8552f64daec9c29726c6bd8de",
+      "size": 32857
     },
     {
       "path": "ggml/quantize_q8_1_x4.loom",
@@ -149,6 +149,7 @@
   ],
   "exports": [
     {
+      "name": "ggml_gather_add_f32",
       "symbol": "ggml_gather_add_f32",
       "source": "../hrx_owned/gather_add_f32.loom",
       "workload_parameters": [
@@ -191,6 +192,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
@@ -201,6 +203,7 @@
       "compile_dependencies": []
     },
     {
+      "name": "ggml_linear_q6k_f32_wave32",
       "symbol": "ggml_linear_q6k_f32_wave32",
       "source": "ggml/linear_q6k_f32.loom",
       "workload_parameters": [
@@ -241,6 +244,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "linear_q6k_f32_linked",
@@ -258,6 +262,7 @@
       ]
     },
     {
+      "name": "ggml_linear_q6k_f32_wave64",
       "symbol": "ggml_linear_q6k_f32_wave64",
       "source": "ggml/linear_q6k_f32.loom",
       "workload_parameters": [
@@ -298,6 +303,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "linear_q6k_f32_linked",
@@ -315,6 +321,7 @@
       ]
     },
     {
+      "name": "ggml_linear_q6k_q8_1_x4",
       "symbol": "ggml_linear_q6k_q8_1_x4",
       "source": "ggml/linear_q6k_q8_1_x4.loom",
       "workload_parameters": [
@@ -355,6 +362,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "linear_q6k_q8_1_x4_linked",
@@ -370,6 +378,7 @@
       ]
     },
     {
+      "name": "ggml_linear_q6k_q8_1_x4",
       "symbol": "ggml_linear_q6k_q8_1_x4_wave64_block4",
       "source": "ggml/linear_q6k_q8_1_x4.loom",
       "workload_parameters": [
@@ -410,6 +419,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "gfx1151",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "linear_q6k_q8_1_x4_linked",
@@ -425,6 +435,7 @@
       ]
     },
     {
+      "name": "ggml_q8_1_x4_inspect_one_group",
       "symbol": "ggml_q8_1_x4_inspect_one_group",
       "source": "ggml/quantize_q8_1_x4.loom",
       "workload_parameters": [],
@@ -441,6 +452,7 @@
         "write",
         "write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
@@ -451,6 +463,7 @@
       "compile_dependencies": []
     },
     {
+      "name": "ggml_quantize_q8_1_x4_f32",
       "symbol": "ggml_quantize_q8_1_x4_f32",
       "source": "ggml/quantize_q8_1_x4.loom",
       "workload_parameters": [
@@ -481,6 +494,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
@@ -491,6 +505,7 @@
       "compile_dependencies": []
     },
     {
+      "name": "qwen3_moe_attention_postprocess_f32_f16",
       "symbol": "qwen3_moe_attention_postprocess_f32_f16",
       "source": "qwen3_moe/attention_postprocess_f32_f16.loom",
       "workload_parameters": [
@@ -541,6 +556,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "attention_postprocess_f32_f16_linked",
@@ -556,6 +572,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_attention_qkv_postprocess_fused_decode",
       "symbol": "qwen3_moe_attention_qkv_postprocess_fused_decode",
       "source": "qwen3_moe/attention_qkv_postprocess_fused.loom",
       "workload_parameters": [
@@ -616,6 +633,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "attention_qkv_postprocess_fused_linked",
@@ -647,6 +665,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_attention_qkv_quantized",
       "symbol": "qwen3_moe_attention_qkv_quantized",
       "source": "qwen3_moe/attention_qkv_quantized.loom",
       "workload_parameters": [
@@ -679,6 +698,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "attention_qkv_quantized_linked",
@@ -706,6 +726,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_attention_rmsnorm_quantize_q8_1_x4",
       "symbol": "qwen3_moe_attention_rmsnorm_quantize_q8_1_x4",
       "source": "qwen3_moe/attention_prepare_quantized.loom",
       "workload_parameters": [
@@ -730,6 +751,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "attention_prepare_quantized_linked",
@@ -747,6 +769,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_build_expert_partition_table",
       "symbol": "qwen3_moe_build_expert_partition_table",
       "source": "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
       "workload_parameters": [
@@ -785,6 +808,7 @@
         "read",
         "write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_gate_up_swiglu_q4k_linked",
@@ -800,6 +824,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_build_expert_table",
       "symbol": "qwen3_moe_build_expert_table",
       "source": "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
       "workload_parameters": [
@@ -846,6 +871,7 @@
         "read",
         "write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_gate_up_swiglu_q4k_linked",
@@ -861,6 +887,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_build_expert_table_partition_prefill_512",
       "symbol": "qwen3_moe_build_expert_table_partition_prefill_512",
       "source": "qwen3_moe/expert_table_partition_fused.loom",
       "workload_parameters": [
@@ -911,6 +938,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "expert_table_partition_fused_linked",
@@ -928,6 +956,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_dense_linear_q4k_f16_wmma",
       "symbol": "qwen3_moe_dense_linear_q4k_f16_wmma",
       "source": "qwen3_moe/dense_linear_quantized_f16_wmma.loom",
       "workload_parameters": [
@@ -952,6 +981,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "dense_linear_quantized_f16_wmma_linked",
@@ -977,6 +1007,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_dense_linear_q4k_q8_1_x4",
       "symbol": "qwen3_moe_dense_linear_q4k_q8_1_x4",
       "source": "qwen3_moe/dense_linear_quantized_f16_wmma.loom",
       "workload_parameters": [
@@ -1001,6 +1032,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "dense_linear_quantized_f16_wmma_linked",
@@ -1026,6 +1058,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_dense_linear_q4k_q8_1_x4_next_q8",
       "symbol": "qwen3_moe_dense_linear_q4k_q8_1_x4_next_q8",
       "source": "qwen3_moe/dense_linear_quantized_f16_wmma.loom",
       "workload_parameters": [
@@ -1058,6 +1091,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "dense_linear_quantized_f16_wmma_linked",
@@ -1083,6 +1117,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_dense_linear_q6k_f16_wmma",
       "symbol": "qwen3_moe_dense_linear_q6k_f16_wmma",
       "source": "qwen3_moe/dense_linear_quantized_f16_wmma.loom",
       "workload_parameters": [
@@ -1107,6 +1142,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "dense_linear_quantized_f16_wmma_linked",
@@ -1132,6 +1168,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_flash_attention_decode_f32_f16_wmma",
       "symbol": "qwen3_moe_flash_attention_decode_f32_f16_wmma",
       "source": "qwen3_moe/flash_attention_decode_f32_f16_wmma.loom",
       "workload_parameters": [
@@ -1160,6 +1197,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
@@ -1170,6 +1208,7 @@
       "compile_dependencies": []
     },
     {
+      "name": "qwen3_moe_flash_attention_decode_q128_fused_f32_f16_wmma",
       "symbol": "qwen3_moe_flash_attention_decode_q128_fused_f32_f16_wmma",
       "source": "qwen3_moe/flash_attention_decode_q128_f32_f16_wmma.loom",
       "workload_parameters": [
@@ -1198,6 +1237,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
@@ -1208,6 +1248,7 @@
       "compile_dependencies": []
     },
     {
+      "name": "qwen3_moe_flash_attention_decode_split_f32_f16_wmma",
       "symbol": "qwen3_moe_flash_attention_decode_split_f32_f16_wmma",
       "source": "qwen3_moe/flash_attention_decode_split_f32_f16_wmma.loom",
       "workload_parameters": [
@@ -1244,6 +1285,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
@@ -1254,6 +1296,7 @@
       "compile_dependencies": []
     },
     {
+      "name": "qwen3_moe_flash_attention_decode_split_f32_f16_wmma_next_q8",
       "symbol": "qwen3_moe_flash_attention_decode_split_f32_f16_wmma_next_q8",
       "source": "qwen3_moe/flash_attention_decode_split_f32_f16_wmma.loom",
       "workload_parameters": [
@@ -1292,6 +1335,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
@@ -1302,6 +1346,7 @@
       "compile_dependencies": []
     },
     {
+      "name": "qwen3_moe_flash_attention_decode_split_produce_partials_f32_f16_wmma",
       "symbol": "qwen3_moe_flash_attention_decode_split_produce_partials_f32_f16_wmma",
       "source": "qwen3_moe/flash_attention_decode_split_f32_f16_wmma.loom",
       "workload_parameters": [
@@ -1334,6 +1379,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
@@ -1344,6 +1390,7 @@
       "compile_dependencies": []
     },
     {
+      "name": "qwen3_moe_flash_attention_decode_split_reduce_f32",
       "symbol": "qwen3_moe_flash_attention_decode_split_reduce_f32",
       "source": "qwen3_moe/flash_attention_decode_split_f32_f16_wmma.loom",
       "workload_parameters": [
@@ -1370,6 +1417,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
@@ -1380,6 +1428,7 @@
       "compile_dependencies": []
     },
     {
+      "name": "qwen3_moe_flash_attention_f32_f16_wmma",
       "symbol": "qwen3_moe_flash_attention_f32_f16_wmma",
       "source": "qwen3_moe/flash_attention_f32_f16_wmma.loom",
       "workload_parameters": [
@@ -1416,6 +1465,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
@@ -1426,6 +1476,7 @@
       "compile_dependencies": []
     },
     {
+      "name": "qwen3_moe_flash_attention_test_extract_row",
       "symbol": "qwen3_moe_flash_attention_test_extract_row",
       "source": "qwen3_moe/flash_attention_f32_f16_wmma.loom",
       "workload_parameters": [
@@ -1468,6 +1519,7 @@
         "read",
         "read"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
@@ -1478,6 +1530,7 @@
       "compile_dependencies": []
     },
     {
+      "name": "qwen3_moe_flash_attention_test_make_causal_mask",
       "symbol": "qwen3_moe_flash_attention_test_make_causal_mask",
       "source": "qwen3_moe/flash_attention_f32_f16_wmma.loom",
       "workload_parameters": [],
@@ -1488,6 +1541,7 @@
       "binding_access": [
         "read"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
@@ -1498,6 +1552,7 @@
       "compile_dependencies": []
     },
     {
+      "name": "qwen3_moe_rmsnorm_f32",
       "symbol": "qwen3_moe_rmsnorm_f32",
       "source": "qwen3_moe/attention_prepare_quantized.loom",
       "workload_parameters": [
@@ -1522,6 +1577,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "attention_prepare_quantized_linked",
@@ -1539,6 +1595,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_rmsnorm_f32_quantize_q8_1_x4",
       "symbol": "qwen3_moe_rmsnorm_f32_quantize_q8_1_x4",
       "source": "qwen3_moe/attention_prepare_quantized.loom",
       "workload_parameters": [
@@ -1565,6 +1622,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "attention_prepare_quantized_linked",
@@ -1582,6 +1640,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_rmsnorm_quantize_q8_1_x4_wave64_production_check",
       "symbol": "qwen3_moe_rmsnorm_quantize_q8_1_x4_wave64_production_check",
       "source": "qwen3_moe/routed_down_q6k.loom",
       "workload_parameters": [],
@@ -1596,6 +1655,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_down_q6k_linked",
@@ -1621,6 +1681,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_down_q4k_f16_wmma_grouped",
       "symbol": "qwen3_moe_routed_down_q4k_f16_wmma_grouped",
       "source": "qwen3_moe/routed_down_quantized_f16_wmma.loom",
       "workload_parameters": [
@@ -1647,6 +1708,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_down_quantized_f16_wmma_linked",
@@ -1678,6 +1740,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_down_q4k_q8_1_x4",
       "symbol": "qwen3_moe_routed_down_q4k_q8_1_x4",
       "source": "qwen3_moe/routed_down_q4k.loom",
       "workload_parameters": [
@@ -1746,6 +1809,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_down_q4k_linked",
@@ -1769,6 +1833,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_down_q4k_q8_1_x4_next_q8",
       "symbol": "qwen3_moe_routed_down_q4k_q8_1_x4_next_q8",
       "source": "qwen3_moe/routed_down_q4k.loom",
       "workload_parameters": [
@@ -1843,6 +1908,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_down_q4k_linked",
@@ -1866,6 +1932,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_down_q6k_f16_wmma_grouped",
       "symbol": "qwen3_moe_routed_down_q6k_f16_wmma_grouped",
       "source": "qwen3_moe/routed_down_quantized_f16_wmma.loom",
       "workload_parameters": [
@@ -1892,6 +1959,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_down_quantized_f16_wmma_linked",
@@ -1923,6 +1991,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_down_q6k_f32_wave64",
       "symbol": "qwen3_moe_routed_down_q6k_f32_wave64",
       "source": "qwen3_moe/routed_down_q6k.loom",
       "workload_parameters": [
@@ -1991,6 +2060,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_down_q6k_linked",
@@ -2016,6 +2086,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_down_q6k_f32_wave64_next_q8",
       "symbol": "qwen3_moe_routed_down_q6k_f32_wave64_next_q8",
       "source": "qwen3_moe/routed_down_q6k.loom",
       "workload_parameters": [
@@ -2090,6 +2161,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_down_q6k_linked",
@@ -2115,6 +2187,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_down_q6k_q8_1_x4",
       "symbol": "qwen3_moe_routed_down_q6k_q8_1_x4",
       "source": "qwen3_moe/routed_down_q6k.loom",
       "workload_parameters": [
@@ -2183,6 +2256,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_down_q6k_linked",
@@ -2208,6 +2282,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_down_q6k_q8_1_x4_next_q8",
       "symbol": "qwen3_moe_routed_down_q6k_q8_1_x4_next_q8",
       "source": "qwen3_moe/routed_down_q6k.loom",
       "workload_parameters": [
@@ -2282,6 +2357,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_down_q6k_linked",
@@ -2307,6 +2383,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_down_weighted_reduce_f16_f32",
       "symbol": "qwen3_moe_routed_down_weighted_reduce_f16_f32",
       "source": "qwen3_moe/routed_down_quantized_f16_wmma.loom",
       "workload_parameters": [
@@ -2331,6 +2408,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_down_quantized_f16_wmma_linked",
@@ -2362,6 +2440,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_down_weighted_reduce_next_rmsnorm_f32",
       "symbol": "qwen3_moe_routed_down_weighted_reduce_next_rmsnorm_f32",
       "source": "qwen3_moe/routed_down_weighted_reduce_next_rmsnorm_f32.loom",
       "workload_parameters": [
@@ -2390,6 +2469,7 @@
         "read",
         "read"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_down_weighted_reduce_next_rmsnorm_f32_linked",
@@ -2423,6 +2503,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma",
       "symbol": "qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma",
       "source": "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
       "workload_parameters": [
@@ -2453,6 +2534,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_gate_up_swiglu_q4k_f16_wmma_linked",
@@ -2470,6 +2552,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_gate_up_swiglu_q4k_q8",
       "symbol": "qwen3_moe_routed_gate_up_swiglu_q4k_q8",
       "source": "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
       "workload_parameters": [
@@ -2530,6 +2613,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_gate_up_swiglu_q4k_linked",
@@ -2545,6 +2629,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8",
       "symbol": "qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8",
       "source": "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
       "workload_parameters": [
@@ -2609,6 +2694,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_gate_up_swiglu_q4k_linked",
@@ -2624,6 +2710,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_gate_up_swiglu_q4k_q8_grouped",
       "symbol": "qwen3_moe_routed_gate_up_swiglu_q4k_q8_grouped",
       "source": "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
       "workload_parameters": [
@@ -2676,6 +2763,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_gate_up_swiglu_q4k_linked",
@@ -2691,6 +2779,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_linear_q4k_f16_wmma",
       "symbol": "qwen3_moe_routed_linear_q4k_f16_wmma",
       "source": "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
       "workload_parameters": [
@@ -2717,6 +2806,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_gate_up_swiglu_q4k_f16_wmma_linked",
@@ -2734,6 +2824,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_swiglu_f16",
       "symbol": "qwen3_moe_routed_swiglu_f16",
       "source": "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
       "workload_parameters": [
@@ -2758,6 +2849,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_gate_up_swiglu_q4k_f16_wmma_linked",
@@ -2775,6 +2867,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_routed_swiglu_f32",
       "symbol": "qwen3_moe_routed_swiglu_f32",
       "source": "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
       "workload_parameters": [
@@ -2799,6 +2892,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "routed_gate_up_swiglu_q4k_f16_wmma_linked",
@@ -2816,6 +2910,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_router_projection_f32_four_row_wave32",
       "symbol": "qwen3_moe_router_projection_f32_four_row_wave32",
       "source": "qwen3_moe/router_projection_f32.loom",
       "workload_parameters": [
@@ -2840,6 +2935,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "router_projection_f32_linked",
@@ -2855,6 +2951,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_router_projection_f32_one_row_wave64",
       "symbol": "qwen3_moe_router_projection_f32_one_row_wave64",
       "source": "qwen3_moe/router_projection_f32.loom",
       "workload_parameters": [
@@ -2879,6 +2976,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "router_projection_f32_linked",
@@ -2894,6 +2992,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_router_projection_f32_reference",
       "symbol": "qwen3_moe_router_projection_f32_reference",
       "source": "qwen3_moe/router_projection_f32.loom",
       "workload_parameters": [
@@ -2918,6 +3017,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "router_projection_f32_linked",
@@ -2933,6 +3033,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_router_projection_top8_fused_decode_f32",
       "symbol": "qwen3_moe_router_projection_top8_fused_decode_f32",
       "source": "qwen3_moe/router_projection_top8_fused_f32.loom",
       "workload_parameters": [
@@ -2971,6 +3072,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "router_projection_top8_fused_f32_linked",
@@ -2990,6 +3092,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_router_top8_f32",
       "symbol": "qwen3_moe_router_top8_f32",
       "source": "qwen3_moe/router_top8_f32.loom",
       "workload_parameters": [
@@ -3022,6 +3125,7 @@
         "write",
         "write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "router_top8_f32_linked",
@@ -3037,6 +3141,7 @@
       ]
     },
     {
+      "name": "qwen3_moe_router_top8_wide_stride_reference",
       "symbol": "qwen3_moe_router_top8_wide_stride_reference",
       "source": "qwen3_moe/router_top8_f32.loom",
       "workload_parameters": [],
@@ -3047,6 +3152,7 @@
       "binding_access": [
         "read"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "archive",
         "link_module": "router_top8_f32_linked",
@@ -3062,6 +3168,7 @@
       ]
     },
     {
+      "name": "qwen_attention_metadata_bringup_workaround",
       "symbol": "qwen_attention_metadata_bringup_workaround",
       "source": "../qwen_owned/attention_metadata_bringup_workaround.loom",
       "workload_parameters": [
@@ -3098,6 +3205,7 @@
         "read_write",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
@@ -3108,6 +3216,7 @@
       "compile_dependencies": []
     },
     {
+      "name": "qwen_token_embedding_q4k_bringup_workaround",
       "symbol": "qwen_token_embedding_q4k_bringup_workaround",
       "source": "../qwen_owned/token_embedding_bringup_workaround.loom",
       "workload_parameters": [
@@ -3148,6 +3257,7 @@
         "read",
         "read_write"
       ],
+      "target_selector": "",
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [

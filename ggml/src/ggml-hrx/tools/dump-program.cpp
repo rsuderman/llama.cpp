@@ -35,7 +35,7 @@ int main(int argc, char ** argv) {
         if (!plan.valid()) throw std::runtime_error(
             "cannot recover program: " + (plan.errors.empty() ? std::string("unknown error") : plan.errors.front()));
 
-        const ggml::hrx::KernelCorpus & corpus = ggml::hrx::get_qwen_kernel_corpus(target.c_str());
+        const ggml::hrx::KernelCorpus & corpus = ggml::hrx::get_qwen_kernel_corpus();
         const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(plan, corpus);
         const ggml::hrx::VerificationResult verification =
             ggml::hrx::verify_command_program(plan, corpus, commands);

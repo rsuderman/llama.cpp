@@ -1009,7 +1009,7 @@ static ggml_backend_t device_init(ggml_backend_dev_t device, const char * parame
         context->device = device_ctx;
         context->stream = stream;
         context->name = device_ctx->name;
-        context->corpus = &ggml::hrx::get_qwen_kernel_corpus(device_ctx->architecture.c_str());
+        context->corpus = &ggml::hrx::get_qwen_kernel_corpus();
         const ggml::hrx::VerificationResult corpus_verification = ggml::hrx::verify_kernel_corpus(*context->corpus);
         if (!corpus_verification.valid()) {
             GGML_LOG_ERROR("%s: embedded kernel corpus validation failed: %s\n", __func__, corpus_verification.errors.front().c_str());

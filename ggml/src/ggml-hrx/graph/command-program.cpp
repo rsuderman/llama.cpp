@@ -365,7 +365,7 @@ CommandProgram build_command_program(const ProgramPlan & plan, const KernelCorpu
             command.label = invocation.stage + (invocation.layer >= 0 ? "." + std::to_string(invocation.layer) : "");
             command.kernel = dispatch.kernel;
             command.dependencies = dispatch.dependencies;
-            const KernelResolveResult resolved = resolve_kernel_definition(corpus, command.kernel);
+            const KernelResolveResult resolved = resolve_kernel_definition(corpus, plan.target, command.kernel);
             const KernelDefinition * definition = resolved.definition;
             if (!resolved.found()) {
                 result.errors.push_back(format_kernel_resolve_error(resolved, command.kernel));
@@ -475,7 +475,7 @@ VerificationResult verify_command_program(const ProgramPlan & plan, const Kernel
         KernelResolveResult resolved;
         const KernelDefinition * definition = nullptr;
         if (command.kind == CommandKind::Kernel) {
-            resolved = resolve_kernel_definition(corpus, command.kernel);
+            resolved = resolve_kernel_definition(corpus, commands.target, command.kernel);
             definition = resolved.definition;
         }
         if (command.kind == CommandKind::Kernel && !resolved.found()) {

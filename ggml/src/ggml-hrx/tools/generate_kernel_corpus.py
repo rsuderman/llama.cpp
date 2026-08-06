@@ -36,12 +36,13 @@ CORPUS_ARRAY_TEMPLATE = """static {type} {symbol}[] = {{
 
 KERNEL_RECORD_TEMPLATE = """    {{
         {family},
-        {id},
-        kernel_catalog_id({family}, {id}),
+        {name},
+        kernel_catalog_id({family}, {name}),
         {source},
         {dependencies},
-        {id},
+        {symbol},
         "amdgpu",
+        {target_selector},
         {{ nullptr, 0 }},
         {scalar_parameters},
         {bindings},
@@ -70,7 +71,7 @@ static const KernelDefinition kQwenKernelDefinitions[] = {{
 }};
 
 static const KernelCorpus kQwenKernelCorpus = {{
-    "ggml-hrx-kernel-corpus-v1",
+    "ggml-hrx-kernel-corpus-v2",
     {upstream_revision},
     {corpus_digest},
     {recipe_digest},
@@ -306,7 +307,9 @@ def generate_corpus_records(manifest: dict, source_records: Dict[str, str]) -> T
         records.append(
             KERNEL_RECORD_TEMPLATE.format(
                 family=cpp_string(export.get("family", DEFAULT_KERNEL_FAMILY)),
-                id=cpp_string(export["symbol"]),
+                name=cpp_string(export["name"]),
+                symbol=cpp_string(export["symbol"]),
+                target_selector=cpp_string(export.get("target_selector", "")),
                 source=cpp_string(export["source"]),
                 dependencies=dependencies_span,
                 source_digest=cpp_string(digests[export["source"]]),
@@ -324,7 +327,10 @@ def generate_corpus_records(manifest: dict, source_records: Dict[str, str]) -> T
 
 
 def generate_catalog_verifier(manifest: dict) -> str:
-    kernel_entries = sorted((export.get("family", DEFAULT_KERNEL_FAMILY), export["symbol"]) for export in manifest.get("exports", []))
+    kernel_entries = sorted(set(
+        (export.get("family", DEFAULT_KERNEL_FAMILY), export["name"])
+        for export in manifest.get("exports", [])
+    ))
     return CATALOG_DATA_TEMPLATE.format(
         kernel_entries="\n".join(
             "    { " + cpp_string(family) + ", " + cpp_string(kernel_name) + " },"

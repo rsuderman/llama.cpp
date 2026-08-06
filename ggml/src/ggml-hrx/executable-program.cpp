@@ -99,11 +99,6 @@ PackedKernelConstants pack_kernel_constants(const KernelDefinition & definition,
 }
 
 std::string kernel_artifact_key(const KernelDefinition & definition,
-                                const Command & command) {
-    return kernel_artifact_key(definition, command, definition.target != nullptr ? definition.target : "");
-}
-
-std::string kernel_artifact_key(const KernelDefinition & definition,
                                 const Command & command,
                                 const std::string & target) {
     std::ostringstream out;
@@ -403,7 +398,7 @@ bool ExecutableProgramPreparer::compile_artifacts() {
     for (const Command & command : commands.commands) {
         if (command.ordinal >= record_command_count) break;
         if (command.kind != CommandKind::Kernel) continue;
-        const KernelResolveResult resolved = resolve_kernel_definition(corpus, command.kernel);
+        const KernelResolveResult resolved = resolve_kernel_definition(corpus, options.target, command.kernel);
         const KernelDefinition * definition = resolved.definition;
         if (!resolved.found()) {
             result.errors_.push_back(format_kernel_resolve_error(resolved, command.kernel));
