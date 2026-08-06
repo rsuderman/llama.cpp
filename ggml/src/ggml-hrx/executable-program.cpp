@@ -540,6 +540,11 @@ bool ExecutableProgramPreparer::compile_artifacts() {
             result.errors_.push_back("compiled launch geometry is empty for " + key);
             break;
         }
+        if (!std::equal(artifact->launch.workgroup_size.begin(), artifact->launch.workgroup_size.end(),
+                std::begin(artifact->export_info.workgroup_size))) {
+            result.errors_.push_back("compiled launch workgroup size does not match executable metadata for " + key);
+            break;
+        }
         if (artifact->launch.workgroup_storage_bytes != 0) {
             result.errors_.push_back("HRX graph ABI cannot encode dynamic workgroup storage for " + key);
             break;
@@ -729,7 +734,7 @@ bool ExecutableProgramPreparer::record_graph() {
             const hrx_graph_kernel_node_attrs_t attrs = {
                 artifact->executable, artifact->export_ordinal,
                 { { artifact->launch.workgroup_count[0], artifact->launch.workgroup_count[1], artifact->launch.workgroup_count[2] },
-                  { artifact->launch.workgroup_size[0], artifact->launch.workgroup_size[1], artifact->launch.workgroup_size[2] },
+                  {},
                   artifact->launch.subgroup_size },
                 constants.data(), constants.size(), bindings.data(), bindings.size(), 0,
             };
