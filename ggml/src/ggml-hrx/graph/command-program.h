@@ -21,6 +21,7 @@ enum class CommandKind : uint8_t {
 enum class BindingOrigin : uint8_t {
     GraphValue,
     Transient,
+    PersistentConstant,
 };
 
 struct CommandBinding {
@@ -28,6 +29,7 @@ struct CommandBinding {
     BindingOrigin origin = BindingOrigin::GraphValue;
     ValueId value = kInvalidId;
     uint32_t transient = UINT32_MAX;
+    uint32_t persistent_constant = UINT32_MAX;
     StorageId storage = kInvalidId;
     size_t offset = 0;
     size_t length = 0;
@@ -62,6 +64,20 @@ struct TransientPlan {
     std::vector<TransientAllocation> allocations;
 };
 
+struct PersistentConstantAllocation {
+    uint32_t id = 0;
+    StorageId storage = kInvalidId;
+    size_t size = 0;
+    size_t alignment = 1;
+    size_t arena_offset = 0;
+};
+
+struct PersistentConstantPlan {
+    size_t arena_size = 0;
+    size_t arena_alignment = 1;
+    std::vector<PersistentConstantAllocation> allocations;
+};
+
 struct ConstantInitialization {
     std::string label;
     StorageId storage = kInvalidId;
@@ -77,6 +93,7 @@ struct CommandProgram {
     std::string corpus_digest;
     std::vector<Command> commands;
     TransientPlan transients;
+    PersistentConstantPlan persistent_constants;
     std::vector<ConstantInitialization> initializations;
     std::vector<RootContract> roots;
     std::vector<std::string> errors;

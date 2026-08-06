@@ -209,13 +209,40 @@ static void pack_transient_plan(TransientPlan & result) {
               [](const TransientAllocation & a, const TransientAllocation & b) { return a.id < b.id; });
 }
 
+static PersistentConstantPlan build_persistent_constant_plan(
+        const ProgramPlan & plan, const std::vector<ConstantInitialization> & initializations) {
+    PersistentConstantPlan result;
+    result.arena_alignment = 256;
+    std::set<StorageId> storages;
+    for (const ConstantInitialization & initialization : initializations) {
+        if (!storages.insert(initialization.storage).second || initialization.storage >= plan.graph.storages.size()) {
+            continue;
+        }
+        PersistentConstantAllocation allocation;
+        allocation.id = static_cast<uint32_t>(result.allocations.size());
+        allocation.storage = initialization.storage;
+        allocation.size = plan.graph.storages[initialization.storage].size;
+        allocation.alignment = 256;
+        allocation.arena_offset = align_up(result.arena_size, allocation.alignment);
+        result.arena_size = allocation.arena_offset + allocation.size;
+        result.allocations.push_back(allocation);
+    }
+    result.arena_size = align_up(result.arena_size, result.arena_alignment);
+    return result;
+}
+
 static TransientPlan build_transient_plan(const ProgramPlan & plan,
                                           const std::vector<uint32_t> & invocation_first_command,
-                                          const std::vector<uint32_t> & invocation_last_command) {
+                                          const std::vector<uint32_t> & invocation_last_command,
+                                          const PersistentConstantPlan & persistent_constants) {
     TransientPlan result;
     result.arena_alignment = 256;
     for (const ResourceContract & resource : plan.resources.resources) {
         if (!resource.elidable || resource.first_invocation == UINT32_MAX) continue;
+        const bool persistent = std::any_of(
+            persistent_constants.allocations.begin(), persistent_constants.allocations.end(),
+            [&](const PersistentConstantAllocation & allocation) { return allocation.storage == resource.storage; });
+        if (persistent) continue;
         TransientAllocation allocation;
         allocation.id = static_cast<uint32_t>(result.allocations.size());
         allocation.storage = resource.storage;
@@ -230,11 +257,15 @@ static TransientPlan build_transient_plan(const ProgramPlan & plan,
 }
 
 static nlohmann::ordered_json binding_json(const CommandBinding & binding) {
+    const char * origin = "graph_value";
+    if (binding.origin == BindingOrigin::Transient) origin = "transient";
+    if (binding.origin == BindingOrigin::PersistentConstant) origin = "persistent_constant";
     return {
         { "name", binding.name },
-        { "origin", binding.origin == BindingOrigin::GraphValue ? "graph_value" : "transient" },
+        { "origin", origin },
         { "value", binding.value },
         { "transient", binding.transient },
+        { "persistent_constant", binding.persistent_constant },
         { "storage", binding.storage },
         { "offset", binding.offset },
         { "length", binding.length },
@@ -314,9 +345,19 @@ CommandProgram build_command_program(const ProgramPlan & plan, const KernelCorpu
     }
     result.commands = expand_synthetic_commands(result.commands, result.errors);
     append_rope_initialization(plan, result);
-    result.transients = build_transient_plan(plan, invocation_first, invocation_last);
+    result.persistent_constants = build_persistent_constant_plan(plan, result.initializations);
+    result.transients = build_transient_plan(
+        plan, invocation_first, invocation_last, result.persistent_constants);
     for (Command & command : result.commands) {
         for (CommandBinding & binding : command.bindings) {
+            const auto persistent = std::find_if(
+                result.persistent_constants.allocations.begin(), result.persistent_constants.allocations.end(),
+                [&](const PersistentConstantAllocation & allocation) { return allocation.storage == binding.storage; });
+            if (persistent != result.persistent_constants.allocations.end()) {
+                binding.origin = BindingOrigin::PersistentConstant;
+                binding.persistent_constant = persistent->id;
+                continue;
+            }
             const auto position = std::find_if(result.transients.allocations.begin(), result.transients.allocations.end(),
                 [&](const TransientAllocation & allocation) { return allocation.storage == binding.storage; });
             if (position != result.transients.allocations.end()) {
@@ -336,20 +377,6 @@ CommandProgram build_command_program(const ProgramPlan & plan, const KernelCorpu
             allocation.first_command = std::min(allocation.first_command, command.ordinal);
             allocation.last_command = std::max(allocation.last_command, command.ordinal);
         }
-    }
-    // Constant payloads are uploaded while preparing the executable, before
-    // command zero can run. Their allocations must therefore remain live from
-    // the beginning of execution, not merely from their first command read.
-    // Otherwise an earlier transient may alias and overwrite the initialized
-    // bytes before the consumer observes them.
-    for (const ConstantInitialization & initialization : result.initializations) {
-        const auto position = std::find_if(result.transients.allocations.begin(), result.transients.allocations.end(),
-            [&](const TransientAllocation & allocation) { return allocation.storage == initialization.storage; });
-        if (position == result.transients.allocations.end()) {
-            result.errors.push_back("constant initialization does not resolve to transient storage");
-            continue;
-        }
-        position->first_command = 0;
     }
     pack_transient_plan(result.transients);
     // Schedule dependencies describe authored ordering. Add the conservative
@@ -446,19 +473,54 @@ VerificationResult verify_command_program(const ProgramPlan & plan, const Kernel
                 binding.offset + binding.length > plan.graph.storages[binding.storage].size) {
                 result.errors.push_back("command has an invalid resource range");
             }
+            if (binding.origin == BindingOrigin::PersistentConstant) {
+                const auto allocation = std::find_if(
+                    commands.persistent_constants.allocations.begin(), commands.persistent_constants.allocations.end(),
+                    [&](const PersistentConstantAllocation & item) {
+                        return item.id == binding.persistent_constant && item.storage == binding.storage;
+                    });
+                if (allocation == commands.persistent_constants.allocations.end()) {
+                    result.errors.push_back("command has an invalid persistent constant binding");
+                }
+                if (binding.access != ResourceAccess::Read) {
+                    result.errors.push_back("command writes persistent constant storage");
+                }
+            }
         }
     }
+    std::set<StorageId> initialized_storages;
     for (const ConstantInitialization & initialization : commands.initializations) {
         if (initialization.storage >= plan.graph.storages.size() || initialization.data.empty() ||
-            initialization.data.size() > plan.graph.storages[initialization.storage].size) {
+            initialization.data.size() > plan.graph.storages[initialization.storage].size ||
+            !initialized_storages.insert(initialization.storage).second) {
             result.errors.push_back("invalid constant initialization payload");
         }
-        const auto allocation = std::find_if(commands.transients.allocations.begin(),
-            commands.transients.allocations.end(), [&](const TransientAllocation & item) {
+        const auto allocation = std::find_if(commands.persistent_constants.allocations.begin(),
+            commands.persistent_constants.allocations.end(), [&](const PersistentConstantAllocation & item) {
                 return item.storage == initialization.storage;
             });
-        if (allocation == commands.transients.allocations.end() || allocation->first_command != 0) {
-            result.errors.push_back("constant initialization is not live from command zero");
+        if (allocation == commands.persistent_constants.allocations.end()) {
+            result.errors.push_back("constant initialization does not resolve to persistent storage");
+        }
+    }
+    std::set<StorageId> persistent_storages;
+    std::set<uint32_t> persistent_ids;
+    for (const PersistentConstantAllocation & allocation : commands.persistent_constants.allocations) {
+        if (allocation.storage >= plan.graph.storages.size() ||
+            !plan.resources.resources[allocation.storage].elidable ||
+            allocation.size != plan.graph.storages[allocation.storage].size ||
+            allocation.alignment == 0 || allocation.arena_offset % allocation.alignment != 0 ||
+            allocation.arena_offset + allocation.size > commands.persistent_constants.arena_size ||
+            !persistent_storages.insert(allocation.storage).second ||
+            !persistent_ids.insert(allocation.id).second ||
+            initialized_storages.count(allocation.storage) == 0) {
+            result.errors.push_back("invalid persistent constant allocation");
+        }
+        for (const PersistentConstantAllocation & other : commands.persistent_constants.allocations) {
+            if (allocation.id >= other.id) continue;
+            const bool overlap = allocation.arena_offset < other.arena_offset + other.size &&
+                other.arena_offset < allocation.arena_offset + allocation.size;
+            if (overlap) result.errors.push_back("persistent constant allocations overlap");
         }
     }
     for (const TransientAllocation & a : commands.transients.allocations) {
@@ -466,6 +528,9 @@ VerificationResult verify_command_program(const ProgramPlan & plan, const Kernel
             a.size != plan.graph.storages[a.storage].size || a.arena_offset % a.alignment != 0 ||
             a.arena_offset + a.size > commands.transients.arena_size) {
             result.errors.push_back("invalid transient allocation");
+        }
+        if (persistent_storages.count(a.storage) != 0) {
+            result.errors.push_back("persistent constant is also allocated as a transient");
         }
         for (const TransientAllocation & b : commands.transients.allocations) {
             if (a.id >= b.id) continue;
@@ -551,6 +616,9 @@ std::string format_command_program(const CommandProgram & program) {
             out << "    binding[" << i << "] " << binding.name << ' ' << resource_access_name(binding.access)
                 << " storage=" << binding.storage << " range=" << binding.offset << "+" << binding.length;
             if (binding.origin == BindingOrigin::Transient) out << " transient=" << binding.transient;
+            if (binding.origin == BindingOrigin::PersistentConstant) {
+                out << " persistent_constant=" << binding.persistent_constant;
+            }
             out << '\n';
         }
     }
@@ -560,6 +628,13 @@ std::string format_command_program(const CommandProgram & program) {
         out << "  transient " << allocation.id << " storage=" << allocation.storage << " range="
             << allocation.arena_offset << "+" << allocation.size << " live=" << allocation.first_command
             << ".." << allocation.last_command << '\n';
+    }
+    out << "persistent-constants arena=" << program.persistent_constants.arena_size
+        << " alignment=" << program.persistent_constants.arena_alignment
+        << " allocations=" << program.persistent_constants.allocations.size() << '\n';
+    for (const PersistentConstantAllocation & allocation : program.persistent_constants.allocations) {
+        out << "  persistent-constant " << allocation.id << " storage=" << allocation.storage << " range="
+            << allocation.arena_offset << "+" << allocation.size << '\n';
     }
     for (const ConstantInitialization & initialization : program.initializations) {
         out << "  initialize " << initialization.label << " storage=" << initialization.storage
@@ -615,6 +690,9 @@ std::string serialize_command_program_json(const CommandProgram & program) {
         { "initializations", nlohmann::ordered_json::array() },
         { "transients", { { "arena_size", program.transients.arena_size },
             { "arena_alignment", program.transients.arena_alignment }, { "allocations", nlohmann::ordered_json::array() } } },
+        { "persistent_constants", { { "arena_size", program.persistent_constants.arena_size },
+            { "arena_alignment", program.persistent_constants.arena_alignment },
+            { "allocations", nlohmann::ordered_json::array() } } },
     };
     for (const Command & command : program.commands) {
         nlohmann::ordered_json item = {
@@ -641,6 +719,12 @@ std::string serialize_command_program_json(const CommandProgram & program) {
             { "id", allocation.id }, { "storage", allocation.storage }, { "size", allocation.size },
             { "alignment", allocation.alignment }, { "arena_offset", allocation.arena_offset },
             { "first_command", allocation.first_command }, { "last_command", allocation.last_command },
+        });
+    }
+    for (const PersistentConstantAllocation & allocation : program.persistent_constants.allocations) {
+        root["persistent_constants"]["allocations"].push_back({
+            { "id", allocation.id }, { "storage", allocation.storage }, { "size", allocation.size },
+            { "alignment", allocation.alignment }, { "arena_offset", allocation.arena_offset },
         });
     }
     return root.dump();

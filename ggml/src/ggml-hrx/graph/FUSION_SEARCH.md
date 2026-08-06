@@ -273,6 +273,12 @@ target, and compile parameters. The command program then contains concrete
 kernel, fill, copy, and barrier commands; named bindings; dependencies;
 constant initialization; and a lifetime-packed transient arena.
 
+Prepared-once constants use a separate persistent-constant arena. They are not
+eligible for transient lifetime packing: a late command in one launch must not
+alias bytes read near the beginning of the next reusable launch. Keeping this
+storage class explicit also makes the executable's retained memory and each
+binding's lifetime contract visible in text and JSON diagnostics.
+
 The corpus is the executable compilation recipe. A schedule that names a
 kernel absent from the corpus, supplies incompatible specialization metadata,
 or violates its ABI fails command construction. No best-effort substitution is

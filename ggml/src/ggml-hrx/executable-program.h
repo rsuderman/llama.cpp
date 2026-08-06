@@ -135,6 +135,7 @@ public:
     size_t resident_host_weight_bytes() const { return resident_host_weight_bytes_; }
     size_t host_staging_bytes() const { return host_staging_bytes_; }
     size_t transient_bytes() const { return transient_bytes_; }
+    size_t persistent_constant_bytes() const { return persistent_constant_bytes_; }
     size_t source_command_count() const { return source_command_count_; }
     bool command_prefix() const { return command_prefix_; }
     bool split_commands() const { return split_commands_; }
@@ -163,6 +164,7 @@ private:
     size_t resident_host_weight_bytes_ = 0;
     size_t host_staging_bytes_ = 0;
     size_t transient_bytes_ = 0;
+    size_t persistent_constant_bytes_ = 0;
     size_t source_command_count_ = 0;
     bool command_prefix_ = false;
     bool split_commands_ = false;

@@ -589,22 +589,63 @@ int main(int argc, char ** argv) {
         REQUIRE(executable_commands.initializations.size() == 1);
         REQUIRE(executable_commands.initializations[0].data.size() == 256);
         const auto initialized_allocation = std::find_if(
-            executable_commands.transients.allocations.begin(), executable_commands.transients.allocations.end(),
-            [&](const ggml::hrx::TransientAllocation & allocation) {
+            executable_commands.persistent_constants.allocations.begin(),
+            executable_commands.persistent_constants.allocations.end(),
+            [&](const ggml::hrx::PersistentConstantAllocation & allocation) {
                 return allocation.storage == executable_commands.initializations[0].storage;
             });
-        REQUIRE(initialized_allocation != executable_commands.transients.allocations.end());
-        REQUIRE(initialized_allocation->first_command == 0);
-        REQUIRE(ggml::hrx::verify_command_program(reactive, executable_corpus, executable_commands).valid());
-        ggml::hrx::CommandProgram late_initialization = executable_commands;
-        const auto late_allocation = std::find_if(
-            late_initialization.transients.allocations.begin(), late_initialization.transients.allocations.end(),
+        REQUIRE(initialized_allocation != executable_commands.persistent_constants.allocations.end());
+        REQUIRE(initialized_allocation->size == 256);
+        REQUIRE(executable_commands.persistent_constants.arena_size >= initialized_allocation->size);
+        REQUIRE(std::none_of(
+            executable_commands.transients.allocations.begin(), executable_commands.transients.allocations.end(),
             [&](const ggml::hrx::TransientAllocation & allocation) {
-                return allocation.storage == late_initialization.initializations[0].storage;
-            });
-        REQUIRE(late_allocation != late_initialization.transients.allocations.end());
-        late_allocation->first_command = 1;
-        REQUIRE(!ggml::hrx::verify_command_program(reactive, executable_corpus, late_initialization).valid());
+                return allocation.storage == initialized_allocation->storage;
+            }));
+        size_t persistent_binding_count = 0;
+        for (const ggml::hrx::Command & command : executable_commands.commands) {
+            for (const ggml::hrx::CommandBinding & binding : command.bindings) {
+                if (binding.storage != initialized_allocation->storage) continue;
+                REQUIRE(binding.origin == ggml::hrx::BindingOrigin::PersistentConstant);
+                REQUIRE(binding.persistent_constant == initialized_allocation->id);
+                ++persistent_binding_count;
+            }
+        }
+        REQUIRE(persistent_binding_count != 0);
+        REQUIRE(ggml::hrx::format_command_program(executable_commands).find(
+            "persistent-constants arena=256") != std::string::npos);
+        REQUIRE(ggml::hrx::serialize_command_program_json(executable_commands).find(
+            "\"origin\":\"persistent_constant\"") != std::string::npos);
+        REQUIRE(ggml::hrx::verify_command_program(reactive, executable_corpus, executable_commands).valid());
+        ggml::hrx::CommandProgram missing_persistent = executable_commands;
+        missing_persistent.persistent_constants.allocations.clear();
+        REQUIRE(!ggml::hrx::verify_command_program(reactive, executable_corpus, missing_persistent).valid());
+        ggml::hrx::CommandProgram missing_initialization = executable_commands;
+        missing_initialization.initializations.clear();
+        REQUIRE(!ggml::hrx::verify_command_program(reactive, executable_corpus, missing_initialization).valid());
+        ggml::hrx::CommandProgram writable_persistent = executable_commands;
+        bool changed_persistent_access = false;
+        for (ggml::hrx::Command & command : writable_persistent.commands) {
+            for (ggml::hrx::CommandBinding & binding : command.bindings) {
+                if (binding.origin != ggml::hrx::BindingOrigin::PersistentConstant) continue;
+                binding.access = ggml::hrx::ResourceAccess::ReadWrite;
+                changed_persistent_access = true;
+                break;
+            }
+            if (changed_persistent_access) break;
+        }
+        REQUIRE(changed_persistent_access);
+        REQUIRE(!ggml::hrx::verify_command_program(reactive, executable_corpus, writable_persistent).valid());
+        ggml::hrx::CommandProgram aliased_persistent = executable_commands;
+        ggml::hrx::TransientAllocation alias;
+        alias.id = static_cast<uint32_t>(aliased_persistent.transients.allocations.size());
+        alias.storage = initialized_allocation->storage;
+        alias.size = initialized_allocation->size;
+        alias.alignment = initialized_allocation->alignment;
+        alias.first_command = 0;
+        alias.last_command = 0;
+        aliased_persistent.transients.allocations.push_back(alias);
+        REQUIRE(!ggml::hrx::verify_command_program(reactive, executable_corpus, aliased_persistent).valid());
 
         ggml::hrx::Schedule missing_operation = reactive.schedule;
         missing_operation.invocations[1].covered_operations.pop_back();

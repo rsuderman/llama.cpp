@@ -51,6 +51,13 @@ const TransientAllocation * find_transient(const CommandProgram & commands, uint
     return it == commands.transients.allocations.end() ? nullptr : &*it;
 }
 
+const PersistentConstantAllocation * find_persistent_constant(const CommandProgram & commands, uint32_t id) {
+    const auto it = std::find_if(
+        commands.persistent_constants.allocations.begin(), commands.persistent_constants.allocations.end(),
+        [&](const PersistentConstantAllocation & allocation) { return allocation.id == id; });
+    return it == commands.persistent_constants.allocations.end() ? nullptr : &*it;
+}
+
 void append_u32(std::vector<uint8_t> & bytes, uint32_t value) {
     const size_t offset = bytes.size();
     bytes.resize(offset + sizeof(value));
@@ -148,6 +155,7 @@ struct PreparedExecutableProgram::Impl {
         if (graph_exec != nullptr) hrx_graph_exec_release(graph_exec);
         if (graph != nullptr) hrx_graph_release(graph);
         if (transient_buffer != nullptr) hrx_buffer_release(transient_buffer);
+        if (persistent_constant_buffer != nullptr) hrx_buffer_release(persistent_constant_buffer);
         for (HostStaging & staging : host_staging) {
             if (staging.buffer != nullptr) hrx_buffer_release(staging.buffer);
         }
@@ -156,6 +164,7 @@ struct PreparedExecutableProgram::Impl {
     hrx_graph_t graph = nullptr;
     hrx_graph_exec_t graph_exec = nullptr;
     hrx_buffer_t transient_buffer = nullptr;
+    hrx_buffer_t persistent_constant_buffer = nullptr;
     hrx_device_t device = nullptr;
     TransferManager * transfers = nullptr;
     std::vector<HostStaging> host_staging;
@@ -290,7 +299,7 @@ public:
 
 private:
     bool validate_and_initialize();
-    bool allocate_transients();
+    bool allocate_program_buffers();
     bool compile_artifacts();
     bool bind_storage();
     bool record_graph();
@@ -340,21 +349,33 @@ bool ExecutableProgramPreparer::validate_and_initialize() {
     return true;
 }
 
-bool ExecutableProgramPreparer::allocate_transients() {
+bool ExecutableProgramPreparer::allocate_program_buffers() {
     if (commands.transients.arena_size != 0) {
         error = take_status(hrx_buffer_allocate(stream, commands.transients.arena_size, HRX_MEMORY_TYPE_DEVICE_LOCAL,
             HRX_BUFFER_USAGE_DEFAULT, &impl.transient_buffer));
         if (error) { result.errors_.push_back("allocate transient arena: " + *error); return false; }
     }
     result.transient_bytes_ = commands.transients.arena_size;
-    for (const ConstantInitialization & initialization : commands.initializations) {
-        const auto allocation = std::find_if(commands.transients.allocations.begin(), commands.transients.allocations.end(),
-            [&](const TransientAllocation & item) { return item.storage == initialization.storage; });
-        if (allocation == commands.transients.allocations.end() || impl.transient_buffer == nullptr) {
-            result.errors_.push_back("constant initialization does not resolve to transient storage");
+    if (commands.persistent_constants.arena_size != 0) {
+        error = take_status(hrx_buffer_allocate(
+            stream, commands.persistent_constants.arena_size, HRX_MEMORY_TYPE_DEVICE_LOCAL,
+            HRX_BUFFER_USAGE_DEFAULT, &impl.persistent_constant_buffer));
+        if (error) {
+            result.errors_.push_back("allocate persistent constant arena: " + *error);
             return false;
         }
-        const std::string upload_error = transfers.upload(initialization.data.data(), impl.transient_buffer,
+    }
+    result.persistent_constant_bytes_ = commands.persistent_constants.arena_size;
+    for (const ConstantInitialization & initialization : commands.initializations) {
+        const auto allocation = std::find_if(
+            commands.persistent_constants.allocations.begin(), commands.persistent_constants.allocations.end(),
+            [&](const PersistentConstantAllocation & item) { return item.storage == initialization.storage; });
+        if (allocation == commands.persistent_constants.allocations.end() ||
+            impl.persistent_constant_buffer == nullptr) {
+            result.errors_.push_back("constant initialization does not resolve to persistent storage");
+            return false;
+        }
+        const std::string upload_error = transfers.upload(initialization.data.data(), impl.persistent_constant_buffer,
             allocation->arena_offset, initialization.data.size());
         if (!upload_error.empty()) {
             result.errors_.push_back("upload " + initialization.label + ": " + upload_error);
@@ -615,7 +636,7 @@ bool ExecutableProgramPreparer::bind_storage() {
         }
         storage_refs[binding.storage] = { concrete_buffer, concrete_offset, binding.length };
     }
-    result.retained_bytes_ += commands.transients.arena_size;
+    result.retained_bytes_ += commands.transients.arena_size + commands.persistent_constants.arena_size;
     for (const PreparedExecutableProgram::Impl::HostStaging & staging : impl.host_staging) {
         if (!staging.initialize) continue;
         const std::string upload_error = transfers.upload(staging.host_data, staging.buffer, 0, staging.length);
@@ -642,6 +663,16 @@ bool ExecutableProgramPreparer::resolve_binding(
             return false;
         }
         result_ref = { impl.transient_buffer, allocation->arena_offset + binding.offset, binding.length };
+    } else if (binding.origin == BindingOrigin::PersistentConstant) {
+        const PersistentConstantAllocation * allocation =
+            find_persistent_constant(commands, binding.persistent_constant);
+        if (allocation == nullptr || impl.persistent_constant_buffer == nullptr ||
+            binding.offset > allocation->size || binding.length > allocation->size - binding.offset) {
+            result.errors_.push_back("invalid concrete persistent constant binding");
+            return false;
+        }
+        result_ref = {
+            impl.persistent_constant_buffer, allocation->arena_offset + binding.offset, binding.length };
     } else {
         const auto concrete = storage_refs.find(binding.storage);
         if (concrete == storage_refs.end() || binding.offset > concrete->second.length ||
@@ -758,7 +789,7 @@ bool ExecutableProgramPreparer::record_graph() {
 
 PreparedExecutableProgram ExecutableProgramPreparer::run() {
     if (!validate_and_initialize()) return std::move(result);
-    if (!allocate_transients()) return std::move(result);
+    if (!allocate_program_buffers()) return std::move(result);
     if (!compile_artifacts()) return std::move(result);
     if (!bind_storage()) return std::move(result);
     record_graph();
@@ -792,6 +823,7 @@ std::string PreparedExecutableProgram::format() const {
         << "resident_host_weight_bytes=" << program.resident_host_weight_bytes() << '\n'
         << "host_staging_bytes=" << program.host_staging_bytes() << '\n'
         << "transient_bytes=" << program.transient_bytes() << '\n'
+        << "persistent_constant_bytes=" << program.persistent_constant_bytes() << '\n'
         << "allocation_fingerprint=" << program.allocation_fingerprint().value << '\n';
     for (const PreparedArtifactDiagnostic & artifact : program.artifacts()) {
         out << "artifact " << artifact.kernel_id << " key=" << artifact.key
@@ -825,6 +857,7 @@ std::string PreparedExecutableProgram::serialize_json() const {
         { "resident_host_weight_bytes", program.resident_host_weight_bytes() },
         { "host_staging_bytes", program.host_staging_bytes() },
         { "transient_bytes", program.transient_bytes() },
+        { "persistent_constant_bytes", program.persistent_constant_bytes() },
         { "allocation_fingerprint", program.allocation_fingerprint().value }, { "errors", program.errors() },
     };
     root["artifacts"] = nlohmann::json::array();
