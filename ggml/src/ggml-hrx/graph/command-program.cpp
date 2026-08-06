@@ -124,6 +124,20 @@ static std::vector<Command> expand_synthetic_commands(const std::vector<Command>
             fill.bindings = { destination };
             result.push_back(std::move(fill));
             synthetic = result.back().ordinal;
+        } else if (original.kernel.variant == "qwen3_moe_build_expert_table_partition_prefill_512" &&
+                   original.bindings.size() >= 4) {
+            Command fill;
+            fill.ordinal = static_cast<uint32_t>(result.size());
+            fill.kind = CommandKind::Fill;
+            fill.label = original.label + ".clear_completion_counter";
+            fill.kernel.integer_parameters["fill_byte"] = 0;
+            fill.dependencies = dependencies;
+            CommandBinding destination = original.bindings[3];
+            destination.name = "destination";
+            destination.access = ResourceAccess::Write;
+            fill.bindings = { destination };
+            result.push_back(std::move(fill));
+            synthetic = result.back().ordinal;
         }
         Command command = original;
         command.ordinal = static_cast<uint32_t>(result.size());

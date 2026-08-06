@@ -157,8 +157,12 @@ static void emit_prefill_component(const Graph & graph, const RoutedTransformerM
         case RoutedTransformerComponentKind::RouterSelection:
             add_dispatch(invocation, kernel("qwen3_moe_router_projection_f32_four_row_wave32", layer, active_token_count), ordinal);
             add_dispatch(invocation, kernel("qwen3_moe_router_top8_f32", layer, active_token_count), ordinal);
-            add_dispatch(invocation, kernel("qwen3_moe_build_expert_table", layer, active_token_count), ordinal);
-            add_dispatch(invocation, kernel("qwen3_moe_build_expert_partition_table", layer, active_token_count), ordinal);
+            if (invocation.recipe == routed_transformer_recipes::kPrefillExpertPartition) {
+                add_dispatch(invocation, kernel("qwen3_moe_build_expert_table_partition_prefill_512", layer, active_token_count), ordinal);
+            } else {
+                add_dispatch(invocation, kernel("qwen3_moe_build_expert_table", layer, active_token_count), ordinal);
+                add_dispatch(invocation, kernel("qwen3_moe_build_expert_partition_table", layer, active_token_count), ordinal);
+            }
             break;
         case RoutedTransformerComponentKind::ExpertGateUp:
             add_dispatch(invocation, kernel("qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma", layer, active_token_count), ordinal);
@@ -168,8 +172,10 @@ static void emit_prefill_component(const Graph & graph, const RoutedTransformerM
                 "qwen3_moe_routed_down_q6k_f16_wmma_grouped", "routed_down",
                 weight_type(graph, block.operations_by_role.experts_routed_down),
                 layer, active_token_count, gaps), ordinal);
-            add_dispatch(invocation, kernel("qwen3_moe_routed_down_weighted_reduce_f16_f32",
-                                            layer, active_token_count), ordinal);
+            add_dispatch(invocation, kernel(invocation.recipe == routed_transformer_recipes::kPrefillDownNextNorm
+                ? "qwen3_moe_routed_down_weighted_reduce_next_rmsnorm_f32"
+                : "qwen3_moe_routed_down_weighted_reduce_f16_f32",
+                layer, active_token_count), ordinal);
             break;
         default: break;
     }
@@ -326,7 +332,7 @@ static bool emit_decode_recipe(const Graph & graph, const RoutedTransformerModel
 
 };
 
-static RoutedTransformerRecipeCatalog implemented_recipe_catalog() {
+static RoutedTransformerRecipeCatalog implemented_recipe_catalog(const RoutedTransformerModel & model) {
     RoutedTransformerRecipeCatalog catalog;
     catalog.available = {
         routed_transformer_recipes::kDecodeQkvPostprocess,
@@ -335,6 +341,12 @@ static RoutedTransformerRecipeCatalog implemented_recipe_catalog() {
         routed_transformer_recipes::kDecodeGateUpNextQ8,
         routed_transformer_recipes::kDecodeDownNextQ8,
     };
+    if (model.query_token_count != 1) {
+        catalog.available.insert(routed_transformer_recipes::kPrefillDownNextNorm);
+        if (model.query_token_count == 512) {
+            catalog.available.insert(routed_transformer_recipes::kPrefillExpertPartition);
+        }
+    }
     return catalog;
 }
 
@@ -358,7 +370,7 @@ RoutedTransformerProgramProof RoutedTransformerProgramProof::recover(const Graph
     search_options.require_complete_coverage = true;
     search_options.record_trace = true;
     proof.search = SearchResult::search(
-        index, RoutedTransformerProvider::make_planner(implemented_recipe_catalog(), model), search_options);
+        index, RoutedTransformerProvider::make_planner(implemented_recipe_catalog(*model), model), search_options);
     if (!proof.search.valid()) {
         proof.errors = proof.search.errors;
         return proof;
@@ -452,7 +464,9 @@ RoutedTransformerProgramProof RoutedTransformerProgramProof::recover(const Graph
             invocation.kernel = atom;
             RoutedTransformerProgramImplementation::add_dispatch(
                 invocation, std::move(atom), dispatch_ordinal);
-        } else if (block != nullptr && selected.correctness_baseline) {
+        } else if (block != nullptr && (selected.correctness_baseline ||
+                   (prefill && (selected.family == routed_transformer_recipes::kPrefillExpertPartition ||
+                                selected.family == routed_transformer_recipes::kPrefillDownNextNorm)))) {
             if (prefill) RoutedTransformerProgramImplementation::emit_prefill_component(
                 graph, *model, *block, component->kind, invocation, dispatch_ordinal, proof.native_gaps);
             else RoutedTransformerProgramImplementation::emit_decode_component(

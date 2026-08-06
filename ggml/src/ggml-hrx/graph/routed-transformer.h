@@ -138,7 +138,7 @@ public:
         std::shared_ptr<const RoutedTransformerModel> supplied_model = {})
         : catalog_(std::move(catalog)), supplied_model_(std::move(supplied_model)) {}
     const char * id() const override { return "llm.routed_transformer"; }
-    const char * revision() const override { return "2"; }
+    const char * revision() const override { return "3"; }
     Decision discover(const GraphIndex & index, FactDatabase & facts) const override;
     void seed(const GraphIndex & index, const FactDatabase & facts,
               std::vector<FusionCandidate> & candidates) const override;

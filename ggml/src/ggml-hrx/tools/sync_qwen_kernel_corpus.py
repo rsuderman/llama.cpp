@@ -89,6 +89,8 @@ def binding_access(symbol: str, name: str) -> str:
         return "write"
     if symbol == "qwen3_moe_build_expert_partition_table" and name == "partition_table":
         return "write"
+    if symbol == "qwen3_moe_build_expert_table_partition_prefill_512" and name in ("expert_table", "partition_table"):
+        return "write"
     if symbol == "ggml_q8_1_x4_inspect_one_group" and name != "packed":
         return "write"
     if name in ("output", "query_output", "key_output", "value_output", "normalized_output", "q8_output",

@@ -47,6 +47,7 @@ struct Scratch {
     ValueId partial_max = kInvalidId;
     ValueId partial_sum = kInvalidId;
     ValueId partial_output = kInvalidId;
+    ValueId prefill_completion_counter = kInvalidId;
     // Aliased counters used by sequential fused decode stages.
     struct {
         // Storage containing every counter initialized by one command.
@@ -106,6 +107,20 @@ static void compile_config(Dispatch & dispatch, const char * name, const std::st
 static void rmsnorm_config(Dispatch & dispatch, const Facts & facts) {
     compile_config(dispatch, "qwen3_moe.model.hidden_size", std::to_string(facts.hidden_size));
     compile_config(dispatch, "qwen3_moe.model.rms_epsilon", facts.rms_epsilon);
+}
+
+static void routed_gate_up_config(Dispatch & dispatch, const Facts & facts) {
+    compile_config(dispatch, "qwen3_moe.routed_gate_up.input_size", std::to_string(facts.hidden_size));
+    compile_config(dispatch, "qwen3_moe.routed_gate_up.route_count", std::to_string(facts.route_count));
+    compile_config(dispatch, "qwen3_moe.routed_gate_up.expert_count", std::to_string(facts.expert_count));
+    compile_config(dispatch, "qwen3_moe.routed_gate_up.output_size", std::to_string(facts.expert_intermediate_size));
+}
+
+static void routed_down_config(Dispatch & dispatch, const Facts & facts) {
+    compile_config(dispatch, "qwen3_moe.routed_down.expert_count", std::to_string(facts.expert_count));
+    compile_config(dispatch, "qwen3_moe.routed_down.input_size", std::to_string(facts.expert_intermediate_size));
+    compile_config(dispatch, "qwen3_moe.routed_down.output_size", std::to_string(facts.hidden_size));
+    compile_config(dispatch, "qwen3_moe.routed_down.route_count", std::to_string(facts.route_count));
 }
 
 static ValueId append_scratch(Graph & graph, const std::string & name, size_t byte_length) {
@@ -251,6 +266,9 @@ static Scratch allocate_scratch(Graph & graph, const Facts & facts, bool decode)
                                    kExpertPartitionRouteTileSize;
         scratch.partition_table = append_scratch(graph, "partition_table",
             (1 + facts.expert_count + route_tiles) * sizeof(int32_t));
+        if (facts.token_count == 512) {
+            scratch.prefill_completion_counter = append_scratch(graph, "expert_table_completion_counter", sizeof(int32_t));
+        }
     }
     return scratch;
 }
@@ -470,6 +488,15 @@ static void bind_prefill_block(const Graph & graph, const RoutedTransformerModel
                                   binding("partition_table", scratch.partition_table) };
             runtime_scalar(dispatch, "route_count", facts.route_count);
             runtime_scalar(dispatch, "expert_count", facts.expert_count);
+            routed_gate_up_config(dispatch, facts);
+        } else if (variant == "qwen3_moe_build_expert_table_partition_prefill_512") {
+            dispatch.bindings = { binding("route_ids", op_output(graph, route_ids)),
+                                  binding("expert_table", scratch.expert_table),
+                                  binding("partition_table", scratch.partition_table),
+                                  binding("completion_counter", scratch.prefill_completion_counter) };
+            runtime_scalar(dispatch, "route_count", facts.route_count);
+            runtime_scalar(dispatch, "route_stride", facts.route_stride);
+            runtime_scalar(dispatch, "expert_count", facts.expert_count);
         } else if (variant == "qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma") {
             dispatch.bindings = { binding("input", op_output(graph, ff_prepared)),
                                   binding("expert_table", scratch.expert_table),
@@ -495,10 +522,23 @@ static void bind_prefill_block(const Graph & graph, const RoutedTransformerModel
             dispatch.bindings = { binding("route_weights", op_output(graph, route_weights)),
                                   binding("routed_output", op_output(graph, down)),
                                   binding("output", active_hidden_state) };
-            compile_config(dispatch, "qwen3_moe.routed_down.expert_count", std::to_string(facts.expert_count));
-            compile_config(dispatch, "qwen3_moe.routed_down.input_size", std::to_string(facts.expert_intermediate_size));
-            compile_config(dispatch, "qwen3_moe.routed_down.output_size", std::to_string(facts.hidden_size));
+            routed_down_config(dispatch, facts);
+        } else if (variant == "qwen3_moe_routed_down_weighted_reduce_next_rmsnorm_f32") {
+            if (terminal) {
+                errors.push_back("terminal block cannot publish next attention RMSNorm");
+                continue;
+            }
+            const RoutedTransformerBlock & next_block = model.blocks[block.ordinal + 1];
+            const OperationId next_prepared = next_block.operations_by_role.attention_prepared;
+            dispatch.bindings = { binding("route_weights", op_output(graph, route_weights)),
+                                  binding("routed_output", op_output(graph, down)),
+                                  binding("hidden_state", active_hidden_state),
+                                  binding("next_norm_weight", op_input(graph, next_prepared, 1)),
+                                  binding("next_projection_input", op_output(graph, next_prepared)) };
+            compile_config(dispatch, "qwen3_moe.model.hidden_size", std::to_string(facts.hidden_size));
+            compile_config(dispatch, "qwen3_moe.model.rms_epsilon", facts.rms_epsilon);
             compile_config(dispatch, "qwen3_moe.routed_down.route_count", std::to_string(facts.route_count));
+            compile_config(dispatch, "qwen3_moe.routed_down.output_size", std::to_string(facts.hidden_size));
         } else {
             errors.push_back("unexpected routed-transformer prefill dispatch " + variant);
         }

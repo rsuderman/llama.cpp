@@ -50,8 +50,8 @@
     },
     {
       "path": "qwen3_moe/expert_table_partition_fused.loom",
-      "sha256": "687639c9ff5351723508dd454cdc7941398b0d1462d2d9f46e7f97a4b3bf23ad",
-      "size": 17430
+      "sha256": "d30799b706cc96f873b3a217d4b8a178042002eef905f03d63e885190354515f",
+      "size": 20394
     },
     {
       "path": "qwen3_moe/flash_attention_decode_f32_f16_wmma.loom",
@@ -194,8 +194,8 @@
       ],
       "binding_access": [
         "read",
-        "read",
-        "read",
+        "write",
+        "write",
         "read_write"
       ],
       "target_selector": "",
@@ -940,8 +940,8 @@
       ],
       "binding_access": [
         "read",
-        "read",
-        "read",
+        "write",
+        "write",
         "read_write"
       ],
       "target_selector": "",
