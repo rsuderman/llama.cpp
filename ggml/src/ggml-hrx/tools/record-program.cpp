@@ -39,7 +39,7 @@ int main(int argc, char ** argv) {
         if (!graph.valid()) throw std::runtime_error("normalized graph is invalid");
         const ggml::hrx::ProgramPlan plan = ggml::hrx::build_reactive_plan(graph, target);
         if (!plan.valid()) throw std::runtime_error("reactive plan is invalid");
-        const ggml::hrx::KernelCorpus & corpus = ggml::hrx::get_qwen_kernel_corpus(target.c_str());
+        const ggml::hrx::KernelCorpus & corpus = ggml::hrx::get_qwen_kernel_corpus();
         const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(plan, corpus);
         if (!commands.valid()) throw std::runtime_error(commands.errors.front());
 

@@ -78,6 +78,25 @@ static ggml_tensor * build_arithmetic_graph(Fixture & fixture, const char * pref
     return mul;
 }
 
+static void build_fork_join_graph(Fixture & fixture, const char * prefix) {
+    ggml_tensor * x = ggml_new_tensor_2d(fixture.context, GGML_TYPE_F32, 4, 8);
+    ggml_tensor * y = ggml_new_tensor_2d(fixture.context, GGML_TYPE_F32, 4, 8);
+    ggml_tensor * z = ggml_new_tensor_2d(fixture.context, GGML_TYPE_F32, 4, 8);
+    ggml_tensor * w = ggml_new_tensor_2d(fixture.context, GGML_TYPE_F32, 4, 8);
+    ggml_set_input(x);
+    ggml_set_input(y);
+    ggml_set_input(z);
+    ggml_set_input(w);
+    ggml_tensor * left = ggml_add(fixture.context, x, y);
+    ggml_tensor * right = ggml_mul(fixture.context, z, w);
+    ggml_tensor * result = ggml_add(fixture.context, left, right);
+    ggml_set_name(left, (std::string(prefix) + "-left").c_str());
+    ggml_set_name(right, (std::string(prefix) + "-right").c_str());
+    ggml_set_name(result, (std::string(prefix) + "-result").c_str());
+    ggml_set_output(result);
+    ggml_build_forward_expand(fixture.graph, result);
+}
+
 static void test_deterministic_import_and_schedule() {
     const ggml::hrx::Graph first = make_arithmetic_graph("first");
     const ggml::hrx::Graph second = make_arithmetic_graph("second");
@@ -391,7 +410,7 @@ static ggml::hrx::KernelCorpus make_test_corpus(const ggml::hrx::ProgramPlan & p
             kernel.id = ggml::hrx::kernel_catalog_id(kernel.family, kernel.name);
             kernel.source = sources.back().c_str();
             kernel.symbol = dispatch.kernel.variant.c_str();
-            kernel.target = plan.target.c_str();
+            kernel.backend = "amdgpu";
             kernel.source_digest = digests.back().c_str();
             kernel.bindings = { bindings.back().data(), bindings.back().size() };
             kernel.compile_recipe.mode = "direct";
@@ -459,15 +478,79 @@ static void test_command_program_and_diagnostics() {
     REQUIRE(ggml::hrx::fingerprint_bindings(snapshot) != first);
     snapshot.bindings.pop_back();
     REQUIRE(!ggml::hrx::verify_binding_snapshot(plan, snapshot).valid());
+
+    Fixture fork_join_fixture;
+    build_fork_join_graph(fork_join_fixture, "unordered-alias");
+    const ggml::hrx::ImportedGraph fork_join_graph = ggml::hrx::ImportedGraph::import(fork_join_fixture.graph);
+    ggml::hrx::ProgramPlan fork_join_plan = ggml::hrx::build_reactive_plan(fork_join_graph.graph, "gfx1151");
+    REQUIRE(fork_join_plan.valid());
+    REQUIRE(fork_join_plan.schedule.invocations.size() == 3);
+    fork_join_plan.schedule.invocations[0].dispatches[0].dependencies.clear();
+    fork_join_plan.schedule.invocations[1].dispatches[0].dependencies.clear();
+    fork_join_plan.schedule.invocations[2].dispatches[0].dependencies = { 0, 1 };
+    REQUIRE(ggml::hrx::verify_schedule(fork_join_plan.graph, fork_join_plan.schedule).valid());
+    const ggml::hrx::KernelCorpus fork_join_corpus = make_test_corpus(fork_join_plan);
+    const ggml::hrx::CommandProgram fork_join_commands =
+        ggml::hrx::build_command_program(fork_join_plan, fork_join_corpus);
+    REQUIRE(fork_join_commands.valid());
+    REQUIRE(fork_join_commands.commands[0].dependencies.empty());
+    REQUIRE(fork_join_commands.commands[1].dependencies.empty());
+    REQUIRE(fork_join_commands.commands[2].dependencies == std::vector<uint32_t>({ 0, 1 }));
+    REQUIRE(fork_join_commands.transients.allocations.size() == 2);
+    const ggml::hrx::TransientAllocation & left = fork_join_commands.transients.allocations[0];
+    const ggml::hrx::TransientAllocation & right = fork_join_commands.transients.allocations[1];
+    REQUIRE(left.arena_offset + left.size <= right.arena_offset ||
+            right.arena_offset + right.size <= left.arena_offset);
+    REQUIRE(ggml::hrx::verify_command_program(fork_join_plan, fork_join_corpus, fork_join_commands).valid());
+
+    ggml::hrx::CommandProgram unordered_alias = fork_join_commands;
+    unordered_alias.transients.allocations[0].first_command = 0;
+    unordered_alias.transients.allocations[0].last_command = 0;
+    unordered_alias.transients.allocations[1].first_command = 1;
+    unordered_alias.transients.allocations[1].last_command = 1;
+    unordered_alias.transients.allocations[1].arena_offset =
+        unordered_alias.transients.allocations[0].arena_offset;
+    const ggml::hrx::VerificationResult unordered_alias_verification =
+        ggml::hrx::verify_command_program(fork_join_plan, fork_join_corpus, unordered_alias);
+    REQUIRE(!unordered_alias_verification.valid());
+    REQUIRE(std::find(unordered_alias_verification.errors.begin(), unordered_alias_verification.errors.end(),
+        "aliased transient lifetimes overlap in the command dependency graph") !=
+        unordered_alias_verification.errors.end());
 }
 
 static void test_pinned_kernel_corpus_manifest() {
-    const ggml::hrx::KernelCorpus & corpus = ggml::hrx::get_qwen_kernel_corpus("gfx1151");
+    const ggml::hrx::KernelCorpus & corpus = ggml::hrx::get_qwen_kernel_corpus();
     REQUIRE(ggml::hrx::verify_kernel_corpus(corpus).valid());
-    REQUIRE(std::string(corpus.upstream_revision) == "b01fe3eb2cddfedad982be873239bc365dccd67f");
-    REQUIRE(std::string(corpus.recipe_digest) == "542255e2e245e96ced8744315223e8aeeaeb5e075280930a2fcbc5760cf5551d");
-    REQUIRE(corpus.kernels.size() == 40);
-    REQUIRE(corpus.plan_case_count == 25);
+    REQUIRE(std::string(corpus.upstream_revision) == "c09218e7ca354654b6c66dddaf80f6294e4748bb");
+    REQUIRE(std::string(corpus.recipe_digest) == "598eeb34f8606182a732299c989387dd450c0d8f33e4275635b4a679c0f986d0");
+    REQUIRE(corpus.kernels.size() == 57);
+    REQUIRE(corpus.plan_case_count == 32);
+    const char * family = "qwen3_moe";
+    const char * name = "ggml_linear_q6k_q8_1_x4";
+    const uint64_t id = ggml::hrx::kernel_catalog_id(family, name);
+    const ggml::hrx::KernelResolveResult gfx1100 = ggml::hrx::resolve_kernel_definition(
+        corpus, "gfx1100", family, name, id, ggml::hrx::KernelSpecialization::ExecutionKind::Native);
+    const ggml::hrx::KernelResolveResult gfx1151 = ggml::hrx::resolve_kernel_definition(
+        corpus, "gfx1151", family, name, id, ggml::hrx::KernelSpecialization::ExecutionKind::Native);
+    REQUIRE(gfx1100.found());
+    REQUIRE(gfx1151.found());
+    REQUIRE(std::string(gfx1100.definition->symbol) == "ggml_linear_q6k_q8_1_x4");
+    REQUIRE(std::string(gfx1151.definition->symbol) == "ggml_linear_q6k_q8_1_x4_wave64_block4");
+
+    std::vector<ggml::hrx::KernelDefinition> mismatched_variants(corpus.kernels.begin(), corpus.kernels.end());
+    const auto mismatched = std::find_if(mismatched_variants.begin(), mismatched_variants.end(),
+        [](const ggml::hrx::KernelDefinition & definition) {
+            return std::string(definition.name) == "ggml_linear_q6k_q8_1_x4" &&
+                std::string(definition.target_selector) == "gfx1151";
+        });
+    REQUIRE(mismatched != mismatched_variants.end());
+    mismatched->backend = "other-backend";
+    ggml::hrx::KernelCorpus mismatched_corpus = corpus;
+    mismatched_corpus.kernels = { mismatched_variants.data(), mismatched_variants.size() };
+    const ggml::hrx::VerificationResult mismatch = ggml::hrx::verify_kernel_corpus(mismatched_corpus);
+    REQUIRE(std::find(mismatch.errors.begin(), mismatch.errors.end(),
+        "kernel target variants disagree on ABI for qwen3_moe:ggml_linear_q6k_q8_1_x4") !=
+        mismatch.errors.end());
 }
 
 } // namespace
@@ -498,14 +581,15 @@ int main(int argc, char ** argv) {
             size_t qkv_dispatch_count = 0;
             for (const ggml::hrx::Invocation & invocation : reactive.schedule.invocations) {
                 for (const ggml::hrx::Dispatch & dispatch : invocation.dispatches) {
-                    if (dispatch.kernel.variant == "qwen3_moe_attention_qkv_quantized") {
+                    if (dispatch.kernel.variant == "qwen3_moe_attention_qkv_postprocess_fused_decode") {
                         ++qkv_dispatch_count;
                         REQUIRE(dispatch.kernel.integer_parameters.at("query_weight_type") == GGML_TYPE_Q4_K);
                         REQUIRE(dispatch.kernel.integer_parameters.at("key_weight_type") == GGML_TYPE_Q4_K);
                         const int64_t value_type = dispatch.kernel.integer_parameters.at("value_weight_type");
                         REQUIRE((value_type == GGML_TYPE_Q4_K || value_type == GGML_TYPE_Q6_K));
                     }
-                    if (dispatch.kernel.variant != "qwen3_moe_flash_attention_decode_split_f32_f16_wmma") continue;
+                    if (dispatch.kernel.variant !=
+                            "qwen3_moe_flash_attention_decode_split_f32_f16_wmma_next_q8") continue;
                     ++split_dispatch_count;
                     const int64_t tile_size = dispatch.kernel.integer_parameters.at("key_value_tile_size");
                     REQUIRE(tile_size > 0);
@@ -516,6 +600,27 @@ int main(int argc, char ** argv) {
             }
             REQUIRE(qkv_dispatch_count == model.blocks.size());
             REQUIRE(split_dispatch_count == model.blocks.size());
+            REQUIRE(ggml::hrx::schedule_dispatch_count(reactive.schedule) == model.blocks.size() * 6 + 5);
+        } else {
+            size_t dispatch_ordinal = 0;
+            size_t qkv_fork_count = 0;
+            for (const ggml::hrx::Invocation & invocation : reactive.schedule.invocations) {
+                if (invocation.stage == "attention.qkv_publication") {
+                    REQUIRE(invocation.dispatches.size() == 4);
+                    const std::vector<uint32_t> & predecessor = invocation.dispatches[0].dependencies;
+                    REQUIRE(predecessor.size() == 1);
+                    REQUIRE(invocation.dispatches[1].dependencies == predecessor);
+                    REQUIRE(invocation.dispatches[2].dependencies == predecessor);
+                    REQUIRE(invocation.dispatches[3].dependencies == std::vector<uint32_t>({
+                        static_cast<uint32_t>(dispatch_ordinal),
+                        static_cast<uint32_t>(dispatch_ordinal + 1),
+                        static_cast<uint32_t>(dispatch_ordinal + 2),
+                    }));
+                    ++qkv_fork_count;
+                }
+                dispatch_ordinal += invocation.dispatches.size();
+            }
+            REQUIRE(qkv_fork_count == model.blocks.size());
         }
         const std::string serialized = ggml::hrx::serialize_schedule_json(reactive.schedule);
         std::vector<std::string> round_trip_errors;
@@ -544,6 +649,7 @@ int main(int argc, char ** argv) {
         const size_t route_count = route_ids.access.shape[0];
         const size_t route_stride = route_ids.access.strides[1] / ggml_type_size(route_ids.type);
         size_t checked_routes = 0;
+        size_t checked_expert_tables = 0;
         for (const ggml::hrx::Invocation & invocation : reactive.schedule.invocations) {
             for (const ggml::hrx::Dispatch & dispatch : invocation.dispatches) {
                 const auto & config = dispatch.kernel.compile_parameters;
@@ -562,10 +668,18 @@ int main(int argc, char ** argv) {
                     REQUIRE(stride->second == static_cast<int64_t>(route_stride));
                     ++checked_routes;
                 }
+                if (dispatch.kernel.variant == "qwen3_moe_build_expert_table") {
+                    REQUIRE(config.at("qwen3_moe.routed_gate_up.route_count") == std::to_string(route_count));
+                    REQUIRE(config.at("qwen3_moe.routed_gate_up.expert_count") == std::to_string(expert_count));
+                    ++checked_expert_tables;
+                }
             }
         }
         REQUIRE(checked_routes != 0);
-        const ggml::hrx::KernelCorpus & executable_corpus = ggml::hrx::get_qwen_kernel_corpus("gfx1151");
+        if (reactive.schedule.workload.rfind("prefill-", 0) == 0) {
+            REQUIRE(checked_expert_tables == model.blocks.size());
+        }
+        const ggml::hrx::KernelCorpus & executable_corpus = ggml::hrx::get_qwen_kernel_corpus();
         const ggml::hrx::CommandProgram executable_commands =
             ggml::hrx::build_command_program(reactive, executable_corpus);
         const size_t kernel_command_count = std::count_if(
@@ -584,8 +698,8 @@ int main(int argc, char ** argv) {
                 return command.kind == ggml::hrx::CommandKind::Fill;
             });
         REQUIRE(kernel_command_count == ggml::hrx::schedule_dispatch_count(reactive.schedule));
-        REQUIRE(copy_command_count == 1);
-        REQUIRE(fill_command_count == (reactive.schedule.workload.rfind("decode", 0) == 0 ? model.blocks.size() : 0));
+        REQUIRE(copy_command_count == 0);
+        REQUIRE(fill_command_count == 0);
         REQUIRE(executable_commands.initializations.size() == 1);
         REQUIRE(executable_commands.initializations[0].data.size() == 256);
         const auto initialized_allocation = std::find_if(

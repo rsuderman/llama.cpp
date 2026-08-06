@@ -99,11 +99,6 @@ PackedKernelConstants pack_kernel_constants(const KernelDefinition & definition,
 }
 
 std::string kernel_artifact_key(const KernelDefinition & definition,
-                                const Command & command) {
-    return kernel_artifact_key(definition, command, definition.target != nullptr ? definition.target : "");
-}
-
-std::string kernel_artifact_key(const KernelDefinition & definition,
                                 const Command & command,
                                 const std::string & target) {
     std::ostringstream out;
@@ -403,7 +398,7 @@ bool ExecutableProgramPreparer::compile_artifacts() {
     for (const Command & command : commands.commands) {
         if (command.ordinal >= record_command_count) break;
         if (command.kind != CommandKind::Kernel) continue;
-        const KernelResolveResult resolved = resolve_kernel_definition(corpus, command.kernel);
+        const KernelResolveResult resolved = resolve_kernel_definition(corpus, options.target, command.kernel);
         const KernelDefinition * definition = resolved.definition;
         if (!resolved.found()) {
             result.errors_.push_back(format_kernel_resolve_error(resolved, command.kernel));
@@ -538,6 +533,11 @@ bool ExecutableProgramPreparer::compile_artifacts() {
             artifact->launch.workgroup_count[2] == 0 || artifact->launch.workgroup_size[0] == 0 ||
             artifact->launch.workgroup_size[1] == 0 || artifact->launch.workgroup_size[2] == 0) {
             result.errors_.push_back("compiled launch geometry is empty for " + key);
+            break;
+        }
+        if (!std::equal(artifact->launch.workgroup_size.begin(), artifact->launch.workgroup_size.end(),
+                std::begin(artifact->export_info.workgroup_size))) {
+            result.errors_.push_back("compiled launch workgroup size does not match executable metadata for " + key);
             break;
         }
         if (artifact->launch.workgroup_storage_bytes != 0) {
@@ -729,7 +729,7 @@ bool ExecutableProgramPreparer::record_graph() {
             const hrx_graph_kernel_node_attrs_t attrs = {
                 artifact->executable, artifact->export_ordinal,
                 { { artifact->launch.workgroup_count[0], artifact->launch.workgroup_count[1], artifact->launch.workgroup_count[2] },
-                  { artifact->launch.workgroup_size[0], artifact->launch.workgroup_size[1], artifact->launch.workgroup_size[2] },
+                  {},
                   artifact->launch.subgroup_size },
                 constants.data(), constants.size(), bindings.data(), bindings.size(), 0,
             };

@@ -62,12 +62,19 @@ static void calculate_boundaries(const GraphIndex & index, Invocation & invocati
     }
 }
 
-static void add_dispatch(Invocation & invocation, KernelSpecialization specialization, size_t & ordinal) {
+static uint32_t append_dispatch(Invocation & invocation, KernelSpecialization specialization,
+                                const std::vector<uint32_t> & dependencies, size_t & ordinal) {
     Dispatch dispatch;
     dispatch.kernel = std::move(specialization);
-    if (ordinal != 0) dispatch.dependencies.push_back(static_cast<uint32_t>(ordinal - 1));
+    dispatch.dependencies = dependencies;
     invocation.dispatches.push_back(std::move(dispatch));
-    ++ordinal;
+    return static_cast<uint32_t>(ordinal++);
+}
+
+static void add_dispatch(Invocation & invocation, KernelSpecialization specialization, size_t & ordinal) {
+    std::vector<uint32_t> dependencies;
+    if (ordinal != 0) dependencies.push_back(static_cast<uint32_t>(ordinal - 1));
+    append_dispatch(invocation, std::move(specialization), dependencies, ordinal);
 }
 
 static const RoutedTransformerComponent * find_component(
@@ -115,17 +122,25 @@ static void emit_prefill_component(const Graph & graph, const RoutedTransformerM
             add_dispatch(invocation, kernel("qwen3_moe_rmsnorm_f32",
                 block.ordinal == 0 ? layer : layer - 1, token_count), ordinal);
             break;
-        case RoutedTransformerComponentKind::AttentionQkvPublication:
+        case RoutedTransformerComponentKind::AttentionQkvPublication: {
+            std::vector<uint32_t> projection_dependencies;
+            if (ordinal != 0) projection_dependencies.push_back(static_cast<uint32_t>(ordinal - 1));
+            std::vector<uint32_t> projection_ordinals;
             for (OperationId projection : {
                      block.operations_by_role.attention_query_projection,
                      block.operations_by_role.attention_value_projection,
                      block.operations_by_role.attention_key_projection }) {
-                add_dispatch(invocation, storage_kernel("qwen3_moe_dense_linear_q4k_f16_wmma",
+                projection_ordinals.push_back(append_dispatch(invocation,
+                    storage_kernel("qwen3_moe_dense_linear_q4k_f16_wmma",
                     "qwen3_moe_dense_linear_q6k_f16_wmma", "dense_attention_projection",
-                    weight_type(graph, projection), layer, token_count, gaps), ordinal);
+                    weight_type(graph, projection), layer, token_count, gaps),
+                    projection_dependencies, ordinal));
             }
-            add_dispatch(invocation, kernel("qwen3_moe_attention_postprocess_f32_f16", layer, token_count), ordinal);
+            append_dispatch(invocation,
+                kernel("qwen3_moe_attention_postprocess_f32_f16", layer, token_count),
+                projection_ordinals, ordinal);
             break;
+        }
         case RoutedTransformerComponentKind::Attention:
             add_dispatch(invocation, kernel("qwen3_moe_flash_attention_f32_f16_wmma", layer, token_count), ordinal);
             break;
@@ -142,8 +157,12 @@ static void emit_prefill_component(const Graph & graph, const RoutedTransformerM
         case RoutedTransformerComponentKind::RouterSelection:
             add_dispatch(invocation, kernel("qwen3_moe_router_projection_f32_four_row_wave32", layer, active_token_count), ordinal);
             add_dispatch(invocation, kernel("qwen3_moe_router_top8_f32", layer, active_token_count), ordinal);
-            add_dispatch(invocation, kernel("qwen3_moe_build_expert_table", layer, active_token_count), ordinal);
-            add_dispatch(invocation, kernel("qwen3_moe_build_expert_partition_table", layer, active_token_count), ordinal);
+            if (invocation.recipe == routed_transformer_recipes::kPrefillExpertPartition) {
+                add_dispatch(invocation, kernel("qwen3_moe_build_expert_table_partition_prefill_512", layer, active_token_count), ordinal);
+            } else {
+                add_dispatch(invocation, kernel("qwen3_moe_build_expert_table", layer, active_token_count), ordinal);
+                add_dispatch(invocation, kernel("qwen3_moe_build_expert_partition_table", layer, active_token_count), ordinal);
+            }
             break;
         case RoutedTransformerComponentKind::ExpertGateUp:
             add_dispatch(invocation, kernel("qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma", layer, active_token_count), ordinal);
@@ -153,8 +172,10 @@ static void emit_prefill_component(const Graph & graph, const RoutedTransformerM
                 "qwen3_moe_routed_down_q6k_f16_wmma_grouped", "routed_down",
                 weight_type(graph, block.operations_by_role.experts_routed_down),
                 layer, active_token_count, gaps), ordinal);
-            add_dispatch(invocation, kernel("qwen3_moe_routed_down_weighted_reduce_f16_f32",
-                                            layer, active_token_count), ordinal);
+            add_dispatch(invocation, kernel(invocation.recipe == routed_transformer_recipes::kPrefillDownNextNorm
+                ? "qwen3_moe_routed_down_weighted_reduce_next_rmsnorm_f32"
+                : "qwen3_moe_routed_down_weighted_reduce_f16_f32",
+                layer, active_token_count), ordinal);
             break;
         default: break;
     }
@@ -218,7 +239,7 @@ static void emit_decode_component(const Graph & graph, const RoutedTransformerMo
             break;
         case RoutedTransformerComponentKind::ExpertDownPublication:
             add_dispatch(invocation, storage_kernel("qwen3_moe_routed_down_q4k_q8_1_x4",
-                "qwen3_moe_routed_down_q6k_q8_1_x4", "routed_down_q8",
+                "qwen3_moe_routed_down_q6k_f32_wave64", "routed_down",
                 weight_type(graph, block.operations_by_role.experts_routed_down), layer, token_count, gaps), ordinal);
             add_dispatch(invocation, kernel(block.ordinal + 1 == model.blocks.size()
                 ? "qwen3_moe_rmsnorm_f32_quantize_q8_1_x4"
@@ -228,7 +249,106 @@ static void emit_decode_component(const Graph & graph, const RoutedTransformerMo
     }
 }
 
+static bool emit_decode_recipe(const Graph & graph, const RoutedTransformerModel & model,
+                               const RoutedTransformerBlock & block, const std::string & recipe,
+                               Invocation & invocation, size_t & ordinal, std::vector<std::string> & gaps) {
+    const int layer = static_cast<int>(block.ordinal);
+    const size_t token_count = model.query_token_count;
+    if (recipe == routed_transformer_recipes::kDecodeQkvPostprocess) {
+        const enum ggml_type query_type = weight_type(
+            graph, block.operations_by_role.attention_query_projection);
+        const enum ggml_type key_type = weight_type(
+            graph, block.operations_by_role.attention_key_projection);
+        const enum ggml_type value_type = weight_type(
+            graph, block.operations_by_role.attention_value_projection);
+        if (query_type == GGML_TYPE_Q4_K && key_type == GGML_TYPE_Q4_K &&
+            (value_type == GGML_TYPE_Q4_K || value_type == GGML_TYPE_Q6_K)) {
+            KernelSpecialization qkv = kernel(
+                "qwen3_moe_attention_qkv_postprocess_fused_decode", layer, token_count);
+            qkv.integer_parameters["query_weight_type"] = query_type;
+            qkv.integer_parameters["key_weight_type"] = key_type;
+            qkv.integer_parameters["value_weight_type"] = value_type;
+            add_dispatch(invocation, std::move(qkv), ordinal);
+        } else {
+            const std::string variant = "qwen3_moe_attention_qkv_postprocess_fused_decode_missing_" +
+                type_suffix(query_type) + '_' + type_suffix(key_type) + '_' + type_suffix(value_type);
+            gaps.push_back("block " + std::to_string(layer) + ": " + variant);
+            add_dispatch(invocation, kernel(
+                variant, layer, token_count, KernelSpecialization::ExecutionKind::NativeGap), ordinal);
+        }
+        return true;
+    }
+    if (recipe == routed_transformer_recipes::kDecodeAttentionNextQ8) {
+        KernelSpecialization flash = kernel(
+            "qwen3_moe_flash_attention_decode_split_f32_f16_wmma_next_q8", layer, token_count);
+        flash.integer_parameters["key_value_token_count"] = model.key_value_token_count;
+        flash.integer_parameters["key_value_tile_size"] = kAttentionKvTileSize;
+        flash.integer_parameters["key_value_block_count"] =
+            (model.key_value_token_count + kAttentionKvTileSize - 1) / kAttentionKvTileSize;
+        add_dispatch(invocation, std::move(flash), ordinal);
+        add_dispatch(invocation, storage_kernel(
+            "qwen3_moe_dense_linear_q4k_q8_1_x4_next_q8", "", "dense_attention_output_next_q8",
+            weight_type(graph, block.operations_by_role.attention_output_projection),
+            layer, token_count, gaps), ordinal);
+        return true;
+    }
+    if (recipe == routed_transformer_recipes::kDecodeRouterTopK) {
+        add_dispatch(invocation, kernel(
+            "qwen3_moe_router_projection_top8_fused_decode_f32", layer, token_count), ordinal);
+        return true;
+    }
+    if (recipe == routed_transformer_recipes::kDecodeGateUpNextQ8) {
+        const enum ggml_type down_type = weight_type(
+            graph, block.operations_by_role.experts_routed_down);
+        if (down_type == GGML_TYPE_Q4_K) {
+            add_dispatch(invocation, kernel(
+                "qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8",
+                layer, token_count), ordinal);
+        } else if (down_type == GGML_TYPE_Q6_K) {
+            // The Q6 down path consumes F32 activations, so gate/up preserves
+            // its F32 output instead of publishing an unused Q8 packet.
+            add_dispatch(invocation, kernel(
+                "qwen3_moe_routed_gate_up_swiglu_q4k_q8", layer, token_count), ordinal);
+        } else {
+            const std::string variant = "qwen3_moe_routed_gate_up_missing_down_" +
+                type_suffix(down_type);
+            gaps.push_back("block " + std::to_string(layer) + ": " + variant);
+            add_dispatch(invocation, kernel(
+                variant, layer, token_count,
+                KernelSpecialization::ExecutionKind::NativeGap), ordinal);
+        }
+        return true;
+    }
+    if (recipe == routed_transformer_recipes::kDecodeDownNextQ8) {
+        add_dispatch(invocation, storage_kernel(
+            "qwen3_moe_routed_down_q4k_q8_1_x4_next_q8",
+            "qwen3_moe_routed_down_q6k_f32_wave64_next_q8", "routed_down_next_q8",
+            weight_type(graph, block.operations_by_role.experts_routed_down),
+            layer, token_count, gaps), ordinal);
+        return true;
+    }
+    return false;
+}
+
 };
+
+static RoutedTransformerRecipeCatalog implemented_recipe_catalog(const RoutedTransformerModel & model) {
+    RoutedTransformerRecipeCatalog catalog;
+    catalog.available = {
+        routed_transformer_recipes::kDecodeQkvPostprocess,
+        routed_transformer_recipes::kDecodeAttentionNextQ8,
+        routed_transformer_recipes::kDecodeRouterTopK,
+        routed_transformer_recipes::kDecodeGateUpNextQ8,
+        routed_transformer_recipes::kDecodeDownNextQ8,
+    };
+    if (model.query_token_count != 1) {
+        catalog.available.insert(routed_transformer_recipes::kPrefillDownNextNorm);
+        if (model.query_token_count == 512) {
+            catalog.available.insert(routed_transformer_recipes::kPrefillExpertPartition);
+        }
+    }
+    return catalog;
+}
 
 } // namespace
 
@@ -249,7 +369,8 @@ RoutedTransformerProgramProof RoutedTransformerProgramProof::recover(const Graph
     SearchOptions search_options;
     search_options.require_complete_coverage = true;
     search_options.record_trace = true;
-    proof.search = SearchResult::search(index, RoutedTransformerProvider::make_planner({}, model), search_options);
+    proof.search = SearchResult::search(
+        index, RoutedTransformerProvider::make_planner(implemented_recipe_catalog(*model), model), search_options);
     if (!proof.search.valid()) {
         proof.errors = proof.search.errors;
         return proof;
@@ -301,14 +422,31 @@ RoutedTransformerProgramProof RoutedTransformerProgramProof::recover(const Graph
                 graph.values[graph.operations[model->preamble_operations.front()].inputs[0]].access.shape[1];
             embedding.integer_parameters["hidden_size"] = model->hidden_size;
             RoutedTransformerProgramImplementation::add_dispatch(invocation, std::move(embedding), dispatch_ordinal);
-            KernelSpecialization metadata = RoutedTransformerProgramImplementation::kernel(
-                "qwen_attention_metadata_bringup_workaround", -1, model->query_token_count);
-            metadata.integer_parameters["context_capacity"] = model->key_value_token_count;
-            RoutedTransformerProgramImplementation::add_dispatch(invocation, std::move(metadata), dispatch_ordinal);
-            if (!prefill) RoutedTransformerProgramImplementation::add_dispatch(invocation,
-                RoutedTransformerProgramImplementation::kernel(
-                    "qwen3_moe_attention_rmsnorm_quantize_q8_1_x4", -1, model->query_token_count),
-                dispatch_ordinal);
+            if (prefill) {
+                KernelSpecialization context_capture;
+                context_capture.family = "qwen3_moe";
+                context_capture.variant = "qwen_attention_context_base_capture";
+                context_capture.kernel_id = kernel_catalog_id(
+                    context_capture.family.c_str(), context_capture.variant.c_str());
+                RoutedTransformerProgramImplementation::add_dispatch(
+                    invocation, std::move(context_capture), dispatch_ordinal);
+                KernelSpecialization metadata = RoutedTransformerProgramImplementation::kernel(
+                    "qwen_attention_metadata_bringup_workaround", -1, model->query_token_count);
+                metadata.integer_parameters["context_capacity"] = model->key_value_token_count;
+                RoutedTransformerProgramImplementation::add_dispatch(
+                    invocation, std::move(metadata), dispatch_ordinal);
+            } else {
+                KernelSpecialization state;
+                state.family = "qwen3_moe";
+                state.variant = "qwen_attention_decode_state_initialize";
+                state.kernel_id = kernel_catalog_id(state.family.c_str(), state.variant.c_str());
+                RoutedTransformerProgramImplementation::add_dispatch(
+                    invocation, std::move(state), dispatch_ordinal);
+                RoutedTransformerProgramImplementation::add_dispatch(invocation,
+                    RoutedTransformerProgramImplementation::kernel(
+                        "qwen3_moe_attention_rmsnorm_quantize_q8_1_x4", -1, model->query_token_count),
+                    dispatch_ordinal);
+            }
         } else if (component->kind == RoutedTransformerComponentKind::ProgramEndpoint) {
             if (prefill) RoutedTransformerProgramImplementation::add_dispatch(invocation,
                 RoutedTransformerProgramImplementation::kernel(
@@ -326,11 +464,18 @@ RoutedTransformerProgramProof RoutedTransformerProgramProof::recover(const Graph
             invocation.kernel = atom;
             RoutedTransformerProgramImplementation::add_dispatch(
                 invocation, std::move(atom), dispatch_ordinal);
-        } else if (block != nullptr && selected.correctness_baseline) {
+        } else if (block != nullptr && (selected.correctness_baseline ||
+                   (prefill && (selected.family == routed_transformer_recipes::kPrefillExpertPartition ||
+                                selected.family == routed_transformer_recipes::kPrefillDownNextNorm)))) {
             if (prefill) RoutedTransformerProgramImplementation::emit_prefill_component(
                 graph, *model, *block, component->kind, invocation, dispatch_ordinal, proof.native_gaps);
             else RoutedTransformerProgramImplementation::emit_decode_component(
                 graph, *model, *block, component->kind, invocation, dispatch_ordinal, proof.native_gaps);
+        } else if (block != nullptr && !prefill &&
+                   RoutedTransformerProgramImplementation::emit_decode_recipe(
+                       graph, *model, *block, selected.family, invocation,
+                       dispatch_ordinal, proof.native_gaps)) {
+            // The selected fused recipe populated the invocation.
         } else {
             proof.errors.push_back("selected recipe " + selected.family + " has no registered emitter");
             return proof;

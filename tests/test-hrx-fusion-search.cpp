@@ -262,7 +262,7 @@ int main(int argc, char ** argv) {
         ggml::hrx::RoutedTransformerRecipeCatalog future_catalog;
         using namespace ggml::hrx::routed_transformer_recipes;
         future_catalog.available = {
-            kDecodeQkvPostprocess, kDecodeOutputNextQ8, kDecodeRouterTopK,
+            kDecodeQkvPostprocess, kDecodeAttentionNextQ8, kDecodeRouterTopK,
             kDecodeGateUpNextQ8, kDecodeDownNextQ8,
             kPrefillExpertPartition, kPrefillDownNextNorm,
         };
@@ -273,12 +273,13 @@ int main(int argc, char ** argv) {
         REQUIRE(future.uncovered_operations.empty());
         const size_t current_dispatches = planned_dispatches(result);
         const size_t future_dispatches = planned_dispatches(future);
-        // This verifies composition: enabling independently described recipes
-        // removes one publication per applicable component. It intentionally
-        // derives the expected delta from recovered blocks instead of pinning a
-        // model/corpus dispatch total.
+        // This verifies composition from recovered blocks rather than pinning
+        // a model/corpus total. Decode contracts five dispatches in every block,
+        // plus one inter-layer publication in every nonterminal block. Prefill
+        // leaves both expert-table contraction and inter-layer publication in
+        // the future catalog.
         const size_t expected_reduction = model.query_token_count == 1
-            ? model.blocks.size() * 5
+            ? model.blocks.size() * 5 + model.blocks.size() - 1
             : (model.blocks.size() - 1) * 2;
         REQUIRE(current_dispatches == future_dispatches + expected_reduction);
         ggml::hrx::RoutedTransformerProgramProof structural =

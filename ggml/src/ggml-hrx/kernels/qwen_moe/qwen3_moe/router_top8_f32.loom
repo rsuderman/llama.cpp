@@ -18,54 +18,42 @@
 // avoiding exponentials for experts that cannot contribute to the result.
 amdgpu.target<gfx11-generic> @qwen3_moe_router_gfx11_wave64 {subgroup_size = 64}
 
-kernel.def target(@qwen3_moe_router_gfx11_wave64) @qwen3_moe_router_top8_f32(%token_count: index, %route_id_stride: index) {
-  %one = index.constant 1 : index
-  %three = index.constant 3 : index
-  %four = index.constant 4 : index
-  %wave_size = index.constant 64 : index
-  %wide_workgroup_size = index.constant 256 : index
-  %uses_decode_geometry = index.cmp eq, %token_count, %one : index
-  %subgroup_count = scf.select %uses_decode_geometry, %one, %four : index
-  %workgroup_size = scf.select %uses_decode_geometry, %wave_size, %wide_workgroup_size : index
-  %padded_token_count = index.add %token_count, %three : index
-  %wide_workgroup_count = index.div %padded_token_count, %four : index
-  %workgroup_count = scf.select %uses_decode_geometry, %token_count, %wide_workgroup_count : index
-  kernel.launch.config workgroups(%workgroup_count, %one, %one) workgroup_size(%workgroup_size, %one, %one) : index
-} launch(%token_count: index, %route_id_stride: index, %logits: buffer, %route_ids: buffer, %route_weights: buffer) {
+config.decl @qwen3_moe.router.expert_count : %value: index where [range(%value, 32, 512), mul(%value, 32)]
+
+config.decl @qwen3_moe.router.route_count : %value: index where [range(%value, 1, 32)]
+
+config.decl @qwen3_moe.workload.token_capacity : %value: index where [range(%value, 1, 2048)]
+
+// Selects and normalizes one logical router row. The caller owns mapping a
+// subgroup to a safe physical row and tells the helper whether that row should
+// publish. Keeping row semantics independent of launch geometry lets fused
+// producers consume this exact tie-breaking and normalization contract.
+func.template<qwen3_moe.router.top8.row> device @qwen3_moe_router_top8_row_f32(%valid_token: i1, %token: index, %token_count: index, %route_id_stride: index, %logits: buffer, %route_ids: buffer, %route_weights: buffer) {
   %expert_count0 = config.get @qwen3_moe.router.expert_count : index
   %route_count0 = config.get @qwen3_moe.router.route_count : index
   %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048)] : index
-  %bounded_route_id_stride = index.assume %route_id_stride [range(%route_id_stride, 1, 512)] : index
-  %expert_count, %route_count = index.assume %expert_count0, %route_count0 [range(%expert_count0, 32, 512), mul(%expert_count0, 32), range(%route_count0, 1, 32), le(%route_count0, %expert_count0)] : index, index
-  %token_workgroup = kernel.workgroup.id<x> : index
-  %subgroup = kernel.subgroup.id : index
+  %bounded_route_id_stride0 = index.assume %route_id_stride [range(%route_id_stride, 1, 512)] : index
+  %expert_count, %route_count, %bounded_route_id_stride = index.assume %expert_count0, %route_count0, %bounded_route_id_stride0 [range(%expert_count0, 32, 512), mul(%expert_count0, 32), range(%route_count0, 1, 32), le(%route_count0, %expert_count0), le(%route_count0, %bounded_route_id_stride0)] : index, index, index
+  %safe_token, %launch_token_count = index.assume %token, %bounded_token_count [lt(%token, %bounded_token_count)] : index, index
   %lane = kernel.subgroup.lane.id : index
-  %zero = index.constant 0 : index
-  %one = index.constant 1 : index
-  %four = index.constant 4 : index
+  %c0 = index.constant 0 : index
+  %c1 = index.constant 1 : index
   %wave_size = index.constant 64 : index
   %negative_large = scalar.constant -3.4028234663852885e+38 : f32
   %largest_i32 = scalar.constant 2147483647 : i32
-  %zero_offset = index.constant 0 : offset
-  %uses_decode_geometry = index.cmp eq, %bounded_token_count, %one : index
-  %subgroup_count = scf.select %uses_decode_geometry, %one, %four : index
-  %token_base = index.mul %token_workgroup, %subgroup_count : index
-  %token0 = index.add %token_base, %subgroup : index
-  %valid_token = index.cmp ult, %token0, %bounded_token_count : index
-  %safe_token0 = scf.select %valid_token, %token0, %zero : index
-  %token, %launch_token_count = index.assume %safe_token0, %bounded_token_count [lt(%safe_token0, %bounded_token_count)] : index, index
+  %c0_offset = index.constant 0 : offset
   %experts_per_lane0 = index.div %expert_count, %wave_size : index
   %experts_per_lane = index.assume %experts_per_lane0 [range(%experts_per_lane0, 1, 16)] : index
   %lane_expert_base = index.mul %lane, %experts_per_lane : index
   %route_id_storage_count = index.mul %launch_token_count, %bounded_route_id_stride : index
   %route_weight_storage_count = index.mul %launch_token_count, %route_count : index
   %logits_noalias, %route_ids_noalias, %route_weights_noalias = buffer.assume.noalias %logits, %route_ids, %route_weights : buffer, buffer, buffer
-  %logits_view = buffer.view %logits_noalias[%zero_offset] : buffer -> view<[%launch_token_count]x[%expert_count]xf32, #dense>
-  %route_ids_view = buffer.view %route_ids_noalias[%zero_offset] : buffer -> view<[%route_id_storage_count]xi32, #dense>
-  %route_weights_view = buffer.view %route_weights_noalias[%zero_offset] : buffer -> view<[%route_weight_storage_count]xf32, #dense>
-  %initial_logits = vector.load %logits_view[%token, %lane_expert_base] : view<[%launch_token_count]x[%expert_count]xf32, #dense> -> vector<[%experts_per_lane]xf32>
-  %remaining_final, %selected_logit = scf.for %route = [%zero to %route_count step %one](%remaining_logits = %initial_logits : vector<[%experts_per_lane]xf32>, %lane_selected_logit = %negative_large : f32) -> (vector<[%experts_per_lane]xf32>, f32) {
-    %local_value, %local_id = scf.for %slot = [%zero to %experts_per_lane step %one](%best_value = %negative_large : f32, %best_id = %largest_i32 : i32) -> (f32, i32) unroll {
+  %logits_view = buffer.view %logits_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%expert_count]xf32, #dense>
+  %route_ids_view = buffer.view %route_ids_noalias[%c0_offset] : buffer -> view<[%route_id_storage_count]xi32, #dense>
+  %route_weights_view = buffer.view %route_weights_noalias[%c0_offset] : buffer -> view<[%route_weight_storage_count]xf32, #dense>
+  %initial_logits = vector.load %logits_view[%safe_token, %lane_expert_base] : view<[%launch_token_count]x[%expert_count]xf32, #dense> -> vector<[%experts_per_lane]xf32>
+  %remaining_final, %selected_logit = scf.for %route = [%c0 to %route_count step %c1](%remaining_logits = %initial_logits : vector<[%experts_per_lane]xf32>, %lane_selected_logit = %negative_large : f32) -> (vector<[%experts_per_lane]xf32>, f32) {
+    %local_value, %local_id = scf.for %slot = [%c0 to %experts_per_lane step %c1](%best_value = %negative_large : f32, %best_id = %largest_i32 : i32) -> (f32, i32) unroll {
       %candidate_value = vector.extract %remaining_logits[%slot] : vector<[%experts_per_lane]xf32> -> f32
       %candidate_expert = index.add %lane_expert_base, %slot : index
       %candidate_id = index.cast %candidate_expert : index to i32
@@ -100,7 +88,7 @@ kernel.def target(@qwen3_moe_router_gfx11_wave64) @qwen3_moe_router_top8_f32(%to
     }
     %publishes_route_id = scalar.andi %valid_token, %owns_winner : i1
     scf.if %publishes_route_id {
-      %route_id_token_base = index.mul %token, %bounded_route_id_stride : index
+      %route_id_token_base = index.mul %safe_token, %bounded_route_id_stride : index
       %route_id_index = index.add %route_id_token_base, %route : index
       view.store %local_id, %route_ids_view[%route_id_index] : i32, view<[%route_id_storage_count]xi32, #dense>
     }
@@ -121,9 +109,65 @@ kernel.def target(@qwen3_moe_router_gfx11_wave64) @qwen3_moe_router_top8_f32(%to
   %lane_publishes_weight = index.cmp ult, %lane, %route_count : index
   %publishes_weight = scalar.andi %valid_token, %lane_publishes_weight : i1
   scf.if %publishes_weight {
-    %route_weight_token_base = index.mul %token, %route_count : index
+    %route_weight_token_base = index.mul %safe_token, %route_count : index
     %route_weight_index = index.add %route_weight_token_base, %lane : index
     view.store %route_weight, %route_weights_view[%route_weight_index] : f32, view<[%route_weight_storage_count]xf32, #dense>
+  }
+  func.return
+}
+
+kernel.def target(@qwen3_moe_router_gfx11_wave64) @qwen3_moe_router_top8_f32(%token_count: index, %route_id_stride: index) {
+  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
+  %c1 = index.constant 1 : index
+  %c3 = index.constant 3 : index
+  %c4 = index.constant 4 : index
+  %wave_size = index.constant 64 : index
+  %wide_workgroup_size = index.constant 256 : index
+  %uses_decode_geometry = index.cmp eq, %token_capacity, %c1 : index
+  %subgroup_count = scf.select %uses_decode_geometry, %c1, %c4 : index
+  %workgroup_size = scf.select %uses_decode_geometry, %wave_size, %wide_workgroup_size : index
+  %padded_token_count = index.add %token_capacity, %c3 : index
+  %wide_workgroup_count = index.div %padded_token_count, %c4 : index
+  %workgroup_count = scf.select %uses_decode_geometry, %token_capacity, %wide_workgroup_count : index
+  kernel.launch.config workgroups(%workgroup_count, %c1, %c1) workgroup_size(%workgroup_size, %c1, %c1) : index
+} launch(%token_count: index, %route_id_stride: index, %logits: buffer, %route_ids: buffer, %route_weights: buffer) {
+  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
+  %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048), le(%token_count, %token_capacity)] : index
+  %token_workgroup = kernel.workgroup.id<x> : index
+  %subgroup = kernel.subgroup.id : index
+  %c0 = index.constant 0 : index
+  %c1 = index.constant 1 : index
+  %c4 = index.constant 4 : index
+  %uses_decode_geometry = index.cmp eq, %token_capacity, %c1 : index
+  %subgroup_count = scf.select %uses_decode_geometry, %c1, %c4 : index
+  %token_base = index.mul %token_workgroup, %subgroup_count : index
+  %token0 = index.add %token_base, %subgroup : index
+  %valid_token = index.cmp ult, %token0, %bounded_token_count : index
+  %safe_token = scf.select %valid_token, %token0, %c0 : index
+  func.apply<qwen3_moe.router.top8.row>(%valid_token, %safe_token, %bounded_token_count, %route_id_stride, %logits, %route_ids, %route_weights) : (i1, index, index, index, buffer, buffer, buffer)
+  kernel.return
+}
+
+// Builds the deterministic route-ID oracle for two physical rows with eight
+// published IDs and eight untouched padding slots per row.
+kernel.def @qwen3_moe_router_top8_wide_stride_reference() {
+  %c1 = index.constant 1 : index
+  %c32 = index.constant 32 : index
+  kernel.launch.config workgroups(%c1, %c1, %c1) workgroup_size(%c32, %c1, %c1) : index
+} launch(%route_ids: buffer) {
+  %element = kernel.workitem.id<x> : index
+  %c7 = index.constant 7 : index
+  %c8 = index.constant 8 : index
+  %c16 = index.constant 16 : index
+  %c0_offset = index.constant 0 : offset
+  %slot = index.rem %element, %c16 : index
+  %publishes_id = index.cmp ult, %slot, %c8 : index
+  %route_ids_view = buffer.view %route_ids[%c0_offset] : buffer -> view<32xi32, #dense>
+  scf.if %publishes_id {
+    %scaled_slot = index.mul %slot, %c8 : index
+    %route_id_index = index.add %scaled_slot, %c7 : index
+    %route_id = index.cast %route_id_index : index to i32
+    view.store %route_id, %route_ids_view[%element] : i32, view<32xi32, #dense>
   }
   kernel.return
 }
@@ -131,18 +175,27 @@ kernel.def target(@qwen3_moe_router_gfx11_wave64) @qwen3_moe_router_top8_f32(%to
 // Period-eight logits place sixteen equal maxima in different lane-local
 // slots. Repeated selection must remove each winner and retain the lower-ID
 // half of that tie set. Two rows leave two inactive waves in the four-wave
-// production workgroup and exercise guarded tail publication.
+// production workgroup and exercise guarded tail publication. A second call
+// proves that a wider physical route-ID stride preserves its padding.
 check.case public @qwen3_moe_router_top8_f32_repeated_maxima_case {
   %token_count = check.literal value(2) : index
   %route_id_stride = check.literal value(8) : index
+  %wide_route_id_stride = check.literal value(16) : index
   %logits = check.generate.iota offset(0.0) step(1.0) period(8) : tensor<2x128xf32>
   %route_ids = check.generate.fill value(-1) : tensor<2x8xi32>
   %route_weights = check.generate.fill value(0.0) : tensor<2x8xf32>
+  %wide_route_ids = check.generate.fill value(-1) : tensor<2x16xi32>
+  %wide_route_weights = check.generate.fill value(0.0) : tensor<2x8xf32>
   %expected_ids = check.generate.iota offset(7) step(8) period(8) : tensor<2x8xi32>
+  %expected_wide_ids = check.generate.fill value(-1) : tensor<2x16xi32>
   %expected_weights = check.generate.fill value(0.125) : tensor<2x8xf32>
-  func.call @qwen3_moe_router_top8_f32(%token_count, %route_id_stride, %logits, %route_ids, %route_weights) : (index, index, tensor<2x128xf32>, tensor<2x8xi32>, tensor<2x8xf32>)
+  kernel.launch @qwen3_moe_router_top8_f32[%token_count, %route_id_stride](%token_count, %route_id_stride, %logits, %route_ids, %route_weights) : [index, index](index, index, tensor<2x128xf32>, tensor<2x8xi32>, tensor<2x8xf32>)
+  kernel.launch @qwen3_moe_router_top8_wide_stride_reference[](%expected_wide_ids) : [](tensor<2x16xi32>)
+  kernel.launch @qwen3_moe_router_top8_f32[%token_count, %wide_route_id_stride](%token_count, %wide_route_id_stride, %logits, %wide_route_ids, %wide_route_weights) : [index, index](index, index, tensor<2x128xf32>, tensor<2x16xi32>, tensor<2x8xf32>)
   check.expect.equal actual(%route_ids) expected(%expected_ids) : tensor<2x8xi32>
   check.expect.close actual(%route_weights) expected(%expected_weights) atol(1.0000000000000001e-05) rtol(1.0000000000000001e-05) nan(same) : tensor<2x8xf32>
+  check.expect.equal actual(%wide_route_ids) expected(%expected_wide_ids) : tensor<2x16xi32>
+  check.expect.close actual(%wide_route_weights) expected(%expected_weights) atol(1.0000000000000001e-05) rtol(1.0000000000000001e-05) nan(same) : tensor<2x8xf32>
   check.return
 }
 
@@ -154,7 +207,7 @@ check.case public @qwen3_moe_router_top8_f32_benchmark_case {
   %route_weights = check.generate.fill value(0.0) : tensor<[%token_count]x8xf32>
   %expected_ids = check.generate.iota offset(7) step(8) period(8) : tensor<[%token_count]x8xi32>
   %expected_weights = check.generate.fill value(0.125) : tensor<[%token_count]x8xf32>
-  func.call @qwen3_moe_router_top8_f32(%token_count, %route_id_stride, %logits, %route_ids, %route_weights) : (index, index, tensor<[%token_count]x128xf32>, tensor<[%token_count]x8xi32>, tensor<[%token_count]x8xf32>)
+  kernel.launch @qwen3_moe_router_top8_f32[%token_count, %route_id_stride](%token_count, %route_id_stride, %logits, %route_ids, %route_weights) : [index, index](index, index, tensor<[%token_count]x128xf32>, tensor<[%token_count]x8xi32>, tensor<[%token_count]x8xf32>)
   check.expect.equal actual(%route_ids) expected(%expected_ids) : tensor<[%token_count]x8xi32>
   check.expect.close actual(%route_weights) expected(%expected_weights) atol(1.0000000000000001e-05) rtol(1.0000000000000001e-05) nan(same) : tensor<[%token_count]x8xf32>
   check.return
