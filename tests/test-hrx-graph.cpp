@@ -464,10 +464,10 @@ static void test_command_program_and_diagnostics() {
 static void test_pinned_kernel_corpus_manifest() {
     const ggml::hrx::KernelCorpus & corpus = ggml::hrx::get_qwen_kernel_corpus("gfx1151");
     REQUIRE(ggml::hrx::verify_kernel_corpus(corpus).valid());
-    REQUIRE(std::string(corpus.upstream_revision) == "b01fe3eb2cddfedad982be873239bc365dccd67f");
-    REQUIRE(std::string(corpus.recipe_digest) == "542255e2e245e96ced8744315223e8aeeaeb5e075280930a2fcbc5760cf5551d");
-    REQUIRE(corpus.kernels.size() == 40);
-    REQUIRE(corpus.plan_case_count == 25);
+    REQUIRE(std::string(corpus.upstream_revision) == "87206d1c97ec3d83a693e7ec0f4ce543b9bee77a");
+    REQUIRE(std::string(corpus.recipe_digest) == "598eeb34f8606182a732299c989387dd450c0d8f33e4275635b4a679c0f986d0");
+    REQUIRE(corpus.kernels.size() == 55);
+    REQUIRE(corpus.plan_case_count == 30);
 }
 
 } // namespace

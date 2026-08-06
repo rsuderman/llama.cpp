@@ -22,8 +22,10 @@ CORPUS_FILES = (
     "ggml/quantize_q8_1_x4.loom",
     "qwen3_moe/attention_postprocess_f32_f16.loom",
     "qwen3_moe/attention_prepare_quantized.loom",
+    "qwen3_moe/attention_qkv_postprocess_fused.loom",
     "qwen3_moe/attention_qkv_quantized.loom",
     "qwen3_moe/dense_linear_quantized_f16_wmma.loom",
+    "qwen3_moe/expert_table_partition_fused.loom",
     "qwen3_moe/flash_attention_decode_f32_f16_wmma.loom",
     "qwen3_moe/flash_attention_decode_q128_f32_f16_wmma.loom",
     "qwen3_moe/flash_attention_decode_split_f32_f16_wmma.loom",
@@ -31,10 +33,13 @@ CORPUS_FILES = (
     "qwen3_moe/model_config.loom",
     "qwen3_moe/routed_down_q4k.loom",
     "qwen3_moe/routed_down_q6k.loom",
+    "qwen3_moe/routed_down_next_q8.loom",
     "qwen3_moe/routed_down_quantized_f16_wmma.loom",
+    "qwen3_moe/routed_down_weighted_reduce_next_rmsnorm_f32.loom",
     "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
     "qwen3_moe/routed_linear_q4k_f16_wmma.loom",
     "qwen3_moe/router_projection_f32.loom",
+    "qwen3_moe/router_projection_top8_fused_f32.loom",
     "qwen3_moe/router_top8_f32.loom",
 )
 
@@ -62,6 +67,13 @@ def binding_access(symbol: str, name: str) -> str:
         return "read_write"
     if symbol == "qwen3_moe_router_top8_f32" and name in ("route_ids", "route_weights"):
         return "write"
+    if symbol == "qwen3_moe_router_projection_top8_fused_decode_f32" and name in (
+            "logits", "completion_counter", "route_ids", "route_weights"):
+        return "read_write"
+    if symbol == "qwen3_moe_attention_qkv_postprocess_fused_decode" and name in (
+            "query_output_raw", "key_output_raw", "value_output_raw",
+            "query_output", "key_cache", "value_cache", "completion_counters"):
+        return "read_write"
     if symbol == "qwen3_moe_build_expert_table" and name == "expert_table":
         return "write"
     if symbol == "qwen3_moe_build_expert_partition_table" and name == "partition_table":
@@ -69,7 +81,8 @@ def binding_access(symbol: str, name: str) -> str:
     if symbol == "ggml_q8_1_x4_inspect_one_group" and name != "packed":
         return "write"
     if name in ("output", "query_output", "key_output", "value_output", "normalized_output", "q8_output",
-                "key_cache", "value_cache", "partial_max", "partial_sum", "partial_output", "completion_counter"):
+                "next_q8_output", "key_cache", "value_cache", "partial_max", "partial_sum", "partial_output",
+                "completion_counter", "completion_counters"):
         return "read_write"
     return "read"
 
@@ -150,6 +163,39 @@ def git(repo: pathlib.Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
 
 
+def optional_git(repo: pathlib.Path, *args: str) -> str | None:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args], text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
+
+
+def normalize_repository_url(url: str) -> str:
+    """Normalizes GitHub transport spelling without changing repository identity."""
+    match = re.fullmatch(r"(?:ssh://)?git@github\.com[:/](?P<path>.+)", url)
+    if match:
+        return f"https://github.com/{match.group('path')}"
+    return url
+
+
+def upstream_repository(repo: pathlib.Path) -> str:
+    """Returns provenance without imposing a local Git remote name."""
+    remotes: list[str] = []
+    branch = optional_git(repo, "symbolic-ref", "--quiet", "--short", "HEAD")
+    if branch:
+        branch_remote = optional_git(repo, "config", "--get", f"branch.{branch}.remote")
+        if branch_remote and branch_remote != ".":
+            remotes.append(branch_remote)
+    remotes.append("origin")
+    remotes.extend(git(repo, "remote").splitlines())
+    for remote in dict.fromkeys(remotes):
+        url = optional_git(repo, "config", "--get", f"remote.{remote}.url")
+        if url:
+            return normalize_repository_url(url)
+    raise RuntimeError("HRX source tree has no repository remote for provenance")
+
+
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -182,9 +228,14 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
 
     source_directory = source_root / SOURCE_SUBDIR
     build_data = (source_directory / "BUILD.bazel").read_bytes()
-    link_modules, plan_cases = parse_build_recipes(build_data.decode("utf-8"))
+    all_link_modules, all_plan_cases = parse_build_recipes(build_data.decode("utf-8"))
 
-    modules_by_name = {str(item["name"]): item for item in link_modules}
+    modules_by_name = {str(item["name"]): item for item in all_link_modules}
+    direct_plan_sources = {
+        str(item["source"])
+        for item in all_plan_cases
+        if "source" in item
+    }
 
     def module_files(name: str) -> list[str]:
         module = modules_by_name[name]
@@ -197,9 +248,9 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
         return list(dict.fromkeys(result))
 
     def compile_recipe(source: str) -> dict[str, object]:
-        direct = [str(item["name"]) for item in link_modules if source in item["srcs"]]
-        indirect = [str(item["name"]) for item in link_modules if source in item["libraries"]]
-        if not direct and not indirect:
+        direct = [str(item["name"]) for item in all_link_modules if source in item["srcs"]]
+        indirect = [str(item["name"]) for item in all_link_modules if source in item["libraries"]]
+        if not direct and (source in direct_plan_sources or not indirect):
             return {"mode": "direct", "primary_sources": [source], "library_sources": []}
         module_name = (direct or indirect)[0]
         module = modules_by_name[module_name]
@@ -229,7 +280,6 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
         file_rows.append({"path": relative_text, "sha256": digest, "size": len(data)})
         exports.extend(parse_exports(data.decode("utf-8"), relative_text))
 
-    upstream_digest = upstream_aggregate.hexdigest()
     owned_aggregate = hashlib.sha256()
     for filename in OWNED_FILES:
         source = OWNED_KERNEL_DIR / filename
@@ -244,10 +294,61 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
         file_rows.append({"path": relative_text, "sha256": digest, "size": len(data), "owner": "ggml-hrx"})
         exports.extend(parse_exports(data.decode("utf-8"), relative_text))
 
-    owned_digest = owned_aggregate.hexdigest()
-    combined_aggregate = hashlib.sha256()
-    combined_aggregate.update(bytes.fromhex(upstream_digest))
-    combined_aggregate.update(bytes.fromhex(owned_digest))
+    for item in exports:
+        recipe = compile_recipe(str(item["source"]))
+        item["compile_recipe"] = recipe
+        item["compile_dependencies"] = list(recipe["library_sources"])
+
+    required_modules: set[str] = set()
+
+    def require_module(name: str) -> None:
+        if name in required_modules:
+            return
+        if name not in modules_by_name:
+            raise RuntimeError(f"selected kernel recipe references unknown link module {name}")
+        required_modules.add(name)
+        for library in modules_by_name[name]["libraries"]:
+            if str(library).startswith(":"):
+                require_module(str(library)[1:])
+
+    required_files = set(CORPUS_FILES)
+    for item in exports:
+        if str(item["source"]).startswith("../"):
+            continue
+        recipe = item["compile_recipe"]
+        link_module = str(recipe.get("link_module", ""))
+        if link_module:
+            require_module(link_module)
+        required_files.update(str(path) for path in recipe["primary_sources"])
+        required_files.update(str(path) for path in recipe["library_sources"])
+
+    mirrored_files = set(CORPUS_FILES)
+    for relative_text in sorted(required_files - mirrored_files):
+        relative = pathlib.Path(relative_text)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise RuntimeError(f"kernel recipe escapes the source corpus: {relative_text}")
+        source = source_directory / relative
+        if not source.is_file():
+            raise RuntimeError(f"missing required kernel dependency: {source}")
+        data = source.read_bytes()
+        digest = sha256(data)
+        upstream_aggregate.update(relative_text.encode())
+        upstream_aggregate.update(b"\0")
+        upstream_aggregate.update(bytes.fromhex(digest))
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        file_rows.append({"path": relative_text, "sha256": digest, "size": len(data)})
+
+    link_modules = [
+        module for module in all_link_modules
+        if str(module["name"]) in required_modules
+    ]
+    plan_cases = [
+        case for case in all_plan_cases
+        if (str(case.get("link_module", "")) in required_modules or
+            str(case.get("source", "")) in required_files)
+    ]
     plan_cases.extend([
         {
             "name": "owned_token_embedding_decode_plan_test",
@@ -291,14 +392,15 @@ def construct(source_root: pathlib.Path, destination: pathlib.Path, expected_rev
         },
     ])
 
-    for item in exports:
-        recipe = compile_recipe(str(item["source"]))
-        item["compile_recipe"] = recipe
-        item["compile_dependencies"] = list(recipe["library_sources"])
+    upstream_digest = upstream_aggregate.hexdigest()
+    owned_digest = owned_aggregate.hexdigest()
+    combined_aggregate = hashlib.sha256()
+    combined_aggregate.update(bytes.fromhex(upstream_digest))
+    combined_aggregate.update(bytes.fromhex(owned_digest))
 
     manifest = {
         "schema": "ggml-hrx-qwen-kernel-corpus-v1",
-        "upstream_repository": git(source_root, "config", "--get", "remote.origin.url"),
+        "upstream_repository": upstream_repository(source_root),
         "upstream_revision": revision,
         "source_subdirectory": SOURCE_SUBDIR.as_posix(),
         "corpus_sha256": combined_aggregate.hexdigest(),
