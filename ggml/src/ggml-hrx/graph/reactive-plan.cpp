@@ -1,9 +1,9 @@
 #include "reactive-plan.h"
 
-#include "optimizer.h"
-#include "qwen-bindings.h"
-#include "qwen-program.h"
-#include "qwen-rules.h"
+#include "routed-transformer-bindings.h"
+#include "routed-transformer-program.h"
+
+#include "ggml-impl.h"
 
 #include <algorithm>
 #include <map>
@@ -13,39 +13,49 @@
 namespace ggml::hrx {
 namespace {
 
-static constexpr const char * kPlannerRevision = "reactive-plan-v1";
-
-static bool same_access(const AccessPath & lhs, const AccessPath & rhs) {
-    return lhs.storage == rhs.storage && lhs.version == rhs.version && lhs.offset == rhs.offset &&
-        lhs.shape == rhs.shape && lhs.strides == rhs.strides;
-}
-
-static bool same_effect(const Effect & lhs, const Effect & rhs) {
-    return lhs.kind == rhs.kind && lhs.storage == rhs.storage && lhs.before_version == rhs.before_version &&
-        lhs.after_version == rhs.after_version && lhs.offset == rhs.offset && lhs.size == rhs.size && lhs.exact == rhs.exact;
-}
+static constexpr const char * kPlannerRevision = "reactive-plan-v2";
 
 static void append_error(VerificationResult & result, const std::string & error) {
     result.errors.push_back(error);
 }
 
-static Schedule eager_schedule(const Graph & graph) {
-    const std::vector<FusionRule> rules = canonical_qwen3_moe_rules();
-    const Selection selection = select_regions(graph, rules);
-    Schedule result = materialize_schedule_with_cpu_fallback(graph, rules, selection);
-    for (Invocation & invocation : result.invocations) {
-        if (invocation.kernel.execution_kind == KernelSpecialization::ExecutionKind::CpuFallback) {
-            invocation.kernel.execution_kind = KernelSpecialization::ExecutionKind::NativeEager;
-            invocation.kernel.family = "hrx_eager";
-            invocation.kernel.variant = ggml_op_name(graph.operations[invocation.covered_operations.front()].op);
-            invocation.kernel.kernel_id = kernel_catalog_id(invocation.kernel.family.c_str(), invocation.kernel.variant.c_str());
+static Schedule atom_schedule(const Graph & graph) {
+    Schedule result;
+    result.graph_fingerprint = graph.fingerprint;
+    result.workload = "atom-fallback";
+    result.oracle_revision = "hrx-atom-recipes-v1";
+    const GraphIndex index(graph);
+    uint32_t dispatch_ordinal = 0;
+    for (const Operation & operation : graph.operations) {
+        Invocation invocation;
+        invocation.stage = "atom";
+        invocation.recipe = std::string("atom.") + ggml_op_name(operation.op);
+        invocation.covered_operations.push_back(operation.id);
+        invocation.kernel.family = "hrx_atom";
+        invocation.kernel.variant = ggml_op_name(operation.op);
+        invocation.kernel.kernel_id = kernel_catalog_id(
+            invocation.kernel.family.c_str(), invocation.kernel.variant.c_str());
+        invocation.kernel.execution_kind = KernelSpecialization::ExecutionKind::NativeEager;
+        const RegionBoundary boundary = index.boundary(invocation.covered_operations);
+        for (size_t i = 0; i < boundary.inputs.size(); ++i) {
+            invocation.inputs.push_back({ "arg" + std::to_string(i), boundary.inputs[i] });
         }
-        for (Dispatch & dispatch : invocation.dispatches) {
-            if (dispatch.kernel.execution_kind == KernelSpecialization::ExecutionKind::CpuFallback) {
-                dispatch.kernel = invocation.kernel;
-            }
+        for (size_t i = 0; i < boundary.outputs.size(); ++i) {
+            invocation.outputs.push_back({ "result" + std::to_string(i), boundary.outputs[i] });
         }
+        Dispatch dispatch;
+        dispatch.kernel = invocation.kernel;
+        dispatch.bindings.insert(dispatch.bindings.end(), invocation.inputs.begin(), invocation.inputs.end());
+        dispatch.bindings.insert(dispatch.bindings.end(), invocation.outputs.begin(), invocation.outputs.end());
+        if (dispatch_ordinal != 0) dispatch.dependencies.push_back(dispatch_ordinal - 1);
+        invocation.dispatches.push_back(std::move(dispatch));
+        result.invocations.push_back(std::move(invocation));
+        ++dispatch_ordinal;
     }
+    for (ValueId root : graph.roots) {
+        result.roots.push_back({ root, RootDisposition::Materialized, "ggml_atom_result" });
+    }
+    result.expected_dispatch_count = result.invocations.size();
     return result;
 }
 
@@ -78,34 +88,6 @@ bool eager_capability_declared(enum ggml_op op) {
         default:
             return false;
     }
-}
-
-bool graph_semantically_equal(const Graph & lhs, const Graph & rhs) {
-    if (lhs.storages.size() < rhs.storages.size() || lhs.values.size() < rhs.values.size() ||
-        lhs.operations.size() != rhs.operations.size() || lhs.roots != rhs.roots) return false;
-    for (size_t i = rhs.values.size(); i < lhs.values.size(); ++i) {
-        if (lhs.values[i].name.rfind("hrx.synthetic.", 0) != 0) return false;
-    }
-    for (size_t i = 0; i < rhs.storages.size(); ++i) {
-        const Storage & a = lhs.storages[i];
-        const Storage & b = rhs.storages[i];
-        if (a.id != b.id || a.root != b.root || a.size != b.size || a.external != b.external ||
-            a.weight != b.weight || a.mutable_state != b.mutable_state || a.final_version != b.final_version) return false;
-    }
-    for (size_t i = 0; i < rhs.values.size(); ++i) {
-        const Value & a = lhs.values[i];
-        const Value & b = rhs.values[i];
-        if (a.id != b.id || a.type != b.type || a.op != b.op || a.boundary != b.boundary ||
-            a.producer != b.producer || a.view_source != b.view_source || !same_access(a.access, b.access)) return false;
-    }
-    for (size_t i = 0; i < lhs.operations.size(); ++i) {
-        const Operation & a = lhs.operations[i];
-        const Operation & b = rhs.operations[i];
-        if (a.id != b.id || a.op != b.op || a.inputs != b.inputs || a.output != b.output ||
-            a.raw_params != b.raw_params || a.effects.size() != b.effects.size()) return false;
-        for (size_t j = 0; j < a.effects.size(); ++j) if (!same_effect(a.effects[j], b.effects[j])) return false;
-    }
-    return true;
 }
 
 ResourceProgram build_resource_program(const Graph & graph, const Schedule & schedule) {
@@ -274,20 +256,47 @@ ProgramPlan build_reactive_plan(const Graph & graph, const std::string & target)
     }
     if (!result.errors.empty()) return result;
 
-    const QwenProgramProof proof = recover_owned_qwen3_moe_program(graph);
-    if (!proof.errors.empty() && !proof.schedule.invocations.empty()) {
-        result.errors = proof.errors;
-        return result;
-    }
-    result.schedule = proof.recognized() ? proof.schedule : eager_schedule(graph);
-    const VerificationResult schedule_verification = proof.recognized()
-        ? verify_owned_qwen3_moe_program(graph, proof) : verify_schedule(graph, result.schedule);
-    result.errors.insert(result.errors.end(), schedule_verification.errors.begin(), schedule_verification.errors.end());
-    if (proof.recognized()) {
-        const VerificationResult bindings = materialize_qwen3_moe_dispatch_bindings(result.graph, result.schedule);
+    RoutedTransformerProgramProof structural = RoutedTransformerProgramProof::recover(graph);
+    if (structural.structurally_recognized) {
+        if (!structural.valid()) {
+            result.errors = structural.errors;
+            result.errors.insert(result.errors.end(), structural.search.errors.begin(), structural.search.errors.end());
+            return result;
+        }
+        result.schedule = std::move(structural.schedule);
+        result.atom_fallback_count = std::count_if(
+            result.schedule.invocations.begin(), result.schedule.invocations.end(),
+            [](const Invocation & invocation) { return invocation.recipe.rfind("atom.", 0) == 0; });
+        for (const Invocation & invocation : result.schedule.invocations) {
+            if (invocation.recipe.rfind("atom.", 0) == 0) {
+                result.warnings.push_back("unoptimized routed-transformer fallback: " + invocation.recipe);
+            }
+        }
+        result.planner_identity = RoutedTransformerProvider::make_planner().identity();
+        result.fusion_search_text = SearchResult::format_report(structural.search);
+        result.fusion_search_json = SearchResult::serialize_report_json(structural.search);
+        result.fusion_regions_dot = SearchResult::region_dot(GraphIndex(graph), structural.search);
+        result.logical_program_text = RoutedTransformerModel::format(*structural.logical_program);
+        result.logical_program_json = RoutedTransformerModel::serialize_json(*structural.logical_program);
+        result.logical_program_dot = RoutedTransformerModel::dot(*structural.logical_program);
+        const VerificationResult bindings = RoutedTransformerProgramProof::materialize_dispatch_bindings(
+            result.graph, result.schedule, *structural.logical_program);
         result.errors.insert(result.errors.end(), bindings.errors.begin(), bindings.errors.end());
         const VerificationResult bound_schedule = verify_schedule(result.graph, result.schedule);
         result.errors.insert(result.errors.end(), bound_schedule.errors.begin(), bound_schedule.errors.end());
+        if (!result.errors.empty()) return result;
+
+    } else {
+        result.schedule = atom_schedule(graph);
+        result.planner_identity = "atom-recipes-v1";
+        result.atom_fallback_count = graph.operations.size();
+        for (const std::string & error : structural.errors) {
+            result.warnings.push_back("routed-transformer recognition rejected: " + error);
+        }
+        result.warnings.push_back("routed-transformer structure not recognized; the plan contains " +
+                                  std::to_string(result.atom_fallback_count) + " native-eager atom recipes");
+        const VerificationResult schedule_verification = verify_schedule(graph, result.schedule);
+        result.errors.insert(result.errors.end(), schedule_verification.errors.begin(), schedule_verification.errors.end());
     }
     if (!result.errors.empty()) return result;
     result.resources = build_resource_program(result.graph, result.schedule);
@@ -299,26 +308,80 @@ ProgramPlan build_reactive_plan(const Graph & graph, const std::string & target)
 
 ExecutionFrame ReactivePlanCache::prepare(const ggml_cgraph * cgraph, const std::string & target) {
     ExecutionFrame frame;
-    ImportedGraph imported = import_graph_with_bindings(cgraph);
+    if (cgraph == nullptr) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++stats_.failures;
+        frame.errors.push_back("HRX cannot prepare a null ggml_cgraph");
+        return frame;
+    }
+    const uint64_t uid = cgraph->uid;
+    if (uid != 0) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto position = plans_.find(uid);
+        if (position != plans_.end()) {
+            const UidPlanEntry & entry = position->second;
+            if (entry.target != target) {
+                ++stats_.failures;
+                frame.errors.push_back("HRX graph UID " + std::to_string(uid) +
+                    " was reused with target '" + target + "' after being planned for target '" + entry.target + "'");
+                return frame;
+            }
+            ++stats_.hits;
+            frame.plan = entry.plan;
+            frame.values = entry.values;
+            frame.storage_roots = entry.storage_roots;
+            return frame;
+        }
+    }
+
+    ImportedGraph imported = ImportedGraph::import(cgraph);
     if (!imported.graph.valid()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++stats_.failures;
         frame.errors = imported.graph.errors;
         return frame;
     }
-    const std::string key = imported.graph.fingerprint + '|' + target + '|' + kPlannerRevision;
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto & bucket = plans_[key];
-    for (const std::shared_ptr<const ProgramPlan> & candidate : bucket) {
-        if (graph_semantically_equal(candidate->graph, imported.graph)) {
-            ++stats_.hits;
-            frame.plan = candidate;
-            frame.values = std::move(imported.value_tensors);
-            frame.storage_roots = std::move(imported.storage_roots);
-            frame.values.resize(candidate->graph.values.size(), nullptr);
-            frame.storage_roots.resize(candidate->graph.storages.size(), nullptr);
+
+    // UID zero is the ggml convention for a graph without a stable scheduler
+    // identity. Such graphs are valid, but there is no sound cache key for
+    // them: import and plan this execution without either querying or
+    // publishing the UID cache.
+    if (uid == 0) {
+        ProgramPlan plan = build_reactive_plan(imported.graph, target);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            ++stats_.builds;
+            if (!plan.valid()) ++stats_.failures;
+        }
+        if (!plan.valid()) {
+            frame.errors = plan.errors;
             return frame;
         }
-        ++stats_.semantic_collisions;
+        frame.plan = std::make_shared<const ProgramPlan>(std::move(plan));
+        frame.values = std::move(imported.value_tensors);
+        frame.storage_roots = std::move(imported.storage_roots);
+        frame.values.resize(frame.plan->graph.values.size(), nullptr);
+        frame.storage_roots.resize(frame.plan->graph.storages.size(), nullptr);
+        return frame;
     }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto existing = plans_.find(uid);
+    if (existing != plans_.end()) {
+        const UidPlanEntry & entry = existing->second;
+        if (entry.target != target) {
+            ++stats_.failures;
+            frame.errors.push_back("HRX graph UID " + std::to_string(uid) +
+                " was reused with target '" + target + "' after being planned for target '" + entry.target + "'");
+            return frame;
+        }
+        ++stats_.hits;
+        frame.plan = entry.plan;
+        frame.values = entry.values;
+        frame.storage_roots = entry.storage_roots;
+        return frame;
+    }
+
     ProgramPlan plan = build_reactive_plan(imported.graph, target);
     ++stats_.builds;
     if (!plan.valid()) {
@@ -326,12 +389,17 @@ ExecutionFrame ReactivePlanCache::prepare(const ggml_cgraph * cgraph, const std:
         frame.errors = plan.errors;
         return frame;
     }
-    frame.plan = std::make_shared<const ProgramPlan>(std::move(plan));
-    bucket.push_back(frame.plan);
-    frame.values = std::move(imported.value_tensors);
-    frame.storage_roots = std::move(imported.storage_roots);
-    frame.values.resize(frame.plan->graph.values.size(), nullptr);
-    frame.storage_roots.resize(frame.plan->graph.storages.size(), nullptr);
+    UidPlanEntry entry;
+    entry.target = target;
+    entry.plan = std::make_shared<const ProgramPlan>(std::move(plan));
+    entry.values = std::move(imported.value_tensors);
+    entry.storage_roots = std::move(imported.storage_roots);
+    entry.values.resize(entry.plan->graph.values.size(), nullptr);
+    entry.storage_roots.resize(entry.plan->graph.storages.size(), nullptr);
+    frame.plan = entry.plan;
+    frame.values = entry.values;
+    frame.storage_roots = entry.storage_roots;
+    plans_.emplace(uid, std::move(entry));
     return frame;
 }
 

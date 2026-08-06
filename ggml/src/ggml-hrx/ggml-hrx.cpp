@@ -2,7 +2,6 @@
 
 #include "graph/command-program.h"
 #include "graph/graph-ir.h"
-#include "graph/qwen-program.h"
 #include "graph/reactive-plan.h"
 #include "executable-program.h"
 #include "kernel-corpus.h"
@@ -35,6 +34,7 @@
 namespace {
 
 static constexpr size_t GGML_HRX_ALIGNMENT = 256;
+static constexpr size_t GGML_HRX_DEBUG_MAXIMUM_SNAPSHOT_BINDING_BYTES = 64ull * 1024ull * 1024ull;
 // GGML represents tensor locations as host pointers and derives view/arena
 // offsets with ordinary pointer arithmetic. Device-local HRX buffers have no
 // host address to return, so expose a non-null sentinel base solely as an
@@ -367,7 +367,7 @@ static void dump_graph(const ggml_backend_hrx_context::DiagnosticOptions & optio
     static std::mutex mutex;
     const uint64_t id = sequence.fetch_add(1);
     try {
-        const ggml::hrx::Graph normalized = ggml::hrx::import_graph_with_bindings(graph).graph;
+        const ggml::hrx::Graph normalized = ggml::hrx::ImportedGraph::import(graph).graph;
         const std::filesystem::path & directory = options.directory;
         std::filesystem::create_directories(directory);
         const std::string stem = std::to_string(id) + "-uid-" + std::to_string(graph->uid) + "-" + mode + "-" + stage;
@@ -380,7 +380,7 @@ static void dump_graph(const ggml_backend_hrx_context::DiagnosticOptions & optio
         if (!std::filesystem::exists(json_path)) {
             const std::filesystem::path temporary_path = json_path.string() + ".tmp";
             std::ofstream output(temporary_path, std::ios::binary | std::ios::trunc);
-            output << ggml::hrx::serialize_graph_json(normalized) << '\n';
+            output << ggml::hrx::Graph::serialize_json(normalized) << '\n';
             output.close();
             std::filesystem::rename(temporary_path, json_path);
         }
@@ -409,6 +409,22 @@ static void write_atomic(const std::filesystem::path & path, const std::string &
     }
 }
 
+static void write_atomic(const std::filesystem::path & path, const std::vector<uint8_t> & contents) {
+    std::filesystem::create_directories(path.parent_path());
+    const std::filesystem::path temporary = path.string() + ".tmp";
+    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    if (!output) throw std::runtime_error("cannot create diagnostic file " + temporary.string());
+    output.write(reinterpret_cast<const char *>(contents.data()),
+                 static_cast<std::streamsize>(contents.size()));
+    output.close();
+    std::error_code error;
+    std::filesystem::rename(temporary, path, error);
+    if (error) {
+        std::filesystem::remove(temporary);
+        if (!std::filesystem::exists(path)) throw std::runtime_error("cannot publish diagnostic file " + path.string());
+    }
+}
+
 static void dump_plan(const ggml_backend_hrx_context::DiagnosticOptions & options,
                       const ggml::hrx::ProgramPlan & plan,
                       const ggml::hrx::KernelCorpus & corpus) {
@@ -423,11 +439,19 @@ static void dump_plan(const ggml_backend_hrx_context::DiagnosticOptions & option
         const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(plan, corpus);
         const ggml::hrx::VerificationResult command_verification =
             ggml::hrx::verify_command_program(plan, corpus, commands);
-        const ggml::hrx::QwenProgramProof proof = ggml::hrx::recover_owned_qwen3_moe_program(plan.graph);
-        write_atomic(directory / "program.txt", proof.recognized()
-            ? ggml::hrx::qwen_program_signature(proof) : plan.semantic_witness);
+        write_atomic(directory / "program.txt", plan.semantic_witness);
         write_atomic(directory / "semantic-witness.txt", plan.semantic_witness);
         write_atomic(directory / "program.json", ggml::hrx::serialize_schedule_json(plan.schedule));
+        if (!plan.fusion_search_text.empty()) {
+            write_atomic(directory / "fusion-search.txt", plan.fusion_search_text);
+            write_atomic(directory / "fusion-search.json", plan.fusion_search_json);
+            write_atomic(directory / "fusion-regions.dot", plan.fusion_regions_dot);
+        }
+        if (!plan.logical_program_text.empty()) {
+            write_atomic(directory / "logical-program.txt", plan.logical_program_text);
+            write_atomic(directory / "logical-program.json", plan.logical_program_json);
+            write_atomic(directory / "logical-program.dot", plan.logical_program_dot);
+        }
         write_atomic(directory / "resources.txt", ggml::hrx::format_resource_program(plan.resources));
         write_atomic(directory / "kernels.txt", ggml::hrx::format_kernel_corpus(corpus));
         write_atomic(directory / "kernels.json", ggml::hrx::serialize_kernel_corpus_json(corpus));
@@ -437,6 +461,9 @@ static void dump_plan(const ggml_backend_hrx_context::DiagnosticOptions & option
         std::ostringstream status;
         status << "schema=ggml-hrx-plan-diagnostics-v1\nlevel=" << options.level << "\nvalid="
                << (command_verification.valid() ? "true" : "false") << '\n';
+        status << "planner=" << plan.planner_identity << '\n'
+               << "atom_fallbacks=" << plan.atom_fallback_count << '\n';
+        for (const std::string & warning : plan.warnings) status << "warning=" << warning << '\n';
         status << ggml::hrx::format_verification_summary(command_verification.errors);
         write_atomic(directory / "status.txt", status.str());
         write_atomic(directory / "verification-errors.txt", ggml::hrx::format_verification_errors(command_verification.errors));
@@ -496,7 +523,7 @@ static enum ggml_backend_graph_claim_result graph_claim(ggml_backend_t backend, 
         // The raw pre-placement graph carries an additional, unused leaf list;
         // importing that list perturbs ValueIds and therefore the otherwise
         // identical ABI ordering of invocation boundary bindings.
-        const ggml::hrx::Graph normalized = ggml::hrx::import_graph_with_bindings(graph).graph;
+        const ggml::hrx::Graph normalized = ggml::hrx::ImportedGraph::import(graph).graph;
         const ggml::hrx::ProgramPlan plan = ggml::hrx::build_reactive_plan(normalized, context->device->architecture);
         if (!plan.valid()) {
             GGML_LOG_WARN("%s: diagnostic oracle could not build a plan: %s\n", __func__, plan.errors.front().c_str());
@@ -843,14 +870,68 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
             return GGML_STATUS_FAILED;
         }
         if (executable->command_prefix()) {
-            executable->abandon_after_synchronize();
+            std::vector<uint8_t> transient_snapshot;
+            const ggml::hrx::ErrorResult snapshot_error = executable->snapshot_transients(transient_snapshot);
+            if (snapshot_error) {
+                GGML_LOG_ERROR("%s: debug-prefix transient snapshot failed: %s\n", __func__, snapshot_error->c_str());
+                return GGML_STATUS_FAILED;
+            }
+            std::vector<ggml::hrx::PreparedBindingSnapshot> output_snapshots;
+            const ggml::hrx::ErrorResult output_snapshot_error =
+                executable->snapshot_last_command_outputs(
+                    output_snapshots, GGML_HRX_DEBUG_MAXIMUM_SNAPSHOT_BINDING_BYTES);
+            if (output_snapshot_error) {
+                GGML_LOG_ERROR("%s: debug-prefix output snapshot failed: %s\n",
+                    __func__, output_snapshot_error->c_str());
+                return GGML_STATUS_FAILED;
+            }
+            const ggml::hrx::ErrorResult completion_error = executable->complete_after_synchronize();
+            if (completion_error) {
+                GGML_LOG_ERROR("%s: debug-prefix readback failed: %s\n", __func__, completion_error->c_str());
+                return GGML_STATUS_FAILED;
+            }
+            if (!context->diagnostics.directory.empty()) {
+                const std::filesystem::path snapshot_directory =
+                    context->diagnostics.directory / "snapshots" / frame.plan->schedule.workload;
+                const std::string stem = "prefix-" + std::to_string(executable->commands().size());
+                try {
+                    write_atomic(snapshot_directory / (stem + "-transients.bin"), transient_snapshot);
+                    std::ostringstream metadata;
+                    metadata << "schema=ggml-hrx-transient-snapshot-v1\n"
+                             << "workload=" << frame.plan->schedule.workload << '\n'
+                             << "commands=" << executable->commands().size() << '\n'
+                             << "bytes=" << transient_snapshot.size() << '\n'
+                             << "allocation_fingerprint=" << executable->allocation_fingerprint().value << '\n';
+                    for (size_t i = 0; i < output_snapshots.size(); ++i) {
+                        std::string name = output_snapshots[i].name;
+                        std::replace_if(name.begin(), name.end(), [](char character) {
+                            return !std::isalnum(static_cast<unsigned char>(character)) && character != '-' && character != '_';
+                        }, '_');
+                        const std::string file_name = stem + "-output-" + std::to_string(i) + "-" + name + ".bin";
+                        metadata << "output=" << i << '\t' << output_snapshots[i].name << '\t'
+                                 << ggml::hrx::resource_access_name(output_snapshots[i].access) << '\t'
+                                 << output_snapshots[i].length << '\t';
+                        if (output_snapshots[i].bytes.empty() && output_snapshots[i].length != 0) {
+                            metadata << "omitted:binding-exceeds-" <<
+                                GGML_HRX_DEBUG_MAXIMUM_SNAPSHOT_BINDING_BYTES << "-bytes\n";
+                        } else {
+                            write_atomic(snapshot_directory / file_name, output_snapshots[i].bytes);
+                            metadata << file_name << '\n';
+                        }
+                    }
+                    write_atomic(snapshot_directory / (stem + ".txt"), metadata.str());
+                } catch (const std::exception & error) {
+                    GGML_LOG_ERROR("%s: debug-prefix snapshot write failed: %s\n", __func__, error.what());
+                    return GGML_STATUS_FAILED;
+                }
+            }
             dump_execution_state(context->diagnostics, *frame.plan, bindings, *executable,
                 context->device->transfers->stats(), context->weights->stats(),
                 "debug_prefix_complete", "intentional stop after synchronized command prefix",
                 context->executable_builds, context->executable_hits, context->launches);
-            GGML_LOG_WARN("%s: synchronized commands [0, %zu); stopping before graph outputs are consumed\n",
+            GGML_LOG_WARN("%s: synchronized commands [0, %zu); exposing diagnostic partial outputs\n",
                 __func__, executable->commands().size());
-            return GGML_STATUS_ABORTED;
+            return GGML_STATUS_SUCCESS;
         }
     }
 
