@@ -92,107 +92,85 @@ const KernelCorpus & get_qwen_kernel_corpus() {
     return kQwenKernelCorpus;
 }
 
-KernelResolveResult resolve_kernel_definition(const KernelCorpus &                corpus,
-                                              const std::string &                 target,
-                                              const std::string &                 family,
-                                              const std::string &                 name,
-                                              uint64_t                            id,
-                                              KernelSpecialization::ExecutionKind execution_kind) {
-    if (execution_kind == KernelSpecialization::ExecutionKind::NativeGap) {
-        return {
-            id == kUncatalogedKernelId ? KernelResolveStatus::NativeGap : KernelResolveStatus::InvalidNativeGap,
-            nullptr,
-        };
+KernelResolveResult resolve_kernel_definition(const KernelCorpus & corpus,
+                                              const std::string &  target,
+                                              uint64_t             kernel_id) {
+    if (kernel_id == kUncatalogedKernelId) {
+        return { KernelResolveStatus::UncatalogedKernel, nullptr };
     }
-    if (execution_kind != KernelSpecialization::ExecutionKind::Native &&
-        execution_kind != KernelSpecialization::ExecutionKind::NativeEager) {
-        return { KernelResolveStatus::UncatalogedNative, nullptr };
-    }
-    if (id == kUncatalogedKernelId) {
-        return { KernelResolveStatus::UncatalogedNative, nullptr };
-    }
-    bool                     id_match        = false;
-    bool                     name_match      = false;
+    const KernelDefinition * first_match     = nullptr;
     const KernelDefinition * default_variant = nullptr;
+    bool                     target_mismatch = false;
     for (const KernelDefinition & kernel : corpus.kernels) {
-        if (kernel.id != id) {
+        if (kernel.id != kernel_id) {
             continue;
         }
-        id_match = true;
-        if (string_equal(kernel.family, family.c_str()) && string_equal(kernel.name, name.c_str())) {
-            name_match = true;
-            if (string_equal(kernel.target_selector, target.c_str())) {
-                return { KernelResolveStatus::Found, &kernel };
-            }
-            if (string_empty(kernel.target_selector)) {
-                default_variant = &kernel;
-            }
+        if (first_match == nullptr) {
+            first_match = &kernel;
+        } else if (!string_equal(first_match->family, kernel.family) || !string_equal(first_match->name, kernel.name)) {
+            return { KernelResolveStatus::HashCollision, nullptr };
+        }
+        if (string_equal(kernel.target_selector, target.c_str())) {
+            return { KernelResolveStatus::Found, &kernel };
+        }
+        if (string_empty(kernel.target_selector)) {
+            default_variant = &kernel;
+        } else {
+            target_mismatch = true;
         }
     }
     if (default_variant != nullptr) {
         return { KernelResolveStatus::Found, default_variant };
     }
-    if (name_match) {
-        return { KernelResolveStatus::UnsupportedTarget, nullptr };
+    if (target_mismatch) {
+        return { KernelResolveStatus::UnsupportedTarget, first_match };
     }
-    return { id_match ? KernelResolveStatus::HashCollision : KernelResolveStatus::MissingActiveCorpusEntry, nullptr };
-}
-
-KernelResolveResult resolve_kernel_definition(const KernelCorpus &         corpus,
-                                              const std::string &          target,
-                                              const KernelSpecialization & kernel) {
-    return resolve_kernel_definition(corpus, target, kernel.family, kernel.variant, kernel.kernel_id,
-                                     kernel.execution_kind);
+    return { KernelResolveStatus::MissingActiveCorpusEntry, nullptr };
 }
 
 const char * kernel_resolve_status_name(KernelResolveStatus status) {
     switch (status) {
         case KernelResolveStatus::Found:
             return "found";
-        case KernelResolveStatus::NativeGap:
-            return "native_gap";
-        case KernelResolveStatus::UncatalogedNative:
-            return "uncataloged_native";
+        case KernelResolveStatus::UncatalogedKernel:
+            return "uncataloged_kernel";
         case KernelResolveStatus::MissingActiveCorpusEntry:
             return "missing_active_corpus_entry";
         case KernelResolveStatus::HashCollision:
             return "hash_collision";
-        case KernelResolveStatus::InvalidNativeGap:
-            return "invalid_native_gap";
         case KernelResolveStatus::UnsupportedTarget:
             return "unsupported_target";
     }
     return "unknown";
 }
 
-std::string format_kernel_resolve_error(const KernelResolveResult & result,
-                                        const std::string &         family,
-                                        const std::string &         name) {
-    KernelSpecialization kernel;
-    kernel.family           = family;
-    kernel.variant          = name;
-    const std::string label = kernel_specialization_name(kernel);
+std::string kernel_definition_name(const KernelDefinition & definition) {
+    return std::string(definition.family != nullptr ? definition.family : "") + ":" +
+           (definition.name != nullptr ? definition.name : "");
+}
+
+std::string kernel_definition_name_or_id(const KernelDefinition * definition, uint64_t kernel_id) {
+    if (definition != nullptr) {
+        return kernel_definition_name(*definition);
+    }
+    return "kernel_id=" + std::to_string(kernel_id);
+}
+
+std::string format_kernel_resolve_error(const KernelResolveResult & result, uint64_t kernel_id) {
+    const std::string label = kernel_definition_name_or_id(result.definition, kernel_id);
     switch (result.status) {
         case KernelResolveStatus::Found:
             return "";
-        case KernelResolveStatus::NativeGap:
-            return "native gap for " + label;
-        case KernelResolveStatus::UncatalogedNative:
-            return "uncataloged native kernel " + label;
+        case KernelResolveStatus::UncatalogedKernel:
+            return "uncataloged kernel " + label;
         case KernelResolveStatus::MissingActiveCorpusEntry:
             return "cataloged kernel " + label + " is not available in the active corpus";
         case KernelResolveStatus::HashCollision:
             return "kernel catalog id collision while resolving " + label;
-        case KernelResolveStatus::InvalidNativeGap:
-            return "native gap " + label + " unexpectedly has a catalog id";
         case KernelResolveStatus::UnsupportedTarget:
             return "cataloged kernel " + label + " has no implementation for the requested target";
     }
     return "unknown kernel resolution failure for " + label;
-}
-
-std::string format_kernel_resolve_error(const KernelResolveResult & result, const KernelSpecialization & kernel) {
-    return format_kernel_resolve_error(result, kernel.family, kernel.variant);
 }
 
 VerificationResult verify_kernel_corpus(const KernelCorpus & corpus) {

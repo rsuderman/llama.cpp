@@ -151,9 +151,51 @@
       "sha256": "04194341d13cb28c394ab9c6dfb6625bb2bad7dd3e2b45f0c5f41b4ffedd9723",
       "size": 4517,
       "owner": "ggml-hrx"
+    },
+    {
+      "path": "../hrx_owned/add_f32.loom",
+      "sha256": "da6b76c1bcb423f840b9a1d7be91732d6e8af96d2f0dba5249bce251a681626c",
+      "size": 2492,
+      "owner": "ggml-hrx"
     }
   ],
   "exports": [
+    {
+      "name": "ggml_add_f32",
+      "symbol": "ggml_add_f32",
+      "source": "../hrx_owned/add_f32.loom",
+      "workload_parameters": [
+        {
+          "name": "element_count",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "element_count",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "a",
+        "b",
+        "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "../hrx_owned/add_f32.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
     {
       "name": "ggml_gather_add_f32",
       "symbol": "ggml_gather_add_f32",

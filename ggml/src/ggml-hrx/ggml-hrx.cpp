@@ -1,17 +1,26 @@
 #include "ggml-hrx.h"
 
+#include "dispatch-scheduler.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
+#include "hrx-interop-utils.h"
 #include "hrx_runtime.h"
+#include "kernel-corpus.h"
+#include "loom-jit.h"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <optional>
+#include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -51,9 +60,25 @@ struct ggml_backend_hrx_device_context {
 };
 
 struct ggml_backend_hrx_context {
-    ggml_backend_hrx_device_context * device;
-    hrx_stream_t                      stream;
-    std::string                       name;
+    ggml_backend_hrx_device_context *                                           device;
+    hrx_stream_t                                                                stream;
+    ggml_hrx_loom_jit_amdgpu *                                                  jit = nullptr;
+    std::mutex                                                                  executable_mutex;
+    std::unordered_map<std::string, std::shared_ptr<struct ExecutableArtifact>> executable_cache;
+    std::string                                                                 name;
+};
+
+struct ExecutableArtifact {
+    ~ExecutableArtifact() {
+        if (executable != nullptr) {
+            hrx_executable_release(executable);
+        }
+    }
+
+    hrx_executable_t                executable     = nullptr;
+    uint32_t                        export_ordinal = 0;
+    hrx_executable_export_info_t    export_info    = {};
+    ggml_hrx_loom_jit_launch_config launch;
 };
 
 struct ggml_backend_hrx_reg_context {
@@ -331,6 +356,245 @@ static bool tensor_hrx_binding(const ggml_tensor *                tensor,
     return true;
 }
 
+static bool bind_dispatch_tensor(const ggml_tensor * tensor, ggml::hrx::DispatchBinding & binding, void * user_data) {
+    GGML_UNUSED(user_data);
+    ggml_backend_hrx_buffer_context * context = nullptr;
+    size_t                            offset  = 0;
+    if (!tensor_hrx_binding(tensor, &context, &offset)) {
+        return false;
+    }
+    binding.tensor = tensor;
+    binding.offset = offset;
+    binding.length = ggml_nbytes(tensor);
+    binding.buffer = context->buffer;
+    return true;
+}
+
+static ggml_hrx_loom_jit_source_format to_jit_source_format(ggml::hrx::KernelSourceFormat format) {
+    switch (format) {
+        case ggml::hrx::KERNEL_SOURCE_FORMAT_TEXT:
+            return GGML_HRX_LOOM_JIT_SOURCE_FORMAT_TEXT;
+        case ggml::hrx::KERNEL_SOURCE_FORMAT_BINARY:
+            return GGML_HRX_LOOM_JIT_SOURCE_FORMAT_BYTECODE;
+    }
+    return GGML_HRX_LOOM_JIT_SOURCE_FORMAT_TEXT;
+}
+
+static void append_u32(std::vector<uint8_t> & bytes, uint32_t value) {
+    const size_t offset = bytes.size();
+    bytes.resize(offset + sizeof(value));
+    std::memcpy(bytes.data() + offset, &value, sizeof(value));
+}
+
+static bool pack_kernel_constants(const ggml::hrx::KernelDefinition & definition,
+                                  const ggml::hrx::Dispatch &         dispatch,
+                                  std::vector<uint8_t> &              constants) {
+    constants.clear();
+    for (const ggml::hrx::KernelScalarDefinition & parameter : definition.launch_parameters) {
+        const char * name = parameter.name != nullptr ? parameter.name : "";
+        const char * type = parameter.type != nullptr ? parameter.type : "";
+        const auto   item = dispatch.kernel.integer_parameters.find(name);
+        if (item == dispatch.kernel.integer_parameters.end() || std::strcmp(type, "index") != 0 || item->second < 0 ||
+            static_cast<uint64_t>(item->second) > std::numeric_limits<uint32_t>::max()) {
+            constants.clear();
+            GGML_LOG_ERROR("%s: invalid launch scalar %s for %s\n", __func__, name,
+                           ggml::hrx::kernel_definition_name(definition).c_str());
+            return false;
+        }
+        append_u32(constants, static_cast<uint32_t>(item->second));
+    }
+    return true;
+}
+
+static std::string executable_artifact_key(const ggml::hrx::KernelDefinition & definition,
+                                           const ggml::hrx::Dispatch &         dispatch,
+                                           const std::string &                 target) {
+    std::ostringstream out;
+    out << target << '|' << definition.source_digest << '|' << definition.symbol
+        << "|recipe=" << definition.compile_recipe.mode;
+    for (const ggml::hrx::KernelScalarDefinition & parameter : definition.workload_parameters) {
+        const char * name = parameter.name != nullptr ? parameter.name : "";
+        const auto   item = dispatch.kernel.integer_parameters.find(name);
+        out << '|' << name << '=';
+        if (item == dispatch.kernel.integer_parameters.end()) {
+            out << "<missing>";
+        } else {
+            out << item->second;
+        }
+    }
+    for (const ggml::hrx::KernelCompileConfig & config : definition.compile_config) {
+        out << '|' << (config.key != nullptr ? config.key : "") << '=' << (config.value != nullptr ? config.value : "");
+    }
+    return out.str();
+}
+
+static bool ensure_jit(ggml_backend_hrx_context * context) {
+    if (context->jit != nullptr) {
+        return true;
+    }
+    ggml_hrx_loom_jit_amdgpu_options options = {};
+    options.processor                        = context->device->architecture.c_str();
+    options.identifier                       = context->device->architecture.c_str();
+    if (ggml::hrx::ErrorResult error =
+            ggml::hrx::take_status(ggml_hrx_loom_jit_amdgpu_create(&options, &context->jit))) {
+        GGML_LOG_ERROR("%s: create Loom JIT: %s\n", __func__, error->c_str());
+        return false;
+    }
+    return true;
+}
+
+static std::shared_ptr<ExecutableArtifact> prepare_executable(ggml_backend_hrx_context *          context,
+                                                              const ggml::hrx::KernelDefinition & definition,
+                                                              const ggml::hrx::Dispatch &         dispatch,
+                                                              std::vector<uint8_t> &              constants) {
+    if (!pack_kernel_constants(definition, dispatch, constants)) {
+        return nullptr;
+    }
+    const std::string           key = executable_artifact_key(definition, dispatch, context->device->architecture);
+    std::lock_guard<std::mutex> lock(context->executable_mutex);
+    const auto                  found = context->executable_cache.find(key);
+    if (found != context->executable_cache.end()) {
+        return found->second;
+    }
+    if (!ensure_jit(context)) {
+        return nullptr;
+    }
+    if (definition.compile_recipe.primary_sources.empty()) {
+        GGML_LOG_ERROR("%s: kernel %s has no primary source\n", __func__,
+                       ggml::hrx::kernel_definition_name(definition).c_str());
+        return nullptr;
+    }
+    const ggml::hrx::KernelSourceRef & primary_source = definition.compile_recipe.primary_sources.front();
+    const ggml::hrx::KernelSource *    source         = primary_source.contents;
+    if (source == nullptr) {
+        GGML_LOG_ERROR("%s: missing embedded source for %s\n", __func__, primary_source.path);
+        return nullptr;
+    }
+    std::vector<ggml_hrx_loom_jit_source> dependencies;
+    dependencies.reserve(definition.compile_recipe.library_sources.size());
+    for (const ggml::hrx::KernelSourceRef & dependency_ref : definition.compile_recipe.library_sources) {
+        const ggml::hrx::KernelSource * dependency = dependency_ref.contents;
+        if (dependency == nullptr) {
+            GGML_LOG_ERROR("%s: missing embedded dependency for %s\n", __func__, dependency_ref.path);
+            return nullptr;
+        }
+        dependencies.push_back({
+            dependency->source.data,
+            dependency->source.length,
+            to_jit_source_format(dependency->source.format),
+            dependency_ref.path,
+        });
+    }
+
+    std::vector<ggml_hrx_loom_jit_config_binding> configs;
+    configs.reserve(definition.compile_config.size());
+    for (const ggml::hrx::KernelCompileConfig & config : definition.compile_config) {
+        configs.push_back({ config.key, config.value });
+    }
+    std::vector<int64_t> workload;
+    workload.reserve(definition.workload_parameters.size());
+    for (const ggml::hrx::KernelScalarDefinition & parameter : definition.workload_parameters) {
+        const char * name = parameter.name != nullptr ? parameter.name : "";
+        const char * type = parameter.type != nullptr ? parameter.type : "";
+        const auto   item = dispatch.kernel.integer_parameters.find(name);
+        if (item == dispatch.kernel.integer_parameters.end() || std::strcmp(type, "index") != 0) {
+            GGML_LOG_ERROR("%s: invalid workload scalar %s for %s\n", __func__, name,
+                           ggml::hrx::kernel_definition_name(definition).c_str());
+            return nullptr;
+        }
+        workload.push_back(item->second);
+    }
+
+    ggml_hrx_loom_jit_compile_options compile_options = {};
+    compile_options.source_data                       = source->source.data;
+    compile_options.source_size                       = source->source.length;
+    compile_options.source_format                     = to_jit_source_format(source->source.format);
+    compile_options.source_identifier                 = primary_source.path;
+    compile_options.root_symbol                       = definition.symbol;
+    compile_options.module_name                       = definition.symbol;
+    compile_options.artifact_identifier               = definition.symbol;
+    compile_options.dependencies                      = dependencies.data();
+    compile_options.dependency_count                  = dependencies.size();
+    compile_options.config_bindings                   = configs.data();
+    compile_options.config_binding_count              = configs.size();
+    compile_options.workload_arguments                = workload.data();
+    compile_options.workload_argument_count           = workload.size();
+    compile_options.evaluate_launch_config            = true;
+
+    ggml_hrx_loom_jit_compile_result compiled;
+    if (ggml::hrx::ErrorResult error =
+            ggml::hrx::take_status(ggml_hrx_loom_jit_amdgpu_compile(context->jit, &compile_options, &compiled))) {
+        GGML_LOG_ERROR("%s: compile %s: %s\n", __func__, key.c_str(), error->c_str());
+        return nullptr;
+    }
+
+    auto artifact    = std::make_shared<ExecutableArtifact>();
+    artifact->launch = compiled.launch_config;
+    if (ggml::hrx::ErrorResult error = ggml::hrx::take_status(
+            hrx_executable_load_data(context->device->device, compiled.hsaco_data, compiled.hsaco_size, "amdgpu",
+                                     context->device->architecture.c_str(), &artifact->executable))) {
+        GGML_LOG_ERROR("%s: load %s: %s\n", __func__, key.c_str(), error->c_str());
+        return nullptr;
+    }
+    if (ggml::hrx::ErrorResult error = ggml::hrx::take_status(
+            hrx_executable_lookup_export_by_name(artifact->executable, definition.symbol, &artifact->export_ordinal))) {
+        GGML_LOG_ERROR("%s: lookup %s: %s\n", __func__, key.c_str(), error->c_str());
+        return nullptr;
+    }
+    if (ggml::hrx::ErrorResult error = ggml::hrx::take_status(
+            hrx_executable_export_info(artifact->executable, artifact->export_ordinal, &artifact->export_info))) {
+        GGML_LOG_ERROR("%s: inspect %s: %s\n", __func__, key.c_str(), error->c_str());
+        return nullptr;
+    }
+    if (artifact->export_info.binding_count != dispatch.bindings.size() ||
+        artifact->export_info.constant_byte_length != constants.size() ||
+        artifact->export_info.parameter_count != dispatch.bindings.size() + definition.launch_parameters.size()) {
+        GGML_LOG_ERROR("%s: compiled ABI does not match manifest for %s\n", __func__, key.c_str());
+        return nullptr;
+    }
+    if (artifact->launch.workgroup_count[0] == 0 || artifact->launch.workgroup_size[0] == 0) {
+        GGML_LOG_ERROR("%s: compiled launch geometry is empty for %s\n", __func__, key.c_str());
+        return nullptr;
+    }
+    context->executable_cache.emplace(key, artifact);
+    return artifact;
+}
+
+static bool dispatch_request(ggml_backend_hrx_context * context, const ggml::hrx::Dispatch & dispatch) {
+    const ggml::hrx::KernelCorpus & corpus = ggml::hrx::get_qwen_kernel_corpus();
+    ggml::hrx::KernelResolveResult  resolved =
+        ggml::hrx::resolve_kernel_definition(corpus, context->device->architecture, dispatch.kernel.kernel_id);
+    if (!resolved.found()) {
+        GGML_LOG_ERROR("%s: %s\n", __func__,
+                       ggml::hrx::format_kernel_resolve_error(resolved, dispatch.kernel.kernel_id).c_str());
+        return false;
+    }
+    std::vector<uint8_t> constants;
+    auto                 artifact = prepare_executable(context, *resolved.definition, dispatch, constants);
+    if (artifact == nullptr) {
+        return false;
+    }
+    std::vector<hrx_buffer_ref_t> refs;
+    refs.reserve(dispatch.bindings.size());
+    for (const ggml::hrx::DispatchBinding & binding : dispatch.bindings) {
+        refs.push_back({ binding.buffer, binding.offset, binding.length });
+    }
+    hrx_dispatch_config_t config = {
+        { artifact->launch.workgroup_count[0], artifact->launch.workgroup_count[1],
+         artifact->launch.workgroup_count[2]                                                                           },
+        { artifact->launch.workgroup_size[0],  artifact->launch.workgroup_size[1],  artifact->launch.workgroup_size[2] },
+        artifact->launch.subgroup_size,
+    };
+    if (ggml::hrx::ErrorResult error = ggml::hrx::take_status(
+            hrx_stream_dispatch(context->stream, artifact->executable, artifact->export_ordinal, &config,
+                                constants.data(), constants.size(), refs.data(), refs.size(), 0))) {
+        GGML_LOG_ERROR("%s: dispatch %s: %s\n", __func__,
+                       ggml::hrx::kernel_definition_name(*resolved.definition).c_str(), error->c_str());
+        return false;
+    }
+    return true;
+}
+
 static const char * backend_name(ggml_backend_t backend) {
     return static_cast<ggml_backend_hrx_context *>(backend->context)->name.c_str();
 }
@@ -338,6 +602,10 @@ static const char * backend_name(ggml_backend_t backend) {
 static void backend_free(ggml_backend_t backend) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
     HRX_CHECK(hrx_stream_synchronize(context->stream));
+    context->executable_cache.clear();
+    if (context->jit != nullptr) {
+        ggml_hrx_loom_jit_amdgpu_release(context->jit);
+    }
     hrx_stream_release(context->stream);
     delete context;
     delete backend;
@@ -410,21 +678,33 @@ static void backend_synchronize(ggml_backend_t backend) {
 }
 
 static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * graph) {
-    GGML_UNUSED(backend);
     if (graph->n_nodes == 0) {
         return GGML_STATUS_SUCCESS;
     }
-    GGML_LOG_ERROR("%s: HRX graph execution was removed; no graph compute path is currently available\n", __func__);
-    return GGML_STATUS_FAILED;
+    auto *                          context = static_cast<ggml_backend_hrx_context *>(backend->context);
+    ggml::hrx::DispatchScheduler    scheduler;
+    ggml::hrx::DispatchMatchContext match_context = { bind_dispatch_tensor, nullptr };
+    if (!scheduler.schedule_graph(*graph, match_context)) {
+        GGML_LOG_ERROR("%s: %s\n", __func__, scheduler.error().c_str());
+        return GGML_STATUS_FAILED;
+    }
+    for (const ggml::hrx::Dispatch & dispatch : scheduler.dispatches()) {
+        if (!dispatch_request(context, dispatch)) {
+            return GGML_STATUS_FAILED;
+        }
+    }
+    return GGML_STATUS_SUCCESS;
 }
 
 static enum ggml_backend_graph_claim_result graph_claim(ggml_backend_t                     backend,
                                                         const ggml_cgraph *                graph,
                                                         enum ggml_backend_graph_claim_mode mode) {
     GGML_UNUSED(backend);
-    GGML_UNUSED(graph);
     GGML_UNUSED(mode);
-    return GGML_BACKEND_GRAPH_CLAIM_DECLINED;
+    if (!ggml::hrx::DispatchScheduler::can_schedule_graph(*graph)) {
+        return GGML_BACKEND_GRAPH_CLAIM_DECLINED;
+    }
+    return GGML_BACKEND_GRAPH_CLAIM_ACCEPTED;
 }
 
 static const ggml_backend_i backend_i = {
@@ -503,8 +783,7 @@ static ggml_backend_buffer_type_t device_buffer_type(ggml_backend_dev_t device) 
 
 static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op) {
     GGML_UNUSED(device);
-    GGML_UNUSED(op);
-    return false;
+    return ggml::hrx::DispatchScheduler::supports_op(op);
 }
 
 static bool device_supports_buffer_type(ggml_backend_dev_t device, ggml_backend_buffer_type_t buft) {

@@ -101,11 +101,9 @@ struct KernelCorpus {
 
 enum class KernelResolveStatus : uint8_t {
     Found,
-    NativeGap,
-    UncatalogedNative,
+    UncatalogedKernel,
     MissingActiveCorpusEntry,
     HashCollision,
-    InvalidNativeGap,
     UnsupportedTarget,
 };
 
@@ -118,21 +116,14 @@ struct KernelResolveResult {
 
 const KernelSource * get_kernel_source(const char * source_path);
 const KernelCorpus & get_qwen_kernel_corpus();
-KernelResolveResult  resolve_kernel_definition(const KernelCorpus &                corpus,
-                                               const std::string &                 target,
-                                               const std::string &                 family,
-                                               const std::string &                 name,
-                                               uint64_t                            id,
-                                               KernelSpecialization::ExecutionKind execution_kind);
-KernelResolveResult  resolve_kernel_definition(const KernelCorpus &         corpus,
-                                               const std::string &          target,
-                                               const KernelSpecialization & kernel);
+KernelResolveResult  resolve_kernel_definition(const KernelCorpus & corpus,
+                                               const std::string &  target,
+                                               uint64_t             kernel_id);
 const char *         kernel_resolve_status_name(KernelResolveStatus status);
-std::string          format_kernel_resolve_error(const KernelResolveResult & result,
-                                                 const std::string &         family,
-                                                 const std::string &         name);
-std::string        format_kernel_resolve_error(const KernelResolveResult & result, const KernelSpecialization & kernel);
-VerificationResult verify_kernel_corpus(const KernelCorpus & corpus);
-std::string        format_kernel_corpus(const KernelCorpus & corpus);
+std::string          kernel_definition_name(const KernelDefinition & definition);
+std::string          kernel_definition_name_or_id(const KernelDefinition * definition, uint64_t kernel_id);
+std::string          format_kernel_resolve_error(const KernelResolveResult & result, uint64_t kernel_id);
+VerificationResult   verify_kernel_corpus(const KernelCorpus & corpus);
+std::string          format_kernel_corpus(const KernelCorpus & corpus);
 
 }  // namespace ggml::hrx

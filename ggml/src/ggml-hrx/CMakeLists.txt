@@ -110,9 +110,16 @@ target_compile_features(ggml-hrx-kernel-corpus PRIVATE cxx_std_17)
 set_target_properties(ggml-hrx-kernel-corpus PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 ggml_add_backend_library(ggml-hrx
+    dispatch-add.cpp
+    dispatch-add.h
+    dispatch-scheduler.cpp
+    dispatch-scheduler.h
+    dispatch.h
     ggml-hrx.cpp
+    loom-jit.cpp
 )
-target_link_libraries(ggml-hrx PRIVATE hrx::hrx loomc::loomc)
+target_link_libraries(ggml-hrx PRIVATE ggml-hrx-kernel-corpus hrx::hrx loomc::loomc)
+target_include_directories(ggml-hrx PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_definitions(ggml-hrx PRIVATE GGML_USE_HRX)
 
 if (GGML_HRX_BUNDLE_RUNTIME_LIBS)
