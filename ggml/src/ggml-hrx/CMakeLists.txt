@@ -63,7 +63,7 @@ endif()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
-set(GGML_HRX_QWEN_KERNEL_CORPUS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernels/qwen_moe")
+set(GGML_HRX_QWEN_KERNEL_CORPUS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernel-corpus/kernels/qwen_moe")
 set(GGML_HRX_QWEN_KERNEL_CORPUS_MANIFEST "${GGML_HRX_QWEN_KERNEL_CORPUS_DIR}/manifest.json")
 set(GGML_HRX_KERNEL_CORPUS_SOURCES_INC "${CMAKE_CURRENT_BINARY_DIR}/kernel-corpus-sources.inc")
 set(GGML_HRX_KERNEL_CORPUS_QWEN_INC "${CMAKE_CURRENT_BINARY_DIR}/kernel-corpus-qwen.inc")
@@ -94,13 +94,13 @@ option(GGML_HRX_BUNDLE_RUNTIME_LIBS "Bundle HRX/ROCm runtime libraries next to t
 set(GGML_HRX_BUNDLE_LIBRARY_DIRS "" CACHE STRING "Library directories to scan when GGML_HRX_BUNDLE_RUNTIME_LIBS=ON")
 
 add_library(ggml-hrx-kernel-corpus STATIC
-    kernel-corpus-json.cpp
-    kernel-corpus-json.h
-    kernel-corpus-catalog-verify.h
-    kernel-corpus-catalog.h
-    kernel-corpus.cpp
-    kernel-corpus.h
-    kernel-types.h
+    kernel-corpus/kernel-corpus-json.cpp
+    kernel-corpus/kernel-corpus-json.h
+    kernel-corpus/kernel-corpus-catalog-verify.h
+    kernel-corpus/kernel-corpus-catalog.h
+    kernel-corpus/kernel-corpus.cpp
+    kernel-corpus/kernel-corpus.h
+    kernel-corpus/kernel-types.h
     "${GGML_HRX_KERNEL_CORPUS_SOURCES_INC}"
     "${GGML_HRX_KERNEL_CORPUS_QWEN_INC}"
     "${GGML_HRX_KERNEL_CORPUS_CATALOG_INC}"
@@ -110,16 +110,20 @@ target_compile_features(ggml-hrx-kernel-corpus PRIVATE cxx_std_17)
 set_target_properties(ggml-hrx-kernel-corpus PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 ggml_add_backend_library(ggml-hrx
-    dispatch-add.cpp
-    dispatch-add.h
-    dispatch-scheduler.cpp
-    dispatch-scheduler.h
-    dispatch.h
+    dispatch/dispatch-add.cpp
+    dispatch/dispatch-add.h
+    dispatch/dispatch-scheduler.cpp
+    dispatch/dispatch-scheduler.h
+    dispatch/dispatch.h
+    graph/graph.cpp
+    graph/graph.h
     ggml-hrx.cpp
     loom-jit.cpp
+    graph/value-map.cpp
+    graph/value-map.h
 )
 target_link_libraries(ggml-hrx PRIVATE ggml-hrx-kernel-corpus hrx::hrx loomc::loomc)
-target_include_directories(ggml-hrx PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_include_directories(ggml-hrx PRIVATE . "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_definitions(ggml-hrx PRIVATE GGML_USE_HRX)
 
 if (GGML_HRX_BUNDLE_RUNTIME_LIBS)

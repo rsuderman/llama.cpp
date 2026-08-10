@@ -1,7 +1,9 @@
+#include "dispatch/dispatch-scheduler.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-hrx.h"
 #include "ggml.h"
+#include "graph/graph.h"
 
 #include <cmath>
 #include <cstdint>
@@ -16,6 +18,80 @@
             std::abort();                                                                            \
         }                                                                                            \
     } while (false)
+
+static void run_graph_import_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 256 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * a   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * out = ggml_add(ctx, a, a);
+    REQUIRE(a != nullptr);
+    REQUIRE(out != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, out);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph, nullptr, nullptr);
+    REQUIRE(imported.valid());
+    REQUIRE(imported.graph.nodes().size() == 1);
+    const ggml::hrx::GraphNode * node = &imported.graph.nodes().front();
+    REQUIRE(node->op == GGML_OP_ADD);
+    REQUIRE(node->inputs.size() == 2);
+    REQUIRE(node->inputs[0] == node->inputs[1]);
+    REQUIRE(ggml::hrx::DispatchScheduler::supports_node(imported.graph, node));
+
+    const ggml::hrx::Value * a_value   = imported.graph.values().find_tensor(a);
+    const ggml::hrx::Value * out_value = imported.graph.values().find_tensor(out);
+    REQUIRE(a_value != nullptr);
+    REQUIRE(out_value != nullptr);
+    REQUIRE(a_value->kind == ggml::hrx::ValueKind::External);
+    REQUIRE(out_value->kind == ggml::hrx::ValueKind::External);
+
+    ggml_free(ctx);
+}
+
+static void run_transient_import_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 256 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * a   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * b   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * sum = ggml_add(ctx, a, b);
+    ggml_tensor * out = ggml_sqr(ctx, sum);
+    REQUIRE(a != nullptr);
+    REQUIRE(b != nullptr);
+    REQUIRE(sum != nullptr);
+    REQUIRE(out != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, out);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph, nullptr, nullptr);
+    REQUIRE(imported.valid());
+    REQUIRE(imported.graph.nodes().size() == 2);
+    REQUIRE(imported.graph.nodes()[0].op == GGML_OP_ADD);
+    REQUIRE(imported.graph.nodes()[1].op == GGML_OP_SQR);
+
+    const ggml::hrx::Value * a_value   = imported.graph.values().find_tensor(a);
+    const ggml::hrx::Value * sum_value = imported.graph.values().find_tensor(sum);
+    const ggml::hrx::Value * out_value = imported.graph.values().find_tensor(out);
+    REQUIRE(a_value != nullptr);
+    REQUIRE(sum_value != nullptr);
+    REQUIRE(out_value != nullptr);
+    REQUIRE(a_value->kind == ggml::hrx::ValueKind::External);
+    REQUIRE(sum_value->kind == ggml::hrx::ValueKind::Transient);
+    REQUIRE(out_value->kind == ggml::hrx::ValueKind::External);
+
+    ggml_free(ctx);
+}
 
 static void run_add_f32() {
     ggml_backend_t backend = ggml_backend_hrx_init(0);
@@ -100,6 +176,9 @@ static void run_unsupported_op_fails() {
 }
 
 int main() {
+    run_graph_import_checks();
+    run_transient_import_checks();
+
     if (ggml_backend_hrx_get_device_count() == 0) {
         std::fprintf(stderr, "test skipped: no HRX devices available\n");
         return 0;

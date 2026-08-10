@@ -1,26 +1,24 @@
 #pragma once
 
 #include "dispatch.h"
+#include "graph/graph.h"
 
 #include <string>
 #include <vector>
-
-struct ggml_cgraph;
-struct ggml_tensor;
 
 namespace ggml::hrx {
 
 class DispatchScheduler {
   public:
     void enqueue(Dispatch dispatch);
-    bool schedule_graph(const ggml_cgraph & graph, const DispatchMatchContext & context);
+    bool schedule_graph(const Graph & graph);
 
     const std::vector<Dispatch> & dispatches() const { return dispatches_; }
 
     const std::string & error() const { return error_; }
 
-    static bool supports_op(const ggml_tensor * op);
-    static bool can_schedule_graph(const ggml_cgraph & graph);
+    static bool supports_node(const Graph & graph, const GraphNode * node);
+    static bool can_schedule_graph(const Graph & graph);
 
   private:
     std::vector<Dispatch> dispatches_;

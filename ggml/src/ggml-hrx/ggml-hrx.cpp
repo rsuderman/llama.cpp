@@ -1,11 +1,12 @@
 #include "ggml-hrx.h"
 
-#include "dispatch-scheduler.h"
+#include "dispatch/dispatch-scheduler.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
+#include "graph/graph.h"
 #include "hrx-interop-utils.h"
 #include "hrx_runtime.h"
-#include "kernel-corpus.h"
+#include "kernel-corpus/kernel-corpus.h"
 #include "loom-jit.h"
 
 #include <atomic>
@@ -356,17 +357,18 @@ static bool tensor_hrx_binding(const ggml_tensor *                tensor,
     return true;
 }
 
-static bool bind_dispatch_tensor(const ggml_tensor * tensor, ggml::hrx::DispatchBinding & binding, void * user_data) {
+static bool resolve_value_buffer(const ggml_tensor *             tensor,
+                                 ggml::hrx::ValueBufferBinding & binding,
+                                 void *                          user_data) {
     GGML_UNUSED(user_data);
     ggml_backend_hrx_buffer_context * context = nullptr;
     size_t                            offset  = 0;
     if (!tensor_hrx_binding(tensor, &context, &offset)) {
         return false;
     }
-    binding.tensor = tensor;
+    binding.buffer = context->buffer;
     binding.offset = offset;
     binding.length = ggml_nbytes(tensor);
-    binding.buffer = context->buffer;
     return true;
 }
 
@@ -677,14 +679,36 @@ static void backend_synchronize(ggml_backend_t backend) {
     HRX_CHECK(hrx_stream_synchronize(context->stream));
 }
 
+static bool supports_standalone_op_as_graph(const ggml_tensor * op) {
+    if (op == nullptr) {
+        return false;
+    }
+    ggml::hrx::Graph                graph;
+    std::vector<ggml::hrx::ValueId> inputs;
+    for (const ggml_tensor * source : op->src) {
+        if (source == nullptr) {
+            continue;
+        }
+        inputs.push_back(graph.values().get_or_add_tensor_value(source, ggml::hrx::ValueKind::External, std::nullopt));
+    }
+    const ggml::hrx::ValueId output =
+        graph.values().get_or_add_tensor_value(op, ggml::hrx::ValueKind::External, std::nullopt);
+    const ggml::hrx::GraphNode & node = graph.add_node(op->op, output, std::move(inputs), op);
+    return ggml::hrx::DispatchScheduler::supports_node(graph, &node);
+}
+
 static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * graph) {
     if (graph->n_nodes == 0) {
         return GGML_STATUS_SUCCESS;
     }
-    auto *                          context = static_cast<ggml_backend_hrx_context *>(backend->context);
-    ggml::hrx::DispatchScheduler    scheduler;
-    ggml::hrx::DispatchMatchContext match_context = { bind_dispatch_tensor, nullptr };
-    if (!scheduler.schedule_graph(*graph, match_context)) {
+    auto *                       context  = static_cast<ggml_backend_hrx_context *>(backend->context);
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph, resolve_value_buffer, nullptr);
+    if (!imported.valid()) {
+        GGML_LOG_ERROR("%s: import HRX graph: %s\n", __func__, imported.errors.front().c_str());
+        return GGML_STATUS_FAILED;
+    }
+    ggml::hrx::DispatchScheduler scheduler;
+    if (!scheduler.schedule_graph(imported.graph)) {
         GGML_LOG_ERROR("%s: %s\n", __func__, scheduler.error().c_str());
         return GGML_STATUS_FAILED;
     }
@@ -701,7 +725,8 @@ static enum ggml_backend_graph_claim_result graph_claim(ggml_backend_t          
                                                         enum ggml_backend_graph_claim_mode mode) {
     GGML_UNUSED(backend);
     GGML_UNUSED(mode);
-    if (!ggml::hrx::DispatchScheduler::can_schedule_graph(*graph)) {
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph, nullptr, nullptr);
+    if (!imported.valid() || !ggml::hrx::DispatchScheduler::can_schedule_graph(imported.graph)) {
         return GGML_BACKEND_GRAPH_CLAIM_DECLINED;
     }
     return GGML_BACKEND_GRAPH_CLAIM_ACCEPTED;
@@ -783,7 +808,7 @@ static ggml_backend_buffer_type_t device_buffer_type(ggml_backend_dev_t device) 
 
 static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op) {
     GGML_UNUSED(device);
-    return ggml::hrx::DispatchScheduler::supports_op(op);
+    return supports_standalone_op_as_graph(op);
 }
 
 static bool device_supports_buffer_type(ggml_backend_dev_t device, ggml_backend_buffer_type_t buft) {
