@@ -53,7 +53,6 @@ CommandProgram build_command_program(const CommandPlan &  plan,
             CommandBinding          command_binding;
             command_binding.value  = binding.value;
             command_binding.origin = CommandBindingOrigin::GraphValue;
-            command_binding.buffer = binding.buffer;
             command_binding.offset = binding.offset;
             command_binding.length = binding.length;
             if (definition != nullptr && binding_index < definition->bindings.size()) {
@@ -121,9 +120,6 @@ VerificationResult verify_command_program(const CommandProgram & program,
             }
             if (binding.value.value < 0) {
                 result.errors.log("%s has an invalid value id", command_prefix(command).c_str());
-            }
-            if (binding.buffer == nullptr) {
-                result.errors.log("%s has an unbound buffer", command_prefix(command).c_str());
             }
             if (binding.length == 0) {
                 result.errors.log("%s has an empty binding", command_prefix(command).c_str());

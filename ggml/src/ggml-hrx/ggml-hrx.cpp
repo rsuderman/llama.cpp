@@ -1,5 +1,6 @@
 #include "ggml-hrx.h"
 
+#include "dispatch/command-program-bindings.h"
 #include "dispatch/command-program.h"
 #include "dispatch/dispatch-scheduler.h"
 #include "ggml-backend-impl.h"
@@ -560,7 +561,9 @@ static std::shared_ptr<ExecutableArtifact> prepare_executable(ggml_backend_hrx_c
     return artifact;
 }
 
-static bool dispatch_request(ggml_backend_hrx_context * context, const ggml::hrx::Dispatch & dispatch) {
+static bool dispatch_request(ggml_backend_hrx_context *            context,
+                             const ggml::hrx::Dispatch &           dispatch,
+                             const std::vector<hrx_buffer_ref_t> & refs) {
     const ggml::hrx::KernelCorpus & corpus = ggml::hrx::get_qwen_kernel_corpus();
     ggml::hrx::KernelResolveResult  resolved =
         ggml::hrx::resolve_kernel_definition(corpus, context->device->architecture, dispatch.kernel.kernel_id);
@@ -574,10 +577,9 @@ static bool dispatch_request(ggml_backend_hrx_context * context, const ggml::hrx
     if (artifact == nullptr) {
         return false;
     }
-    std::vector<hrx_buffer_ref_t> refs;
-    refs.reserve(dispatch.bindings.size());
-    for (const ggml::hrx::DispatchBinding & binding : dispatch.bindings) {
-        refs.push_back({ binding.buffer, binding.offset, binding.length });
+    if (refs.size() != dispatch.bindings.size()) {
+        GGML_LOG_ERROR("%s: dispatch binding refs do not match dispatch bindings\n", __func__);
+        return false;
     }
     hrx_dispatch_config_t config = {
         { artifact->launch.workgroup_count[0], artifact->launch.workgroup_count[1],
@@ -595,32 +597,81 @@ static bool dispatch_request(ggml_backend_hrx_context * context, const ggml::hrx
     return true;
 }
 
-static bool execute_kernel_command(ggml_backend_hrx_context * context, const ggml::hrx::Command & command) {
+static bool resolve_command_binding(const ggml::hrx::Command &                command,
+                                    const ggml::hrx::CommandBinding &         binding,
+                                    const ggml::hrx::CommandProgramBindings & bindings,
+                                    hrx_buffer_ref_t &                        ref,
+                                    ggml::hrx::ErrorLog &                     errors) {
+    if (binding.origin != ggml::hrx::CommandBindingOrigin::GraphValue) {
+        errors.log("command %u binding %s has an unsupported binding origin", command.ordinal, binding.name.c_str());
+        return false;
+    }
+    const ggml::hrx::CommandProgramBinding * concrete = bindings.find(binding.value);
+    if (concrete == nullptr) {
+        errors.log("command %u binding %s value %d is not bound", command.ordinal, binding.name.c_str(),
+                   binding.value.value);
+        return false;
+    }
+    if (concrete->buffer == nullptr) {
+        errors.log("command %u binding %s value %d has a null buffer", command.ordinal, binding.name.c_str(),
+                   binding.value.value);
+        return false;
+    }
+    if (binding.length == 0) {
+        errors.log("command %u binding %s has an empty range", command.ordinal, binding.name.c_str());
+        return false;
+    }
+    if (binding.offset > concrete->length || binding.length > concrete->length - binding.offset) {
+        errors.log("command %u binding %s range is outside value %d", command.ordinal, binding.name.c_str(),
+                   binding.value.value);
+        return false;
+    }
+    ref = { concrete->buffer, concrete->offset + binding.offset, binding.length };
+    return true;
+}
+
+static bool execute_kernel_command(ggml_backend_hrx_context *                context,
+                                   const ggml::hrx::Command &                command,
+                                   const ggml::hrx::CommandProgramBindings & bindings) {
     if (command.kind != ggml::hrx::CommandKind::Kernel) {
         GGML_LOG_ERROR("%s: unsupported command kind\n", __func__);
         return false;
     }
 
-    ggml::hrx::Dispatch dispatch;
+    ggml::hrx::Dispatch           dispatch;
+    std::vector<hrx_buffer_ref_t> refs;
     dispatch.kernel = command.kernel;
     dispatch.bindings.reserve(command.bindings.size());
+    refs.reserve(command.bindings.size());
     for (const ggml::hrx::CommandBinding & binding : command.bindings) {
-        dispatch.bindings.push_back({ binding.value, binding.buffer, binding.offset, binding.length });
+        hrx_buffer_ref_t    ref = {};
+        ggml::hrx::ErrorLog errors;
+        if (!resolve_command_binding(command, binding, bindings, ref, errors)) {
+            GGML_LOG_ERROR("%s: %s\n", __func__, errors.front().c_str());
+            return false;
+        }
+        dispatch.bindings.push_back({ binding.value, binding.offset, binding.length });
+        refs.push_back(ref);
     }
-    return dispatch_request(context, dispatch);
+    return dispatch_request(context, dispatch, refs);
 }
 
-static bool execute_command_program(ggml_backend_hrx_context *        context,
-                                    const ggml::hrx::CommandProgram & commands,
-                                    const ggml::hrx::KernelCorpus &   corpus,
-                                    const std::string &               target) {
+static bool execute_command_program(ggml_backend_hrx_context *                context,
+                                    const ggml::hrx::CommandProgram &         commands,
+                                    const ggml::hrx::CommandProgramBindings & bindings,
+                                    const ggml::hrx::KernelCorpus &           corpus,
+                                    const std::string &                       target) {
     const ggml::hrx::VerificationResult verification = ggml::hrx::verify_command_program(commands, corpus, target);
     if (!verification.valid()) {
         GGML_LOG_ERROR("%s: invalid HRX command program: %s\n", __func__, verification.errors.front().c_str());
         return false;
     }
+    if (!bindings.valid()) {
+        GGML_LOG_ERROR("%s: invalid HRX command program bindings: %s\n", __func__, bindings.errors.front().c_str());
+        return false;
+    }
     for (const ggml::hrx::Command & command : commands.commands) {
-        if (!execute_kernel_command(context, command)) {
+        if (!execute_kernel_command(context, command, bindings)) {
             return false;
         }
     }
@@ -759,7 +810,9 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
     const ggml::hrx::KernelCorpus & corpus   = ggml::hrx::get_qwen_kernel_corpus();
     const std::string &             target   = context->device->architecture;
     const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(scheduler.plan(), corpus, target);
-    if (!execute_command_program(context, commands, corpus, target)) {
+    const ggml::hrx::CommandProgramBindings bindings =
+        ggml::hrx::CommandProgramBindings::from_value_map(imported.graph.values());
+    if (!execute_command_program(context, commands, bindings, corpus, target)) {
         return GGML_STATUS_FAILED;
     }
     return GGML_STATUS_SUCCESS;

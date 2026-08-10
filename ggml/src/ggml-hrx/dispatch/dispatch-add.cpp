@@ -25,11 +25,6 @@ static const Value * graph_value(const Graph & graph, ValueId id) {
     return graph.values().find(id);
 }
 
-static bool has_external_buffer(const Value * value) {
-    return value != nullptr && value->kind == ValueKind::External && value->buffer.has_value() &&
-           value->buffer->buffer != nullptr;
-}
-
 bool supports_add_f32_dispatch(const Graph & graph, const GraphNode * node) {
     if (node == nullptr || node->op != GGML_OP_ADD || node->inputs.size() != 2) {
         return false;
@@ -53,16 +48,16 @@ bool try_match_add_f32_dispatch(const Graph & graph, const GraphNode * node, Dis
     const Value * output = graph_value(graph, node->output);
     const Value * a      = graph_value(graph, node->inputs[0]);
     const Value * b      = graph_value(graph, node->inputs[1]);
-    if (!has_external_buffer(a) || !has_external_buffer(b) || !has_external_buffer(output)) {
+    if (output == nullptr || a == nullptr || b == nullptr) {
         return false;
     }
 
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kAddF32Kernel);
     dispatch.kernel.integer_parameters.emplace("element_count", output->element_count);
-    dispatch.bindings.push_back({ a->id, a->buffer->buffer, a->buffer->offset, a->buffer->length });
-    dispatch.bindings.push_back({ b->id, b->buffer->buffer, b->buffer->offset, b->buffer->length });
-    dispatch.bindings.push_back({ output->id, output->buffer->buffer, output->buffer->offset, output->buffer->length });
+    dispatch.bindings.push_back({ a->id, 0, a->byte_count });
+    dispatch.bindings.push_back({ b->id, 0, b->byte_count });
+    dispatch.bindings.push_back({ output->id, 0, output->byte_count });
 
     scheduler.enqueue(std::move(dispatch));
     return true;

@@ -25,10 +25,9 @@ inline KernelSpecialization make_kernel_specialization(KernelCatalogRef ref) {
 }
 
 struct DispatchBinding {
-    ValueId      value;
-    hrx_buffer_t buffer = nullptr;
-    size_t       offset = 0;
-    size_t       length = 0;
+    ValueId value;
+    size_t  offset = 0;
+    size_t  length = 0;
 };
 
 struct Dispatch {

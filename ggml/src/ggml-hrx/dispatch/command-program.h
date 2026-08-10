@@ -24,7 +24,6 @@ struct CommandBinding {
     std::string          name;
     ValueId              value;
     CommandBindingOrigin origin = CommandBindingOrigin::GraphValue;
-    hrx_buffer_t         buffer = nullptr;
     size_t               offset = 0;
     size_t               length = 0;
     ResourceAccess       access = ResourceAccess::Read;

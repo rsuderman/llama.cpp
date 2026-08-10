@@ -112,6 +112,8 @@ set_target_properties(ggml-hrx-kernel-corpus PROPERTIES POSITION_INDEPENDENT_COD
 
 ggml_add_backend_library(ggml-hrx
     dispatch/command-plan.h
+    dispatch/command-program-bindings.cpp
+    dispatch/command-program-bindings.h
     dispatch/command-program.cpp
     dispatch/command-program.h
     dispatch/dispatch-add.cpp

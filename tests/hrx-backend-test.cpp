@@ -1,3 +1,4 @@
+#include "dispatch/command-program-bindings.h"
 #include "dispatch/command-program.h"
 #include "dispatch/dispatch-scheduler.h"
 #include "ggml-alloc.h"
@@ -101,16 +102,37 @@ static void run_graph_import_checks() {
     REQUIRE(contains_value_id(external_ids, out_value->id));
 
     ggml::hrx::DispatchScheduler scheduler;
-    REQUIRE(!scheduler.schedule_graph(imported.graph));
-    REQUIRE(!scheduler.plan().valid());
-    REQUIRE(scheduler.plan().dispatches.empty());
-
-    REQUIRE(imported.graph.values().bind_buffer(a_value->id, { dummy_hrx_buffer(0x1000), 0, a_value->byte_count }));
-    REQUIRE(imported.graph.values().bind_buffer(out_value->id, { dummy_hrx_buffer(0x2000), 0, out_value->byte_count }));
     REQUIRE(scheduler.schedule_graph(imported.graph));
     REQUIRE(scheduler.plan().valid());
     REQUIRE(scheduler.plan().dispatches.size() == 1);
     REQUIRE(scheduler.plan().dispatches.front().bindings.size() == 3);
+    REQUIRE(scheduler.plan().dispatches.front().bindings[0].length == a_value->byte_count);
+
+    ggml::hrx::CommandProgramBindings missing_bindings =
+        ggml::hrx::CommandProgramBindings::from_value_map(imported.graph.values());
+    REQUIRE(!missing_bindings.valid());
+
+    REQUIRE(imported.graph.values().bind_buffer(a_value->id, { dummy_hrx_buffer(0x1000), 0, a_value->byte_count }));
+    ggml::hrx::CommandProgramBindings partial_bindings =
+        ggml::hrx::CommandProgramBindings::from_value_map(imported.graph.values());
+    REQUIRE(!partial_bindings.valid());
+
+    REQUIRE(imported.graph.values().bind_buffer(out_value->id, { dummy_hrx_buffer(0x2000), 0, 0 }));
+    ggml::hrx::CommandProgramBindings empty_runtime_binding =
+        ggml::hrx::CommandProgramBindings::from_value_map(imported.graph.values());
+    REQUIRE(!empty_runtime_binding.valid());
+
+    REQUIRE(imported.graph.values().bind_buffer(out_value->id, { dummy_hrx_buffer(0x2000), 0, out_value->byte_count }));
+    ggml::hrx::CommandProgramBindings runtime_bindings =
+        ggml::hrx::CommandProgramBindings::from_value_map(imported.graph.values());
+    REQUIRE(runtime_bindings.valid());
+    REQUIRE(runtime_bindings.bindings().size() == 2);
+    const ggml::hrx::CommandProgramBinding * a_binding = runtime_bindings.find(a_value->id);
+    REQUIRE(a_binding != nullptr);
+    REQUIRE(a_binding->buffer == dummy_hrx_buffer(0x1000));
+    REQUIRE(a_binding->offset == 0);
+    REQUIRE(a_binding->length == a_value->byte_count);
+    REQUIRE(runtime_bindings.find(ggml::hrx::ValueId(123456)) == nullptr);
 
     const ggml::hrx::CommandProgram commands =
         ggml::hrx::build_command_program(scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
@@ -136,10 +158,6 @@ static void run_graph_import_checks() {
     ggml::hrx::CommandProgram empty_bindings = commands;
     empty_bindings.commands.front().bindings.clear();
     REQUIRE(!command_program_verifies(empty_bindings));
-
-    ggml::hrx::CommandProgram null_buffer           = commands;
-    null_buffer.commands.front().bindings[0].buffer = nullptr;
-    REQUIRE(!command_program_verifies(null_buffer));
 
     ggml::hrx::CommandProgram empty_binding           = commands;
     empty_binding.commands.front().bindings[0].length = 0;
