@@ -134,8 +134,12 @@ ggml_add_backend_library(ggml-hrx
     graph/value-map.h
     runtime/command-program-executor.cpp
     runtime/command-program-executor.h
+    runtime/graph-program-cache.cpp
+    runtime/graph-program-cache.h
     runtime/kernel-executable-cache.cpp
     runtime/kernel-executable-cache.h
+    runtime/prepared-command-program-cache.cpp
+    runtime/prepared-command-program-cache.h
 )
 target_link_libraries(ggml-hrx PRIVATE ggml-hrx-kernel-corpus hrx::hrx loomc::loomc)
 target_include_directories(ggml-hrx PRIVATE . "${CMAKE_CURRENT_BINARY_DIR}")

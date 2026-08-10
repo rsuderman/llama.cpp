@@ -6,9 +6,11 @@
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-hrx.h"
+#include "ggml-impl.h"
 #include "ggml.h"
 #include "graph/graph.h"
 #include "runtime/command-program-executor.h"
+#include "runtime/graph-program-cache.h"
 
 #include <cmath>
 #include <cstdint>
@@ -149,6 +151,37 @@ static void run_graph_import_checks() {
     REQUIRE(a_binding->offset == 0);
     REQUIRE(a_binding->length == a_value->byte_count);
     REQUIRE(runtime_bindings.find(ggml::hrx::ValueId(123456)) == nullptr);
+
+    const ggml::hrx::CommandProgramBindingsFingerprint runtime_fingerprint =
+        ggml::hrx::command_program_bindings_fingerprint(runtime_bindings);
+    REQUIRE(!runtime_fingerprint.value.empty());
+
+    ggml::hrx::ValueMap changed_identity = imported.graph.values();
+    REQUIRE(changed_identity.bind_buffer(
+        a_value->id, { dummy_hrx_buffer(0x1000), 0, a_value->byte_count, 1, 0, a_value->byte_count }));
+    const ggml::hrx::CommandProgramBindings changed_identity_bindings =
+        ggml::hrx::CommandProgramBindings::from_value_map(changed_identity);
+    REQUIRE(changed_identity_bindings.valid());
+    REQUIRE(ggml::hrx::command_program_bindings_fingerprint(changed_identity_bindings).value !=
+            runtime_fingerprint.value);
+
+    ggml::hrx::ValueMap changed_generation = imported.graph.values();
+    REQUIRE(changed_generation.bind_buffer(
+        a_value->id, { dummy_hrx_buffer(0x1000), 0, a_value->byte_count, 0, 1, a_value->byte_count }));
+    const ggml::hrx::CommandProgramBindings changed_generation_bindings =
+        ggml::hrx::CommandProgramBindings::from_value_map(changed_generation);
+    REQUIRE(changed_generation_bindings.valid());
+    REQUIRE(ggml::hrx::command_program_bindings_fingerprint(changed_generation_bindings).value !=
+            runtime_fingerprint.value);
+
+    ggml::hrx::ValueMap changed_capacity = imported.graph.values();
+    REQUIRE(changed_capacity.bind_buffer(
+        a_value->id, { dummy_hrx_buffer(0x1000), 0, a_value->byte_count, 0, 0, a_value->byte_count + 256 }));
+    const ggml::hrx::CommandProgramBindings changed_capacity_bindings =
+        ggml::hrx::CommandProgramBindings::from_value_map(changed_capacity);
+    REQUIRE(changed_capacity_bindings.valid());
+    REQUIRE(ggml::hrx::command_program_bindings_fingerprint(changed_capacity_bindings).value !=
+            runtime_fingerprint.value);
 
     const ggml::hrx::CommandProgram commands =
         ggml::hrx::build_command_program(scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
@@ -389,6 +422,7 @@ static void run_multi_dispatch_checks() {
     REQUIRE(graph != nullptr);
     ggml_build_forward_expand(graph, out0);
     ggml_build_forward_expand(graph, out1);
+    graph->uid = 1001;
 
     ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
     REQUIRE(imported.valid());
@@ -533,6 +567,68 @@ static void run_chained_dispatch_requires_transients() {
     ggml_free(ctx);
 }
 
+static void run_graph_program_cache_uid_mismatch_checks() {
+    ggml::hrx::GraphProgramCache    cache;
+    const ggml::hrx::KernelCorpus & corpus = ggml::hrx::get_qwen_kernel_corpus();
+
+    ggml_init_params params = {};
+    params.mem_size         = 256 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * a    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * b    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * c    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * d    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * out0 = ggml_add(ctx, a, b);
+    ggml_tensor * out1 = ggml_add(ctx, c, d);
+    REQUIRE(a != nullptr);
+    REQUIRE(b != nullptr);
+    REQUIRE(c != nullptr);
+    REQUIRE(d != nullptr);
+    REQUIRE(out0 != nullptr);
+    REQUIRE(out1 != nullptr);
+
+    ggml_cgraph * graph0 = ggml_new_graph(ctx);
+    REQUIRE(graph0 != nullptr);
+    ggml_build_forward_expand(graph0, out0);
+    graph0->uid = 3001;
+
+    ggml::hrx::GraphProgramLookup lookup = cache.get_or_build(*graph0, corpus, "gfx1151");
+    REQUIRE(lookup.valid());
+    ggml::hrx::GraphProgramCacheStats stats = cache.stats();
+    REQUIRE(stats.builds == 1);
+    REQUIRE(stats.hits == 0);
+
+    ggml_cgraph * graph1 = ggml_new_graph(ctx);
+    REQUIRE(graph1 != nullptr);
+    ggml_build_forward_expand(graph1, out0);
+    ggml_build_forward_expand(graph1, out1);
+    graph1->uid = 3001;
+
+    lookup = cache.get_or_build(*graph1, corpus, "gfx1151");
+    REQUIRE(lookup.valid());
+    stats = cache.stats();
+    REQUIRE(stats.builds == 2);
+    REQUIRE(stats.hits == 0);
+
+    ggml_tensor * unsupported = ggml_sqr(ctx, a);
+    REQUIRE(unsupported != nullptr);
+    ggml_cgraph * graph2 = ggml_new_graph(ctx);
+    REQUIRE(graph2 != nullptr);
+    ggml_build_forward_expand(graph2, unsupported);
+    graph2->uid = 3001;
+
+    lookup = cache.get_or_build(*graph2, corpus, "gfx1151");
+    REQUIRE(!lookup.valid());
+    stats = cache.stats();
+    REQUIRE(stats.builds == 2);
+    REQUIRE(stats.hits == 0);
+
+    ggml_free(ctx);
+}
+
 static void run_add_f32() {
     ggml_backend_t backend = ggml_backend_hrx_init(0);
     REQUIRE(backend != nullptr);
@@ -612,6 +708,7 @@ static void run_two_independent_add_f32() {
     REQUIRE(graph != nullptr);
     ggml_build_forward_expand(graph, out0);
     ggml_build_forward_expand(graph, out1);
+    graph->uid = 1002;
 
     ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
     REQUIRE(buffer != nullptr);
@@ -636,8 +733,21 @@ static void run_two_independent_add_f32() {
     ggml_backend_tensor_set(c, c_data.data(), 0, c_data.size() * sizeof(float));
     ggml_backend_tensor_set(d, d_data.data(), 0, d_data.size() * sizeof(float));
 
+    ggml_backend_hrx_cache_stats cache_stats = {};
+    REQUIRE(ggml_backend_hrx_get_cache_stats(backend, &cache_stats));
+    REQUIRE(cache_stats.graph_program_builds == 0);
+    REQUIRE(cache_stats.graph_program_hits == 0);
+    REQUIRE(cache_stats.prepared_program_builds == 0);
+    REQUIRE(cache_stats.prepared_program_hits == 0);
+
     REQUIRE(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
     ggml_backend_synchronize(backend);
+
+    REQUIRE(ggml_backend_hrx_get_cache_stats(backend, &cache_stats));
+    REQUIRE(cache_stats.graph_program_builds == 1);
+    REQUIRE(cache_stats.graph_program_hits == 0);
+    REQUIRE(cache_stats.prepared_program_builds == 1);
+    REQUIRE(cache_stats.prepared_program_hits == 0);
 
     std::vector<float> actual0(element_count);
     std::vector<float> actual1(element_count);
@@ -648,8 +758,134 @@ static void run_two_independent_add_f32() {
         REQUIRE(actual1[i] == expected1[i]);
     }
 
+    for (int64_t i = 0; i < element_count; ++i) {
+        a_data[i]    = static_cast<float>(i % 23) * -0.25f + 5.0f;
+        b_data[i]    = static_cast<float>(i % 7) * 0.5f - 1.0f;
+        c_data[i]    = static_cast<float>(i % 5) * -0.125f + 2.0f;
+        d_data[i]    = static_cast<float>(i % 29) * 0.75f - 6.0f;
+        expected0[i] = a_data[i] + b_data[i];
+        expected1[i] = c_data[i] + d_data[i];
+    }
+    ggml_backend_tensor_set(a, a_data.data(), 0, a_data.size() * sizeof(float));
+    ggml_backend_tensor_set(b, b_data.data(), 0, b_data.size() * sizeof(float));
+    ggml_backend_tensor_set(c, c_data.data(), 0, c_data.size() * sizeof(float));
+    ggml_backend_tensor_set(d, d_data.data(), 0, d_data.size() * sizeof(float));
+
+    REQUIRE(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(backend);
+
+    REQUIRE(ggml_backend_hrx_get_cache_stats(backend, &cache_stats));
+    REQUIRE(cache_stats.graph_program_builds == 1);
+    REQUIRE(cache_stats.graph_program_hits == 1);
+    REQUIRE(cache_stats.prepared_program_builds == 1);
+    REQUIRE(cache_stats.prepared_program_hits == 1);
+
+    ggml_backend_tensor_get(out0, actual0.data(), 0, actual0.size() * sizeof(float));
+    ggml_backend_tensor_get(out1, actual1.data(), 0, actual1.size() * sizeof(float));
+    for (int64_t i = 0; i < element_count; ++i) {
+        REQUIRE(actual0[i] == expected0[i]);
+        REQUIRE(actual1[i] == expected1[i]);
+    }
+
     ggml_backend_buffer_free(buffer);
     ggml_free(ctx);
+    ggml_backend_free(backend);
+}
+
+static void run_same_uid_distinct_graph_reuses_graph_program() {
+    ggml_backend_t backend = ggml_backend_hrx_init(0);
+    REQUIRE(backend != nullptr);
+
+    constexpr int64_t  element_count = 1024;
+    std::vector<float> a_data(element_count);
+    std::vector<float> b_data(element_count);
+    std::vector<float> expected(element_count);
+
+    ggml_init_params params0 = {};
+    params0.mem_size         = 256 * 1024;
+    params0.no_alloc         = true;
+    ggml_context * ctx0      = ggml_init(params0);
+    REQUIRE(ctx0 != nullptr);
+
+    ggml_tensor * a0   = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, element_count);
+    ggml_tensor * b0   = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, element_count);
+    ggml_tensor * out0 = ggml_add(ctx0, a0, b0);
+    REQUIRE(a0 != nullptr);
+    REQUIRE(b0 != nullptr);
+    REQUIRE(out0 != nullptr);
+
+    ggml_cgraph * graph0 = ggml_new_graph(ctx0);
+    REQUIRE(graph0 != nullptr);
+    ggml_build_forward_expand(graph0, out0);
+    graph0->uid = 1003;
+
+    ggml_backend_buffer_t buffer0 = ggml_backend_alloc_ctx_tensors(ctx0, backend);
+    REQUIRE(buffer0 != nullptr);
+
+    for (int64_t i = 0; i < element_count; ++i) {
+        a_data[i]   = static_cast<float>(i % 17) * 0.25f - 2.0f;
+        b_data[i]   = static_cast<float>(i % 13) * -0.5f + 3.0f;
+        expected[i] = a_data[i] + b_data[i];
+    }
+    ggml_backend_tensor_set(a0, a_data.data(), 0, a_data.size() * sizeof(float));
+    ggml_backend_tensor_set(b0, b_data.data(), 0, b_data.size() * sizeof(float));
+    REQUIRE(ggml_backend_graph_compute(backend, graph0) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(backend);
+
+    ggml_backend_hrx_cache_stats cache_stats = {};
+    REQUIRE(ggml_backend_hrx_get_cache_stats(backend, &cache_stats));
+    REQUIRE(cache_stats.graph_program_builds == 1);
+    REQUIRE(cache_stats.graph_program_hits == 0);
+    REQUIRE(cache_stats.prepared_program_builds == 1);
+    REQUIRE(cache_stats.prepared_program_hits == 0);
+
+    ggml_init_params params1 = {};
+    params1.mem_size         = 256 * 1024;
+    params1.no_alloc         = true;
+    ggml_context * ctx1      = ggml_init(params1);
+    REQUIRE(ctx1 != nullptr);
+
+    ggml_tensor * a1   = ggml_new_tensor_1d(ctx1, GGML_TYPE_F32, element_count);
+    ggml_tensor * b1   = ggml_new_tensor_1d(ctx1, GGML_TYPE_F32, element_count);
+    ggml_tensor * out1 = ggml_add(ctx1, a1, b1);
+    REQUIRE(a1 != nullptr);
+    REQUIRE(b1 != nullptr);
+    REQUIRE(out1 != nullptr);
+
+    ggml_cgraph * graph1 = ggml_new_graph(ctx1);
+    REQUIRE(graph1 != nullptr);
+    ggml_build_forward_expand(graph1, out1);
+    graph1->uid = 1003;
+
+    ggml_backend_buffer_t buffer1 = ggml_backend_alloc_ctx_tensors(ctx1, backend);
+    REQUIRE(buffer1 != nullptr);
+
+    for (int64_t i = 0; i < element_count; ++i) {
+        a_data[i]   = static_cast<float>(i % 23) * -0.25f + 5.0f;
+        b_data[i]   = static_cast<float>(i % 7) * 0.5f - 1.0f;
+        expected[i] = a_data[i] + b_data[i];
+    }
+    ggml_backend_tensor_set(a1, a_data.data(), 0, a_data.size() * sizeof(float));
+    ggml_backend_tensor_set(b1, b_data.data(), 0, b_data.size() * sizeof(float));
+    REQUIRE(ggml_backend_graph_compute(backend, graph1) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(backend);
+
+    REQUIRE(ggml_backend_hrx_get_cache_stats(backend, &cache_stats));
+    REQUIRE(cache_stats.graph_program_builds == 1);
+    REQUIRE(cache_stats.graph_program_hits == 1);
+    REQUIRE(cache_stats.prepared_program_builds == 2);
+    REQUIRE(cache_stats.prepared_program_hits == 0);
+
+    std::vector<float> actual(element_count);
+    ggml_backend_tensor_get(out1, actual.data(), 0, actual.size() * sizeof(float));
+    for (int64_t i = 0; i < element_count; ++i) {
+        REQUIRE(actual[i] == expected[i]);
+    }
+
+    ggml_backend_buffer_free(buffer1);
+    ggml_free(ctx1);
+    ggml_backend_buffer_free(buffer0);
+    ggml_free(ctx0);
     ggml_backend_free(backend);
 }
 
@@ -690,6 +926,7 @@ int main() {
     run_multi_dispatch_checks();
     run_transient_import_checks();
     run_chained_dispatch_requires_transients();
+    run_graph_program_cache_uid_mismatch_checks();
 
     if (ggml_backend_hrx_get_device_count() == 0) {
         std::fprintf(stderr, "test skipped: no HRX devices available\n");
@@ -698,6 +935,7 @@ int main() {
 
     run_add_f32();
     run_two_independent_add_f32();
+    run_same_uid_distinct_graph_reuses_graph_program();
     run_unsupported_op_fails();
     return 0;
 }

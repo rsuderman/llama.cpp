@@ -16,6 +16,7 @@ namespace ggml::hrx {
 
 struct ValueId {
     ValueId() : value(-1) {}
+
     explicit ValueId(int32_t value) : value(value) {}
 
     int32_t value;
@@ -35,9 +36,12 @@ enum class ValueKind : uint8_t {
 };
 
 struct ValueBufferBinding {
-    hrx_buffer_t buffer = nullptr;
-    size_t       offset = 0;
-    size_t       length = 0;
+    hrx_buffer_t buffer     = nullptr;
+    size_t       offset     = 0;
+    size_t       length     = 0;
+    uint64_t     identity   = 0;
+    uint64_t     generation = 0;
+    size_t       capacity   = 0;
 };
 
 struct Value {

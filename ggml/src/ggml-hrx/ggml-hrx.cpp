@@ -1,22 +1,20 @@
 #include "ggml-hrx.h"
 
 #include "dispatch/command-program-bindings.h"
-#include "dispatch/command-program.h"
-#include "dispatch/dispatch-scheduler.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
-#include "graph/graph.h"
 #include "hrx_runtime.h"
 #include "kernel-corpus/kernel-corpus.h"
 #include "loom-jit.h"
 #include "runtime/command-program-executor.h"
+#include "runtime/graph-program-cache.h"
 #include "runtime/kernel-executable-cache.h"
+#include "runtime/prepared-command-program-cache.h"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -61,11 +59,13 @@ struct ggml_backend_hrx_device_context {
 };
 
 struct ggml_backend_hrx_context {
-    ggml_backend_hrx_device_context * device;
-    hrx_stream_t                      stream;
-    ggml_hrx_loom_jit_amdgpu *        jit = nullptr;
-    ggml::hrx::KernelExecutableCache  kernel_executables;
-    std::string                       name;
+    ggml_backend_hrx_device_context *      device;
+    hrx_stream_t                           stream;
+    ggml_hrx_loom_jit_amdgpu *             jit = nullptr;
+    ggml::hrx::KernelExecutableCache       kernel_executables;
+    ggml::hrx::GraphProgramCache           graph_programs;
+    ggml::hrx::PreparedCommandProgramCache prepared_programs;
+    std::string                            name;
 };
 
 struct ggml_backend_hrx_reg_context {
@@ -349,24 +349,37 @@ static bool resolve_value_buffer(const ggml_tensor * tensor, ggml::hrx::ValueBuf
     if (!tensor_hrx_binding(tensor, &context, &offset)) {
         return false;
     }
-    binding.buffer = context->buffer;
-    binding.offset = offset;
-    binding.length = ggml_nbytes(tensor);
+    ggml_backend_buffer_t buffer = tensor->view_src != nullptr ? tensor->view_src->buffer : tensor->buffer;
+    binding.buffer               = context->buffer;
+    binding.offset               = offset;
+    binding.length               = ggml_nbytes(tensor);
+    binding.identity             = context->identity;
+    binding.generation           = context->generation;
+    binding.capacity             = buffer != nullptr ? buffer->size : 0;
     return true;
 }
 
-static void bind_external_value_buffers(ggml::hrx::ValueMap & values) {
-    for (const ggml::hrx::ValueId id : values.external_value_ids()) {
-        const ggml::hrx::Value * value = values.find(id);
-        if (value == nullptr || value->tensor == nullptr) {
-            continue;
+static ggml::hrx::CommandProgramBindings bind_external_value_buffers(const ggml::hrx::GraphProgramMatch & match) {
+    std::vector<ggml::hrx::CommandProgramBinding> bindings;
+    ggml::hrx::ErrorLog                           errors;
+    bindings.reserve(match.external_bindings.size());
+    for (const ggml::hrx::GraphProgramExternalBinding & external : match.external_bindings) {
+        ggml::hrx::ValueBufferBinding    value_binding;
+        ggml::hrx::CommandProgramBinding binding;
+        binding.value = external.value;
+        if (resolve_value_buffer(external.tensor, value_binding)) {
+            binding.buffer     = value_binding.buffer;
+            binding.offset     = value_binding.offset;
+            binding.length     = value_binding.length;
+            binding.identity   = value_binding.identity;
+            binding.generation = value_binding.generation;
+            binding.capacity   = value_binding.capacity;
+        } else {
+            errors.log("external value %d is not bound", external.value.value);
         }
-
-        ggml::hrx::ValueBufferBinding binding;
-        if (resolve_value_buffer(value->tensor, binding)) {
-            values.bind_buffer(id, binding);
-        }
+        bindings.push_back(binding);
     }
+    return ggml::hrx::CommandProgramBindings::from_bindings(std::move(bindings), errors);
 }
 
 static const char * backend_name(ggml_backend_t backend) {
@@ -376,6 +389,8 @@ static const char * backend_name(ggml_backend_t backend) {
 static void backend_free(ggml_backend_t backend) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
     HRX_CHECK(hrx_stream_synchronize(context->stream));
+    context->prepared_programs.clear();
+    context->graph_programs.clear();
     context->kernel_executables.clear();
     if (context->jit != nullptr) {
         ggml_hrx_loom_jit_amdgpu_release(context->jit);
@@ -451,48 +466,24 @@ static void backend_synchronize(ggml_backend_t backend) {
     HRX_CHECK(hrx_stream_synchronize(context->stream));
 }
 
-static bool supports_standalone_op_as_graph(const ggml_tensor * op) {
-    if (op == nullptr) {
-        return false;
-    }
-    ggml::hrx::Graph                graph;
-    std::vector<ggml::hrx::ValueId> inputs;
-    for (const ggml_tensor * source : op->src) {
-        if (source == nullptr) {
-            continue;
-        }
-        inputs.push_back(graph.values().get_or_add_tensor_value(source, ggml::hrx::ValueKind::External));
-    }
-    const ggml::hrx::ValueId     output = graph.values().get_or_add_tensor_value(op, ggml::hrx::ValueKind::External);
-    const ggml::hrx::GraphNode & node   = graph.add_node(op->op, output, std::move(inputs));
-    return ggml::hrx::DispatchScheduler::supports_node(graph, &node);
-}
-
 static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * graph) {
     if (graph->n_nodes == 0) {
         return GGML_STATUS_SUCCESS;
     }
-    auto *                       context  = static_cast<ggml_backend_hrx_context *>(backend->context);
-    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
-    if (!imported.valid()) {
-        GGML_LOG_ERROR("%s: import HRX graph: %s\n", __func__, imported.errors.front().c_str());
+    auto *                          context = static_cast<ggml_backend_hrx_context *>(backend->context);
+    const ggml::hrx::KernelCorpus & corpus  = ggml::hrx::get_qwen_kernel_corpus();
+    const std::string &             target  = context->device->architecture;
+    ggml::hrx::GraphProgramLookup   lookup  = context->graph_programs.get_or_build(*graph, corpus, target);
+    if (!lookup.valid()) {
+        GGML_LOG_ERROR("%s: build HRX graph program: %s\n", __func__, lookup.errors.front().c_str());
         return GGML_STATUS_FAILED;
     }
-    bind_external_value_buffers(imported.graph.values());
-    ggml::hrx::DispatchScheduler scheduler;
-    if (!scheduler.schedule_graph(imported.graph)) {
-        GGML_LOG_ERROR("%s: %s\n", __func__, scheduler.error().c_str());
-        return GGML_STATUS_FAILED;
-    }
-    const ggml::hrx::KernelCorpus & corpus   = ggml::hrx::get_qwen_kernel_corpus();
-    const std::string &             target   = context->device->architecture;
-    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(scheduler.plan(), corpus, target);
-    const ggml::hrx::CommandProgramBindings bindings =
-        ggml::hrx::CommandProgramBindings::from_value_map(imported.graph.values());
+    const ggml::hrx::CommandProgramBindings         bindings          = bind_external_value_buffers(lookup.match);
     const ggml::hrx::CommandProgramExecutionContext execution_context = {
         context->device->device, context->stream, target.c_str(), &corpus, &context->jit, &context->kernel_executables,
     };
-    if (!ggml::hrx::execute_command_program(execution_context, commands, bindings)) {
+    if (!context->prepared_programs.execute(execution_context, lookup.program->uid(), lookup.program->command_shape(),
+                                            lookup.program->commands(), bindings)) {
         return GGML_STATUS_FAILED;
     }
     return GGML_STATUS_SUCCESS;
@@ -501,10 +492,11 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
 static enum ggml_backend_graph_claim_result graph_claim(ggml_backend_t                     backend,
                                                         const ggml_cgraph *                graph,
                                                         enum ggml_backend_graph_claim_mode mode) {
-    GGML_UNUSED(backend);
     GGML_UNUSED(mode);
-    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
-    if (!imported.valid() || !ggml::hrx::DispatchScheduler::can_schedule_graph(imported.graph)) {
+    auto *                          context = static_cast<ggml_backend_hrx_context *>(backend->context);
+    const ggml::hrx::KernelCorpus & corpus  = ggml::hrx::get_qwen_kernel_corpus();
+    const std::string &             target  = context->device->architecture;
+    if (!context->graph_programs.can_execute(*graph, corpus, target)) {
         return GGML_BACKEND_GRAPH_CLAIM_DECLINED;
     }
     return GGML_BACKEND_GRAPH_CLAIM_ACCEPTED;
@@ -586,7 +578,7 @@ static ggml_backend_buffer_type_t device_buffer_type(ggml_backend_dev_t device) 
 
 static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op) {
     GGML_UNUSED(device);
-    return supports_standalone_op_as_graph(op);
+    return ggml::hrx::can_execute_standalone_op_as_graph(op);
 }
 
 static bool device_supports_buffer_type(ggml_backend_dev_t device, ggml_backend_buffer_type_t buft) {
@@ -711,6 +703,20 @@ ggml_backend_t ggml_backend_hrx_init(size_t device) {
 
 bool ggml_backend_is_hrx(ggml_backend_t backend) {
     return backend != nullptr && ggml_guid_matches(backend->guid, ggml_backend_hrx_guid());
+}
+
+bool ggml_backend_hrx_get_cache_stats(ggml_backend_t backend, ggml_backend_hrx_cache_stats * stats) {
+    if (!ggml_backend_is_hrx(backend) || stats == nullptr) {
+        return false;
+    }
+    auto *                                  context     = static_cast<ggml_backend_hrx_context *>(backend->context);
+    const ggml::hrx::GraphProgramCacheStats graph_stats = context->graph_programs.stats();
+    const ggml::hrx::PreparedCommandProgramCacheStats prepared_stats = context->prepared_programs.stats();
+    stats->graph_program_builds                                      = graph_stats.builds;
+    stats->graph_program_hits                                        = graph_stats.hits;
+    stats->prepared_program_builds                                   = prepared_stats.builds;
+    stats->prepared_program_hits                                     = prepared_stats.hits;
+    return true;
 }
 
 int ggml_backend_hrx_get_device_count() {
