@@ -2,6 +2,7 @@
 
 #include "command-plan.h"
 #include "error-log.h"
+#include "graph/graph.h"
 #include "kernel-corpus/kernel-corpus.h"
 #include "kernel-corpus/kernel-types.h"
 
@@ -19,6 +20,7 @@ enum class CommandKind : uint8_t {
 
 enum class CommandBindingOrigin : uint8_t {
     GraphValue,
+    Transient,
 };
 
 struct CommandBinding {
@@ -45,7 +47,10 @@ struct CommandProgram {
     bool valid() const { return errors.success(); }
 };
 
-CommandProgram build_command_program(const CommandPlan & plan, const KernelCorpus & corpus, const std::string & target);
+CommandProgram     build_command_program(const Graph &        graph,
+                                         const CommandPlan &  plan,
+                                         const KernelCorpus & corpus,
+                                         const std::string &  target);
 VerificationResult verify_command_program(const CommandProgram & program,
                                           const KernelCorpus &   corpus,
                                           const std::string &    target);

@@ -258,7 +258,7 @@ std::unique_ptr<GraphProgram> GraphProgramCache::build_program(const ggml_cgraph
         return nullptr;
     }
 
-    CommandProgram commands = build_command_program(scheduler.plan(), corpus, target);
+    CommandProgram commands = build_command_program(imported.graph, scheduler.plan(), corpus, target);
     if (!commands.valid()) {
         errors.append(commands.errors);
         return nullptr;

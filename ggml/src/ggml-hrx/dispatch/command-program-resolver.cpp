@@ -14,30 +14,36 @@ static bool resolve_command_binding(const Command &                command,
                                     ErrorLog &                     errors) {
     const std::string command_context = format_command(command);
     const std::string binding_context = format_command_binding(binding);
-    if (binding.origin != CommandBindingOrigin::GraphValue) {
-        errors.log("%s %s has an unsupported binding origin", command_context.c_str(), binding_context.c_str());
-        return false;
-    }
-    const CommandProgramBinding * concrete = bindings.find(binding.value);
-    if (concrete == nullptr) {
-        errors.log("%s %s is not bound", command_context.c_str(), binding_context.c_str());
-        return false;
-    }
-    if (concrete->buffer == nullptr) {
-        errors.log("%s %s has a null buffer", command_context.c_str(), binding_context.c_str());
-        return false;
-    }
     if (binding.length == 0) {
         errors.log("%s %s has an empty range", command_context.c_str(), binding_context.c_str());
         return false;
     }
-    if (binding.offset > concrete->length || binding.length > concrete->length - binding.offset) {
-        errors.log("%s %s is outside runtime binding length %zu", command_context.c_str(), binding_context.c_str(),
-                   concrete->length);
-        return false;
+    switch (binding.origin) {
+        case CommandBindingOrigin::GraphValue:
+            {
+                const CommandProgramBinding * concrete = bindings.find(binding.value);
+                if (concrete == nullptr) {
+                    errors.log("%s %s is not bound", command_context.c_str(), binding_context.c_str());
+                    return false;
+                }
+                if (concrete->buffer == nullptr) {
+                    errors.log("%s %s has a null buffer", command_context.c_str(), binding_context.c_str());
+                    return false;
+                }
+                if (binding.offset > concrete->length || binding.length > concrete->length - binding.offset) {
+                    errors.log("%s %s is outside runtime binding length %zu", command_context.c_str(),
+                               binding_context.c_str(), concrete->length);
+                    return false;
+                }
+                ref = { concrete->buffer, concrete->offset + binding.offset, binding.length };
+                return true;
+            }
+        case CommandBindingOrigin::Transient:
+            errors.log("%s %s has no transient allocation", command_context.c_str(), binding_context.c_str());
+            return false;
     }
-    ref = { concrete->buffer, concrete->offset + binding.offset, binding.length };
-    return true;
+    errors.log("%s %s has an unsupported binding origin", command_context.c_str(), binding_context.c_str());
+    return false;
 }
 
 }  // namespace

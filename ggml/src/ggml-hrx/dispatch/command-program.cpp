@@ -18,9 +18,20 @@ static std::string string_value(const char * value) {
     return value != nullptr ? value : "";
 }
 
+static CommandBindingOrigin command_binding_origin(ValueKind kind) {
+    switch (kind) {
+        case ValueKind::External:
+            return CommandBindingOrigin::GraphValue;
+        case ValueKind::Transient:
+            return CommandBindingOrigin::Transient;
+    }
+    return CommandBindingOrigin::GraphValue;
+}
+
 }  // namespace
 
-CommandProgram build_command_program(const CommandPlan &  plan,
+CommandProgram build_command_program(const Graph &        graph,
+                                     const CommandPlan &  plan,
                                      const KernelCorpus & corpus,
                                      const std::string &  target) {
     CommandProgram result;
@@ -54,9 +65,15 @@ CommandProgram build_command_program(const CommandPlan &  plan,
             const DispatchBinding & binding = dispatch.bindings[binding_index];
             CommandBinding          command_binding;
             command_binding.value  = binding.value;
-            command_binding.origin = CommandBindingOrigin::GraphValue;
             command_binding.offset = binding.offset;
             command_binding.length = binding.length;
+            const Value * value    = graph.values().find(binding.value);
+            if (value == nullptr) {
+                result.errors.log("command %u binding %zu references missing graph value %d", command.ordinal,
+                                  binding_index, binding.value.value);
+            } else {
+                command_binding.origin = command_binding_origin(value->kind);
+            }
             if (definition != nullptr && binding_index < definition->bindings.size()) {
                 command_binding.name   = string_value(definition->bindings[binding_index].name);
                 command_binding.access = definition->bindings[binding_index].access;
@@ -119,8 +136,10 @@ VerificationResult verify_command_program(const CommandProgram & program,
         }
         for (const CommandBinding & binding : command.bindings) {
             const std::string binding_context = format_command_binding(binding);
-            if (binding.origin != CommandBindingOrigin::GraphValue) {
-                result.errors.log("%s %s is not a graph binding", command_context.c_str(), binding_context.c_str());
+            if (binding.origin != CommandBindingOrigin::GraphValue &&
+                binding.origin != CommandBindingOrigin::Transient) {
+                result.errors.log("%s %s has an unsupported binding origin", command_context.c_str(),
+                                  binding_context.c_str());
             }
             if (binding.value.value < 0) {
                 result.errors.log("%s %s has an invalid value id", command_context.c_str(), binding_context.c_str());

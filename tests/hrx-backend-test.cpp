@@ -183,8 +183,8 @@ static void run_graph_import_checks() {
     REQUIRE(ggml::hrx::command_program_bindings_fingerprint(changed_capacity_bindings).value !=
             runtime_fingerprint.value);
 
-    const ggml::hrx::CommandProgram commands =
-        ggml::hrx::build_command_program(scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
     REQUIRE(commands.valid());
     REQUIRE(commands.commands.size() == 1);
     const ggml::hrx::Command & command = commands.commands.front();
@@ -193,10 +193,13 @@ static void run_graph_import_checks() {
     REQUIRE(command.kernel.kernel_id != ggml::hrx::kUncatalogedKernelId);
     REQUIRE(command.bindings.size() == 3);
     REQUIRE(command.bindings[0].name == "a");
+    REQUIRE(command.bindings[0].origin == ggml::hrx::CommandBindingOrigin::GraphValue);
     REQUIRE(command.bindings[0].access == ggml::hrx::ResourceAccess::Read);
     REQUIRE(command.bindings[1].name == "b");
+    REQUIRE(command.bindings[1].origin == ggml::hrx::CommandBindingOrigin::GraphValue);
     REQUIRE(command.bindings[1].access == ggml::hrx::ResourceAccess::Read);
     REQUIRE(command.bindings[2].name == "output");
+    REQUIRE(command.bindings[2].origin == ggml::hrx::CommandBindingOrigin::GraphValue);
     REQUIRE(command.bindings[2].access == ggml::hrx::ResourceAccess::ReadWrite);
     REQUIRE(command_program_verifies(commands));
 
@@ -206,6 +209,7 @@ static void run_graph_import_checks() {
     REQUIRE(ggml::hrx::command_kind_name(ggml::hrx::CommandKind::Kernel) == "Kernel");
     REQUIRE(ggml::hrx::command_kind_name(static_cast<ggml::hrx::CommandKind>(255)) == "Unknown(255)");
     REQUIRE(ggml::hrx::command_binding_origin_name(ggml::hrx::CommandBindingOrigin::GraphValue) == "GraphValue");
+    REQUIRE(ggml::hrx::command_binding_origin_name(ggml::hrx::CommandBindingOrigin::Transient) == "Transient");
     REQUIRE(ggml::hrx::command_binding_origin_name(static_cast<ggml::hrx::CommandBindingOrigin>(255)) ==
             "Unknown(255)");
     REQUIRE(ggml::hrx::resource_access_name(ggml::hrx::ResourceAccess::Read) == "Read");
@@ -317,11 +321,15 @@ static void run_graph_import_checks() {
     REQUIRE(!resolved.valid());
     REQUIRE(error_log_contains(resolved.errors, "unsupported binding origin"));
     REQUIRE(error_log_contains(resolved.errors, "origin=Unknown(255)"));
+    ggml::hrx::VerificationResult verification =
+        ggml::hrx::verify_command_program(unsupported_origin, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(!verification.valid());
+    REQUIRE(error_log_contains(verification.errors, "unsupported binding origin"));
+    REQUIRE(error_log_contains(verification.errors, "origin=Unknown(255)"));
 
     ggml::hrx::CommandProgram invalid_kernel         = commands;
     invalid_kernel.commands.front().kernel.kernel_id = ggml::hrx::kUncatalogedKernelId;
-    ggml::hrx::VerificationResult verification =
-        ggml::hrx::verify_command_program(invalid_kernel, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    verification = ggml::hrx::verify_command_program(invalid_kernel, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
     REQUIRE(!verification.valid());
     REQUIRE(error_log_contains(verification.errors, "command 0"));
     REQUIRE(error_log_contains(verification.errors, "kernel_id="));
@@ -439,8 +447,8 @@ static void run_multi_dispatch_checks() {
     REQUIRE(scheduler.plan().valid());
     REQUIRE(scheduler.plan().dispatches.size() == 2);
 
-    const ggml::hrx::CommandProgram commands =
-        ggml::hrx::build_command_program(scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
     REQUIRE(commands.valid());
     REQUIRE(commands.commands.size() == 2);
     REQUIRE(commands.commands[0].ordinal == 0);
@@ -545,13 +553,26 @@ static void run_chained_dispatch_requires_transients() {
     REQUIRE(scheduler.plan().valid());
     REQUIRE(scheduler.plan().dispatches.size() == 2);
 
-    const ggml::hrx::CommandProgram commands =
-        ggml::hrx::build_command_program(scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
     REQUIRE(commands.valid());
     REQUIRE(commands.commands.size() == 2);
     REQUIRE(commands.commands[1].dependencies.size() == 1);
     REQUIRE(commands.commands[1].dependencies[0] == 0);
+    REQUIRE(commands.commands[0].bindings.size() == 3);
+    REQUIRE(commands.commands[1].bindings.size() == 3);
+    REQUIRE(commands.commands[0].bindings[0].origin == ggml::hrx::CommandBindingOrigin::GraphValue);
+    REQUIRE(commands.commands[0].bindings[1].origin == ggml::hrx::CommandBindingOrigin::GraphValue);
+    REQUIRE(commands.commands[0].bindings[2].value == sum_value->id);
+    REQUIRE(commands.commands[0].bindings[2].origin == ggml::hrx::CommandBindingOrigin::Transient);
+    REQUIRE(commands.commands[1].bindings[0].value == sum_value->id);
+    REQUIRE(commands.commands[1].bindings[0].origin == ggml::hrx::CommandBindingOrigin::Transient);
+    REQUIRE(commands.commands[1].bindings[1].origin == ggml::hrx::CommandBindingOrigin::GraphValue);
+    REQUIRE(commands.commands[1].bindings[2].origin == ggml::hrx::CommandBindingOrigin::GraphValue);
     REQUIRE(command_program_verifies(commands));
+
+    const std::string transient_binding_text = ggml::hrx::format_command_binding(commands.commands[1].bindings[0]);
+    REQUIRE(string_contains(transient_binding_text, "origin=Transient"));
 
     bind_external_values(imported.graph.values());
     const ggml::hrx::CommandProgramBindings bindings =
@@ -561,7 +582,8 @@ static void run_chained_dispatch_requires_transients() {
 
     const ggml::hrx::ResolvedCommandProgram resolved = ggml::hrx::resolve_command_program_bindings(commands, bindings);
     REQUIRE(!resolved.valid());
-    REQUIRE(error_log_contains(resolved.errors, "is not bound"));
+    REQUIRE(error_log_contains(resolved.errors, "no transient allocation"));
+    REQUIRE(error_log_contains(resolved.errors, "origin=Transient"));
     REQUIRE(error_log_contains(resolved.errors, "value="));
 
     ggml_free(ctx);
