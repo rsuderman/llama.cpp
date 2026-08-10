@@ -10,15 +10,17 @@ CommandProgramBindings CommandProgramBindings::from_value_map(const ValueMap & v
             result.errors.log("external value %d does not exist", id.value);
             continue;
         }
-        if (!value->buffer.has_value() || value->buffer->buffer == nullptr) {
+        if (!value->buffer.has_value()) {
             result.errors.log("external value %d is not bound", id.value);
             continue;
         }
+        result.bindings_.push_back({ value->id, value->buffer->buffer, value->buffer->offset, value->buffer->length });
+        if (value->buffer->buffer == nullptr) {
+            result.errors.log("external value %d has a null binding", id.value);
+        }
         if (value->buffer->length == 0) {
             result.errors.log("external value %d has an empty binding", id.value);
-            continue;
         }
-        result.bindings_.push_back({ value->id, value->buffer->buffer, value->buffer->offset, value->buffer->length });
     }
     return result;
 }

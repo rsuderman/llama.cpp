@@ -116,6 +116,8 @@ ggml_add_backend_library(ggml-hrx
     dispatch/command-program-bindings.h
     dispatch/command-program.cpp
     dispatch/command-program.h
+    dispatch/command-program-resolver.cpp
+    dispatch/command-program-resolver.h
     dispatch/dispatch-add.cpp
     dispatch/dispatch-add.h
     dispatch/dispatch-scheduler.cpp
@@ -128,6 +130,10 @@ ggml_add_backend_library(ggml-hrx
     loom-jit.cpp
     graph/value-map.cpp
     graph/value-map.h
+    runtime/command-program-executor.cpp
+    runtime/command-program-executor.h
+    runtime/kernel-executable-cache.cpp
+    runtime/kernel-executable-cache.h
 )
 target_link_libraries(ggml-hrx PRIVATE ggml-hrx-kernel-corpus hrx::hrx loomc::loomc)
 target_include_directories(ggml-hrx PRIVATE . "${CMAKE_CURRENT_BINARY_DIR}")

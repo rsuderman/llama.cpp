@@ -1,4 +1,5 @@
 #include "dispatch/command-program-bindings.h"
+#include "dispatch/command-program-resolver.h"
 #include "dispatch/command-program.h"
 #include "dispatch/dispatch-scheduler.h"
 #include "ggml-alloc.h"
@@ -37,6 +38,15 @@ static bool contains_value_id(const std::vector<ggml::hrx::ValueId> & ids, ggml:
 
 static bool command_program_verifies(const ggml::hrx::CommandProgram & program) {
     return ggml::hrx::verify_command_program(program, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151").valid();
+}
+
+static bool error_log_contains(const ggml::hrx::ErrorLog & errors, const char * text) {
+    for (const std::string & message : errors.messages()) {
+        if (message.find(text) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void run_error_log_checks() {
@@ -150,6 +160,83 @@ static void run_graph_import_checks() {
     REQUIRE(command.bindings[2].name == "output");
     REQUIRE(command.bindings[2].access == ggml::hrx::ResourceAccess::ReadWrite);
     REQUIRE(command_program_verifies(commands));
+
+    ggml::hrx::ResolvedCommandProgram resolved =
+        ggml::hrx::resolve_command_program_bindings(commands, runtime_bindings);
+    REQUIRE(resolved.valid());
+    REQUIRE(resolved.commands.size() == 1);
+    REQUIRE(resolved.commands.front().ordinal == command.ordinal);
+    REQUIRE(resolved.commands.front().kind == command.kind);
+    REQUIRE(resolved.commands.front().kernel.kernel_id == command.kernel.kernel_id);
+    REQUIRE(resolved.commands.front().bindings.size() == 3);
+    REQUIRE(resolved.commands.front().bindings[0].binding.name == "a");
+    REQUIRE(resolved.commands.front().bindings[0].ref.buffer == dummy_hrx_buffer(0x1000));
+    REQUIRE(resolved.commands.front().bindings[0].ref.offset == 0);
+    REQUIRE(resolved.commands.front().bindings[0].ref.length == a_value->byte_count);
+    REQUIRE(resolved.commands.front().bindings[1].binding.name == "b");
+    REQUIRE(resolved.commands.front().bindings[1].ref.buffer == dummy_hrx_buffer(0x1000));
+    REQUIRE(resolved.commands.front().bindings[1].ref.offset == 0);
+    REQUIRE(resolved.commands.front().bindings[1].ref.length == a_value->byte_count);
+    REQUIRE(resolved.commands.front().bindings[2].binding.name == "output");
+    REQUIRE(resolved.commands.front().bindings[2].ref.buffer == dummy_hrx_buffer(0x2000));
+    REQUIRE(resolved.commands.front().bindings[2].ref.offset == 0);
+    REQUIRE(resolved.commands.front().bindings[2].ref.length == out_value->byte_count);
+
+    ggml::hrx::CommandProgram offset_command           = commands;
+    offset_command.commands.front().bindings[0].offset = 4;
+    offset_command.commands.front().bindings[0].length = 8;
+    ggml::hrx::ValueMap offset_values                  = imported.graph.values();
+    REQUIRE(offset_values.bind_buffer(a_value->id, { dummy_hrx_buffer(0x3000), 16, a_value->byte_count }));
+    REQUIRE(offset_values.bind_buffer(out_value->id, { dummy_hrx_buffer(0x4000), 32, out_value->byte_count }));
+    const ggml::hrx::CommandProgramBindings offset_bindings =
+        ggml::hrx::CommandProgramBindings::from_value_map(offset_values);
+    REQUIRE(offset_bindings.valid());
+    resolved = ggml::hrx::resolve_command_program_bindings(offset_command, offset_bindings);
+    REQUIRE(resolved.valid());
+    REQUIRE(resolved.commands.front().bindings[0].ref.buffer == dummy_hrx_buffer(0x3000));
+    REQUIRE(resolved.commands.front().bindings[0].ref.offset == 20);
+    REQUIRE(resolved.commands.front().bindings[0].ref.length == 8);
+
+    resolved = ggml::hrx::resolve_command_program_bindings(commands, missing_bindings);
+    REQUIRE(!resolved.valid());
+    REQUIRE(error_log_contains(resolved.errors, "is not bound"));
+
+    resolved = ggml::hrx::resolve_command_program_bindings(commands, partial_bindings);
+    REQUIRE(!resolved.valid());
+    REQUIRE(error_log_contains(resolved.errors, "is not bound"));
+
+    resolved = ggml::hrx::resolve_command_program_bindings(commands, empty_runtime_binding);
+    REQUIRE(!resolved.valid());
+    REQUIRE(error_log_contains(resolved.errors, "empty binding"));
+
+    ggml::hrx::ValueMap null_values = imported.graph.values();
+    REQUIRE(null_values.bind_buffer(a_value->id, { nullptr, 0, a_value->byte_count }));
+    REQUIRE(null_values.bind_buffer(out_value->id, { dummy_hrx_buffer(0x2000), 0, out_value->byte_count }));
+    const ggml::hrx::CommandProgramBindings null_bindings =
+        ggml::hrx::CommandProgramBindings::from_value_map(null_values);
+    REQUIRE(!null_bindings.valid());
+    resolved = ggml::hrx::resolve_command_program_bindings(commands, null_bindings);
+    REQUIRE(!resolved.valid());
+    REQUIRE(error_log_contains(resolved.errors, "null buffer"));
+
+    ggml::hrx::CommandProgram empty_resolve_binding           = commands;
+    empty_resolve_binding.commands.front().bindings[0].length = 0;
+    resolved = ggml::hrx::resolve_command_program_bindings(empty_resolve_binding, runtime_bindings);
+    REQUIRE(!resolved.valid());
+    REQUIRE(error_log_contains(resolved.errors, "empty range"));
+
+    ggml::hrx::CommandProgram out_of_range_binding           = commands;
+    out_of_range_binding.commands.front().bindings[0].offset = a_value->byte_count;
+    out_of_range_binding.commands.front().bindings[0].length = 4;
+    resolved = ggml::hrx::resolve_command_program_bindings(out_of_range_binding, runtime_bindings);
+    REQUIRE(!resolved.valid());
+    REQUIRE(error_log_contains(resolved.errors, "outside runtime binding length"));
+
+    ggml::hrx::CommandProgram unsupported_origin           = commands;
+    unsupported_origin.commands.front().bindings[0].origin = static_cast<ggml::hrx::CommandBindingOrigin>(255);
+    resolved = ggml::hrx::resolve_command_program_bindings(unsupported_origin, runtime_bindings);
+    REQUIRE(!resolved.valid());
+    REQUIRE(error_log_contains(resolved.errors, "unsupported binding origin"));
 
     ggml::hrx::CommandProgram invalid_kernel         = commands;
     invalid_kernel.commands.front().kernel.kernel_id = ggml::hrx::kUncatalogedKernelId;
