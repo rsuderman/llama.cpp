@@ -1,4 +1,5 @@
 #include "dispatch/command-program-bindings.h"
+#include "dispatch/command-program-diagnostics.h"
 #include "dispatch/command-program-resolver.h"
 #include "dispatch/command-program.h"
 #include "dispatch/dispatch-scheduler.h"
@@ -47,6 +48,10 @@ static bool error_log_contains(const ggml::hrx::ErrorLog & errors, const char * 
         }
     }
     return false;
+}
+
+static bool string_contains(const std::string & value, const char * text) {
+    return value.find(text) != std::string::npos;
 }
 
 static void run_error_log_checks() {
@@ -161,6 +166,38 @@ static void run_graph_import_checks() {
     REQUIRE(command.bindings[2].access == ggml::hrx::ResourceAccess::ReadWrite);
     REQUIRE(command_program_verifies(commands));
 
+    REQUIRE(ggml::hrx::command_kind_name(ggml::hrx::CommandKind::Kernel) == "Kernel");
+    REQUIRE(ggml::hrx::command_kind_name(static_cast<ggml::hrx::CommandKind>(255)) == "Unknown(255)");
+    REQUIRE(ggml::hrx::command_binding_origin_name(ggml::hrx::CommandBindingOrigin::GraphValue) == "GraphValue");
+    REQUIRE(ggml::hrx::command_binding_origin_name(static_cast<ggml::hrx::CommandBindingOrigin>(255)) ==
+            "Unknown(255)");
+    REQUIRE(ggml::hrx::resource_access_name(ggml::hrx::ResourceAccess::Read) == "Read");
+    REQUIRE(ggml::hrx::resource_access_name(ggml::hrx::ResourceAccess::Write) == "Write");
+    REQUIRE(ggml::hrx::resource_access_name(ggml::hrx::ResourceAccess::ReadWrite) == "ReadWrite");
+    REQUIRE(ggml::hrx::resource_access_name(static_cast<ggml::hrx::ResourceAccess>(255)) == "Unknown(255)");
+
+    const std::string binding_text = ggml::hrx::format_command_binding(command.bindings[0]);
+    REQUIRE(string_contains(binding_text, "binding a"));
+    REQUIRE(string_contains(binding_text, "value="));
+    REQUIRE(string_contains(binding_text, "origin=GraphValue"));
+    REQUIRE(string_contains(binding_text, "access=Read"));
+    REQUIRE(string_contains(binding_text, "range=[0, "));
+    REQUIRE(string_contains(binding_text, std::to_string(a_value->byte_count).c_str()));
+
+    const std::string command_text = ggml::hrx::format_command(command);
+    REQUIRE(string_contains(command_text, "command 0"));
+    REQUIRE(string_contains(command_text, "kind=Kernel"));
+    REQUIRE(string_contains(command_text, "kernel_id="));
+    REQUIRE(string_contains(command_text, "bindings=3"));
+    REQUIRE(string_contains(command_text, "deps=0"));
+
+    const std::string program_text = ggml::hrx::format_command_program(commands);
+    REQUIRE(string_contains(program_text, "command_program commands=1"));
+    REQUIRE(string_contains(program_text, "command 0"));
+    REQUIRE(string_contains(program_text, "binding a"));
+    REQUIRE(string_contains(program_text, "binding b"));
+    REQUIRE(string_contains(program_text, "binding output"));
+
     ggml::hrx::ResolvedCommandProgram resolved =
         ggml::hrx::resolve_command_program_bindings(commands, runtime_bindings);
     REQUIRE(resolved.valid());
@@ -200,6 +237,8 @@ static void run_graph_import_checks() {
     resolved = ggml::hrx::resolve_command_program_bindings(commands, missing_bindings);
     REQUIRE(!resolved.valid());
     REQUIRE(error_log_contains(resolved.errors, "is not bound"));
+    REQUIRE(error_log_contains(resolved.errors, "binding output"));
+    REQUIRE(error_log_contains(resolved.errors, "value="));
 
     resolved = ggml::hrx::resolve_command_program_bindings(commands, partial_bindings);
     REQUIRE(!resolved.valid());
@@ -218,12 +257,14 @@ static void run_graph_import_checks() {
     resolved = ggml::hrx::resolve_command_program_bindings(commands, null_bindings);
     REQUIRE(!resolved.valid());
     REQUIRE(error_log_contains(resolved.errors, "null buffer"));
+    REQUIRE(error_log_contains(resolved.errors, "binding a"));
 
     ggml::hrx::CommandProgram empty_resolve_binding           = commands;
     empty_resolve_binding.commands.front().bindings[0].length = 0;
     resolved = ggml::hrx::resolve_command_program_bindings(empty_resolve_binding, runtime_bindings);
     REQUIRE(!resolved.valid());
     REQUIRE(error_log_contains(resolved.errors, "empty range"));
+    REQUIRE(error_log_contains(resolved.errors, "range=[0, 0)"));
 
     ggml::hrx::CommandProgram out_of_range_binding           = commands;
     out_of_range_binding.commands.front().bindings[0].offset = a_value->byte_count;
@@ -231,36 +272,62 @@ static void run_graph_import_checks() {
     resolved = ggml::hrx::resolve_command_program_bindings(out_of_range_binding, runtime_bindings);
     REQUIRE(!resolved.valid());
     REQUIRE(error_log_contains(resolved.errors, "outside runtime binding length"));
+    REQUIRE(error_log_contains(resolved.errors, "binding a"));
 
     ggml::hrx::CommandProgram unsupported_origin           = commands;
     unsupported_origin.commands.front().bindings[0].origin = static_cast<ggml::hrx::CommandBindingOrigin>(255);
     resolved = ggml::hrx::resolve_command_program_bindings(unsupported_origin, runtime_bindings);
     REQUIRE(!resolved.valid());
     REQUIRE(error_log_contains(resolved.errors, "unsupported binding origin"));
+    REQUIRE(error_log_contains(resolved.errors, "origin=Unknown(255)"));
 
     ggml::hrx::CommandProgram invalid_kernel         = commands;
     invalid_kernel.commands.front().kernel.kernel_id = ggml::hrx::kUncatalogedKernelId;
-    REQUIRE(!command_program_verifies(invalid_kernel));
+    ggml::hrx::VerificationResult verification =
+        ggml::hrx::verify_command_program(invalid_kernel, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(!verification.valid());
+    REQUIRE(error_log_contains(verification.errors, "command 0"));
+    REQUIRE(error_log_contains(verification.errors, "kernel_id="));
 
     ggml::hrx::CommandProgram empty_bindings = commands;
     empty_bindings.commands.front().bindings.clear();
-    REQUIRE(!command_program_verifies(empty_bindings));
+    verification = ggml::hrx::verify_command_program(empty_bindings, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(!verification.valid());
+    REQUIRE(error_log_contains(verification.errors, "bindings=0"));
 
     ggml::hrx::CommandProgram empty_binding           = commands;
     empty_binding.commands.front().bindings[0].length = 0;
-    REQUIRE(!command_program_verifies(empty_binding));
+    verification = ggml::hrx::verify_command_program(empty_binding, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(!verification.valid());
+    REQUIRE(error_log_contains(verification.errors, "binding a"));
+    REQUIRE(error_log_contains(verification.errors, "range=[0, 0)"));
+
+    ggml::hrx::CommandProgram invalid_value          = commands;
+    invalid_value.commands.front().bindings[0].value = ggml::hrx::ValueId(-1);
+    verification = ggml::hrx::verify_command_program(invalid_value, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(!verification.valid());
+    REQUIRE(error_log_contains(verification.errors, "value=-1"));
 
     ggml::hrx::CommandProgram forward_dependency = commands;
     forward_dependency.commands.front().dependencies.push_back(0);
-    REQUIRE(!command_program_verifies(forward_dependency));
+    verification =
+        ggml::hrx::verify_command_program(forward_dependency, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(!verification.valid());
+    REQUIRE(error_log_contains(verification.errors, "forward dependency 0"));
 
     ggml::hrx::CommandProgram wrong_binding_name         = commands;
     wrong_binding_name.commands.front().bindings[0].name = "wrong";
-    REQUIRE(!command_program_verifies(wrong_binding_name));
+    verification =
+        ggml::hrx::verify_command_program(wrong_binding_name, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(!verification.valid());
+    REQUIRE(error_log_contains(verification.errors, "binding wrong"));
 
     ggml::hrx::CommandProgram wrong_binding_access           = commands;
     wrong_binding_access.commands.front().bindings[0].access = ggml::hrx::ResourceAccess::Write;
-    REQUIRE(!command_program_verifies(wrong_binding_access));
+    verification =
+        ggml::hrx::verify_command_program(wrong_binding_access, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(!verification.valid());
+    REQUIRE(error_log_contains(verification.errors, "access=Write"));
 
     ggml_free(ctx);
 }

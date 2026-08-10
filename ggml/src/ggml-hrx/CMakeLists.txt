@@ -114,6 +114,8 @@ ggml_add_backend_library(ggml-hrx
     dispatch/command-plan.h
     dispatch/command-program-bindings.cpp
     dispatch/command-program-bindings.h
+    dispatch/command-program-diagnostics.cpp
+    dispatch/command-program-diagnostics.h
     dispatch/command-program.cpp
     dispatch/command-program.h
     dispatch/command-program-resolver.cpp

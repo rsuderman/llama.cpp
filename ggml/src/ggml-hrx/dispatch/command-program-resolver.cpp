@@ -1,40 +1,39 @@
 #include "command-program-resolver.h"
 
+#include "command-program-diagnostics.h"
+
+#include <string>
+
 namespace ggml::hrx {
 namespace {
-
-static const char * binding_name(const CommandBinding & binding) {
-    return binding.name.empty() ? "<unnamed>" : binding.name.c_str();
-}
 
 static bool resolve_command_binding(const Command &                command,
                                     const CommandBinding &         binding,
                                     const CommandProgramBindings & bindings,
                                     ResolvedBufferRef &            ref,
                                     ErrorLog &                     errors) {
+    const std::string command_context = format_command(command);
+    const std::string binding_context = format_command_binding(binding);
     if (binding.origin != CommandBindingOrigin::GraphValue) {
-        errors.log("command %u binding %s has an unsupported binding origin", command.ordinal, binding_name(binding));
+        errors.log("%s %s has an unsupported binding origin", command_context.c_str(), binding_context.c_str());
         return false;
     }
     const CommandProgramBinding * concrete = bindings.find(binding.value);
     if (concrete == nullptr) {
-        errors.log("command %u binding %s value %d is not bound", command.ordinal, binding_name(binding),
-                   binding.value.value);
+        errors.log("%s %s is not bound", command_context.c_str(), binding_context.c_str());
         return false;
     }
     if (concrete->buffer == nullptr) {
-        errors.log("command %u binding %s value %d has a null buffer", command.ordinal, binding_name(binding),
-                   binding.value.value);
+        errors.log("%s %s has a null buffer", command_context.c_str(), binding_context.c_str());
         return false;
     }
     if (binding.length == 0) {
-        errors.log("command %u binding %s has an empty range", command.ordinal, binding_name(binding));
+        errors.log("%s %s has an empty range", command_context.c_str(), binding_context.c_str());
         return false;
     }
     if (binding.offset > concrete->length || binding.length > concrete->length - binding.offset) {
-        errors.log("command %u binding %s value %d range [%zu, %zu) is outside runtime binding length %zu",
-                   command.ordinal, binding_name(binding), binding.value.value, binding.offset,
-                   binding.offset + binding.length, concrete->length);
+        errors.log("%s %s is outside runtime binding length %zu", command_context.c_str(), binding_context.c_str(),
+                   concrete->length);
         return false;
     }
     ref = { concrete->buffer, concrete->offset + binding.offset, binding.length };

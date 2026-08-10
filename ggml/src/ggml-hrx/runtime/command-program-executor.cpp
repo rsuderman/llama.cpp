@@ -1,8 +1,11 @@
 #include "command-program-executor.h"
 
+#include "dispatch/command-program-diagnostics.h"
 #include "dispatch/command-program-resolver.h"
 #include "ggml-impl.h"
 #include "hrx-interop-utils.h"
+
+#include <sstream>
 
 namespace ggml::hrx {
 namespace {
@@ -33,6 +36,13 @@ static bool execution_context_valid(const CommandProgramExecutionContext & conte
         return false;
     }
     return true;
+}
+
+static std::string format_resolved_command_context(const ResolvedCommand & command) {
+    std::ostringstream out;
+    out << "command " << command.ordinal << " kind=" << command_kind_name(command.kind)
+        << " kernel_id=" << command.kernel.kernel_id << " bindings=" << command.bindings.size();
+    return out.str();
 }
 
 static bool dispatch_request(const CommandProgramExecutionContext & context,
@@ -71,8 +81,9 @@ static bool dispatch_request(const CommandProgramExecutionContext & context,
 }
 
 static bool execute_kernel_command(const CommandProgramExecutionContext & context, const ResolvedCommand & command) {
+    const std::string command_context = format_resolved_command_context(command);
     if (command.kind != CommandKind::Kernel) {
-        GGML_LOG_ERROR("%s: unsupported command kind\n", __func__);
+        GGML_LOG_ERROR("%s: unsupported command kind in %s\n", __func__, command_context.c_str());
         return false;
     }
 
@@ -85,7 +96,11 @@ static bool execute_kernel_command(const CommandProgramExecutionContext & contex
         dispatch.bindings.push_back({ binding.binding.value, binding.binding.offset, binding.binding.length });
         refs.push_back({ binding.ref.buffer, binding.ref.offset, binding.ref.length });
     }
-    return dispatch_request(context, dispatch, refs);
+    if (!dispatch_request(context, dispatch, refs)) {
+        GGML_LOG_ERROR("%s: failed to execute %s\n", __func__, command_context.c_str());
+        return false;
+    }
+    return true;
 }
 
 }  // namespace
