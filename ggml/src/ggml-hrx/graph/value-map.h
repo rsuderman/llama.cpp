@@ -15,6 +15,7 @@ typedef struct hrx_buffer_s * hrx_buffer_t;
 namespace ggml::hrx {
 
 struct ValueId {
+    ValueId() : value(-1) {}
     explicit ValueId(int32_t value) : value(value) {}
 
     int32_t value;

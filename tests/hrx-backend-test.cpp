@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <vector>
 
 #define REQUIRE(condition)                                                                           \
@@ -31,6 +32,10 @@ static bool contains_value_id(const std::vector<ggml::hrx::ValueId> & ids, ggml:
         }
     }
     return false;
+}
+
+static bool command_program_verifies(const ggml::hrx::CommandProgram & program) {
+    return ggml::hrx::verify_command_program(program, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151").valid();
 }
 
 static void run_graph_import_checks() {
@@ -84,7 +89,8 @@ static void run_graph_import_checks() {
     REQUIRE(scheduler.plan().dispatches.size() == 1);
     REQUIRE(scheduler.plan().dispatches.front().bindings.size() == 3);
 
-    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(scheduler.plan());
+    const ggml::hrx::CommandProgram commands =
+        ggml::hrx::build_command_program(scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
     REQUIRE(commands.valid());
     REQUIRE(commands.commands.size() == 1);
     const ggml::hrx::Command & command = commands.commands.front();
@@ -92,7 +98,41 @@ static void run_graph_import_checks() {
     REQUIRE(command.kind == ggml::hrx::CommandKind::Kernel);
     REQUIRE(command.kernel.kernel_id != ggml::hrx::kUncatalogedKernelId);
     REQUIRE(command.bindings.size() == 3);
-    REQUIRE(ggml::hrx::verify_command_program(commands).valid());
+    REQUIRE(command.bindings[0].name == "a");
+    REQUIRE(command.bindings[0].access == ggml::hrx::ResourceAccess::Read);
+    REQUIRE(command.bindings[1].name == "b");
+    REQUIRE(command.bindings[1].access == ggml::hrx::ResourceAccess::Read);
+    REQUIRE(command.bindings[2].name == "output");
+    REQUIRE(command.bindings[2].access == ggml::hrx::ResourceAccess::ReadWrite);
+    REQUIRE(command_program_verifies(commands));
+
+    ggml::hrx::CommandProgram invalid_kernel         = commands;
+    invalid_kernel.commands.front().kernel.kernel_id = ggml::hrx::kUncatalogedKernelId;
+    REQUIRE(!command_program_verifies(invalid_kernel));
+
+    ggml::hrx::CommandProgram empty_bindings = commands;
+    empty_bindings.commands.front().bindings.clear();
+    REQUIRE(!command_program_verifies(empty_bindings));
+
+    ggml::hrx::CommandProgram null_buffer           = commands;
+    null_buffer.commands.front().bindings[0].buffer = nullptr;
+    REQUIRE(!command_program_verifies(null_buffer));
+
+    ggml::hrx::CommandProgram empty_binding           = commands;
+    empty_binding.commands.front().bindings[0].length = 0;
+    REQUIRE(!command_program_verifies(empty_binding));
+
+    ggml::hrx::CommandProgram forward_dependency = commands;
+    forward_dependency.commands.front().dependencies.push_back(0);
+    REQUIRE(!command_program_verifies(forward_dependency));
+
+    ggml::hrx::CommandProgram wrong_binding_name         = commands;
+    wrong_binding_name.commands.front().bindings[0].name = "wrong";
+    REQUIRE(!command_program_verifies(wrong_binding_name));
+
+    ggml::hrx::CommandProgram wrong_binding_access           = commands;
+    wrong_binding_access.commands.front().bindings[0].access = ggml::hrx::ResourceAccess::Write;
+    REQUIRE(!command_program_verifies(wrong_binding_access));
 
     ggml_free(ctx);
 }

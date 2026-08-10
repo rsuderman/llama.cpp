@@ -595,7 +595,7 @@ static bool dispatch_request(ggml_backend_hrx_context * context, const ggml::hrx
     return true;
 }
 
-static bool command_request(ggml_backend_hrx_context * context, const ggml::hrx::Command & command) {
+static bool execute_kernel_command(ggml_backend_hrx_context * context, const ggml::hrx::Command & command) {
     if (command.kind != ggml::hrx::CommandKind::Kernel) {
         GGML_LOG_ERROR("%s: unsupported command kind\n", __func__);
         return false;
@@ -608,6 +608,23 @@ static bool command_request(ggml_backend_hrx_context * context, const ggml::hrx:
         dispatch.bindings.push_back({ binding.value, binding.buffer, binding.offset, binding.length });
     }
     return dispatch_request(context, dispatch);
+}
+
+static bool execute_command_program(ggml_backend_hrx_context *        context,
+                                    const ggml::hrx::CommandProgram & commands,
+                                    const ggml::hrx::KernelCorpus &   corpus,
+                                    const std::string &               target) {
+    const ggml::hrx::VerificationResult verification = ggml::hrx::verify_command_program(commands, corpus, target);
+    if (!verification.valid()) {
+        GGML_LOG_ERROR("%s: invalid HRX command program: %s\n", __func__, verification.errors.front().c_str());
+        return false;
+    }
+    for (const ggml::hrx::Command & command : commands.commands) {
+        if (!execute_kernel_command(context, command)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static void bind_external_value_buffers(ggml::hrx::ValueMap & values) {
@@ -739,16 +756,11 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
         GGML_LOG_ERROR("%s: %s\n", __func__, scheduler.error().c_str());
         return GGML_STATUS_FAILED;
     }
-    const ggml::hrx::CommandProgram     commands     = ggml::hrx::build_command_program(scheduler.plan());
-    const ggml::hrx::VerificationResult verification = ggml::hrx::verify_command_program(commands);
-    if (!verification.valid()) {
-        GGML_LOG_ERROR("%s: invalid HRX command program: %s\n", __func__, verification.errors.front().c_str());
+    const ggml::hrx::KernelCorpus & corpus   = ggml::hrx::get_qwen_kernel_corpus();
+    const std::string &             target   = context->device->architecture;
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(scheduler.plan(), corpus, target);
+    if (!execute_command_program(context, commands, corpus, target)) {
         return GGML_STATUS_FAILED;
-    }
-    for (const ggml::hrx::Command & command : commands.commands) {
-        if (!command_request(context, command)) {
-            return GGML_STATUS_FAILED;
-        }
     }
     return GGML_STATUS_SUCCESS;
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "command-plan.h"
+#include "kernel-corpus/kernel-corpus.h"
 #include "kernel-corpus/kernel-types.h"
 
 #include <cstddef>
@@ -19,11 +20,13 @@ enum class CommandBindingOrigin : uint8_t {
 };
 
 struct CommandBinding {
+    std::string          name;
     ValueId              value;
     CommandBindingOrigin origin = CommandBindingOrigin::GraphValue;
     hrx_buffer_t         buffer = nullptr;
     size_t               offset = 0;
     size_t               length = 0;
+    ResourceAccess       access = ResourceAccess::Read;
 };
 
 struct Command {
@@ -41,7 +44,9 @@ struct CommandProgram {
     bool valid() const { return errors.empty(); }
 };
 
-CommandProgram     build_command_program(const CommandPlan & plan);
-VerificationResult verify_command_program(const CommandProgram & program);
+CommandProgram build_command_program(const CommandPlan & plan, const KernelCorpus & corpus, const std::string & target);
+VerificationResult verify_command_program(const CommandProgram & program,
+                                          const KernelCorpus &   corpus,
+                                          const std::string &    target);
 
 }  // namespace ggml::hrx
