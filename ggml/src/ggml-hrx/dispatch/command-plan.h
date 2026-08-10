@@ -1,17 +1,17 @@
 #pragma once
 
 #include "dispatch.h"
+#include "error-log.h"
 
-#include <string>
 #include <vector>
 
 namespace ggml::hrx {
 
 struct CommandPlan {
     std::vector<Dispatch> dispatches;
-    std::string           error;
+    ErrorLog              errors;
 
-    bool valid() const { return error.empty(); }
+    bool valid() const { return errors.success(); }
 };
 
 }  // namespace ggml::hrx

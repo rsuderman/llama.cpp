@@ -1,8 +1,9 @@
 #pragma once
 
+#include "error-log.h"
+
 #include <cstdint>
 #include <string>
-#include <vector>
 
 namespace ggml::hrx {
 
@@ -13,9 +14,9 @@ enum class ResourceAccess : uint8_t {
 };
 
 struct VerificationResult {
-    std::vector<std::string> errors;
+    ErrorLog errors;
 
-    bool valid() const { return errors.empty(); }
+    bool valid() const { return errors.success(); }
 };
 
 }  // namespace ggml::hrx

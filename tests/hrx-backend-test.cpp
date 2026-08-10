@@ -38,6 +38,29 @@ static bool command_program_verifies(const ggml::hrx::CommandProgram & program) 
     return ggml::hrx::verify_command_program(program, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151").valid();
 }
 
+static void run_error_log_checks() {
+    ggml::hrx::ErrorLog errors;
+    REQUIRE(errors.success());
+    REQUIRE(errors.empty());
+    REQUIRE(errors.size() == 0);
+
+    errors.log("first");
+    REQUIRE(!errors.success());
+    REQUIRE(!errors.empty());
+    REQUIRE(errors.size() == 1);
+    REQUIRE(errors.front() == "first");
+
+    errors.log("value %d", 7);
+    REQUIRE(errors.size() == 2);
+    REQUIRE(errors.messages()[1] == "value 7");
+
+    ggml::hrx::ErrorLog other;
+    other.log("third");
+    errors.append(other);
+    REQUIRE(errors.size() == 3);
+    REQUIRE(errors.messages()[2] == "third");
+}
+
 static void run_graph_import_checks() {
     ggml_init_params params = {};
     params.mem_size         = 256 * 1024;
@@ -261,6 +284,7 @@ static void run_unsupported_op_fails() {
 }
 
 int main() {
+    run_error_log_checks();
     run_graph_import_checks();
     run_transient_import_checks();
 

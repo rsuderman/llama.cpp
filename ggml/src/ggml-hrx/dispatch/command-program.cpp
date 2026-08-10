@@ -27,7 +27,7 @@ CommandProgram build_command_program(const CommandPlan &  plan,
                                      const std::string &  target) {
     CommandProgram result;
     if (!plan.valid()) {
-        result.errors.push_back(plan.error);
+        result.errors.append(plan.errors);
         return result;
     }
 
@@ -40,13 +40,12 @@ CommandProgram build_command_program(const CommandPlan &  plan,
         const KernelResolveResult resolved   = resolve_kernel_definition(corpus, target, command.kernel.kernel_id);
         const KernelDefinition *  definition = resolved.definition;
         if (!resolved.found()) {
-            result.errors.push_back(format_kernel_resolve_error(resolved, command.kernel.kernel_id));
+            result.errors.log("%s", format_kernel_resolve_error(resolved, command.kernel.kernel_id).c_str());
             definition = nullptr;
         } else if (dispatch.bindings.size() != definition->bindings.size()) {
-            result.errors.push_back("command " + std::to_string(command.ordinal) + " kernel " +
-                                    kernel_definition_name(*definition) + " has " +
-                                    std::to_string(dispatch.bindings.size()) + " bindings but its ABI requires " +
-                                    std::to_string(definition->bindings.size()));
+            result.errors.log("command %u kernel %s has %zu bindings but its ABI requires %zu", command.ordinal,
+                              kernel_definition_name(*definition).c_str(), dispatch.bindings.size(),
+                              definition->bindings.size());
         }
         command.bindings.reserve(dispatch.bindings.size());
         for (size_t binding_index = 0; binding_index < dispatch.bindings.size(); ++binding_index) {
@@ -73,15 +72,15 @@ VerificationResult verify_command_program(const CommandProgram & program,
                                           const std::string &    target) {
     VerificationResult result;
     if (!program.valid()) {
-        result.errors.insert(result.errors.end(), program.errors.begin(), program.errors.end());
+        result.errors.append(program.errors);
     }
     for (size_t i = 0; i < program.commands.size(); ++i) {
         const Command & command = program.commands[i];
         if (command.ordinal != i) {
-            result.errors.push_back("command ordinals are not contiguous");
+            result.errors.log("command ordinals are not contiguous");
         }
         if (command.kind != CommandKind::Kernel) {
-            result.errors.push_back(command_prefix(command) + " is not a kernel command");
+            result.errors.log("%s is not a kernel command", command_prefix(command).c_str());
         }
         KernelResolveResult      resolved;
         const KernelDefinition * definition = nullptr;
@@ -90,45 +89,44 @@ VerificationResult verify_command_program(const CommandProgram & program,
             definition = resolved.definition;
         }
         if (command.kind == CommandKind::Kernel && !resolved.found()) {
-            result.errors.push_back(command_prefix(command) + ": " +
-                                    format_kernel_resolve_error(resolved, command.kernel.kernel_id));
+            result.errors.log("%s: %s", command_prefix(command).c_str(),
+                              format_kernel_resolve_error(resolved, command.kernel.kernel_id).c_str());
         } else if (definition != nullptr) {
             if (command.bindings.size() != definition->bindings.size()) {
-                result.errors.push_back(command_prefix(command) + " kernel " + kernel_definition_name(*definition) +
-                                        " has " + std::to_string(command.bindings.size()) +
-                                        " bindings but its ABI requires " +
-                                        std::to_string(definition->bindings.size()));
+                result.errors.log("%s kernel %s has %zu bindings but its ABI requires %zu",
+                                  command_prefix(command).c_str(), kernel_definition_name(*definition).c_str(),
+                                  command.bindings.size(), definition->bindings.size());
             }
             const size_t shared_count = std::min(command.bindings.size(), definition->bindings.size());
             for (size_t binding_index = 0; binding_index < shared_count; ++binding_index) {
                 const CommandBinding &          binding = command.bindings[binding_index];
                 const KernelBindingDefinition & abi     = definition->bindings[binding_index];
                 if (!string_equal(binding.name.c_str(), abi.name) || binding.access != abi.access) {
-                    result.errors.push_back(command_prefix(command) + " binding " + std::to_string(binding_index) +
-                                            " does not match the kernel ABI");
+                    result.errors.log("%s binding %zu does not match the kernel ABI", command_prefix(command).c_str(),
+                                      binding_index);
                 }
             }
         }
         if (command.bindings.empty()) {
-            result.errors.push_back(command_prefix(command) + " has no bindings");
+            result.errors.log("%s has no bindings", command_prefix(command).c_str());
         }
         for (uint32_t dependency : command.dependencies) {
             if (dependency >= command.ordinal) {
-                result.errors.push_back(command_prefix(command) + " has a forward dependency");
+                result.errors.log("%s has a forward dependency", command_prefix(command).c_str());
             }
         }
         for (const CommandBinding & binding : command.bindings) {
             if (binding.origin != CommandBindingOrigin::GraphValue) {
-                result.errors.push_back(command_prefix(command) + " has a non-graph binding");
+                result.errors.log("%s has a non-graph binding", command_prefix(command).c_str());
             }
             if (binding.value.value < 0) {
-                result.errors.push_back(command_prefix(command) + " has an invalid value id");
+                result.errors.log("%s has an invalid value id", command_prefix(command).c_str());
             }
             if (binding.buffer == nullptr) {
-                result.errors.push_back(command_prefix(command) + " has an unbound buffer");
+                result.errors.log("%s has an unbound buffer", command_prefix(command).c_str());
             }
             if (binding.length == 0) {
-                result.errors.push_back(command_prefix(command) + " has an empty binding");
+                result.errors.log("%s has an empty binding", command_prefix(command).c_str());
             }
         }
     }

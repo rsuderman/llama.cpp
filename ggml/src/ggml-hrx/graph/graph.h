@@ -1,5 +1,6 @@
 #pragma once
 
+#include "error-log.h"
 #include "ggml.h"
 #include "value-map.h"
 
@@ -35,10 +36,10 @@ class Graph {
 };
 
 struct GraphImportResult {
-    Graph                    graph;
-    std::vector<std::string> errors;
+    Graph    graph;
+    ErrorLog errors;
 
-    bool valid() const { return errors.empty(); }
+    bool valid() const { return errors.success(); }
 };
 
 GraphImportResult import_ggml_graph(const ggml_cgraph & graph);

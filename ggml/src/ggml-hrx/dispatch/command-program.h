@@ -1,6 +1,7 @@
 #pragma once
 
 #include "command-plan.h"
+#include "error-log.h"
 #include "kernel-corpus/kernel-corpus.h"
 #include "kernel-corpus/kernel-types.h"
 
@@ -38,10 +39,10 @@ struct Command {
 };
 
 struct CommandProgram {
-    std::vector<Command>     commands;
-    std::vector<std::string> errors;
+    std::vector<Command> commands;
+    ErrorLog             errors;
 
-    bool valid() const { return errors.empty(); }
+    bool valid() const { return errors.success(); }
 };
 
 CommandProgram build_command_program(const CommandPlan & plan, const KernelCorpus & corpus, const std::string & target);

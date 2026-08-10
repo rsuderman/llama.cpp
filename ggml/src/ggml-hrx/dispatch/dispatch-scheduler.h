@@ -17,7 +17,7 @@ class DispatchScheduler {
 
     const std::vector<Dispatch> & dispatches() const { return plan_.dispatches; }
 
-    const std::string & error() const { return plan_.error; }
+    const std::string & error() const { return plan_.errors.front(); }
 
     static bool supports_node(const Graph & graph, const GraphNode * node);
     static bool can_schedule_graph(const Graph & graph);
