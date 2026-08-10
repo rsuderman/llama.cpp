@@ -110,6 +110,9 @@ target_compile_features(ggml-hrx-kernel-corpus PRIVATE cxx_std_17)
 set_target_properties(ggml-hrx-kernel-corpus PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 ggml_add_backend_library(ggml-hrx
+    dispatch/command-plan.h
+    dispatch/command-program.cpp
+    dispatch/command-program.h
     dispatch/dispatch-add.cpp
     dispatch/dispatch-add.h
     dispatch/dispatch-scheduler.cpp

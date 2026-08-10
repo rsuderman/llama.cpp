@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dispatch.h"
+#include "command-plan.h"
 #include "graph/graph.h"
 
 #include <string>
@@ -13,16 +13,17 @@ class DispatchScheduler {
     void enqueue(Dispatch dispatch);
     bool schedule_graph(const Graph & graph);
 
-    const std::vector<Dispatch> & dispatches() const { return dispatches_; }
+    const CommandPlan & plan() const { return plan_; }
 
-    const std::string & error() const { return error_; }
+    const std::vector<Dispatch> & dispatches() const { return plan_.dispatches; }
+
+    const std::string & error() const { return plan_.error; }
 
     static bool supports_node(const Graph & graph, const GraphNode * node);
     static bool can_schedule_graph(const Graph & graph);
 
   private:
-    std::vector<Dispatch> dispatches_;
-    std::string           error_;
+    CommandPlan plan_;
 };
 
 }  // namespace ggml::hrx

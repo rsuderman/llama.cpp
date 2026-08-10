@@ -1,3 +1,4 @@
+#include "dispatch/command-program.h"
 #include "dispatch/dispatch-scheduler.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
@@ -73,12 +74,25 @@ static void run_graph_import_checks() {
 
     ggml::hrx::DispatchScheduler scheduler;
     REQUIRE(!scheduler.schedule_graph(imported.graph));
+    REQUIRE(!scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.empty());
 
     REQUIRE(imported.graph.values().bind_buffer(a_value->id, { dummy_hrx_buffer(0x1000), 0, a_value->byte_count }));
     REQUIRE(imported.graph.values().bind_buffer(out_value->id, { dummy_hrx_buffer(0x2000), 0, out_value->byte_count }));
     REQUIRE(scheduler.schedule_graph(imported.graph));
-    REQUIRE(scheduler.dispatches().size() == 1);
-    REQUIRE(scheduler.dispatches().front().bindings.size() == 3);
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 1);
+    REQUIRE(scheduler.plan().dispatches.front().bindings.size() == 3);
+
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(scheduler.plan());
+    REQUIRE(commands.valid());
+    REQUIRE(commands.commands.size() == 1);
+    const ggml::hrx::Command & command = commands.commands.front();
+    REQUIRE(command.ordinal == 0);
+    REQUIRE(command.kind == ggml::hrx::CommandKind::Kernel);
+    REQUIRE(command.kernel.kernel_id != ggml::hrx::kUncatalogedKernelId);
+    REQUIRE(command.bindings.size() == 3);
+    REQUIRE(ggml::hrx::verify_command_program(commands).valid());
 
     ggml_free(ctx);
 }

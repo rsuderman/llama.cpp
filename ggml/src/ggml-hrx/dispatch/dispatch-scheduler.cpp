@@ -10,20 +10,19 @@
 namespace ggml::hrx {
 
 void DispatchScheduler::enqueue(Dispatch dispatch) {
-    dispatches_.push_back(std::move(dispatch));
+    plan_.dispatches.push_back(std::move(dispatch));
 }
 
 bool DispatchScheduler::schedule_graph(const Graph & graph) {
-    dispatches_.clear();
-    error_.clear();
+    plan_                                = {};
     const std::vector<GraphNode> & nodes = graph.nodes();
     for (size_t i = 0; i < nodes.size(); ++i) {
         const GraphNode * node = &nodes[i];
         if (try_match_add_f32_dispatch(graph, node, *this)) {
             continue;
         }
-        error_ = "unsupported HRX node " + std::to_string(i) + ": " + ggml_op_name(node->op);
-        dispatches_.clear();
+        plan_.error = "unsupported HRX node " + std::to_string(i) + ": " + ggml_op_name(node->op);
+        plan_.dispatches.clear();
         return false;
     }
     return true;

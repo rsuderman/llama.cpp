@@ -1,5 +1,6 @@
 #include "ggml-hrx.h"
 
+#include "dispatch/command-program.h"
 #include "dispatch/dispatch-scheduler.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
@@ -594,6 +595,21 @@ static bool dispatch_request(ggml_backend_hrx_context * context, const ggml::hrx
     return true;
 }
 
+static bool command_request(ggml_backend_hrx_context * context, const ggml::hrx::Command & command) {
+    if (command.kind != ggml::hrx::CommandKind::Kernel) {
+        GGML_LOG_ERROR("%s: unsupported command kind\n", __func__);
+        return false;
+    }
+
+    ggml::hrx::Dispatch dispatch;
+    dispatch.kernel = command.kernel;
+    dispatch.bindings.reserve(command.bindings.size());
+    for (const ggml::hrx::CommandBinding & binding : command.bindings) {
+        dispatch.bindings.push_back({ binding.value, binding.buffer, binding.offset, binding.length });
+    }
+    return dispatch_request(context, dispatch);
+}
+
 static void bind_external_value_buffers(ggml::hrx::ValueMap & values) {
     for (const ggml::hrx::ValueId id : values.external_value_ids()) {
         const ggml::hrx::Value * value = values.find(id);
@@ -723,8 +739,14 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
         GGML_LOG_ERROR("%s: %s\n", __func__, scheduler.error().c_str());
         return GGML_STATUS_FAILED;
     }
-    for (const ggml::hrx::Dispatch & dispatch : scheduler.dispatches()) {
-        if (!dispatch_request(context, dispatch)) {
+    const ggml::hrx::CommandProgram     commands     = ggml::hrx::build_command_program(scheduler.plan());
+    const ggml::hrx::VerificationResult verification = ggml::hrx::verify_command_program(commands);
+    if (!verification.valid()) {
+        GGML_LOG_ERROR("%s: invalid HRX command program: %s\n", __func__, verification.errors.front().c_str());
+        return GGML_STATUS_FAILED;
+    }
+    for (const ggml::hrx::Command & command : commands.commands) {
+        if (!command_request(context, command)) {
             return GGML_STATUS_FAILED;
         }
     }
