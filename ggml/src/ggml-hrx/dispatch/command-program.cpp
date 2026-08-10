@@ -32,9 +32,13 @@ CommandProgram build_command_program(const CommandPlan &  plan,
     result.commands.reserve(plan.dispatches.size());
     for (const Dispatch & dispatch : plan.dispatches) {
         Command command;
-        command.ordinal                      = static_cast<uint32_t>(result.commands.size());
-        command.kind                         = CommandKind::Kernel;
-        command.kernel                       = dispatch.kernel;
+        command.ordinal = static_cast<uint32_t>(result.commands.size());
+        command.kind    = CommandKind::Kernel;
+        command.kernel  = dispatch.kernel;
+        // TODO: replace this linear ordinal dependency with real graph/resource dependency analysis.
+        if (command.ordinal > 0) {
+            command.dependencies.push_back(command.ordinal - 1);
+        }
         const KernelResolveResult resolved   = resolve_kernel_definition(corpus, target, command.kernel.kernel_id);
         const KernelDefinition *  definition = resolved.definition;
         if (!resolved.found()) {
