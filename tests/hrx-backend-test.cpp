@@ -377,7 +377,7 @@ static void run_graph_import_checks() {
     ggml_hrx_loom_jit_amdgpu *                      jit             = nullptr;
     const ggml::hrx::KernelCorpus &                 corpus          = ggml::hrx::get_qwen_kernel_corpus();
     const ggml::hrx::CommandProgramExecutionContext prepare_context = {
-        nullptr, nullptr, "gfx1151", &corpus, &jit, nullptr,
+        nullptr, nullptr, "gfx1151", &corpus, &jit, nullptr, nullptr,
     };
 
     ggml::hrx::PreparedCommandProgram prepared =
@@ -569,6 +569,15 @@ static void run_chained_dispatch_requires_transients() {
     REQUIRE(commands.commands[1].bindings[0].origin == ggml::hrx::CommandBindingOrigin::Transient);
     REQUIRE(commands.commands[1].bindings[1].origin == ggml::hrx::CommandBindingOrigin::GraphValue);
     REQUIRE(commands.commands[1].bindings[2].origin == ggml::hrx::CommandBindingOrigin::GraphValue);
+    REQUIRE(commands.transients.allocations.size() == 1);
+    const ggml::hrx::TransientAllocation * sum_allocation =
+        ggml::hrx::find_transient_allocation(commands.transients, sum_value->id);
+    REQUIRE(sum_allocation != nullptr);
+    REQUIRE(sum_allocation->value == sum_value->id);
+    REQUIRE(sum_allocation->size == sum_value->byte_count);
+    REQUIRE(sum_allocation->alignment == 256);
+    REQUIRE(sum_allocation->arena_offset == 0);
+    REQUIRE(commands.transients.arena_size == 256);
     REQUIRE(command_program_verifies(commands));
 
     const std::string transient_binding_text = ggml::hrx::format_command_binding(commands.commands[1].bindings[0]);
@@ -582,9 +591,140 @@ static void run_chained_dispatch_requires_transients() {
 
     const ggml::hrx::ResolvedCommandProgram resolved = ggml::hrx::resolve_command_program_bindings(commands, bindings);
     REQUIRE(!resolved.valid());
-    REQUIRE(error_log_contains(resolved.errors, "no transient allocation"));
+    REQUIRE(error_log_contains(resolved.errors, "no transient arena"));
     REQUIRE(error_log_contains(resolved.errors, "origin=Transient"));
     REQUIRE(error_log_contains(resolved.errors, "value="));
+
+    const ggml::hrx::TransientArenaAllocationRef transient_arena = {
+        dummy_hrx_buffer(0x8000),
+        commands.transients.arena_size,
+        7,
+    };
+    const ggml::hrx::ResolvedCommandProgram resolved_with_transients =
+        ggml::hrx::resolve_command_program_bindings(commands, bindings, &transient_arena);
+    REQUIRE(resolved_with_transients.valid());
+    REQUIRE(resolved_with_transients.commands.size() == 2);
+    REQUIRE(resolved_with_transients.commands[0].bindings[2].ref.buffer == dummy_hrx_buffer(0x8000));
+    REQUIRE(resolved_with_transients.commands[0].bindings[2].ref.offset == 0);
+    REQUIRE(resolved_with_transients.commands[0].bindings[2].ref.length == sum_value->byte_count);
+    REQUIRE(resolved_with_transients.commands[1].bindings[0].ref.buffer == dummy_hrx_buffer(0x8000));
+    REQUIRE(resolved_with_transients.commands[1].bindings[0].ref.offset == 0);
+    REQUIRE(resolved_with_transients.commands[1].bindings[0].ref.length == sum_value->byte_count);
+
+    ggml::hrx::PreparedCommandProgram prepared_shape;
+    for (const ggml::hrx::Command & prepared_source : commands.commands) {
+        ggml::hrx::PreparedCommand prepared_command;
+        prepared_command.ordinal               = prepared_source.ordinal;
+        prepared_command.kind                  = prepared_source.kind;
+        prepared_command.kernel.specialization = prepared_source.kernel;
+        for (const ggml::hrx::CommandBinding & binding : prepared_source.bindings) {
+            prepared_command.kernel.bindings.push_back({
+                binding, { dummy_hrx_buffer(0x4000), 123, binding.length }
+            });
+        }
+        prepared_shape.commands.push_back(prepared_command);
+    }
+    prepared_shape.bound_transient_arena_allocation_id = 1;
+
+    REQUIRE(ggml::hrx::bind_prepared_command_program_transients(commands, transient_arena, prepared_shape));
+    REQUIRE(prepared_shape.bound_transient_arena_allocation_id == transient_arena.allocation_id);
+    REQUIRE(prepared_shape.commands[0].kernel.bindings[2].ref.buffer == dummy_hrx_buffer(0x8000));
+    REQUIRE(prepared_shape.commands[0].kernel.bindings[2].ref.offset == 0);
+    REQUIRE(prepared_shape.commands[1].kernel.bindings[0].ref.buffer == dummy_hrx_buffer(0x8000));
+    REQUIRE(prepared_shape.commands[1].kernel.bindings[0].ref.offset == 0);
+
+    const ggml::hrx::TransientArenaAllocationRef grown_transient_arena = {
+        dummy_hrx_buffer(0x9000),
+        commands.transients.arena_size + 256,
+        8,
+    };
+    REQUIRE(ggml::hrx::bind_prepared_command_program_transients(commands, grown_transient_arena, prepared_shape));
+    REQUIRE(prepared_shape.bound_transient_arena_allocation_id == grown_transient_arena.allocation_id);
+    REQUIRE(prepared_shape.commands[0].kernel.bindings[2].ref.buffer == dummy_hrx_buffer(0x9000));
+    REQUIRE(prepared_shape.commands[1].kernel.bindings[0].ref.buffer == dummy_hrx_buffer(0x9000));
+
+    const ggml::hrx::TransientArenaAllocationRef invalid_transient_arena = {
+        dummy_hrx_buffer(0xa000),
+        commands.transients.arena_size,
+        ggml::hrx::kInvalidTransientArenaAllocationId,
+    };
+    const ggml::hrx::ResolvedCommandProgram invalid_transient_resolved =
+        ggml::hrx::resolve_command_program_bindings(commands, bindings, &invalid_transient_arena);
+    REQUIRE(!invalid_transient_resolved.valid());
+    REQUIRE(error_log_contains(invalid_transient_resolved.errors, "no transient arena allocation id"));
+
+    ggml::hrx::CommandProgram missing_allocation = commands;
+    missing_allocation.transients.allocations.clear();
+    ggml::hrx::VerificationResult verification =
+        ggml::hrx::verify_command_program(missing_allocation, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(!verification.valid());
+    REQUIRE(error_log_contains(verification.errors, "no transient allocation"));
+
+    ggml::hrx::CommandProgram out_of_range      = commands;
+    out_of_range.commands[0].bindings[2].length = sum_value->byte_count + 1;
+    verification = ggml::hrx::verify_command_program(out_of_range, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(!verification.valid());
+    REQUIRE(error_log_contains(verification.errors, "outside transient allocation length"));
+
+    ggml_free(ctx);
+}
+
+static void run_multiple_transient_plan_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 256 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * a    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * b    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * c    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * d    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * sum0 = ggml_add(ctx, a, b);
+    ggml_tensor * sum1 = ggml_add(ctx, c, d);
+    ggml_tensor * out  = ggml_add(ctx, sum0, sum1);
+    REQUIRE(a != nullptr);
+    REQUIRE(b != nullptr);
+    REQUIRE(c != nullptr);
+    REQUIRE(d != nullptr);
+    REQUIRE(sum0 != nullptr);
+    REQUIRE(sum1 != nullptr);
+    REQUIRE(out != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, out);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    REQUIRE(imported.graph.nodes().size() == 3);
+
+    const ggml::hrx::Value * sum0_value = imported.graph.values().find_tensor(sum0);
+    const ggml::hrx::Value * sum1_value = imported.graph.values().find_tensor(sum1);
+    REQUIRE(sum0_value != nullptr);
+    REQUIRE(sum1_value != nullptr);
+    REQUIRE(sum0_value->kind == ggml::hrx::ValueKind::Transient);
+    REQUIRE(sum1_value->kind == ggml::hrx::ValueKind::Transient);
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(imported.graph));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 3);
+
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(commands.valid());
+    REQUIRE(commands.transients.allocations.size() == 2);
+    REQUIRE(commands.transients.arena_size == 512);
+    const ggml::hrx::TransientAllocation * sum0_allocation =
+        ggml::hrx::find_transient_allocation(commands.transients, sum0_value->id);
+    const ggml::hrx::TransientAllocation * sum1_allocation =
+        ggml::hrx::find_transient_allocation(commands.transients, sum1_value->id);
+    REQUIRE(sum0_allocation != nullptr);
+    REQUIRE(sum1_allocation != nullptr);
+    REQUIRE(sum0_allocation->arena_offset != sum1_allocation->arena_offset);
+    REQUIRE(sum0_allocation->arena_offset % 256 == 0);
+    REQUIRE(sum1_allocation->arena_offset % 256 == 0);
 
     ggml_free(ctx);
 }
@@ -814,6 +954,92 @@ static void run_two_independent_add_f32() {
     ggml_backend_free(backend);
 }
 
+static void run_chained_add_f32() {
+    ggml_backend_t backend = ggml_backend_hrx_init(0);
+    REQUIRE(backend != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size         = 256 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    constexpr int64_t element_count = 1024;
+    ggml_tensor *     a             = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, element_count);
+    ggml_tensor *     b             = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, element_count);
+    ggml_tensor *     c             = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, element_count);
+    ggml_tensor *     sum           = ggml_add(ctx, a, b);
+    ggml_tensor *     out           = ggml_add(ctx, sum, c);
+    REQUIRE(a != nullptr);
+    REQUIRE(b != nullptr);
+    REQUIRE(c != nullptr);
+    REQUIRE(sum != nullptr);
+    REQUIRE(out != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, out);
+    graph->uid = 1004;
+
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    REQUIRE(buffer != nullptr);
+
+    std::vector<float> a_data(element_count);
+    std::vector<float> b_data(element_count);
+    std::vector<float> c_data(element_count);
+    std::vector<float> expected(element_count);
+    for (int64_t i = 0; i < element_count; ++i) {
+        a_data[i]   = static_cast<float>(i % 17) * 0.25f - 2.0f;
+        b_data[i]   = static_cast<float>(i % 13) * -0.5f + 3.0f;
+        c_data[i]   = static_cast<float>(i % 7) * 0.125f + 1.0f;
+        expected[i] = a_data[i] + b_data[i] + c_data[i];
+    }
+
+    ggml_backend_tensor_set(a, a_data.data(), 0, a_data.size() * sizeof(float));
+    ggml_backend_tensor_set(b, b_data.data(), 0, b_data.size() * sizeof(float));
+    ggml_backend_tensor_set(c, c_data.data(), 0, c_data.size() * sizeof(float));
+
+    REQUIRE(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(backend);
+
+    std::vector<float> actual(element_count);
+    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+    for (int64_t i = 0; i < element_count; ++i) {
+        REQUIRE(actual[i] == expected[i]);
+    }
+
+    ggml_backend_hrx_cache_stats cache_stats = {};
+    REQUIRE(ggml_backend_hrx_get_cache_stats(backend, &cache_stats));
+    REQUIRE(cache_stats.graph_program_builds == 1);
+    REQUIRE(cache_stats.prepared_program_builds == 1);
+
+    for (int64_t i = 0; i < element_count; ++i) {
+        a_data[i]   = static_cast<float>(i % 11) * -0.25f + 5.0f;
+        b_data[i]   = static_cast<float>(i % 5) * 0.5f - 1.0f;
+        c_data[i]   = static_cast<float>(i % 19) * 0.75f - 6.0f;
+        expected[i] = a_data[i] + b_data[i] + c_data[i];
+    }
+    ggml_backend_tensor_set(a, a_data.data(), 0, a_data.size() * sizeof(float));
+    ggml_backend_tensor_set(b, b_data.data(), 0, b_data.size() * sizeof(float));
+    ggml_backend_tensor_set(c, c_data.data(), 0, c_data.size() * sizeof(float));
+
+    REQUIRE(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(backend);
+
+    REQUIRE(ggml_backend_hrx_get_cache_stats(backend, &cache_stats));
+    REQUIRE(cache_stats.graph_program_hits == 1);
+    REQUIRE(cache_stats.prepared_program_hits == 1);
+
+    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+    for (int64_t i = 0; i < element_count; ++i) {
+        REQUIRE(actual[i] == expected[i]);
+    }
+
+    ggml_backend_buffer_free(buffer);
+    ggml_free(ctx);
+    ggml_backend_free(backend);
+}
+
 static void run_same_uid_distinct_graph_reuses_graph_program() {
     ggml_backend_t backend = ggml_backend_hrx_init(0);
     REQUIRE(backend != nullptr);
@@ -948,6 +1174,7 @@ int main() {
     run_multi_dispatch_checks();
     run_transient_import_checks();
     run_chained_dispatch_requires_transients();
+    run_multiple_transient_plan_checks();
     run_graph_program_cache_uid_mismatch_checks();
 
     if (ggml_backend_hrx_get_device_count() == 0) {
@@ -957,6 +1184,7 @@ int main() {
 
     run_add_f32();
     run_two_independent_add_f32();
+    run_chained_add_f32();
     run_same_uid_distinct_graph_reuses_graph_program();
     run_unsupported_op_fails();
     return 0;

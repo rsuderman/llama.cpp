@@ -5,6 +5,7 @@
 #include "dispatch/command-program.h"
 
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -34,8 +35,17 @@ class PreparedCommandProgramCache {
                           const std::string &                    command_shape,
                           const CommandProgramBindings &         bindings) const;
 
+    struct Entry {
+        std::mutex             mutex;
+        PreparedCommandProgram program;
+        bool                   has_program = false;
+    };
+
+    void record_build();
+    void record_hit();
+
     mutable std::mutex                                      mutex_;
-    std::unordered_map<std::string, PreparedCommandProgram> programs_;
+    std::unordered_map<std::string, std::shared_ptr<Entry>> programs_;
     PreparedCommandProgramCacheStats                        stats_;
 };
 

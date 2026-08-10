@@ -7,11 +7,13 @@
 namespace ggml::hrx {
 namespace {
 
-static bool resolve_command_binding(const Command &                command,
-                                    const CommandBinding &         binding,
-                                    const CommandProgramBindings & bindings,
-                                    ResolvedBufferRef &            ref,
-                                    ErrorLog &                     errors) {
+static bool resolve_command_binding(const Command &                     command,
+                                    const CommandProgram &              program,
+                                    const CommandBinding &              binding,
+                                    const CommandProgramBindings &      bindings,
+                                    const TransientArenaAllocationRef * transient_arena,
+                                    ResolvedBufferRef &                 ref,
+                                    ErrorLog &                          errors) {
     const std::string command_context = format_command(command);
     const std::string binding_context = format_command_binding(binding);
     if (binding.length == 0) {
@@ -39,8 +41,35 @@ static bool resolve_command_binding(const Command &                command,
                 return true;
             }
         case CommandBindingOrigin::Transient:
-            errors.log("%s %s has no transient allocation", command_context.c_str(), binding_context.c_str());
-            return false;
+            {
+                const TransientAllocation * allocation = find_transient_allocation(program.transients, binding.value);
+                if (allocation == nullptr) {
+                    errors.log("%s %s has no transient allocation", command_context.c_str(), binding_context.c_str());
+                    return false;
+                }
+                if (transient_arena == nullptr || transient_arena->buffer == nullptr) {
+                    errors.log("%s %s has no transient arena", command_context.c_str(), binding_context.c_str());
+                    return false;
+                }
+                if (transient_arena->allocation_id == kInvalidTransientArenaAllocationId) {
+                    errors.log("%s %s has no transient arena allocation id", command_context.c_str(),
+                               binding_context.c_str());
+                    return false;
+                }
+                if (program.transients.arena_size > transient_arena->capacity) {
+                    errors.log("%s %s requires transient arena size %zu but only %zu bytes are available",
+                               command_context.c_str(), binding_context.c_str(), program.transients.arena_size,
+                               transient_arena->capacity);
+                    return false;
+                }
+                if (binding.offset > allocation->size || binding.length > allocation->size - binding.offset) {
+                    errors.log("%s %s is outside transient allocation length %zu", command_context.c_str(),
+                               binding_context.c_str(), allocation->size);
+                    return false;
+                }
+                ref = { transient_arena->buffer, allocation->arena_offset + binding.offset, binding.length };
+                return true;
+            }
     }
     errors.log("%s %s has an unsupported binding origin", command_context.c_str(), binding_context.c_str());
     return false;
@@ -48,8 +77,9 @@ static bool resolve_command_binding(const Command &                command,
 
 }  // namespace
 
-ResolvedCommandProgram resolve_command_program_bindings(const CommandProgram &         program,
-                                                        const CommandProgramBindings & bindings) {
+ResolvedCommandProgram resolve_command_program_bindings(const CommandProgram &              program,
+                                                        const CommandProgramBindings &      bindings,
+                                                        const TransientArenaAllocationRef * transient_arena) {
     ResolvedCommandProgram result;
     if (!program.valid()) {
         result.errors.append(program.errors);
@@ -69,7 +99,8 @@ ResolvedCommandProgram resolve_command_program_bindings(const CommandProgram &  
         for (const CommandBinding & binding : command.bindings) {
             ResolvedCommandBinding resolved_binding;
             resolved_binding.binding = binding;
-            if (resolve_command_binding(command, binding, bindings, resolved_binding.ref, result.errors)) {
+            if (resolve_command_binding(command, program, binding, bindings, transient_arena, resolved_binding.ref,
+                                        result.errors)) {
                 resolved_command.bindings.push_back(resolved_binding);
             }
         }

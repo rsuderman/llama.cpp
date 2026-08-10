@@ -68,12 +68,18 @@ std::string format_command(const Command & command) {
 
 std::string format_command_program(const CommandProgram & program) {
     std::ostringstream out;
-    out << "command_program commands=" << program.commands.size();
+    out << "command_program commands=" << program.commands.size()
+        << " transient_arena=" << program.transients.arena_size
+        << " transient_allocations=" << program.transients.allocations.size();
     for (const Command & command : program.commands) {
         out << '\n' << format_command(command);
         for (const CommandBinding & binding : command.bindings) {
             out << "\n  " << format_command_binding(binding);
         }
+    }
+    for (const TransientAllocation & allocation : program.transients.allocations) {
+        out << "\ntransient value=" << allocation.value.value << " range=[" << allocation.arena_offset << ", "
+            << allocation.arena_offset + allocation.size << ") alignment=" << allocation.alignment;
     }
     return out.str();
 }

@@ -1,6 +1,6 @@
 #include "prepared-command-program-cache.h"
 
-#include <optional>
+#include <memory>
 #include <sstream>
 #include <utility>
 
@@ -26,32 +26,43 @@ bool PreparedCommandProgramCache::execute(const CommandProgramExecutionContext &
         return execute_command_program(context, commands, bindings);
     }
 
-    const std::string                     key = cache_key(graph_uid, context, command_shape, bindings);
-    std::optional<PreparedCommandProgram> cached_prepared;
+    const std::string      key = cache_key(graph_uid, context, command_shape, bindings);
+    std::shared_ptr<Entry> entry;
+    bool                   created_entry = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const auto                  found = programs_.find(key);
-        if (found != programs_.end() && found->second.valid()) {
-            cached_prepared = found->second;
-            ++stats_.hits;
+        auto                        found = programs_.find(key);
+        if (found == programs_.end()) {
+            entry = std::make_shared<Entry>();
+            programs_.emplace(key, entry);
+            created_entry = true;
+        } else {
+            entry = found->second;
         }
     }
-    if (cached_prepared.has_value()) {
-        return execute_prepared_command_program(context, *cached_prepared);
+
+    std::lock_guard<std::mutex> entry_lock(entry->mutex);
+    if (entry->has_program && entry->program.valid()) {
+        record_hit();
+        return bind_and_execute_prepared_command_program(context, commands, entry->program);
     }
 
     PreparedCommandProgram prepared = prepare_command_program(context, commands, bindings);
     if (!prepared.valid()) {
-        return execute_prepared_command_program(context, prepared);
-    }
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto                  inserted = programs_.emplace(key, prepared);
-        if (inserted.second) {
-            ++stats_.builds;
+        if (created_entry) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto                  found = programs_.find(key);
+            if (found != programs_.end() && found->second == entry && !entry->has_program) {
+                programs_.erase(found);
+            }
         }
+        return bind_and_execute_prepared_command_program(context, commands, prepared);
     }
-    return execute_prepared_command_program(context, prepared);
+    entry->program     = std::move(prepared);
+    entry->has_program = true;
+    record_build();
+
+    return bind_and_execute_prepared_command_program(context, commands, entry->program);
 }
 
 PreparedCommandProgramCacheStats PreparedCommandProgramCache::stats() const {
@@ -62,6 +73,16 @@ PreparedCommandProgramCacheStats PreparedCommandProgramCache::stats() const {
 void PreparedCommandProgramCache::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     programs_.clear();
+}
+
+void PreparedCommandProgramCache::record_build() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++stats_.builds;
+}
+
+void PreparedCommandProgramCache::record_hit() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++stats_.hits;
 }
 
 }  // namespace ggml::hrx

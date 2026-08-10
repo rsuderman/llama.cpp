@@ -140,6 +140,8 @@ ggml_add_backend_library(ggml-hrx
     runtime/kernel-executable-cache.h
     runtime/prepared-command-program-cache.cpp
     runtime/prepared-command-program-cache.h
+    runtime/transient-arena.cpp
+    runtime/transient-arena.h
 )
 target_link_libraries(ggml-hrx PRIVATE ggml-hrx-kernel-corpus hrx::hrx loomc::loomc)
 target_include_directories(ggml-hrx PRIVATE . "${CMAKE_CURRENT_BINARY_DIR}")

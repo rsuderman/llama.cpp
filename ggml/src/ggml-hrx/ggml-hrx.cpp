@@ -10,6 +10,7 @@
 #include "runtime/graph-program-cache.h"
 #include "runtime/kernel-executable-cache.h"
 #include "runtime/prepared-command-program-cache.h"
+#include "runtime/transient-arena.h"
 
 #include <atomic>
 #include <cstddef>
@@ -65,6 +66,7 @@ struct ggml_backend_hrx_context {
     ggml::hrx::KernelExecutableCache       kernel_executables;
     ggml::hrx::GraphProgramCache           graph_programs;
     ggml::hrx::PreparedCommandProgramCache prepared_programs;
+    ggml::hrx::TransientArena              transient_arena;
     std::string                            name;
 };
 
@@ -392,6 +394,7 @@ static void backend_free(ggml_backend_t backend) {
     context->prepared_programs.clear();
     context->graph_programs.clear();
     context->kernel_executables.clear();
+    context->transient_arena.clear();
     if (context->jit != nullptr) {
         ggml_hrx_loom_jit_amdgpu_release(context->jit);
     }
@@ -480,7 +483,8 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
     }
     const ggml::hrx::CommandProgramBindings         bindings          = bind_external_value_buffers(lookup.match);
     const ggml::hrx::CommandProgramExecutionContext execution_context = {
-        context->device->device, context->stream, target.c_str(), &corpus, &context->jit, &context->kernel_executables,
+        context->device->device,      context->stream,           target.c_str(), &corpus, &context->jit,
+        &context->kernel_executables, &context->transient_arena,
     };
     if (!context->prepared_programs.execute(execution_context, lookup.program->uid(), lookup.program->command_shape(),
                                             lookup.program->commands(), bindings)) {

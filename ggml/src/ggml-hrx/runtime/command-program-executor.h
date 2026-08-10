@@ -17,6 +17,7 @@ namespace ggml::hrx {
 
 class KernelExecutableCache;
 struct KernelExecutable;
+class TransientArena;
 
 struct CommandProgramExecutionContext {
     hrx_device_t                device             = nullptr;
@@ -25,6 +26,7 @@ struct CommandProgramExecutionContext {
     const KernelCorpus *        corpus             = nullptr;
     ggml_hrx_loom_jit_amdgpu ** jit                = nullptr;
     KernelExecutableCache *     kernel_executables = nullptr;
+    TransientArena *            transient_arena    = nullptr;
 };
 
 struct PreparedCommandBinding {
@@ -48,6 +50,7 @@ struct PreparedCommand {
 struct PreparedCommandProgram {
     std::vector<PreparedCommand> commands;
     ErrorLog                     errors;
+    uint64_t                     bound_transient_arena_allocation_id = kInvalidTransientArenaAllocationId;
 
     bool valid() const { return errors.success(); }
 };
@@ -58,6 +61,14 @@ PreparedCommandProgram prepare_command_program(const CommandProgramExecutionCont
 
 bool execute_prepared_command_program(const CommandProgramExecutionContext & context,
                                       const PreparedCommandProgram &         commands);
+
+bool bind_prepared_command_program_transients(const CommandProgram &              commands,
+                                              const TransientArenaAllocationRef & transient_allocation,
+                                              PreparedCommandProgram &            prepared);
+
+bool bind_and_execute_prepared_command_program(const CommandProgramExecutionContext & context,
+                                               const CommandProgram &                 commands,
+                                               PreparedCommandProgram &               prepared);
 
 bool execute_command_program(const CommandProgramExecutionContext & context,
                              const CommandProgram &                 commands,

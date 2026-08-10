@@ -5,6 +5,7 @@
 #include "error-log.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace ggml::hrx {
@@ -13,6 +14,14 @@ struct ResolvedBufferRef {
     hrx_buffer_t buffer = nullptr;
     size_t       offset = 0;
     size_t       length = 0;
+};
+
+static constexpr uint64_t kInvalidTransientArenaAllocationId = 0;
+
+struct TransientArenaAllocationRef {
+    hrx_buffer_t buffer        = nullptr;
+    size_t       capacity      = 0;
+    uint64_t     allocation_id = kInvalidTransientArenaAllocationId;
 };
 
 struct ResolvedCommandBinding {
@@ -34,7 +43,8 @@ struct ResolvedCommandProgram {
     bool valid() const { return errors.success(); }
 };
 
-ResolvedCommandProgram resolve_command_program_bindings(const CommandProgram &         program,
-                                                        const CommandProgramBindings & bindings);
+ResolvedCommandProgram resolve_command_program_bindings(const CommandProgram &              program,
+                                                        const CommandProgramBindings &      bindings,
+                                                        const TransientArenaAllocationRef * transient_arena = nullptr);
 
 }  // namespace ggml::hrx

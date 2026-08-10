@@ -40,12 +40,28 @@ struct Command {
     std::vector<uint32_t>       dependencies;
 };
 
+struct TransientAllocation {
+    ValueId value;
+    size_t  size         = 0;
+    size_t  alignment    = 1;
+    size_t  arena_offset = 0;
+};
+
+struct TransientPlan {
+    size_t                           arena_size      = 0;
+    size_t                           arena_alignment = 1;
+    std::vector<TransientAllocation> allocations;
+};
+
 struct CommandProgram {
     std::vector<Command> commands;
+    TransientPlan        transients;
     ErrorLog             errors;
 
     bool valid() const { return errors.success(); }
 };
+
+const TransientAllocation * find_transient_allocation(const TransientPlan & plan, ValueId value);
 
 CommandProgram     build_command_program(const Graph &        graph,
                                          const CommandPlan &  plan,

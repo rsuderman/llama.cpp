@@ -18,6 +18,10 @@ static std::string string_value(const char * value) {
     return value != nullptr ? value : "";
 }
 
+static size_t align_up(size_t value, size_t alignment) {
+    return alignment == 0 ? value : (value + alignment - 1) / alignment * alignment;
+}
+
 static CommandBindingOrigin command_binding_origin(ValueKind kind) {
     switch (kind) {
         case ValueKind::External:
@@ -28,7 +32,55 @@ static CommandBindingOrigin command_binding_origin(ValueKind kind) {
     return CommandBindingOrigin::GraphValue;
 }
 
+static bool has_transient_allocation(const TransientPlan & plan, ValueId value) {
+    return find_transient_allocation(plan, value) != nullptr;
+}
+
+static void add_transient_allocation(const Graph & graph, ValueId value, TransientPlan & plan, ErrorLog & errors) {
+    if (has_transient_allocation(plan, value)) {
+        return;
+    }
+    const Value * graph_value = graph.values().find(value);
+    if (graph_value == nullptr) {
+        errors.log("transient value %d is missing from graph values", value.value);
+        return;
+    }
+    if (graph_value->kind != ValueKind::Transient) {
+        return;
+    }
+
+    TransientAllocation allocation;
+    allocation.value        = value;
+    allocation.size         = graph_value->byte_count;
+    allocation.alignment    = 256;
+    allocation.arena_offset = align_up(plan.arena_size, allocation.alignment);
+    plan.arena_size         = allocation.arena_offset + allocation.size;
+    plan.allocations.push_back(allocation);
+}
+
+static TransientPlan build_transient_plan(const Graph &                graph,
+                                          const std::vector<Command> & commands,
+                                          ErrorLog &                   errors) {
+    TransientPlan plan;
+    plan.arena_alignment = 256;
+    for (const Command & command : commands) {
+        for (const CommandBinding & binding : command.bindings) {
+            if (binding.origin == CommandBindingOrigin::Transient) {
+                add_transient_allocation(graph, binding.value, plan, errors);
+            }
+        }
+    }
+    plan.arena_size = align_up(plan.arena_size, plan.arena_alignment);
+    return plan;
+}
+
 }  // namespace
+
+const TransientAllocation * find_transient_allocation(const TransientPlan & plan, ValueId value) {
+    const auto found = std::find_if(plan.allocations.begin(), plan.allocations.end(),
+                                    [&](const TransientAllocation & allocation) { return allocation.value == value; });
+    return found == plan.allocations.end() ? nullptr : &*found;
+}
 
 CommandProgram build_command_program(const Graph &        graph,
                                      const CommandPlan &  plan,
@@ -82,6 +134,7 @@ CommandProgram build_command_program(const Graph &        graph,
         }
         result.commands.push_back(std::move(command));
     }
+    result.transients = build_transient_plan(graph, result.commands, result.errors);
     return result;
 }
 
@@ -141,11 +194,41 @@ VerificationResult verify_command_program(const CommandProgram & program,
                 result.errors.log("%s %s has an unsupported binding origin", command_context.c_str(),
                                   binding_context.c_str());
             }
+            if (binding.origin == CommandBindingOrigin::Transient) {
+                const TransientAllocation * allocation = find_transient_allocation(program.transients, binding.value);
+                if (allocation == nullptr) {
+                    result.errors.log("%s %s has no transient allocation", command_context.c_str(),
+                                      binding_context.c_str());
+                } else if (binding.offset > allocation->size || binding.length > allocation->size - binding.offset) {
+                    result.errors.log("%s %s is outside transient allocation length %zu", command_context.c_str(),
+                                      binding_context.c_str(), allocation->size);
+                }
+            }
             if (binding.value.value < 0) {
                 result.errors.log("%s %s has an invalid value id", command_context.c_str(), binding_context.c_str());
             }
             if (binding.length == 0) {
                 result.errors.log("%s %s has an empty binding", command_context.c_str(), binding_context.c_str());
+            }
+        }
+    }
+    if (program.transients.arena_alignment == 0) {
+        result.errors.log("transient arena has zero alignment");
+    }
+    for (const TransientAllocation & allocation : program.transients.allocations) {
+        if (allocation.value.value < 0 || allocation.size == 0 || allocation.alignment == 0 ||
+            allocation.arena_offset % allocation.alignment != 0 ||
+            allocation.arena_offset + allocation.size > program.transients.arena_size) {
+            result.errors.log("invalid transient allocation for value %d", allocation.value.value);
+        }
+        for (const TransientAllocation & other : program.transients.allocations) {
+            if (allocation.value.value >= other.value.value) {
+                continue;
+            }
+            const bool overlap = allocation.arena_offset < other.arena_offset + other.size &&
+                                 other.arena_offset < allocation.arena_offset + allocation.size;
+            if (overlap) {
+                result.errors.log("transient allocations overlap");
             }
         }
     }

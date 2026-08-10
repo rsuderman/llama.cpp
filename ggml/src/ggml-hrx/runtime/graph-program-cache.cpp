@@ -88,6 +88,12 @@ static std::string command_program_shape_key(const CommandProgram & commands) {
             out << ':' << dependency;
         }
     }
+    out << "|transients=" << commands.transients.allocations.size() << "|arena=" << commands.transients.arena_size
+        << "|arena_alignment=" << commands.transients.arena_alignment;
+    for (const TransientAllocation & allocation : commands.transients.allocations) {
+        out << "|t:" << allocation.value.value << ':' << allocation.arena_offset << ':' << allocation.size << ':'
+            << allocation.alignment;
+    }
     return out.str();
 }
 
