@@ -46,9 +46,9 @@ static bool pack_kernel_constants(const KernelDefinition & definition,
     return true;
 }
 
-static std::string kernel_executable_artifact_key(const KernelDefinition & definition,
-                                                  const Dispatch &         dispatch,
-                                                  const char *             target) {
+static std::string kernel_executable_key(const KernelDefinition & definition,
+                                         const Dispatch &         dispatch,
+                                         const char *             target) {
     std::ostringstream out;
     out << (target != nullptr ? target : "") << '|' << definition.source_digest << '|' << definition.symbol
         << "|recipe=" << definition.compile_recipe.mode;
@@ -88,20 +88,20 @@ static bool ensure_jit(const KernelExecutablePrepareContext & context) {
 
 }  // namespace
 
-KernelExecutableArtifact::~KernelExecutableArtifact() {
+KernelExecutable::~KernelExecutable() {
     if (executable != nullptr) {
         hrx_executable_release(executable);
     }
 }
 
-std::shared_ptr<KernelExecutableArtifact> KernelExecutableCache::prepare(const KernelExecutablePrepareContext & context,
-                                                                         const KernelDefinition & definition,
-                                                                         const Dispatch &         dispatch,
-                                                                         std::vector<uint8_t> &   constants) {
+std::shared_ptr<KernelExecutable> KernelExecutableCache::prepare(const KernelExecutablePrepareContext & context,
+                                                                 const KernelDefinition &               definition,
+                                                                 const Dispatch &                       dispatch,
+                                                                 std::vector<uint8_t> &                 constants) {
     if (!pack_kernel_constants(definition, dispatch, constants)) {
         return nullptr;
     }
-    const std::string           key = kernel_executable_artifact_key(definition, dispatch, context.target);
+    const std::string           key = kernel_executable_key(definition, dispatch, context.target);
     std::lock_guard<std::mutex> lock(mutex_);
     const auto                  found = cache_.find(key);
     if (found != cache_.end()) {
@@ -177,36 +177,36 @@ std::shared_ptr<KernelExecutableArtifact> KernelExecutableCache::prepare(const K
         return nullptr;
     }
 
-    auto artifact    = std::make_shared<KernelExecutableArtifact>();
-    artifact->launch = compiled.launch_config;
+    auto executable    = std::make_shared<KernelExecutable>();
+    executable->launch = compiled.launch_config;
     if (ErrorResult error =
             take_status(hrx_executable_load_data(context.device, compiled.hsaco_data, compiled.hsaco_size, "amdgpu",
-                                                 context.target, &artifact->executable))) {
+                                                 context.target, &executable->executable))) {
         GGML_LOG_ERROR("%s: load %s: %s\n", __func__, key.c_str(), error->c_str());
         return nullptr;
     }
-    if (ErrorResult error = take_status(
-            hrx_executable_lookup_export_by_name(artifact->executable, definition.symbol, &artifact->export_ordinal))) {
+    if (ErrorResult error = take_status(hrx_executable_lookup_export_by_name(executable->executable, definition.symbol,
+                                                                             &executable->export_ordinal))) {
         GGML_LOG_ERROR("%s: lookup %s: %s\n", __func__, key.c_str(), error->c_str());
         return nullptr;
     }
     if (ErrorResult error = take_status(
-            hrx_executable_export_info(artifact->executable, artifact->export_ordinal, &artifact->export_info))) {
+            hrx_executable_export_info(executable->executable, executable->export_ordinal, &executable->export_info))) {
         GGML_LOG_ERROR("%s: inspect %s: %s\n", __func__, key.c_str(), error->c_str());
         return nullptr;
     }
-    if (artifact->export_info.binding_count != dispatch.bindings.size() ||
-        artifact->export_info.constant_byte_length != constants.size() ||
-        artifact->export_info.parameter_count != dispatch.bindings.size() + definition.launch_parameters.size()) {
+    if (executable->export_info.binding_count != dispatch.bindings.size() ||
+        executable->export_info.constant_byte_length != constants.size() ||
+        executable->export_info.parameter_count != dispatch.bindings.size() + definition.launch_parameters.size()) {
         GGML_LOG_ERROR("%s: compiled ABI does not match manifest for %s\n", __func__, key.c_str());
         return nullptr;
     }
-    if (artifact->launch.workgroup_count[0] == 0 || artifact->launch.workgroup_size[0] == 0) {
+    if (executable->launch.workgroup_count[0] == 0 || executable->launch.workgroup_size[0] == 0) {
         GGML_LOG_ERROR("%s: compiled launch geometry is empty for %s\n", __func__, key.c_str());
         return nullptr;
     }
-    cache_.emplace(key, artifact);
-    return artifact;
+    cache_.emplace(key, executable);
+    return executable;
 }
 
 void KernelExecutableCache::clear() {

@@ -13,6 +13,7 @@
 namespace ggml::hrx {
 
 enum class CommandKind : uint8_t {
+    Invalid,
     Kernel,
 };
 

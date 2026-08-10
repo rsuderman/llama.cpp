@@ -8,6 +8,7 @@
 #include "ggml-hrx.h"
 #include "ggml.h"
 #include "graph/graph.h"
+#include "runtime/command-program-executor.h"
 
 #include <cmath>
 #include <cstdint>
@@ -166,6 +167,9 @@ static void run_graph_import_checks() {
     REQUIRE(command.bindings[2].access == ggml::hrx::ResourceAccess::ReadWrite);
     REQUIRE(command_program_verifies(commands));
 
+    const ggml::hrx::PreparedCommand default_prepared_command;
+    REQUIRE(default_prepared_command.kind == ggml::hrx::CommandKind::Invalid);
+    REQUIRE(ggml::hrx::command_kind_name(ggml::hrx::CommandKind::Invalid) == "Invalid");
     REQUIRE(ggml::hrx::command_kind_name(ggml::hrx::CommandKind::Kernel) == "Kernel");
     REQUIRE(ggml::hrx::command_kind_name(static_cast<ggml::hrx::CommandKind>(255)) == "Unknown(255)");
     REQUIRE(ggml::hrx::command_binding_origin_name(ggml::hrx::CommandBindingOrigin::GraphValue) == "GraphValue");
@@ -328,6 +332,25 @@ static void run_graph_import_checks() {
         ggml::hrx::verify_command_program(wrong_binding_access, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
     REQUIRE(!verification.valid());
     REQUIRE(error_log_contains(verification.errors, "access=Write"));
+
+    ggml_hrx_loom_jit_amdgpu *                      jit             = nullptr;
+    const ggml::hrx::KernelCorpus &                 corpus          = ggml::hrx::get_qwen_kernel_corpus();
+    const ggml::hrx::CommandProgramExecutionContext prepare_context = {
+        nullptr, nullptr, "gfx1151", &corpus, &jit, nullptr,
+    };
+
+    ggml::hrx::PreparedCommandProgram prepared =
+        ggml::hrx::prepare_command_program(prepare_context, invalid_kernel, runtime_bindings);
+    REQUIRE(!prepared.valid());
+    REQUIRE(error_log_contains(prepared.errors, "kernel_id="));
+
+    prepared = ggml::hrx::prepare_command_program(prepare_context, commands, missing_bindings);
+    REQUIRE(!prepared.valid());
+    REQUIRE(error_log_contains(prepared.errors, "is not bound"));
+
+    prepared = ggml::hrx::prepare_command_program(prepare_context, commands, runtime_bindings);
+    REQUIRE(!prepared.valid());
+    REQUIRE(error_log_contains(prepared.errors, "missing HRX device"));
 
     ggml_free(ctx);
 }

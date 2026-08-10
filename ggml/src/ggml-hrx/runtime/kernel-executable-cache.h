@@ -14,8 +14,8 @@
 
 namespace ggml::hrx {
 
-struct KernelExecutableArtifact {
-    ~KernelExecutableArtifact();
+struct KernelExecutable {
+    ~KernelExecutable();
 
     hrx_executable_t                executable     = nullptr;
     uint32_t                        export_ordinal = 0;
@@ -31,16 +31,16 @@ struct KernelExecutablePrepareContext {
 
 class KernelExecutableCache {
   public:
-    std::shared_ptr<KernelExecutableArtifact> prepare(const KernelExecutablePrepareContext & context,
-                                                      const KernelDefinition &               definition,
-                                                      const Dispatch &                       dispatch,
-                                                      std::vector<uint8_t> &                 constants);
+    std::shared_ptr<KernelExecutable> prepare(const KernelExecutablePrepareContext & context,
+                                              const KernelDefinition &               definition,
+                                              const Dispatch &                       dispatch,
+                                              std::vector<uint8_t> &                 constants);
 
     void clear();
 
   private:
-    std::mutex                                                                 mutex_;
-    std::unordered_map<std::string, std::shared_ptr<KernelExecutableArtifact>> cache_;
+    std::mutex                                                         mutex_;
+    std::unordered_map<std::string, std::shared_ptr<KernelExecutable>> cache_;
 };
 
 }  // namespace ggml::hrx

@@ -10,6 +10,7 @@
 #include "kernel-corpus/kernel-corpus.h"
 #include "loom-jit.h"
 #include "runtime/command-program-executor.h"
+#include "runtime/kernel-executable-cache.h"
 
 #include <atomic>
 #include <cstddef>

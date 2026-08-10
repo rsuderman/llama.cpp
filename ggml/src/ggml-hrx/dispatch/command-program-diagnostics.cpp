@@ -19,6 +19,8 @@ static const char * binding_name(const CommandBinding & binding) {
 
 std::string command_kind_name(CommandKind kind) {
     switch (kind) {
+        case CommandKind::Invalid:
+            return "Invalid";
         case CommandKind::Kernel:
             return "Kernel";
     }
