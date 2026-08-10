@@ -54,13 +54,14 @@ struct Value {
 
 class ValueMap {
   public:
-    ValueId get_or_add_tensor_value(const ggml_tensor *               tensor,
-                                    ValueKind                         kind,
-                                    std::optional<ValueBufferBinding> buffer);
+    ValueMap() = default;
 
-    const Value * find(ValueId id) const;
-    Value *       find(ValueId id);
-    const Value * find_tensor(const ggml_tensor * tensor) const;
+    ValueId get_or_add_tensor_value(const ggml_tensor * tensor, ValueKind kind);
+
+    const Value *        find(ValueId id) const;
+    const Value *        find_tensor(const ggml_tensor * tensor) const;
+    bool                 bind_buffer(ValueId id, ValueBufferBinding binding);
+    std::vector<ValueId> external_value_ids() const;
 
     const std::vector<Value> & values() const { return values_; }
 

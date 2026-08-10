@@ -19,6 +19,19 @@
         }                                                                                            \
     } while (false)
 
+static hrx_buffer_t dummy_hrx_buffer(uintptr_t value) {
+    return reinterpret_cast<hrx_buffer_t>(value);
+}
+
+static bool contains_value_id(const std::vector<ggml::hrx::ValueId> & ids, ggml::hrx::ValueId id) {
+    for (const ggml::hrx::ValueId candidate : ids) {
+        if (candidate == id) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void run_graph_import_checks() {
     ggml_init_params params = {};
     params.mem_size         = 256 * 1024;
@@ -35,7 +48,7 @@ static void run_graph_import_checks() {
     REQUIRE(graph != nullptr);
     ggml_build_forward_expand(graph, out);
 
-    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph, nullptr, nullptr);
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
     REQUIRE(imported.valid());
     REQUIRE(imported.graph.nodes().size() == 1);
     const ggml::hrx::GraphNode * node = &imported.graph.nodes().front();
@@ -50,6 +63,22 @@ static void run_graph_import_checks() {
     REQUIRE(out_value != nullptr);
     REQUIRE(a_value->kind == ggml::hrx::ValueKind::External);
     REQUIRE(out_value->kind == ggml::hrx::ValueKind::External);
+    REQUIRE(!a_value->buffer.has_value());
+    REQUIRE(!out_value->buffer.has_value());
+
+    const std::vector<ggml::hrx::ValueId> external_ids = imported.graph.values().external_value_ids();
+    REQUIRE(external_ids.size() == 2);
+    REQUIRE(contains_value_id(external_ids, a_value->id));
+    REQUIRE(contains_value_id(external_ids, out_value->id));
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(!scheduler.schedule_graph(imported.graph));
+
+    REQUIRE(imported.graph.values().bind_buffer(a_value->id, { dummy_hrx_buffer(0x1000), 0, a_value->byte_count }));
+    REQUIRE(imported.graph.values().bind_buffer(out_value->id, { dummy_hrx_buffer(0x2000), 0, out_value->byte_count }));
+    REQUIRE(scheduler.schedule_graph(imported.graph));
+    REQUIRE(scheduler.dispatches().size() == 1);
+    REQUIRE(scheduler.dispatches().front().bindings.size() == 3);
 
     ggml_free(ctx);
 }
@@ -74,7 +103,7 @@ static void run_transient_import_checks() {
     REQUIRE(graph != nullptr);
     ggml_build_forward_expand(graph, out);
 
-    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph, nullptr, nullptr);
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
     REQUIRE(imported.valid());
     REQUIRE(imported.graph.nodes().size() == 2);
     REQUIRE(imported.graph.nodes()[0].op == GGML_OP_ADD);
@@ -89,6 +118,8 @@ static void run_transient_import_checks() {
     REQUIRE(a_value->kind == ggml::hrx::ValueKind::External);
     REQUIRE(sum_value->kind == ggml::hrx::ValueKind::Transient);
     REQUIRE(out_value->kind == ggml::hrx::ValueKind::External);
+    REQUIRE(
+        !imported.graph.values().bind_buffer(sum_value->id, { dummy_hrx_buffer(0x3000), 0, sum_value->byte_count }));
 
     ggml_free(ctx);
 }
