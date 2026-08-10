@@ -37,42 +37,42 @@ static bool string_empty(const char * value) {
 }
 
 static bool contains_source_ref(KernelSpan<KernelSourceRef> values, const char * path) {
-    return std::find_if(values.begin(), values.end(), [&](const KernelSourceRef & item) {
-        return string_equal(item.path, path);
-    }) !=
-           values.end();
+    return std::find_if(values.begin(), values.end(),
+                        [&](const KernelSourceRef & item) { return string_equal(item.path, path); }) != values.end();
 }
 
 static bool string_span_equal(KernelSpan<const char *> lhs, KernelSpan<const char *> rhs) {
-    return lhs.size() == rhs.size() && std::equal(lhs.begin(), lhs.end(), rhs.begin(), [](const char * a, const char * b) {
-        return string_equal(a, b);
-    });
+    return lhs.size() == rhs.size() && std::equal(lhs.begin(), lhs.end(), rhs.begin(),
+                                                  [](const char * a, const char * b) { return string_equal(a, b); });
 }
 
 static bool scalar_span_equal(KernelSpan<KernelScalarDefinition> lhs, KernelSpan<KernelScalarDefinition> rhs) {
-    return lhs.size() == rhs.size() && std::equal(lhs.begin(), lhs.end(), rhs.begin(),
-        [](const KernelScalarDefinition & a, const KernelScalarDefinition & b) {
-            return string_equal(a.name, b.name) && string_equal(a.type, b.type);
-        });
+    return lhs.size() == rhs.size() &&
+           std::equal(lhs.begin(), lhs.end(), rhs.begin(),
+                      [](const KernelScalarDefinition & a, const KernelScalarDefinition & b) {
+                          return string_equal(a.name, b.name) && string_equal(a.type, b.type);
+                      });
 }
 
 static bool binding_span_equal(KernelSpan<KernelBindingDefinition> lhs, KernelSpan<KernelBindingDefinition> rhs) {
-    return lhs.size() == rhs.size() && std::equal(lhs.begin(), lhs.end(), rhs.begin(),
-        [](const KernelBindingDefinition & a, const KernelBindingDefinition & b) {
-            return string_equal(a.name, b.name) && a.access == b.access;
-        });
+    return lhs.size() == rhs.size() &&
+           std::equal(lhs.begin(), lhs.end(), rhs.begin(),
+                      [](const KernelBindingDefinition & a, const KernelBindingDefinition & b) {
+                          return string_equal(a.name, b.name) && a.access == b.access;
+                      });
 }
 
 static bool kernel_variant_contract_equal(const KernelDefinition & lhs, const KernelDefinition & rhs) {
-    return string_equal(lhs.backend, rhs.backend) &&
-        string_span_equal(lhs.scalar_parameters, rhs.scalar_parameters) &&
-        scalar_span_equal(lhs.workload_parameters, rhs.workload_parameters) &&
-        scalar_span_equal(lhs.launch_parameters, rhs.launch_parameters) &&
-        binding_span_equal(lhs.bindings, rhs.bindings);
+    return string_equal(lhs.backend, rhs.backend) && string_span_equal(lhs.scalar_parameters, rhs.scalar_parameters) &&
+           scalar_span_equal(lhs.workload_parameters, rhs.workload_parameters) &&
+           scalar_span_equal(lhs.launch_parameters, rhs.launch_parameters) &&
+           binding_span_equal(lhs.bindings, rhs.bindings);
 }
 
+// clang-format off
 #include "kernel-corpus-sources.inc"
 #include "kernel-corpus-qwen.inc"
+// clang-format on
 
 }  // namespace
 
@@ -92,9 +92,11 @@ const KernelCorpus & get_qwen_kernel_corpus() {
     return kQwenKernelCorpus;
 }
 
-KernelResolveResult resolve_kernel_definition(const KernelCorpus & corpus, const std::string & target,
-                                              const std::string & family,
-                                              const std::string & name, uint64_t id,
+KernelResolveResult resolve_kernel_definition(const KernelCorpus &                corpus,
+                                              const std::string &                 target,
+                                              const std::string &                 family,
+                                              const std::string &                 name,
+                                              uint64_t                            id,
                                               KernelSpecialization::ExecutionKind execution_kind) {
     if (execution_kind == KernelSpecialization::ExecutionKind::NativeGap) {
         return {
@@ -109,8 +111,8 @@ KernelResolveResult resolve_kernel_definition(const KernelCorpus & corpus, const
     if (id == kUncatalogedKernelId) {
         return { KernelResolveStatus::UncatalogedNative, nullptr };
     }
-    bool id_match = false;
-    bool name_match = false;
+    bool                     id_match        = false;
+    bool                     name_match      = false;
     const KernelDefinition * default_variant = nullptr;
     for (const KernelDefinition & kernel : corpus.kernels) {
         if (kernel.id != id) {
@@ -136,10 +138,11 @@ KernelResolveResult resolve_kernel_definition(const KernelCorpus & corpus, const
     return { id_match ? KernelResolveStatus::HashCollision : KernelResolveStatus::MissingActiveCorpusEntry, nullptr };
 }
 
-KernelResolveResult resolve_kernel_definition(const KernelCorpus & corpus, const std::string & target,
+KernelResolveResult resolve_kernel_definition(const KernelCorpus &         corpus,
+                                              const std::string &          target,
                                               const KernelSpecialization & kernel) {
-    return resolve_kernel_definition(
-        corpus, target, kernel.family, kernel.variant, kernel.kernel_id, kernel.execution_kind);
+    return resolve_kernel_definition(corpus, target, kernel.family, kernel.variant, kernel.kernel_id,
+                                     kernel.execution_kind);
 }
 
 const char * kernel_resolve_status_name(KernelResolveStatus status) {
@@ -162,11 +165,12 @@ const char * kernel_resolve_status_name(KernelResolveStatus status) {
     return "unknown";
 }
 
-std::string format_kernel_resolve_error(const KernelResolveResult & result, const std::string & family,
-                                        const std::string & name) {
+std::string format_kernel_resolve_error(const KernelResolveResult & result,
+                                        const std::string &         family,
+                                        const std::string &         name) {
     KernelSpecialization kernel;
-    kernel.family = family;
-    kernel.variant = name;
+    kernel.family           = family;
+    kernel.variant          = name;
     const std::string label = kernel_specialization_name(kernel);
     switch (result.status) {
         case KernelResolveStatus::Found:
@@ -208,11 +212,11 @@ VerificationResult verify_kernel_corpus(const KernelCorpus & corpus) {
     if (corpus.plan_case_count == 0) {
         result.errors.push_back("kernel corpus has no compile plan cases");
     }
-    std::set<std::string> variants;
+    std::set<std::string>                           variants;
     std::map<std::string, const KernelDefinition *> contracts;
     for (const KernelDefinition & kernel : corpus.kernels) {
-        if (string_empty(kernel.family) || string_empty(kernel.name) || string_empty(kernel.source) || string_empty(kernel.symbol) ||
-            string_empty(kernel.backend) || string_empty(kernel.source_digest)) {
+        if (string_empty(kernel.family) || string_empty(kernel.name) || string_empty(kernel.source) ||
+            string_empty(kernel.symbol) || string_empty(kernel.backend) || string_empty(kernel.source_digest)) {
             result.errors.push_back("kernel definition is incomplete");
         }
         if (kernel.id != kernel_catalog_id(kernel.family != nullptr ? kernel.family : "",
@@ -254,7 +258,8 @@ VerificationResult verify_kernel_corpus(const KernelCorpus & corpus) {
         }
         std::set<std::string> binding_names;
         for (const KernelBindingDefinition & binding : kernel.bindings) {
-            if (string_empty(binding.name) || !binding_names.insert(binding.name != nullptr ? binding.name : "").second) {
+            if (string_empty(binding.name) ||
+                !binding_names.insert(binding.name != nullptr ? binding.name : "").second) {
                 result.errors.push_back("kernel " + std::string(kernel.name != nullptr ? kernel.name : "") +
                                         " has invalid binding names");
             }
@@ -274,10 +279,9 @@ std::string format_kernel_corpus(const KernelCorpus & corpus) {
         << " kernels=" << corpus.kernels.size() << " plan_cases=" << corpus.plan_case_count << '\n';
     for (const KernelDefinition & kernel : corpus.kernels) {
         out << "  kernel " << kernel.family << ':' << kernel.name << " id=0x" << std::hex << kernel.id << std::dec
-            << " backend=" << kernel.backend << " target="
-            << (string_empty(kernel.target_selector) ? "default" : kernel.target_selector)
-            << " symbol=@" << kernel.symbol
-            << " source=" << kernel.source << " sha256=" << kernel.source_digest << '\n';
+            << " backend=" << kernel.backend
+            << " target=" << (string_empty(kernel.target_selector) ? "default" : kernel.target_selector) << " symbol=@"
+            << kernel.symbol << " source=" << kernel.source << " sha256=" << kernel.source_digest << '\n';
         out << "    recipe " << kernel.compile_recipe.mode;
         if (!string_empty(kernel.compile_recipe.link_module)) {
             out << " module=" << kernel.compile_recipe.link_module;

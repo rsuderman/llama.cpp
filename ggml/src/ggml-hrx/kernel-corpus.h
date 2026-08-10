@@ -1,8 +1,7 @@
 #pragma once
 
-#include "graph/resource-access.h"
-#include "graph/schedule.h"
 #include "kernel-corpus-catalog.h"
+#include "kernel-types.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -67,8 +66,8 @@ struct KernelSourceRef {
 };
 
 struct KernelCompileRecipe {
-    const char *             mode        = "";
-    const char *             link_module = "";
+    const char *                mode        = "";
+    const char *                link_module = "";
     KernelSpan<KernelSourceRef> primary_sources;
     KernelSpan<KernelSourceRef> library_sources;
 };
@@ -79,8 +78,8 @@ struct KernelDefinition {
     uint64_t                            id     = kUncatalogedKernelId;
     const char *                        source = "";
     KernelSpan<const char *>            dependencies;
-    const char *                        symbol = "";
-    const char *                        backend = "";
+    const char *                        symbol          = "";
+    const char *                        backend         = "";
     const char *                        target_selector = "";
     KernelSpan<KernelCompileConfig>     compile_config;
     KernelSpan<const char *>            scalar_parameters;
@@ -119,17 +118,21 @@ struct KernelResolveResult {
 
 const KernelSource * get_kernel_source(const char * source_path);
 const KernelCorpus & get_qwen_kernel_corpus();
-KernelResolveResult resolve_kernel_definition(const KernelCorpus & corpus, const std::string & target,
-                                              const std::string & family,
-                                              const std::string & name, uint64_t id,
-                                              KernelSpecialization::ExecutionKind execution_kind);
-KernelResolveResult resolve_kernel_definition(const KernelCorpus & corpus, const std::string & target,
-                                              const KernelSpecialization & kernel);
+KernelResolveResult  resolve_kernel_definition(const KernelCorpus &                corpus,
+                                               const std::string &                 target,
+                                               const std::string &                 family,
+                                               const std::string &                 name,
+                                               uint64_t                            id,
+                                               KernelSpecialization::ExecutionKind execution_kind);
+KernelResolveResult  resolve_kernel_definition(const KernelCorpus &         corpus,
+                                               const std::string &          target,
+                                               const KernelSpecialization & kernel);
 const char *         kernel_resolve_status_name(KernelResolveStatus status);
-std::string          format_kernel_resolve_error(const KernelResolveResult & result, const std::string & family,
-                                                 const std::string & name);
-std::string          format_kernel_resolve_error(const KernelResolveResult & result, const KernelSpecialization & kernel);
-VerificationResult   verify_kernel_corpus(const KernelCorpus & corpus);
-std::string          format_kernel_corpus(const KernelCorpus & corpus);
+std::string          format_kernel_resolve_error(const KernelResolveResult & result,
+                                                 const std::string &         family,
+                                                 const std::string &         name);
+std::string        format_kernel_resolve_error(const KernelResolveResult & result, const KernelSpecialization & kernel);
+VerificationResult verify_kernel_corpus(const KernelCorpus & corpus);
+std::string        format_kernel_corpus(const KernelCorpus & corpus);
 
 }  // namespace ggml::hrx

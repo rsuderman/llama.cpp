@@ -93,69 +93,26 @@ add_custom_command(
 option(GGML_HRX_BUNDLE_RUNTIME_LIBS "Bundle HRX/ROCm runtime libraries next to the HRX backend" OFF)
 set(GGML_HRX_BUNDLE_LIBRARY_DIRS "" CACHE STRING "Library directories to scan when GGML_HRX_BUNDLE_RUNTIME_LIBS=ON")
 
-add_library(ggml-hrx-graph STATIC
-    graph/fusion-search.cpp
-    graph/fusion-search.h
-    graph/graph-index.cpp
-    graph/graph-index.h
-    graph/command-program.cpp
-    graph/command-program.h
-    graph/graph-ir.cpp
-    graph/graph-ir.h
-    graph/reactive-plan.cpp
-    graph/reactive-plan.h
-    graph/resource-access.h
-    graph/routed-transformer.cpp
-    graph/routed-transformer.h
-    graph/routed-transformer-bindings.cpp
-    graph/routed-transformer-bindings.h
-    graph/routed-transformer-program.cpp
-    graph/routed-transformer-program.h
-    graph/schedule.cpp
-    graph/schedule.h
+add_library(ggml-hrx-kernel-corpus STATIC
     kernel-corpus-json.cpp
     kernel-corpus-json.h
     kernel-corpus-catalog-verify.h
     kernel-corpus-catalog.h
     kernel-corpus.cpp
     kernel-corpus.h
+    kernel-types.h
     "${GGML_HRX_KERNEL_CORPUS_SOURCES_INC}"
     "${GGML_HRX_KERNEL_CORPUS_QWEN_INC}"
     "${GGML_HRX_KERNEL_CORPUS_CATALOG_INC}"
 )
-target_include_directories(ggml-hrx-graph PUBLIC . graph PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" .. ../../include ../../../vendor)
-target_compile_features(ggml-hrx-graph PRIVATE cxx_std_17)
-target_link_libraries(ggml-hrx-graph PRIVATE ggml-base)
-set_target_properties(ggml-hrx-graph PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-add_library(ggml-hrx-transfer STATIC
-    hrx-interop-utils.h
-    transfer-manager.cpp
-    transfer-manager.h
-    weight-residency.cpp
-    weight-residency.h
-)
-target_include_directories(ggml-hrx-transfer PUBLIC .)
-target_compile_features(ggml-hrx-transfer PRIVATE cxx_std_17)
-target_link_libraries(ggml-hrx-transfer PUBLIC hrx::hrx)
-set_target_properties(ggml-hrx-transfer PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-add_library(ggml-hrx-executable STATIC
-    executable-program.cpp
-    executable-program.h
-    loom-jit.cpp
-    loom-jit.h
-)
-target_include_directories(ggml-hrx-executable PUBLIC . graph PRIVATE loom-jit .. ../../include ../../../vendor)
-target_compile_features(ggml-hrx-executable PRIVATE cxx_std_17)
-target_link_libraries(ggml-hrx-executable PUBLIC ggml-hrx-graph ggml-hrx-transfer hrx::hrx PRIVATE loomc::loomc)
-set_target_properties(ggml-hrx-executable PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(ggml-hrx-kernel-corpus PUBLIC . PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" ../../../vendor)
+target_compile_features(ggml-hrx-kernel-corpus PRIVATE cxx_std_17)
+set_target_properties(ggml-hrx-kernel-corpus PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 ggml_add_backend_library(ggml-hrx
     ggml-hrx.cpp
 )
 target_link_libraries(ggml-hrx PRIVATE hrx::hrx loomc::loomc)
-target_link_libraries(ggml-hrx PRIVATE ggml-hrx-executable)
 target_compile_definitions(ggml-hrx PRIVATE GGML_USE_HRX)
 
 if (GGML_HRX_BUNDLE_RUNTIME_LIBS)
@@ -171,17 +128,3 @@ add_executable(ggml-hrx-compile-kernel
 target_link_libraries(ggml-hrx-compile-kernel PRIVATE hrx::hrx loomc::loomc)
 target_include_directories(ggml-hrx-compile-kernel PRIVATE .)
 target_compile_features(ggml-hrx-compile-kernel PRIVATE cxx_std_17)
-
-add_executable(ggml-hrx-record-command-buffer-smoke tools/record-command-buffer-smoke.cpp)
-target_link_libraries(ggml-hrx-record-command-buffer-smoke PRIVATE hrx::hrx)
-target_compile_features(ggml-hrx-record-command-buffer-smoke PRIVATE cxx_std_17)
-
-add_executable(ggml-hrx-dump-program tools/dump-program.cpp tools/tool-utils.h)
-target_link_libraries(ggml-hrx-dump-program PRIVATE ggml-hrx-graph hrx::hrx)
-target_include_directories(ggml-hrx-dump-program PRIVATE . graph .. ../../include ../../../vendor)
-target_compile_features(ggml-hrx-dump-program PRIVATE cxx_std_17)
-
-add_executable(ggml-hrx-record-program tools/record-program.cpp tools/tool-utils.h)
-target_link_libraries(ggml-hrx-record-program PRIVATE ggml-hrx-executable hrx::hrx)
-target_include_directories(ggml-hrx-record-program PRIVATE . graph .. ../../include ../../../vendor)
-target_compile_features(ggml-hrx-record-program PRIVATE cxx_std_17)

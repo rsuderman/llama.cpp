@@ -37,7 +37,7 @@ constexpr uint64_t kernel_catalog_id(const char * family, const char * name) {
 
 struct KernelCatalogRef {
     const char * family = "";
-    const char * name = "";
+    const char * name   = "";
     uint64_t     id     = kUncatalogedKernelId;
 
     constexpr bool valid() const {
