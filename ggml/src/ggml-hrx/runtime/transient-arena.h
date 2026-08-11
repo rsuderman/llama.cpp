@@ -1,7 +1,7 @@
 #pragma once
 
 #include "dispatch/command-program-resolver.h"
-#include "error-log.h"
+#include "status.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -23,7 +23,7 @@ class TransientArena {
         AllocationLease(const AllocationLease &)             = delete;
         AllocationLease & operator=(const AllocationLease &) = delete;
 
-        bool ensure_capacity(hrx_device_t device, hrx_stream_t stream, size_t required_size, ErrorLog & errors);
+        Status                      ensure_capacity(hrx_device_t device, hrx_stream_t stream, size_t required_size);
         TransientArenaAllocationRef current_allocation() const;
 
       private:
@@ -41,7 +41,7 @@ class TransientArena {
     TransientArena(const TransientArena &)             = delete;
     TransientArena & operator=(const TransientArena &) = delete;
 
-    bool            ensure_capacity(hrx_device_t device, hrx_stream_t stream, size_t required_size, ErrorLog & errors);
+    Status          ensure_capacity(hrx_device_t device, hrx_stream_t stream, size_t required_size);
     AllocationLease acquire_allocation_lease();
     void            clear();
 
@@ -52,8 +52,8 @@ class TransientArena {
     uint64_t allocation_id() const;
 
   private:
-    uint64_t next_allocation_id();
-    bool     ensure_capacity_locked(hrx_device_t device, hrx_stream_t stream, size_t required_size, ErrorLog & errors);
+    uint64_t                    next_allocation_id();
+    Status                      ensure_capacity_locked(hrx_device_t device, hrx_stream_t stream, size_t required_size);
     TransientArenaAllocationRef current_allocation_locked() const;
 
     mutable std::mutex mutex_;

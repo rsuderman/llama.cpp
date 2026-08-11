@@ -13,18 +13,18 @@ namespace ggml::hrx {
 
 GraphExecutor::GraphExecutor(ggml_backend_hrx_context & context) : context_(context) {}
 
-bool GraphExecutor::context_valid_for_graph_programs(ErrorLog & errors) const {
+Status GraphExecutor::context_valid_for_graph_programs() const {
+    Status status;
     if (context_.device == nullptr) {
-        errors.log("missing HRX device context");
+        status.log("missing HRX device context");
     } else if (context_.device->architecture.empty()) {
-        errors.log("missing HRX target");
+        status.log("missing HRX target");
     }
-    return errors.success();
+    return status;
 }
 
-bool GraphExecutor::context_valid_for_execution(ErrorLog & errors) const {
-    context_valid_for_graph_programs(errors);
-    return errors.success();
+Status GraphExecutor::context_valid_for_execution() const {
+    return context_valid_for_graph_programs();
 }
 
 GraphSupportResult GraphExecutor::can_execute(const ggml_cgraph & graph) const {
@@ -33,20 +33,21 @@ GraphSupportResult GraphExecutor::can_execute(const ggml_cgraph & graph) const {
         result.supported = true;
         return result;
     }
-    if (!context_valid_for_graph_programs(result.errors)) {
+    result.status = context_valid_for_graph_programs();
+    if (!result.status.success()) {
         return result;
     }
     const KernelCorpus &            corpus = get_qwen_kernel_corpus();
     const GraphProgramSupportResult support =
         context_.graph_programs.check_support(graph, corpus, context_.device->architecture);
     result.supported = support.supported;
-    result.errors.append(support.errors);
+    result.status.append(support.status);
     return result;
 }
 
 CommandProgramBindings GraphExecutor::bind_external_value_buffers(const GraphProgramMatch & match) const {
     std::vector<CommandProgramBinding> bindings;
-    ErrorLog                           errors;
+    Status                             status;
     bindings.reserve(match.external_bindings.size());
     for (const GraphProgramExternalBinding & external : match.external_bindings) {
         ValueBufferBinding    value_binding;
@@ -60,35 +61,36 @@ CommandProgramBindings GraphExecutor::bind_external_value_buffers(const GraphPro
             binding.generation = value_binding.generation;
             binding.capacity   = value_binding.capacity;
         } else {
-            errors.log("external value %d is not bound", external.value.value);
+            status.log("external value %d is not bound", external.value.value);
         }
         bindings.push_back(binding);
     }
-    return CommandProgramBindings::from_bindings(std::move(bindings), errors);
+    return CommandProgramBindings::from_bindings(std::move(bindings), status);
 }
 
 GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
     GraphExecutionResult result;
     if (graph.n_nodes == 0) {
-        result.status = GGML_STATUS_SUCCESS;
+        result.code = GGML_STATUS_SUCCESS;
         return result;
     }
-    if (!context_valid_for_execution(result.errors)) {
+    result.status = context_valid_for_execution();
+    if (!result.status.success()) {
         return result;
     }
 
     const KernelCorpus & corpus = get_qwen_kernel_corpus();
     GraphProgramLookup   lookup = context_.graph_programs.get_or_build(graph, corpus, context_.device->architecture);
     if (!lookup.valid()) {
-        result.errors.log("build HRX graph program failed");
-        result.errors.append(lookup.errors);
-        result.errors.append(lookup.match.errors);
+        result.status.log("build HRX graph program failed");
+        result.status.append(lookup.status);
+        result.status.append(lookup.match.status);
         return result;
     }
 
     CommandProgramBindings bindings = bind_external_value_buffers(lookup.match);
     if (!bindings.valid()) {
-        result.errors.append(bindings.errors);
+        result.status.append(bindings.status);
         return result;
     }
     const CommandProgramExecutionContext execution_context = {
@@ -104,14 +106,14 @@ GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
         execution_context, lookup.program->uid(), lookup.program->command_shape(), lookup.program->commands(),
         bindings);
     if (!execution.success) {
-        result.errors.append(execution.errors);
-        if (result.errors.success()) {
-            result.errors.log("execute HRX command program failed");
+        result.status.append(execution.status);
+        if (result.status.success()) {
+            result.status.log("execute HRX command program failed");
         }
         return result;
     }
 
-    result.status = GGML_STATUS_SUCCESS;
+    result.code = GGML_STATUS_SUCCESS;
     return result;
 }
 

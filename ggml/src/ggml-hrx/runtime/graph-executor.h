@@ -2,26 +2,26 @@
 
 #include "backend-context.h"
 #include "dispatch/command-program-bindings.h"
-#include "error-log.h"
 #include "ggml.h"
 #include "runtime/graph-program-cache.h"
+#include "status.h"
 
 struct ggml_cgraph;
 
 namespace ggml::hrx {
 
 struct GraphSupportResult {
-    bool     supported = false;
-    ErrorLog errors;
+    bool   supported = false;
+    Status status;
 
-    bool success() const { return supported && errors.success(); }
+    bool success() const { return supported && status.success(); }
 };
 
 struct GraphExecutionResult {
-    enum ggml_status status = GGML_STATUS_FAILED;
-    ErrorLog         errors;
+    enum ggml_status code = GGML_STATUS_FAILED;
+    Status           status;
 
-    bool success() const { return status == GGML_STATUS_SUCCESS && errors.success(); }
+    bool success() const { return code == GGML_STATUS_SUCCESS && status.success(); }
 };
 
 class GraphExecutor {
@@ -32,8 +32,8 @@ class GraphExecutor {
     GraphExecutionResult execute(const ggml_cgraph & graph) const;
 
   private:
-    bool context_valid_for_graph_programs(ErrorLog & errors) const;
-    bool context_valid_for_execution(ErrorLog & errors) const;
+    Status context_valid_for_graph_programs() const;
+    Status context_valid_for_execution() const;
 
     CommandProgramBindings bind_external_value_buffers(const GraphProgramMatch & match) const;
 

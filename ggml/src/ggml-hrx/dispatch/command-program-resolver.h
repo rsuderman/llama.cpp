@@ -2,7 +2,7 @@
 
 #include "command-program-bindings.h"
 #include "command-program.h"
-#include "error-log.h"
+#include "status.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -38,9 +38,9 @@ struct ResolvedCommand {
 
 struct ResolvedCommandProgram {
     std::vector<ResolvedCommand> commands;
-    ErrorLog                     errors;
+    Status                       status;
 
-    bool valid() const { return errors.success(); }
+    bool valid() const { return status.success(); }
 };
 
 ResolvedCommandProgram resolve_command_program_bindings(const CommandProgram &              program,

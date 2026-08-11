@@ -13,50 +13,55 @@
 namespace ggml::hrx {
 namespace {
 
-static bool command_program_metadata_context_valid(const CommandProgramExecutionContext & context, ErrorLog & errors) {
+static const char * status_first_error(const Status & status) {
+    return status.errors().empty() ? "" : status.errors().front().c_str();
+}
+
+static Status command_program_metadata_context_valid(const CommandProgramExecutionContext & context) {
+    Status status;
     if (context.target == nullptr) {
-        errors.log("missing HRX target");
-        return false;
+        status.log("missing HRX target");
+        return status;
     }
     if (context.corpus == nullptr) {
-        errors.log("missing HRX kernel corpus");
-        return false;
+        status.log("missing HRX kernel corpus");
+        return status;
     }
-    return true;
+    return status;
 }
 
-static bool command_program_preparation_context_valid(const CommandProgramExecutionContext & context,
-                                                      ErrorLog &                             errors) {
+static Status command_program_preparation_context_valid(const CommandProgramExecutionContext & context) {
+    Status status;
     if (context.device == nullptr) {
-        errors.log("missing HRX device");
-        return false;
+        status.log("missing HRX device");
+        return status;
     }
     if (context.jit == nullptr) {
-        errors.log("missing HRX JIT storage");
-        return false;
+        status.log("missing HRX JIT storage");
+        return status;
     }
     if (context.kernel_executables == nullptr) {
-        errors.log("missing HRX kernel executable cache");
-        return false;
+        status.log("missing HRX kernel executable cache");
+        return status;
     }
-    return true;
+    return status;
 }
 
-static bool command_program_transient_context_valid(const CommandProgramExecutionContext & context,
-                                                    const CommandProgram &                 commands,
-                                                    ErrorLog &                             errors) {
+static Status command_program_transient_context_valid(const CommandProgramExecutionContext & context,
+                                                      const CommandProgram &                 commands) {
+    Status status;
     if (commands.transients.arena_size == 0) {
-        return true;
+        return status;
     }
     if (context.transient_arena == nullptr) {
-        errors.log("missing HRX transient arena");
-        return false;
+        status.log("missing HRX transient arena");
+        return status;
     }
     if (context.stream == nullptr) {
-        errors.log("missing HRX stream for transient arena");
-        return false;
+        status.log("missing HRX stream for transient arena");
+        return status;
     }
-    return true;
+    return status;
 }
 
 static bool prepared_execution_context_valid(const CommandProgramExecutionContext & context) {
@@ -67,23 +72,23 @@ static bool prepared_execution_context_valid(const CommandProgramExecutionContex
     return true;
 }
 
-static bool ensure_transient_arena(const CommandProgramExecutionContext & context,
-                                   const CommandProgram &                 commands,
-                                   TransientArenaAllocationRef &          allocation,
-                                   ErrorLog &                             errors) {
-    allocation = {};
-    if (!command_program_transient_context_valid(context, commands, errors)) {
-        return false;
+static Status ensure_transient_arena(const CommandProgramExecutionContext & context,
+                                     const CommandProgram &                 commands,
+                                     TransientArenaAllocationRef &          allocation) {
+    allocation    = {};
+    Status status = command_program_transient_context_valid(context, commands);
+    if (!status.success()) {
+        return status;
     }
     if (commands.transients.arena_size == 0) {
-        return true;
+        return status;
     }
-    if (!context.transient_arena->ensure_capacity(context.device, context.stream, commands.transients.arena_size,
-                                                  errors)) {
-        return false;
+    status = context.transient_arena->ensure_capacity(context.device, context.stream, commands.transients.arena_size);
+    if (!status.success()) {
+        return status;
     }
     allocation = context.transient_arena->current_allocation();
-    return true;
+    return status;
 }
 
 static std::string format_resolved_command_context(const ResolvedCommand & command) {
@@ -128,33 +133,33 @@ static PreparedCommand make_prepared_command_shape(const ResolvedCommand & comma
     return prepared;
 }
 
-static bool prepare_kernel_command(const CommandProgramExecutionContext & context,
-                                   const ResolvedCommand &                command,
-                                   PreparedCommand &                      prepared,
-                                   ErrorLog &                             errors) {
+static Status prepare_kernel_command(const CommandProgramExecutionContext & context,
+                                     const ResolvedCommand &                command,
+                                     PreparedCommand &                      prepared) {
+    Status            status;
     const std::string command_context = format_resolved_command_context(command);
     if (command.kind != CommandKind::Kernel) {
-        errors.log("unsupported command kind in %s", command_context.c_str());
-        return false;
+        status.log("unsupported command kind in %s", command_context.c_str());
+        return status;
     }
     Dispatch dispatch = build_dispatch(command);
 
     KernelResolveResult resolved =
         resolve_kernel_definition(*context.corpus, context.target, dispatch.kernel.kernel_id);
     if (!resolved.found()) {
-        errors.log("%s: %s", command_context.c_str(),
+        status.log("%s: %s", command_context.c_str(),
                    format_kernel_resolve_error(resolved, dispatch.kernel.kernel_id).c_str());
-        return false;
+        return status;
     }
 
     prepared                   = make_prepared_command_shape(command);
     prepared.kernel.executable = context.kernel_executables->prepare(
         { context.device, context.target, context.jit }, *resolved.definition, dispatch, prepared.kernel.constants);
     if (prepared.kernel.executable == nullptr) {
-        errors.log("failed to prepare %s", command_context.c_str());
-        return false;
+        status.log("failed to prepare %s", command_context.c_str());
+        return status;
     }
-    return true;
+    return status;
 }
 
 static bool execute_prepared_kernel_command(const CommandProgramExecutionContext & context,
@@ -198,22 +203,24 @@ PreparedCommandProgram prepare_command_program(const CommandProgramExecutionCont
                                                const CommandProgram &                 commands,
                                                const CommandProgramBindings &         bindings) {
     PreparedCommandProgram prepared;
-    if (!command_program_metadata_context_valid(context, prepared.errors)) {
+    prepared.status = command_program_metadata_context_valid(context);
+    if (!prepared.status.success()) {
         return prepared;
     }
 
     const VerificationResult verification = verify_command_program(commands, *context.corpus, context.target);
     if (!verification.valid()) {
-        prepared.errors.append(verification.errors);
+        prepared.status.append(verification.status);
         return prepared;
     }
     if (!bindings.valid()) {
-        prepared.errors.append(bindings.errors);
+        prepared.status.append(bindings.status);
         return prepared;
     }
 
     TransientArenaAllocationRef transient_allocation;
-    if (!ensure_transient_arena(context, commands, transient_allocation, prepared.errors)) {
+    prepared.status = ensure_transient_arena(context, commands, transient_allocation);
+    if (!prepared.status.success()) {
         return prepared;
     }
 
@@ -222,18 +229,22 @@ PreparedCommandProgram prepare_command_program(const CommandProgramExecutionCont
     const ResolvedCommandProgram resolved =
         resolve_command_program_bindings(commands, bindings, transient_allocation_ptr);
     if (!resolved.valid()) {
-        prepared.errors.append(resolved.errors);
+        prepared.status.append(resolved.status);
         return prepared;
     }
-    if (!command_program_preparation_context_valid(context, prepared.errors)) {
+    prepared.status = command_program_preparation_context_valid(context);
+    if (!prepared.status.success()) {
         return prepared;
     }
 
     prepared.commands.reserve(resolved.commands.size());
     for (const ResolvedCommand & command : resolved.commands) {
         PreparedCommand prepared_command;
-        if (prepare_kernel_command(context, command, prepared_command, prepared.errors)) {
+        Status          status = prepare_kernel_command(context, command, prepared_command);
+        if (status.success()) {
             prepared.commands.push_back(std::move(prepared_command));
+        } else {
+            prepared.status.append(status);
         }
     }
     prepared.bound_transient_arena_allocation_id = transient_allocation.allocation_id;
@@ -299,15 +310,16 @@ bool bind_and_execute_prepared_command_program(const CommandProgramExecutionCont
                execute_prepared_command_program(context, prepared);
     }
 
-    ErrorLog errors;
-    if (!command_program_transient_context_valid(context, commands, errors)) {
-        GGML_LOG_ERROR("%s: %s\n", __func__, errors.front().c_str());
+    Status status = command_program_transient_context_valid(context, commands);
+    if (!status.success()) {
+        GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
         return false;
     }
 
     TransientArena::AllocationLease lease = context.transient_arena->acquire_allocation_lease();
-    if (!lease.ensure_capacity(context.device, context.stream, commands.transients.arena_size, errors)) {
-        GGML_LOG_ERROR("%s: %s\n", __func__, errors.front().c_str());
+    status = lease.ensure_capacity(context.device, context.stream, commands.transients.arena_size);
+    if (!status.success()) {
+        GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
         return false;
     }
     return bind_prepared_command_program_transients(commands, lease.current_allocation(), prepared) &&
@@ -317,7 +329,7 @@ bool bind_and_execute_prepared_command_program(const CommandProgramExecutionCont
 bool execute_prepared_command_program(const CommandProgramExecutionContext & context,
                                       const PreparedCommandProgram &         commands) {
     if (!commands.valid()) {
-        GGML_LOG_ERROR("%s: invalid HRX prepared command program: %s\n", __func__, commands.errors.front().c_str());
+        GGML_LOG_ERROR("%s: invalid HRX prepared command program: %s\n", __func__, status_first_error(commands.status));
         return false;
     }
     if (!prepared_execution_context_valid(context)) {

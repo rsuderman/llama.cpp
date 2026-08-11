@@ -9,22 +9,21 @@
 
 namespace ggml::hrx {
 
-class ErrorLog {
+class [[nodiscard]] Status {
   public:
+    Status() = default;
+
+    Status(const Status &)             = delete;
+    Status & operator=(const Status &) = delete;
+
+    Status(Status &&) noexcept             = default;
+    Status & operator=(Status &&) noexcept = default;
+
     bool success() const { return messages_.empty(); }
 
-    bool empty() const { return messages_.empty(); }
+    const std::vector<std::string> & errors() const { return messages_; }
 
-    size_t size() const { return messages_.size(); }
-
-    const std::string & front() const {
-        static const std::string empty_message;
-        return messages_.empty() ? empty_message : messages_.front();
-    }
-
-    const std::vector<std::string> & messages() const { return messages_; }
-
-    void append(const ErrorLog & other) {
+    void append(const Status & other) {
         messages_.insert(messages_.end(), other.messages_.begin(), other.messages_.end());
     }
 

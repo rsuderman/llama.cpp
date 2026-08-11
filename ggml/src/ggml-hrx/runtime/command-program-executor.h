@@ -49,10 +49,10 @@ struct PreparedCommand {
 
 struct PreparedCommandProgram {
     std::vector<PreparedCommand> commands;
-    ErrorLog                     errors;
+    Status                       status;
     uint64_t                     bound_transient_arena_allocation_id = kInvalidTransientArenaAllocationId;
 
-    bool valid() const { return errors.success(); }
+    bool valid() const { return status.success(); }
 };
 
 PreparedCommandProgram prepare_command_program(const CommandProgramExecutionContext & context,

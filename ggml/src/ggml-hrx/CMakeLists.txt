@@ -94,7 +94,7 @@ option(GGML_HRX_BUNDLE_RUNTIME_LIBS "Bundle HRX/ROCm runtime libraries next to t
 set(GGML_HRX_BUNDLE_LIBRARY_DIRS "" CACHE STRING "Library directories to scan when GGML_HRX_BUNDLE_RUNTIME_LIBS=ON")
 
 add_library(ggml-hrx-kernel-corpus STATIC
-    error-log.h
+    status.h
     kernel-corpus/kernel-corpus-json.cpp
     kernel-corpus/kernel-corpus-json.h
     kernel-corpus/kernel-corpus-catalog-verify.h
@@ -128,7 +128,7 @@ ggml_add_backend_library(ggml-hrx
     dispatch/dispatch-scheduler.cpp
     dispatch/dispatch-scheduler.h
     dispatch/dispatch.h
-    error-log.h
+    status.h
     graph/graph.cpp
     graph/graph.h
     ggml-hrx.cpp

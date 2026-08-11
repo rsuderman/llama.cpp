@@ -371,14 +371,18 @@ static void backend_synchronize(ggml_backend_t backend) {
     HRX_CHECK(hrx_stream_synchronize(context->stream));
 }
 
+static const char * status_first_error(const ggml::hrx::Status & status) {
+    return status.errors().empty() ? "" : status.errors().front().c_str();
+}
+
 static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * graph) {
     auto *                                context  = static_cast<ggml_backend_hrx_context *>(backend->context);
     const ggml::hrx::GraphExecutor        executor = ggml::hrx::GraphExecutor(*context);
     const ggml::hrx::GraphExecutionResult result   = executor.execute(*graph);
     if (!result.success()) {
-        GGML_LOG_ERROR("%s: %s\n", __func__, result.errors.front().c_str());
+        GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(result.status));
     }
-    return result.status;
+    return result.code;
 }
 
 static enum ggml_backend_graph_claim_result graph_claim(ggml_backend_t                     backend,

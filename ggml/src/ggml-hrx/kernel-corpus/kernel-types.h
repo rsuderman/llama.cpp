@@ -1,6 +1,6 @@
 #pragma once
 
-#include "error-log.h"
+#include "status.h"
 
 #include <cstdint>
 #include <string>
@@ -14,9 +14,9 @@ enum class ResourceAccess : uint8_t {
 };
 
 struct VerificationResult {
-    ErrorLog errors;
+    Status status;
 
-    bool valid() const { return errors.success(); }
+    bool valid() const { return status.success(); }
 };
 
 }  // namespace ggml::hrx

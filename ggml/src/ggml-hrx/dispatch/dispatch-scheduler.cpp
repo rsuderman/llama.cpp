@@ -21,7 +21,7 @@ bool DispatchScheduler::schedule_graph(const Graph & graph) {
         if (try_match_add_f32_dispatch(graph, node, *this)) {
             continue;
         }
-        plan_.errors.log("unsupported HRX node %zu: %s", i, ggml_op_name(node->op));
+        plan_.status.log("unsupported HRX node %zu: %s", i, ggml_op_name(node->op));
         plan_.dispatches.clear();
         return false;
     }

@@ -19,7 +19,7 @@ struct PreparedCommandProgramCacheStats {
 
 struct PreparedCommandProgramCacheExecutionResult {
     bool     success = false;
-    ErrorLog errors;
+    Status status;
 };
 
 class PreparedCommandProgramCache {

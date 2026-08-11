@@ -1,10 +1,10 @@
 #pragma once
 
 #include "command-plan.h"
-#include "error-log.h"
 #include "graph/graph.h"
 #include "kernel-corpus/kernel-corpus.h"
 #include "kernel-corpus/kernel-types.h"
+#include "status.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -56,9 +56,9 @@ struct TransientPlan {
 struct CommandProgram {
     std::vector<Command> commands;
     TransientPlan        transients;
-    ErrorLog             errors;
+    Status               status;
 
-    bool valid() const { return errors.success(); }
+    bool valid() const { return status.success(); }
 };
 
 const TransientAllocation * find_transient_allocation(const TransientPlan & plan, ValueId value);

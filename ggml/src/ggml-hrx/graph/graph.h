@@ -1,7 +1,7 @@
 #pragma once
 
-#include "error-log.h"
 #include "ggml.h"
+#include "status.h"
 #include "value-map.h"
 
 #include <string>
@@ -36,10 +36,10 @@ class Graph {
 };
 
 struct GraphImportResult {
-    Graph    graph;
-    ErrorLog errors;
+    Graph  graph;
+    Status status;
 
-    bool valid() const { return errors.success(); }
+    bool valid() const { return status.success(); }
 };
 
 GraphImportResult import_ggml_graph(const ggml_cgraph & graph);

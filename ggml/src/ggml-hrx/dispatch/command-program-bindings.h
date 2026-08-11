@@ -1,7 +1,7 @@
 #pragma once
 
-#include "error-log.h"
 #include "graph/value-map.h"
+#include "status.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -28,15 +28,15 @@ class CommandProgramBindings {
   public:
     static CommandProgramBindings from_value_map(const ValueMap & values);
     static CommandProgramBindings from_bindings(std::vector<CommandProgramBinding> bindings,
-                                                const ErrorLog &                   errors = {});
+                                                const Status &                     errors = {});
 
     const CommandProgramBinding * find(ValueId value) const;
 
     const std::vector<CommandProgramBinding> & bindings() const { return bindings_; }
 
-    bool valid() const { return errors.success(); }
+    bool valid() const { return status.success(); }
 
-    ErrorLog errors;
+    Status status;
 
   private:
     std::vector<CommandProgramBinding> bindings_;

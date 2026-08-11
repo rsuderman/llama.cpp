@@ -24,46 +24,46 @@ static bool tensor_metadata_matches(const Value & value, const ggml_tensor * ten
     return true;
 }
 
-static bool bind_current_value(const ValueMap &                                   values,
-                               ValueId                                            expected,
-                               const ggml_tensor *                                tensor,
-                               std::vector<const ggml_tensor *> &                 tensor_by_value,
-                               std::unordered_map<const ggml_tensor *, int32_t> & value_by_tensor,
-                               const char *                                       role,
-                               size_t                                             node_index,
-                               ErrorLog &                                         errors) {
+static Status bind_current_value(const ValueMap &                                   values,
+                                 ValueId                                            expected,
+                                 const ggml_tensor *                                tensor,
+                                 std::vector<const ggml_tensor *> &                 tensor_by_value,
+                                 std::unordered_map<const ggml_tensor *, int32_t> & value_by_tensor,
+                                 const char *                                       role,
+                                 size_t                                             node_index) {
+    Status        status;
     const Value * value = values.find(expected);
     if (value == nullptr || expected.value < 0 || static_cast<size_t>(expected.value) >= tensor_by_value.size()) {
-        errors.log("node %zu %s references missing cached value %d", node_index, role, expected.value);
-        return false;
+        status.log("node %zu %s references missing cached value %d", node_index, role, expected.value);
+        return status;
     }
     if (tensor == nullptr) {
-        errors.log("node %zu %s value %d maps to a null tensor", node_index, role, expected.value);
-        return false;
+        status.log("node %zu %s value %d maps to a null tensor", node_index, role, expected.value);
+        return status;
     }
 
     const ggml_tensor * existing_tensor = tensor_by_value[static_cast<size_t>(expected.value)];
     if (existing_tensor != nullptr && existing_tensor != tensor) {
-        errors.log("node %zu %s value %d maps to multiple current tensors", node_index, role, expected.value);
-        return false;
+        status.log("node %zu %s value %d maps to multiple current tensors", node_index, role, expected.value);
+        return status;
     }
 
     const auto existing_value = value_by_tensor.find(tensor);
     if (existing_value != value_by_tensor.end() && existing_value->second != expected.value) {
-        errors.log("node %zu %s tensor maps to cached values %d and %d", node_index, role, existing_value->second,
+        status.log("node %zu %s tensor maps to cached values %d and %d", node_index, role, existing_value->second,
                    expected.value);
-        return false;
+        return status;
     }
 
     if (existing_tensor == nullptr && existing_value == value_by_tensor.end() &&
         !tensor_metadata_matches(*value, tensor)) {
-        errors.log("node %zu %s value %d metadata does not match current tensor", node_index, role, expected.value);
-        return false;
+        status.log("node %zu %s value %d metadata does not match current tensor", node_index, role, expected.value);
+        return status;
     }
 
     tensor_by_value[static_cast<size_t>(expected.value)] = tensor;
     value_by_tensor.emplace(tensor, expected.value);
-    return true;
+    return status;
 }
 
 static std::string command_program_shape_key(const CommandProgram & commands) {
@@ -113,15 +113,15 @@ GraphProgram::GraphProgram(uint64_t                        uid,
 GraphProgramMatch GraphProgram::match_current_graph(const ggml_cgraph & current_graph) const {
     GraphProgramMatch result;
     if (graph_ == nullptr) {
-        result.errors.log("missing cached HRX graph");
+        result.status.log("missing cached HRX graph");
         return result;
     }
     if (commands_ == nullptr) {
-        result.errors.log("missing cached HRX command program");
+        result.status.log("missing cached HRX command program");
         return result;
     }
     if (graph_->nodes().size() != static_cast<size_t>(current_graph.n_nodes)) {
-        result.errors.log("cached graph has %zu nodes but current graph has %d", graph_->nodes().size(),
+        result.status.log("cached graph has %zu nodes but current graph has %d", graph_->nodes().size(),
                           current_graph.n_nodes);
         return result;
     }
@@ -134,11 +134,11 @@ GraphProgramMatch GraphProgram::match_current_graph(const ggml_cgraph & current_
         const GraphNode &   cached_node  = graph_->nodes()[node_index];
         const ggml_tensor * current_node = current_graph.nodes[node_index];
         if (current_node == nullptr) {
-            result.errors.log("current graph node %zu is null", node_index);
+            result.status.log("current graph node %zu is null", node_index);
             return result;
         }
         if (cached_node.op != current_node->op) {
-            result.errors.log("node %zu cached op %s does not match current op %s", node_index,
+            result.status.log("node %zu cached op %s does not match current op %s", node_index,
                               ggml_op_name(cached_node.op), ggml_op_name(current_node->op));
             return result;
         }
@@ -149,22 +149,26 @@ GraphProgramMatch GraphProgram::match_current_graph(const ggml_cgraph & current_
                 continue;
             }
             if (input_index >= cached_node.inputs.size()) {
-                result.errors.log("node %zu has more inputs than the cached graph", node_index);
+                result.status.log("node %zu has more inputs than the cached graph", node_index);
                 return result;
             }
-            if (!bind_current_value(values, cached_node.inputs[input_index], source, tensor_by_value, value_by_tensor,
-                                    "input", node_index, result.errors)) {
+            Status status = bind_current_value(values, cached_node.inputs[input_index], source, tensor_by_value,
+                                               value_by_tensor, "input", node_index);
+            if (!status.success()) {
+                result.status.append(status);
                 return result;
             }
             ++input_index;
         }
         if (input_index != cached_node.inputs.size()) {
-            result.errors.log("node %zu has %zu inputs but cached graph has %zu", node_index, input_index,
+            result.status.log("node %zu has %zu inputs but cached graph has %zu", node_index, input_index,
                               cached_node.inputs.size());
             return result;
         }
-        if (!bind_current_value(values, cached_node.output, current_node, tensor_by_value, value_by_tensor, "output",
-                                node_index, result.errors)) {
+        Status status = bind_current_value(values, cached_node.output, current_node, tensor_by_value, value_by_tensor,
+                                           "output", node_index);
+        if (!status.success()) {
+            result.status.append(status);
             return result;
         }
     }
@@ -172,7 +176,7 @@ GraphProgramMatch GraphProgram::match_current_graph(const ggml_cgraph & current_
     for (const ValueId id : values.external_value_ids()) {
         if (id.value < 0 || static_cast<size_t>(id.value) >= tensor_by_value.size() ||
             tensor_by_value[static_cast<size_t>(id.value)] == nullptr) {
-            result.errors.log("external value %d is missing from the current graph", id.value);
+            result.status.log("external value %d is missing from the current graph", id.value);
             return result;
         }
         result.external_bindings.push_back({ id, tensor_by_value[static_cast<size_t>(id.value)] });
@@ -194,8 +198,8 @@ GraphProgramSupportResult GraphProgramCache::check_support(const ggml_cgraph &  
         result.supported = true;
         return result;
     }
-    std::unique_ptr<GraphProgram> program = build_program(graph, corpus, target, result.errors);
-    result.supported                      = program != nullptr && result.errors.success();
+    std::unique_ptr<GraphProgram> program = build_program(graph, corpus, target, result.status);
+    result.supported                      = program != nullptr && result.status.success();
     return result;
 }
 
@@ -217,14 +221,14 @@ GraphProgramLookup GraphProgramCache::get_or_build(const ggml_cgraph &  graph,
         }
     }
 
-    std::unique_ptr<GraphProgram> program = build_program(graph, corpus, target, result.errors);
+    std::unique_ptr<GraphProgram> program = build_program(graph, corpus, target, result.status);
     if (program == nullptr) {
         return result;
     }
 
     GraphProgramMatch match = program->match_current_graph(graph);
     if (!match.valid()) {
-        result.errors.append(match.errors);
+        result.status.append(match.status);
         return result;
     }
 
@@ -260,22 +264,22 @@ void GraphProgramCache::clear() {
 std::unique_ptr<GraphProgram> GraphProgramCache::build_program(const ggml_cgraph &  graph,
                                                                const KernelCorpus & corpus,
                                                                const std::string &  target,
-                                                               ErrorLog &           errors) const {
+                                                               Status &             errors) const {
     GraphImportResult imported = import_ggml_graph(graph);
     if (!imported.valid()) {
-        errors.append(imported.errors);
+        errors.append(imported.status);
         return nullptr;
     }
 
     DispatchScheduler scheduler;
     if (!scheduler.schedule_graph(imported.graph)) {
-        errors.append(scheduler.plan().errors);
+        errors.append(scheduler.plan().status);
         return nullptr;
     }
 
     CommandProgram commands = build_command_program(imported.graph, scheduler.plan(), corpus, target);
     if (!commands.valid()) {
-        errors.append(commands.errors);
+        errors.append(commands.status);
         return nullptr;
     }
 

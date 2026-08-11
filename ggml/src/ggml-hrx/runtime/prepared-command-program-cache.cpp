@@ -35,12 +35,12 @@ PreparedCommandProgramCacheExecutionResult PreparedCommandProgramCache::execute_
     if (graph_uid == 0 || !commands.valid() || !bindings.valid()) {
         PreparedCommandProgram prepared = prepare_command_program(context, commands, bindings);
         if (!prepared.valid()) {
-            result.errors.append(prepared.errors);
+            result.status.append(prepared.status);
             return result;
         }
         result.success = bind_and_execute_prepared_command_program(context, commands, prepared);
         if (!result.success) {
-            result.errors.log("execute uncached HRX command program failed");
+            result.status.log("execute uncached HRX command program failed");
         }
         return result;
     }
@@ -65,7 +65,7 @@ PreparedCommandProgramCacheExecutionResult PreparedCommandProgramCache::execute_
         record_hit();
         result.success = bind_and_execute_prepared_command_program(context, commands, entry->program);
         if (!result.success) {
-            result.errors.log("execute cached HRX command program failed");
+            result.status.log("execute cached HRX command program failed");
         }
         return result;
     }
@@ -79,7 +79,7 @@ PreparedCommandProgramCacheExecutionResult PreparedCommandProgramCache::execute_
                 programs_.erase(found);
             }
         }
-        result.errors.append(prepared.errors);
+        result.status.append(prepared.status);
         return result;
     }
     entry->program     = std::move(prepared);
@@ -88,7 +88,7 @@ PreparedCommandProgramCacheExecutionResult PreparedCommandProgramCache::execute_
 
     result.success = bind_and_execute_prepared_command_program(context, commands, entry->program);
     if (!result.success) {
-        result.errors.log("execute prepared HRX command program failed");
+        result.status.log("execute prepared HRX command program failed");
     }
     return result;
 }

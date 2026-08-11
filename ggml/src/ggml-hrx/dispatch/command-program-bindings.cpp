@@ -11,30 +11,30 @@ CommandProgramBindings CommandProgramBindings::from_value_map(const ValueMap & v
     for (const ValueId id : values.external_value_ids()) {
         const Value * value = values.find(id);
         if (value == nullptr) {
-            result.errors.log("external value %d does not exist", id.value);
+            result.status.log("external value %d does not exist", id.value);
             continue;
         }
         if (!value->buffer.has_value()) {
-            result.errors.log("external value %d is not bound", id.value);
+            result.status.log("external value %d is not bound", id.value);
             continue;
         }
         bindings.push_back({ value->id, value->buffer->buffer, value->buffer->offset, value->buffer->length,
                              value->buffer->identity, value->buffer->generation, value->buffer->capacity });
     }
-    return from_bindings(std::move(bindings), result.errors);
+    return from_bindings(std::move(bindings), result.status);
 }
 
 CommandProgramBindings CommandProgramBindings::from_bindings(std::vector<CommandProgramBinding> bindings,
-                                                             const ErrorLog &                   errors) {
+                                                             const Status &                   errors) {
     CommandProgramBindings result;
-    result.errors.append(errors);
+    result.status.append(errors);
     result.bindings_ = std::move(bindings);
     for (const CommandProgramBinding & binding : result.bindings_) {
         if (binding.buffer == nullptr) {
-            result.errors.log("external value %d has a null binding", binding.value.value);
+            result.status.log("external value %d has a null binding", binding.value.value);
         }
         if (binding.length == 0) {
-            result.errors.log("external value %d has an empty binding", binding.value.value);
+            result.status.log("external value %d has an empty binding", binding.value.value);
         }
     }
     return result;

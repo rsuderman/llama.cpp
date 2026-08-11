@@ -1,7 +1,7 @@
 #pragma once
 
 #include "dispatch.h"
-#include "error-log.h"
+#include "status.h"
 
 #include <vector>
 
@@ -9,9 +9,9 @@ namespace ggml::hrx {
 
 struct CommandPlan {
     std::vector<Dispatch> dispatches;
-    ErrorLog              errors;
+    Status                status;
 
-    bool valid() const { return errors.success(); }
+    bool valid() const { return status.success(); }
 };
 
 }  // namespace ggml::hrx

@@ -1,9 +1,9 @@
 #pragma once
 
 #include "dispatch/command-program.h"
-#include "error-log.h"
 #include "graph/graph.h"
 #include "kernel-corpus/kernel-corpus.h"
+#include "status.h"
 
 #include <cstdint>
 #include <memory>
@@ -24,9 +24,9 @@ struct GraphProgramExternalBinding {
 
 struct GraphProgramMatch {
     std::vector<GraphProgramExternalBinding> external_bindings;
-    ErrorLog                                 errors;
+    Status                                   status;
 
-    bool valid() const { return errors.success(); }
+    bool valid() const { return status.success(); }
 };
 
 class GraphProgram {
@@ -70,16 +70,16 @@ struct GraphProgramLookup {
     GraphProgram *                program = nullptr;
     std::unique_ptr<GraphProgram> uncached_program;
     GraphProgramMatch             match;
-    ErrorLog                      errors;
+    Status                        status;
 
-    bool valid() const { return program != nullptr && errors.success() && match.valid(); }
+    bool valid() const { return program != nullptr && status.success() && match.valid(); }
 };
 
 struct GraphProgramSupportResult {
-    bool     supported = false;
-    ErrorLog errors;
+    bool   supported = false;
+    Status status;
 
-    bool valid() const { return supported && errors.success(); }
+    bool valid() const { return supported && status.success(); }
 };
 
 class GraphProgramCache {
@@ -100,7 +100,7 @@ class GraphProgramCache {
     std::unique_ptr<GraphProgram> build_program(const ggml_cgraph &  graph,
                                                 const KernelCorpus & corpus,
                                                 const std::string &  target,
-                                                ErrorLog &           errors) const;
+                                                Status &             errors) const;
 
     mutable std::mutex                                          mutex_;
     std::unordered_map<uint64_t, std::unique_ptr<GraphProgram>> programs_;

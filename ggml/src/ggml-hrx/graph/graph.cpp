@@ -30,7 +30,7 @@ GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
     for (int i = 0; i < graph.n_nodes; ++i) {
         const ggml_tensor * node = graph.nodes[i];
         if (node == nullptr) {
-            result.errors.log("ggml graph contains a null node");
+            result.status.log("ggml graph contains a null node");
             return result;
         }
         for (const ggml_tensor * source : node->src) {

@@ -176,30 +176,30 @@ std::string format_kernel_resolve_error(const KernelResolveResult & result, uint
 VerificationResult verify_kernel_corpus(const KernelCorpus & corpus) {
     VerificationResult result;
     if (!string_equal(corpus.schema, "ggml-hrx-kernel-corpus-v2")) {
-        result.errors.log("unsupported kernel corpus schema");
+        result.status.log("unsupported kernel corpus schema");
     }
     if (string_empty(corpus.upstream_revision)) {
-        result.errors.log("kernel corpus has no upstream revision");
+        result.status.log("kernel corpus has no upstream revision");
     }
     if (string_empty(corpus.corpus_digest)) {
-        result.errors.log("kernel corpus has no digest");
+        result.status.log("kernel corpus has no digest");
     }
     if (string_empty(corpus.recipe_digest)) {
-        result.errors.log("kernel corpus has no BUILD.bazel recipe digest");
+        result.status.log("kernel corpus has no BUILD.bazel recipe digest");
     }
     if (corpus.plan_case_count == 0) {
-        result.errors.log("kernel corpus has no compile plan cases");
+        result.status.log("kernel corpus has no compile plan cases");
     }
     std::set<std::string>                           variants;
     std::map<std::string, const KernelDefinition *> contracts;
     for (const KernelDefinition & kernel : corpus.kernels) {
         if (string_empty(kernel.family) || string_empty(kernel.name) || string_empty(kernel.source) ||
             string_empty(kernel.symbol) || string_empty(kernel.backend) || string_empty(kernel.source_digest)) {
-            result.errors.log("kernel definition is incomplete");
+            result.status.log("kernel definition is incomplete");
         }
         if (kernel.id != kernel_catalog_id(kernel.family != nullptr ? kernel.family : "",
                                            kernel.name != nullptr ? kernel.name : "")) {
-            result.errors.log("kernel %s has an invalid catalog id", kernel.name != nullptr ? kernel.name : "");
+            result.status.log("kernel %s has an invalid catalog id", kernel.name != nullptr ? kernel.name : "");
         }
         const bool source_is_primary = contains_source_ref(kernel.compile_recipe.primary_sources, kernel.source);
         const bool source_is_library = contains_source_ref(kernel.compile_recipe.library_sources, kernel.source);
@@ -207,18 +207,18 @@ VerificationResult verify_kernel_corpus(const KernelCorpus & corpus) {
              !string_equal(kernel.compile_recipe.mode, "archive")) ||
             kernel.compile_recipe.primary_sources.empty() || (!source_is_primary && !source_is_library) ||
             (string_equal(kernel.compile_recipe.mode, "archive") && string_empty(kernel.compile_recipe.link_module))) {
-            result.errors.log("kernel %s has an invalid BUILD compile recipe",
+            result.status.log("kernel %s has an invalid BUILD compile recipe",
                               kernel.name != nullptr ? kernel.name : "");
         }
         for (const KernelSourceRef & source : kernel.compile_recipe.primary_sources) {
             if (string_empty(source.path) || source.contents == nullptr) {
-                result.errors.log("kernel %s has an invalid embedded primary source reference",
+                result.status.log("kernel %s has an invalid embedded primary source reference",
                                   kernel.name != nullptr ? kernel.name : "");
             }
         }
         for (const KernelSourceRef & source : kernel.compile_recipe.library_sources) {
             if (string_empty(source.path) || source.contents == nullptr) {
-                result.errors.log("kernel %s has an invalid embedded library source reference",
+                result.status.log("kernel %s has an invalid embedded library source reference",
                                   kernel.name != nullptr ? kernel.name : "");
             }
         }
@@ -226,22 +226,22 @@ VerificationResult verify_kernel_corpus(const KernelCorpus & corpus) {
                                       std::string(kernel.name != nullptr ? kernel.name : "");
         const std::string target_selector = kernel.target_selector != nullptr ? kernel.target_selector : "";
         if (!variants.insert(full_name + "@" + target_selector).second) {
-            result.errors.log("kernel corpus repeats target variant %s@%s", full_name.c_str(),
+            result.status.log("kernel corpus repeats target variant %s@%s", full_name.c_str(),
                               target_selector.empty() ? "default" : target_selector.c_str());
         }
         const auto contract = contracts.emplace(full_name, &kernel);
         if (!contract.second && !kernel_variant_contract_equal(*contract.first->second, kernel)) {
-            result.errors.log("kernel target variants disagree on ABI for %s", full_name.c_str());
+            result.status.log("kernel target variants disagree on ABI for %s", full_name.c_str());
         }
         std::set<std::string> binding_names;
         for (const KernelBindingDefinition & binding : kernel.bindings) {
             if (string_empty(binding.name) ||
                 !binding_names.insert(binding.name != nullptr ? binding.name : "").second) {
-                result.errors.log("kernel %s has invalid binding names", kernel.name != nullptr ? kernel.name : "");
+                result.status.log("kernel %s has invalid binding names", kernel.name != nullptr ? kernel.name : "");
             }
         }
         if (kernel.bindings.size() == 0) {
-            result.errors.log("kernel %s has no binding ABI", kernel.name != nullptr ? kernel.name : "");
+            result.status.log("kernel %s has no binding ABI", kernel.name != nullptr ? kernel.name : "");
         }
     }
     return result;
