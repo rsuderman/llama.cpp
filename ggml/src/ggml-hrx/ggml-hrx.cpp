@@ -471,8 +471,40 @@ static ggml_backend_buffer_type_t device_buffer_type(ggml_backend_dev_t device) 
     return &device_context(device)->buft;
 }
 
+static bool eager_capability_declared(enum ggml_op op) {
+    switch (op) {
+        // The scheduler probes preallocated weight tensors as NONE operations when deciding whether their buffer type is
+        // usable by this backend. Fused ops are declared here so graph-claim can validate the full dispatch pattern.
+        // TODO: split this into placement capability and exact graph execution capability once graph claiming owns the
+        // full decision.
+        case GGML_OP_NONE:
+        case GGML_OP_ADD:
+        case GGML_OP_ARGSORT:
+        case GGML_OP_CLAMP:
+        case GGML_OP_DIV:
+        case GGML_OP_FLASH_ATTN_EXT:
+        case GGML_OP_GET_ROWS:
+        case GGML_OP_GLU:
+        case GGML_OP_MUL:
+        case GGML_OP_MUL_MAT:
+        case GGML_OP_MUL_MAT_ID:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_RESHAPE:
+        case GGML_OP_RMS_NORM:
+        case GGML_OP_ROPE:
+        case GGML_OP_SET_ROWS:
+        case GGML_OP_SOFT_MAX:
+        case GGML_OP_SUM_ROWS:
+        case GGML_OP_VIEW:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op) {
-    return ggml::hrx::can_execute_standalone_op_as_graph(op, device_context(device)->architecture);
+    GGML_UNUSED(device);
+    return op != nullptr && eager_capability_declared(op->op);
 }
 
 static bool device_supports_buffer_type(ggml_backend_dev_t device, ggml_backend_buffer_type_t buft) {
