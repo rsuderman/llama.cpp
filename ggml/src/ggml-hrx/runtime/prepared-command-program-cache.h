@@ -17,6 +17,11 @@ struct PreparedCommandProgramCacheStats {
     uint64_t hits   = 0;
 };
 
+struct PreparedCommandProgramCacheExecutionResult {
+    bool     success = false;
+    ErrorLog errors;
+};
+
 class PreparedCommandProgramCache {
   public:
     bool execute(const CommandProgramExecutionContext & context,
@@ -24,6 +29,12 @@ class PreparedCommandProgramCache {
                  const std::string &                    command_shape,
                  const CommandProgram &                 commands,
                  const CommandProgramBindings &         bindings);
+
+    PreparedCommandProgramCacheExecutionResult execute_with_result(const CommandProgramExecutionContext & context,
+                                                                   uint64_t                               graph_uid,
+                                                                   const std::string &                    command_shape,
+                                                                   const CommandProgram &                 commands,
+                                                                   const CommandProgramBindings &         bindings);
 
     PreparedCommandProgramCacheStats stats() const;
 

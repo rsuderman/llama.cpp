@@ -75,9 +75,20 @@ struct GraphProgramLookup {
     bool valid() const { return program != nullptr && errors.success() && match.valid(); }
 };
 
+struct GraphProgramSupportResult {
+    bool     supported = false;
+    ErrorLog errors;
+
+    bool valid() const { return supported && errors.success(); }
+};
+
 class GraphProgramCache {
   public:
     bool can_execute(const ggml_cgraph & graph, const KernelCorpus & corpus, const std::string & target) const;
+
+    GraphProgramSupportResult check_support(const ggml_cgraph &  graph,
+                                            const KernelCorpus & corpus,
+                                            const std::string &  target) const;
 
     GraphProgramLookup get_or_build(const ggml_cgraph & graph, const KernelCorpus & corpus, const std::string & target);
 

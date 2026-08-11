@@ -344,7 +344,7 @@ if (TARGET ggml-hrx)
     add_test(NAME test-hrx-buffer COMMAND test-hrx-buffer)
 
     add_executable(hrx-backend-test hrx-backend-test.cpp)
-    target_link_libraries(hrx-backend-test PRIVATE ggml-hrx ggml)
+    target_link_libraries(hrx-backend-test PRIVATE ggml-hrx ggml hrx::hrx loomc::loomc)
     target_include_directories(hrx-backend-test PRIVATE ../ggml/include ../ggml/src ../ggml/src/ggml-hrx)
     add_test(NAME hrx-backend-test COMMAND hrx-backend-test)
 endif()

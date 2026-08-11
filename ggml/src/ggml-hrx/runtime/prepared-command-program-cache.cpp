@@ -22,8 +22,27 @@ bool PreparedCommandProgramCache::execute(const CommandProgramExecutionContext &
                                           const std::string &                    command_shape,
                                           const CommandProgram &                 commands,
                                           const CommandProgramBindings &         bindings) {
+    return execute_with_result(context, graph_uid, command_shape, commands, bindings).success;
+}
+
+PreparedCommandProgramCacheExecutionResult PreparedCommandProgramCache::execute_with_result(
+    const CommandProgramExecutionContext & context,
+    uint64_t                               graph_uid,
+    const std::string &                    command_shape,
+    const CommandProgram &                 commands,
+    const CommandProgramBindings &         bindings) {
+    PreparedCommandProgramCacheExecutionResult result;
     if (graph_uid == 0 || !commands.valid() || !bindings.valid()) {
-        return execute_command_program(context, commands, bindings);
+        PreparedCommandProgram prepared = prepare_command_program(context, commands, bindings);
+        if (!prepared.valid()) {
+            result.errors.append(prepared.errors);
+            return result;
+        }
+        result.success = bind_and_execute_prepared_command_program(context, commands, prepared);
+        if (!result.success) {
+            result.errors.log("execute uncached HRX command program failed");
+        }
+        return result;
     }
 
     const std::string      key = cache_key(graph_uid, context, command_shape, bindings);
@@ -44,7 +63,11 @@ bool PreparedCommandProgramCache::execute(const CommandProgramExecutionContext &
     std::lock_guard<std::mutex> entry_lock(entry->mutex);
     if (entry->has_program && entry->program.valid()) {
         record_hit();
-        return bind_and_execute_prepared_command_program(context, commands, entry->program);
+        result.success = bind_and_execute_prepared_command_program(context, commands, entry->program);
+        if (!result.success) {
+            result.errors.log("execute cached HRX command program failed");
+        }
+        return result;
     }
 
     PreparedCommandProgram prepared = prepare_command_program(context, commands, bindings);
@@ -56,13 +79,18 @@ bool PreparedCommandProgramCache::execute(const CommandProgramExecutionContext &
                 programs_.erase(found);
             }
         }
-        return bind_and_execute_prepared_command_program(context, commands, prepared);
+        result.errors.append(prepared.errors);
+        return result;
     }
     entry->program     = std::move(prepared);
     entry->has_program = true;
     record_build();
 
-    return bind_and_execute_prepared_command_program(context, commands, entry->program);
+    result.success = bind_and_execute_prepared_command_program(context, commands, entry->program);
+    if (!result.success) {
+        result.errors.log("execute prepared HRX command program failed");
+    }
+    return result;
 }
 
 PreparedCommandProgramCacheStats PreparedCommandProgramCache::stats() const {

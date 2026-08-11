@@ -10,6 +10,7 @@
 #include "ggml.h"
 #include "graph/graph.h"
 #include "runtime/command-program-executor.h"
+#include "runtime/graph-executor.h"
 #include "runtime/graph-program-cache.h"
 
 #include <cmath>
@@ -791,6 +792,52 @@ static void run_graph_program_cache_uid_mismatch_checks() {
     ggml_free(ctx);
 }
 
+static void run_graph_executor_contract_checks() {
+    ggml_backend_hrx_device_context device_context  = {};
+    ggml_backend_hrx_context        backend_context = {};
+    device_context.architecture                     = "gfx1151";
+    backend_context.device                          = &device_context;
+    const ggml::hrx::GraphExecutor executor(backend_context);
+
+    ggml_init_params params = {};
+    params.mem_size         = 256 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * a       = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * b       = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * add_out = ggml_add(ctx, a, b);
+    ggml_tensor * sqr_out = ggml_sqr(ctx, a);
+    REQUIRE(a != nullptr);
+    REQUIRE(b != nullptr);
+    REQUIRE(add_out != nullptr);
+    REQUIRE(sqr_out != nullptr);
+
+    ggml_cgraph * add_graph = ggml_new_graph(ctx);
+    REQUIRE(add_graph != nullptr);
+    ggml_build_forward_expand(add_graph, add_out);
+    const ggml::hrx::GraphSupportResult add_support = executor.can_execute(*add_graph);
+    REQUIRE(add_support.supported);
+    REQUIRE(add_support.errors.success());
+
+    const ggml::hrx::GraphExecutionResult missing_binding = executor.execute(*add_graph);
+    REQUIRE(!missing_binding.success());
+    REQUIRE(missing_binding.status == GGML_STATUS_FAILED);
+    REQUIRE(error_log_contains(missing_binding.errors, "external value"));
+    REQUIRE(error_log_contains(missing_binding.errors, "not bound"));
+
+    ggml_cgraph * sqr_graph = ggml_new_graph(ctx);
+    REQUIRE(sqr_graph != nullptr);
+    ggml_build_forward_expand(sqr_graph, sqr_out);
+    const ggml::hrx::GraphSupportResult sqr_support = executor.can_execute(*sqr_graph);
+    REQUIRE(!sqr_support.supported);
+    REQUIRE(error_log_contains(sqr_support.errors, "unsupported HRX node 0"));
+    REQUIRE(error_log_contains(sqr_support.errors, "SQR"));
+
+    ggml_free(ctx);
+}
+
 static void run_add_f32() {
     ggml_backend_t backend = ggml_backend_hrx_init(0);
     REQUIRE(backend != nullptr);
@@ -1176,6 +1223,7 @@ int main() {
     run_chained_dispatch_requires_transients();
     run_multiple_transient_plan_checks();
     run_graph_program_cache_uid_mismatch_checks();
+    run_graph_executor_contract_checks();
 
     if (ggml_backend_hrx_get_device_count() == 0) {
         std::fprintf(stderr, "test skipped: no HRX devices available\n");

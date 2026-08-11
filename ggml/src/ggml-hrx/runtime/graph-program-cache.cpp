@@ -183,11 +183,20 @@ GraphProgramMatch GraphProgram::match_current_graph(const ggml_cgraph & current_
 bool GraphProgramCache::can_execute(const ggml_cgraph &  graph,
                                     const KernelCorpus & corpus,
                                     const std::string &  target) const {
+    return check_support(graph, corpus, target).supported;
+}
+
+GraphProgramSupportResult GraphProgramCache::check_support(const ggml_cgraph &  graph,
+                                                           const KernelCorpus & corpus,
+                                                           const std::string &  target) const {
+    GraphProgramSupportResult result;
     if (graph.n_nodes == 0) {
-        return true;
+        result.supported = true;
+        return result;
     }
-    ErrorLog errors;
-    return build_program(graph, corpus, target, errors) != nullptr;
+    std::unique_ptr<GraphProgram> program = build_program(graph, corpus, target, result.errors);
+    result.supported                      = program != nullptr && result.errors.success();
+    return result;
 }
 
 GraphProgramLookup GraphProgramCache::get_or_build(const ggml_cgraph &  graph,

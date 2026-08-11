@@ -1,12 +1,13 @@
 #include "ggml-hrx.h"
 
-#include "dispatch/command-program-bindings.h"
+#include "backend-buffer-binding.h"
+#include "backend-context.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
 #include "hrx_runtime.h"
 #include "kernel-corpus/kernel-corpus.h"
 #include "loom-jit.h"
-#include "runtime/command-program-executor.h"
+#include "runtime/graph-executor.h"
 #include "runtime/graph-program-cache.h"
 #include "runtime/kernel-executable-cache.h"
 #include "runtime/prepared-command-program-cache.h"
@@ -32,67 +33,6 @@ static constexpr size_t      GGML_HRX_ALIGNMENT     = 256;
 static constexpr uintptr_t   GGML_HRX_FAKE_PTR_BASE = 0x1000;
 static std::atomic<uint64_t> g_allocation_generation{ 1 };
 
-struct ggml_backend_hrx_device_context;
-
-struct ggml_backend_hrx_buffer_type_context {
-    ggml_backend_hrx_device_context * device;
-    std::string                       name;
-};
-
-struct ggml_backend_hrx_buffer_context {
-    ggml_backend_hrx_device_context * device;
-    hrx_buffer_t                      buffer;
-    uint8_t *                         base;
-    uint64_t                          identity;
-    uint64_t                          generation;
-};
-
-struct ggml_backend_hrx_device_context {
-    hrx_device_t                         device = nullptr;
-    std::string                          name;
-    std::string                          description;
-    std::string                          architecture;
-    size_t                               memory_total = 0;
-    ggml_backend_buffer_type             buft         = {};
-    ggml_backend_hrx_buffer_type_context buft_context = {};
-    std::mutex                           buffer_stream_mutex;
-    hrx_stream_t                         buffer_stream = nullptr;
-};
-
-struct ggml_backend_hrx_context {
-    ggml_backend_hrx_device_context *      device;
-    hrx_stream_t                           stream;
-    ggml_hrx_loom_jit_amdgpu *             jit = nullptr;
-    ggml::hrx::KernelExecutableCache       kernel_executables;
-    ggml::hrx::GraphProgramCache           graph_programs;
-    ggml::hrx::PreparedCommandProgramCache prepared_programs;
-    ggml::hrx::TransientArena              transient_arena;
-    std::string                            name;
-};
-
-struct ggml_backend_hrx_reg_context {
-    bool                                                          initialized = false;
-    std::vector<std::unique_ptr<ggml_backend_hrx_device_context>> device_contexts;
-    std::vector<ggml_backend_device>                              devices;
-
-    ~ggml_backend_hrx_reg_context() {
-        for (auto & context : device_contexts) {
-            if (context->buffer_stream != nullptr) {
-                hrx_stream_release(context->buffer_stream);
-            }
-            if (context->device != nullptr) {
-                hrx_device_release(context->device);
-            }
-        }
-        if (initialized) {
-            hrx_status_t status = hrx_gpu_shutdown();
-            if (!hrx_status_is_ok(status)) {
-                hrx_status_ignore(status);
-            }
-        }
-    }
-};
-
 static bool hrx_check(hrx_status_t status, const char * expression, const char * file, int line) {
     if (hrx_status_is_ok(status)) {
         return true;
@@ -108,6 +48,27 @@ static bool hrx_check(hrx_status_t status, const char * expression, const char *
 }
 
 #define HRX_CHECK(expression) hrx_check((expression), #expression, __FILE__, __LINE__)
+
+}  // namespace
+
+ggml_backend_hrx_reg_context::~ggml_backend_hrx_reg_context() {
+    for (auto & context : device_contexts) {
+        if (context->buffer_stream != nullptr) {
+            hrx_stream_release(context->buffer_stream);
+        }
+        if (context->device != nullptr) {
+            hrx_device_release(context->device);
+        }
+    }
+    if (initialized) {
+        hrx_status_t status = hrx_gpu_shutdown();
+        if (!hrx_status_is_ok(status)) {
+            hrx_status_ignore(status);
+        }
+    }
+}
+
+namespace {
 
 static std::optional<std::string> device_string_property(hrx_device_t          device,
                                                          hrx_device_property_t property,
@@ -141,11 +102,11 @@ static ggml_backend_hrx_device_context * device_context(ggml_backend_dev_t devic
 }
 
 static ggml_backend_hrx_buffer_context * buffer_context(ggml_backend_buffer_t buffer) {
-    return static_cast<ggml_backend_hrx_buffer_context *>(buffer->context);
+    return ggml_backend_hrx_buffer_context_from_buffer(buffer);
 }
 
 static size_t tensor_offset(const ggml_backend_hrx_buffer_context * context, const ggml_tensor * tensor) {
-    return static_cast<size_t>(static_cast<const uint8_t *>(tensor->data) - context->base);
+    return ggml_backend_hrx_tensor_offset(context, tensor);
 }
 
 static const char * buffer_type_name(ggml_backend_buffer_type_t buft) {
@@ -194,10 +155,6 @@ static void buffer_free(ggml_backend_buffer_t buffer) {
         hrx_buffer_release(context->buffer);
     }
     delete context;
-}
-
-static void * buffer_base(ggml_backend_buffer_t buffer) {
-    return buffer_context(buffer)->base;
 }
 
 static void buffer_memset(ggml_backend_buffer_t buffer,
@@ -251,7 +208,7 @@ static void buffer_get(ggml_backend_buffer_t buffer,
 
 static bool buffer_copy(ggml_backend_buffer_t buffer, const ggml_tensor * source, ggml_tensor * destination) {
     ggml_backend_buffer_t source_buffer = source->view_src != nullptr ? source->view_src->buffer : source->buffer;
-    if (source_buffer == nullptr || source_buffer->iface.get_base != buffer_base) {
+    if (source_buffer == nullptr || source_buffer->iface.get_base != ggml_backend_hrx_buffer_base) {
         return false;
     }
     auto * source_context      = buffer_context(source_buffer);
@@ -282,8 +239,12 @@ static void buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
 }
 
 static const ggml_backend_buffer_i buffer_i = {
-    buffer_free, buffer_base, nullptr,     buffer_memset, buffer_set, buffer_get,
-    nullptr,     nullptr,     buffer_copy, buffer_clear,  nullptr,
+    buffer_free, ggml_backend_hrx_buffer_base,
+    nullptr,     buffer_memset,
+    buffer_set,  buffer_get,
+    nullptr,     nullptr,
+    buffer_copy, buffer_clear,
+    nullptr,
 };
 
 static ggml_backend_buffer_t buffer_alloc(ggml_backend_buffer_type_t buft, size_t size) {
@@ -325,65 +286,6 @@ static const ggml_backend_buffer_type_i buffer_type_i = {
     buffer_type_name, buffer_alloc, buffer_alignment, buffer_max_size, nullptr, nullptr,
 };
 
-static bool tensor_hrx_binding(const ggml_tensor *                tensor,
-                               ggml_backend_hrx_buffer_context ** out_context,
-                               size_t *                           out_offset) {
-    if (tensor == nullptr) {
-        return false;
-    }
-    ggml_backend_buffer_t buffer = tensor->view_src != nullptr ? tensor->view_src->buffer : tensor->buffer;
-    if (buffer == nullptr || buffer->iface.get_base != buffer_base) {
-        return false;
-    }
-    auto *       context = buffer_context(buffer);
-    const size_t offset  = tensor_offset(context, tensor);
-    if (context->buffer == nullptr || offset > buffer->size || ggml_nbytes(tensor) > buffer->size - offset) {
-        return false;
-    }
-    *out_context = context;
-    *out_offset  = offset;
-    return true;
-}
-
-static bool resolve_value_buffer(const ggml_tensor * tensor, ggml::hrx::ValueBufferBinding & binding) {
-    ggml_backend_hrx_buffer_context * context = nullptr;
-    size_t                            offset  = 0;
-    if (!tensor_hrx_binding(tensor, &context, &offset)) {
-        return false;
-    }
-    ggml_backend_buffer_t buffer = tensor->view_src != nullptr ? tensor->view_src->buffer : tensor->buffer;
-    binding.buffer               = context->buffer;
-    binding.offset               = offset;
-    binding.length               = ggml_nbytes(tensor);
-    binding.identity             = context->identity;
-    binding.generation           = context->generation;
-    binding.capacity             = buffer != nullptr ? buffer->size : 0;
-    return true;
-}
-
-static ggml::hrx::CommandProgramBindings bind_external_value_buffers(const ggml::hrx::GraphProgramMatch & match) {
-    std::vector<ggml::hrx::CommandProgramBinding> bindings;
-    ggml::hrx::ErrorLog                           errors;
-    bindings.reserve(match.external_bindings.size());
-    for (const ggml::hrx::GraphProgramExternalBinding & external : match.external_bindings) {
-        ggml::hrx::ValueBufferBinding    value_binding;
-        ggml::hrx::CommandProgramBinding binding;
-        binding.value = external.value;
-        if (resolve_value_buffer(external.tensor, value_binding)) {
-            binding.buffer     = value_binding.buffer;
-            binding.offset     = value_binding.offset;
-            binding.length     = value_binding.length;
-            binding.identity   = value_binding.identity;
-            binding.generation = value_binding.generation;
-            binding.capacity   = value_binding.capacity;
-        } else {
-            errors.log("external value %d is not bound", external.value.value);
-        }
-        bindings.push_back(binding);
-    }
-    return ggml::hrx::CommandProgramBindings::from_bindings(std::move(bindings), errors);
-}
-
 static const char * backend_name(ggml_backend_t backend) {
     return static_cast<ggml_backend_hrx_context *>(backend->context)->name.c_str();
 }
@@ -411,7 +313,7 @@ static void backend_set_tensor_async(ggml_backend_t backend,
     auto *                            backend_context = static_cast<ggml_backend_hrx_context *>(backend->context);
     ggml_backend_hrx_buffer_context * context         = nullptr;
     size_t                            tensor_base     = 0;
-    if (!tensor_hrx_binding(tensor, &context, &tensor_base) || offset > ggml_nbytes(tensor) ||
+    if (!ggml_backend_hrx_tensor_binding(tensor, &context, &tensor_base) || offset > ggml_nbytes(tensor) ||
         size > ggml_nbytes(tensor) - offset) {
         GGML_LOG_ERROR("%s: invalid HRX tensor upload\n", __func__);
         return;
@@ -427,7 +329,7 @@ static void backend_get_tensor_async(ggml_backend_t      backend,
     auto *                            backend_context = static_cast<ggml_backend_hrx_context *>(backend->context);
     ggml_backend_hrx_buffer_context * context         = nullptr;
     size_t                            tensor_base     = 0;
-    if (!tensor_hrx_binding(tensor, &context, &tensor_base) || offset > ggml_nbytes(tensor) ||
+    if (!ggml_backend_hrx_tensor_binding(tensor, &context, &tensor_base) || offset > ggml_nbytes(tensor) ||
         size > ggml_nbytes(tensor) - offset) {
         GGML_LOG_ERROR("%s: invalid HRX tensor download\n", __func__);
         return;
@@ -443,13 +345,13 @@ static bool backend_copy_tensor_async(ggml_backend_t      backend_src,
     auto * destination_backend = static_cast<ggml_backend_hrx_context *>(backend_dst->context);
     ggml_backend_hrx_buffer_context * destination_context = nullptr;
     size_t                            destination_offset  = 0;
-    if (!tensor_hrx_binding(destination, &destination_context, &destination_offset)) {
+    if (!ggml_backend_hrx_tensor_binding(destination, &destination_context, &destination_offset)) {
         return false;
     }
     ggml_backend_hrx_buffer_context * source_context = nullptr;
     size_t                            source_offset  = 0;
     const size_t                      size           = ggml_nbytes(source);
-    if (tensor_hrx_binding(source, &source_context, &source_offset)) {
+    if (ggml_backend_hrx_tensor_binding(source, &source_context, &source_offset)) {
         if (source_context->device != destination_context->device) {
             return false;
         }
@@ -470,37 +372,22 @@ static void backend_synchronize(ggml_backend_t backend) {
 }
 
 static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * graph) {
-    if (graph->n_nodes == 0) {
-        return GGML_STATUS_SUCCESS;
+    auto *                                context  = static_cast<ggml_backend_hrx_context *>(backend->context);
+    const ggml::hrx::GraphExecutor        executor = ggml::hrx::GraphExecutor(*context);
+    const ggml::hrx::GraphExecutionResult result   = executor.execute(*graph);
+    if (!result.success()) {
+        GGML_LOG_ERROR("%s: %s\n", __func__, result.errors.front().c_str());
     }
-    auto *                          context = static_cast<ggml_backend_hrx_context *>(backend->context);
-    const ggml::hrx::KernelCorpus & corpus  = ggml::hrx::get_qwen_kernel_corpus();
-    const std::string &             target  = context->device->architecture;
-    ggml::hrx::GraphProgramLookup   lookup  = context->graph_programs.get_or_build(*graph, corpus, target);
-    if (!lookup.valid()) {
-        GGML_LOG_ERROR("%s: build HRX graph program: %s\n", __func__, lookup.errors.front().c_str());
-        return GGML_STATUS_FAILED;
-    }
-    const ggml::hrx::CommandProgramBindings         bindings          = bind_external_value_buffers(lookup.match);
-    const ggml::hrx::CommandProgramExecutionContext execution_context = {
-        context->device->device,      context->stream,           target.c_str(), &corpus, &context->jit,
-        &context->kernel_executables, &context->transient_arena,
-    };
-    if (!context->prepared_programs.execute(execution_context, lookup.program->uid(), lookup.program->command_shape(),
-                                            lookup.program->commands(), bindings)) {
-        return GGML_STATUS_FAILED;
-    }
-    return GGML_STATUS_SUCCESS;
+    return result.status;
 }
 
 static enum ggml_backend_graph_claim_result graph_claim(ggml_backend_t                     backend,
                                                         const ggml_cgraph *                graph,
                                                         enum ggml_backend_graph_claim_mode mode) {
     GGML_UNUSED(mode);
-    auto *                          context = static_cast<ggml_backend_hrx_context *>(backend->context);
-    const ggml::hrx::KernelCorpus & corpus  = ggml::hrx::get_qwen_kernel_corpus();
-    const std::string &             target  = context->device->architecture;
-    if (!context->graph_programs.can_execute(*graph, corpus, target)) {
+    auto *                         context  = static_cast<ggml_backend_hrx_context *>(backend->context);
+    const ggml::hrx::GraphExecutor executor = ggml::hrx::GraphExecutor(*context);
+    if (!executor.can_execute(*graph).supported) {
         return GGML_BACKEND_GRAPH_CLAIM_DECLINED;
     }
     return GGML_BACKEND_GRAPH_CLAIM_ACCEPTED;
