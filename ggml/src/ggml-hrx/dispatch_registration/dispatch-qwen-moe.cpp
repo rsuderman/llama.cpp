@@ -12,13 +12,18 @@ namespace {
 
 static constexpr KernelCatalogRef kQwenRoutedGateUpSwiGLUQ4KF16WmmaKernel =
     GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma");
+static constexpr KernelCatalogRef kQwenRoutedDownQ4KF16WmmaGroupedKernel =
+    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_down_q4k_f16_wmma_grouped");
+static constexpr KernelCatalogRef kQwenRoutedDownQ6KF16WmmaGroupedKernel =
+    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_down_q6k_f16_wmma_grouped");
 
-static constexpr int64_t      kQwenMoeInputSize              = 2048;
-static constexpr int64_t      kQwenMoeOutputSize             = 768;
-static constexpr int64_t      kQwenMoeExpertCount            = 128;
-static constexpr int64_t      kQwenMoeRouteCount             = 8;
-static constexpr size_t       kQwenMoePlanTransientAlignment = 256;
-static constexpr const char * kQwenMoeF16GateUpOutputName    = "qwen.moe.gate_up_swiglu_f16";
+static constexpr int64_t      kQwenMoeInputSize               = 2048;
+static constexpr int64_t      kQwenMoeOutputSize              = 768;
+static constexpr int64_t      kQwenMoeExpertCount             = 128;
+static constexpr int64_t      kQwenMoeRouteCount              = 8;
+static constexpr size_t       kQwenMoePlanTransientAlignment  = 256;
+static constexpr const char * kQwenMoeF16GateUpOutputName     = "qwen.moe.gate_up_swiglu_f16";
+static constexpr const char * kQwenMoeF16RoutedDownOutputName = "qwen.moe.routed_down_f16";
 
 static const Value * graph_value(const Graph & graph, ValueId id) {
     return graph.values().find(id);
@@ -46,9 +51,19 @@ static bool is_qwen_routed_weight(const Value & value) {
            is_shape(value, kQwenMoeInputSize, kQwenMoeOutputSize, kQwenMoeExpertCount, 1);
 }
 
+static bool is_qwen_routed_down_weight(const Value & value) {
+    return (value.type == GGML_TYPE_Q4_K || value.type == GGML_TYPE_Q6_K) && value.contiguous &&
+           is_shape(value, kQwenMoeOutputSize, kQwenMoeInputSize, kQwenMoeExpertCount, 1);
+}
+
 static bool is_qwen_routed_projection_output(const Value & value, int64_t token_count) {
     return value.type == GGML_TYPE_F32 && value.contiguous &&
            is_shape(value, kQwenMoeOutputSize, kQwenMoeRouteCount, token_count, 1);
+}
+
+static bool is_qwen_routed_down_output(const Value & value, int64_t token_count) {
+    return value.type == GGML_TYPE_F32 && value.contiguous &&
+           is_shape(value, kQwenMoeInputSize, kQwenMoeRouteCount, token_count, 1);
 }
 
 static const GraphNode * find_consumer_with_op(const Graph & graph, ValueId value, ggml_op op) {
@@ -102,6 +117,20 @@ static size_t f16_gate_up_output_size(int64_t token_count) {
     return static_cast<size_t>(token_count * kQwenMoeRouteCount * kQwenMoeOutputSize) * sizeof(ggml_fp16_t);
 }
 
+static size_t f16_routed_down_output_size(int64_t token_count) {
+    return static_cast<size_t>(token_count * kQwenMoeRouteCount * kQwenMoeInputSize) * sizeof(ggml_fp16_t);
+}
+
+static void add_routed_down_compile_parameters(Dispatch & dispatch, int64_t token_count) {
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_down.input_size", to_config_value(kQwenMoeOutputSize));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_down.route_count",
+                                               to_config_value(kQwenMoeRouteCount));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_down.expert_count",
+                                               to_config_value(kQwenMoeExpertCount));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_down.output_size", to_config_value(kQwenMoeInputSize));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.workload.token_capacity", to_config_value(token_count));
+}
+
 struct RoutedGateUpMatch {
     const Value *                        gate_weight    = nullptr;
     const Value *                        up_weight      = nullptr;
@@ -120,6 +149,23 @@ struct RoutedGateUpMatch {
         return gate_weight != nullptr && up_weight != nullptr && input != nullptr && route_ids != nullptr &&
                gate_output != nullptr && up_output != nullptr && glu_output != nullptr && routing_bundle != nullptr &&
                gate_node != nullptr && up_node != nullptr && glu_node != nullptr && token_count > 0;
+    }
+};
+
+struct RoutedDownMatch {
+    const Value *                        input_graph_value = nullptr;
+    const CommandPlanAlternateValue *    input_alternate   = nullptr;
+    const Value *                        weight            = nullptr;
+    const Value *                        output            = nullptr;
+    const Value *                        route_ids         = nullptr;
+    const CommandPlanQwenRoutingBundle * routing_bundle    = nullptr;
+    KernelCatalogRef                     kernel            = {};
+    int64_t                              token_count       = 0;
+
+    bool matched() const {
+        return input_graph_value != nullptr && input_alternate != nullptr && weight != nullptr && output != nullptr &&
+               route_ids != nullptr && routing_bundle != nullptr && kernel.id != kUncatalogedKernelId &&
+               token_count > 0;
     }
 };
 
@@ -148,6 +194,51 @@ static bool match_same_route_projection(const Graph &     graph,
     output = graph_value(graph, node.output);
     return weight != nullptr && output != nullptr && is_qwen_routed_weight(*weight) &&
            is_qwen_routed_projection_output(*output, token_count);
+}
+
+static RoutedDownMatch match_qwen_routed_down_grouped(const DispatchMatchContext & context) {
+    RoutedDownMatch   match;
+    const GraphNode * root = context.root_node;
+    if (root == nullptr || root->op != GGML_OP_MUL_MAT_ID || root->inputs.size() != 3 || !context.graph.has_index()) {
+        return match;
+    }
+
+    const Value * weight      = graph_value(context.graph, root->inputs[0]);
+    const Value * input       = graph_value(context.graph, root->inputs[1]);
+    const Value * route_ids   = graph_value(context.graph, root->inputs[2]);
+    const Value * root_output = graph_value(context.graph, root->output);
+    if (weight == nullptr || input == nullptr || route_ids == nullptr || root_output == nullptr ||
+        !is_qwen_routed_down_weight(*weight) || !is_qwen_routed_projection_output(*input, input->ne[2]) ||
+        route_ids->type != GGML_TYPE_I32 || !is_shape(*route_ids, kQwenMoeRouteCount, input->ne[2], 1, 1)) {
+        return {};
+    }
+
+    const int64_t token_count = input->ne[2];
+    if (!is_supported_token_count(token_count) || !is_qwen_routed_down_output(*root_output, token_count)) {
+        return {};
+    }
+
+    const CommandPlanQwenRoutingBundle * routing_bundle = context.plan.metadata.find_qwen_routing_bundle(route_ids->id);
+    if (routing_bundle == nullptr || !bundle_matches_qwen_router(*routing_bundle, route_ids->id, token_count)) {
+        return {};
+    }
+
+    const CommandPlanAlternateValue * input_alternate =
+        find_alternate_value(context.plan, input->id, GGML_TYPE_F16, f16_gate_up_output_size(token_count));
+    if (input_alternate == nullptr) {
+        return {};
+    }
+
+    match.input_graph_value = input;
+    match.input_alternate   = input_alternate;
+    match.weight            = weight;
+    match.output            = root_output;
+    match.route_ids         = route_ids;
+    match.routing_bundle    = routing_bundle;
+    match.kernel            = weight->type == GGML_TYPE_Q4_K ? kQwenRoutedDownQ4KF16WmmaGroupedKernel :
+                                                               kQwenRoutedDownQ6KF16WmmaGroupedKernel;
+    match.token_count       = token_count;
+    return match;
 }
 
 static RoutedGateUpMatch match_qwen_routed_gate_up_swiglu(const DispatchMatchContext & context) {
@@ -277,6 +368,44 @@ static bool match_qwen_routed_gate_up_swiglu_q4k_f16_wmma_dispatch(const Dispatc
     return true;
 }
 
+static bool build_qwen_routed_down_grouped_dispatch(const DispatchMatchContext & context,
+                                                    DispatchMatch &              dispatch_match,
+                                                    KernelCatalogRef             expected_kernel) {
+    const RoutedDownMatch match = match_qwen_routed_down_grouped(context);
+    if (!match.matched() || match.kernel.id != expected_kernel.id) {
+        return false;
+    }
+
+    const ValueId f16_output(context.next_plan_value.value);
+    const size_t  f16_output_bytes = f16_routed_down_output_size(match.token_count);
+    dispatch_match.transients.push_back(
+        { f16_output, kQwenMoeF16RoutedDownOutputName, f16_output_bytes, kQwenMoePlanTransientAlignment });
+
+    Dispatch dispatch;
+    dispatch.kernel = make_kernel_specialization(match.kernel);
+    dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
+    add_routed_down_compile_parameters(dispatch, match.token_count);
+    dispatch.bindings.push_back({ match.input_alternate->alternate_value, 0, match.input_alternate->byte_count });
+    dispatch.bindings.push_back(
+        { match.routing_bundle->expert_table, 0, match.routing_bundle->expert_table_byte_count });
+    dispatch.bindings.push_back({ match.weight->id, 0, match.weight->byte_count });
+    dispatch.bindings.push_back({ f16_output, 0, f16_output_bytes });
+
+    dispatch_match.covered_nodes.push_back(context.root_index);
+    dispatch_match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
+
+static bool match_qwen_routed_down_q4k_f16_wmma_grouped_dispatch(const DispatchMatchContext & context,
+                                                                 DispatchMatch &              dispatch_match) {
+    return build_qwen_routed_down_grouped_dispatch(context, dispatch_match, kQwenRoutedDownQ4KF16WmmaGroupedKernel);
+}
+
+static bool match_qwen_routed_down_q6k_f16_wmma_grouped_dispatch(const DispatchMatchContext & context,
+                                                                 DispatchMatch &              dispatch_match) {
+    return build_qwen_routed_down_grouped_dispatch(context, dispatch_match, kQwenRoutedDownQ6KF16WmmaGroupedKernel);
+}
+
 }  // namespace
 
 void register_qwen_moe_dispatches(DispatchRegistryBuilder & registry) {
@@ -287,6 +416,22 @@ void register_qwen_moe_dispatches(DispatchRegistryBuilder & registry) {
         1000,
         DispatchSource::Qwen,
         match_qwen_routed_gate_up_swiglu_q4k_f16_wmma_dispatch,
+    });
+    registry.add({
+        "qwen.moe.routed_down_q4k_f16_wmma_grouped",
+        GGML_OP_MUL_MAT_ID,
+        DispatchMatchKind::Fused,
+        900,
+        DispatchSource::Qwen,
+        match_qwen_routed_down_q4k_f16_wmma_grouped_dispatch,
+    });
+    registry.add({
+        "qwen.moe.routed_down_q6k_f16_wmma_grouped",
+        GGML_OP_MUL_MAT_ID,
+        DispatchMatchKind::Fused,
+        900,
+        DispatchSource::Qwen,
+        match_qwen_routed_down_q6k_f16_wmma_grouped_dispatch,
     });
 }
 
