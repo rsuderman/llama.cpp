@@ -8,11 +8,13 @@
 #include "ggml-hrx.h"
 #include "ggml-impl.h"
 #include "ggml.h"
+#include "graph/graph-traversal.h"
 #include "graph/graph.h"
 #include "runtime/command-program-executor.h"
 #include "runtime/graph-executor.h"
 #include "runtime/graph-program-cache.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -63,6 +65,35 @@ static bool status_contains(const ggml::hrx::Status & status, const char * text)
 
 static bool string_contains(const std::string & value, const char * text) {
     return value.find(text) != std::string::npos;
+}
+
+static std::vector<size_t> traversal_indices(const ggml::hrx::Graph & graph) {
+    const ggml::hrx::GraphTraversalOrder order = ggml::hrx::GraphTraversalOrder::build(graph);
+    std::vector<size_t>                  indices;
+    indices.reserve(order.nodes().size());
+    for (const ggml::hrx::GraphNode * node : order.nodes()) {
+        size_t index = 0;
+        REQUIRE(node != nullptr);
+        REQUIRE(graph.index().node_index(node, index));
+        indices.push_back(index);
+    }
+    return indices;
+}
+
+static size_t find_position(const std::vector<size_t> & indices, size_t node_index) {
+    const std::vector<size_t>::const_iterator it = std::find(indices.begin(), indices.end(), node_index);
+    REQUIRE(it != indices.end());
+    return static_cast<size_t>(it - indices.begin());
+}
+
+static size_t producer_index_for_tensor(const ggml::hrx::Graph & graph, const ggml_tensor * tensor) {
+    const ggml::hrx::Value * value = graph.values().find_tensor(tensor);
+    REQUIRE(value != nullptr);
+    const ggml::hrx::GraphNode * producer = graph.index().producer(value->id);
+    REQUIRE(producer != nullptr);
+    size_t index = 0;
+    REQUIRE(graph.index().node_index(producer, index));
+    return index;
 }
 
 static void run_status_checks() {
@@ -447,6 +478,160 @@ static void run_graph_index_checks() {
     REQUIRE(scheduler.plan().dispatches.size() == 1);
 
     ggml_free(ctx);
+}
+
+static void run_graph_traversal_checks() {
+    {
+        ggml_init_params params = {};
+        params.mem_size         = 256 * 1024;
+        params.no_alloc         = true;
+        ggml_context * ctx      = ggml_init(params);
+        REQUIRE(ctx != nullptr);
+
+        ggml_tensor * a    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+        ggml_tensor * b    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+        ggml_tensor * c    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+        ggml_tensor * d    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+        ggml_tensor * out0 = ggml_add(ctx, a, b);
+        ggml_tensor * out1 = ggml_add(ctx, c, d);
+        REQUIRE(a != nullptr);
+        REQUIRE(b != nullptr);
+        REQUIRE(c != nullptr);
+        REQUIRE(d != nullptr);
+        REQUIRE(out0 != nullptr);
+        REQUIRE(out1 != nullptr);
+
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        REQUIRE(graph != nullptr);
+        ggml_build_forward_expand(graph, out0);
+        ggml_build_forward_expand(graph, out1);
+
+        ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+        REQUIRE(imported.graph.nodes().size() == 2);
+        REQUIRE(imported.graph.nodes()[0].output == imported.graph.values().find_tensor(out0)->id);
+        REQUIRE(imported.graph.nodes()[1].output == imported.graph.values().find_tensor(out1)->id);
+
+        const std::vector<size_t> order = traversal_indices(imported.graph);
+        REQUIRE(order.size() == 2);
+        REQUIRE(order[0] == 0);
+        REQUIRE(order[1] == 1);
+
+        ggml_free(ctx);
+    }
+
+    {
+        ggml_init_params params = {};
+        params.mem_size         = 256 * 1024;
+        params.no_alloc         = true;
+        ggml_context * ctx      = ggml_init(params);
+        REQUIRE(ctx != nullptr);
+
+        ggml_tensor * a       = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+        ggml_tensor * b       = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+        ggml_tensor * add_out = ggml_add(ctx, a, b);
+        ggml_tensor * weight  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4, 3);
+        ggml_tensor * input   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4, 2);
+        ggml_tensor * matmul  = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(a != nullptr);
+        REQUIRE(b != nullptr);
+        REQUIRE(add_out != nullptr);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        REQUIRE(matmul != nullptr);
+
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        REQUIRE(graph != nullptr);
+        ggml_build_forward_expand(graph, add_out);
+        ggml_build_forward_expand(graph, matmul);
+
+        ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+        REQUIRE(imported.graph.nodes().size() == 2);
+        REQUIRE(imported.graph.nodes()[0].op == GGML_OP_ADD);
+        REQUIRE(imported.graph.nodes()[1].op == GGML_OP_MUL_MAT);
+
+        const std::vector<size_t> order = traversal_indices(imported.graph);
+        REQUIRE(order.size() == 2);
+        REQUIRE(order[0] == 1);
+        REQUIRE(order[1] == 0);
+
+        ggml_free(ctx);
+    }
+
+    {
+        ggml_init_params params = {};
+        params.mem_size         = 256 * 1024;
+        params.no_alloc         = true;
+        ggml_context * ctx      = ggml_init(params);
+        REQUIRE(ctx != nullptr);
+
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 1);
+        ggml_tensor * weight = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 256);
+        ggml_tensor * rms    = ggml_rms_norm(ctx, input, 0.000001f);
+        ggml_tensor * out    = ggml_mul(ctx, rms, weight);
+        REQUIRE(input != nullptr);
+        REQUIRE(weight != nullptr);
+        REQUIRE(rms != nullptr);
+        REQUIRE(out != nullptr);
+
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        REQUIRE(graph != nullptr);
+        ggml_build_forward_expand(graph, out);
+
+        ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+        REQUIRE(imported.graph.nodes().size() == 2);
+        REQUIRE(imported.graph.nodes()[0].op == GGML_OP_RMS_NORM);
+        REQUIRE(imported.graph.nodes()[1].op == GGML_OP_MUL);
+
+        const std::vector<size_t> order = traversal_indices(imported.graph);
+        REQUIRE(order.size() == 2);
+        REQUIRE(order[0] == 0);
+        REQUIRE(order[1] == 1);
+
+        ggml_free(ctx);
+    }
+
+    {
+        ggml_init_params params = {};
+        params.mem_size         = 256 * 1024;
+        params.no_alloc         = true;
+        ggml_context * ctx      = ggml_init(params);
+        REQUIRE(ctx != nullptr);
+
+        ggml_tensor * a     = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+        ggml_tensor * b     = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+        ggml_tensor * c     = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+        ggml_tensor * left  = ggml_add(ctx, a, b);
+        ggml_tensor * right = ggml_mul(ctx, a, c);
+        ggml_tensor * join  = ggml_add(ctx, left, right);
+        REQUIRE(a != nullptr);
+        REQUIRE(b != nullptr);
+        REQUIRE(c != nullptr);
+        REQUIRE(left != nullptr);
+        REQUIRE(right != nullptr);
+        REQUIRE(join != nullptr);
+
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        REQUIRE(graph != nullptr);
+        ggml_build_forward_expand(graph, join);
+
+        ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+        REQUIRE(imported.graph.nodes().size() == 3);
+
+        const size_t left_index  = producer_index_for_tensor(imported.graph, left);
+        const size_t right_index = producer_index_for_tensor(imported.graph, right);
+        const size_t join_index  = producer_index_for_tensor(imported.graph, join);
+
+        const std::vector<size_t> order = traversal_indices(imported.graph);
+        REQUIRE(order.size() == 3);
+        REQUIRE(find_position(order, join_index) > find_position(order, left_index));
+        REQUIRE(find_position(order, join_index) > find_position(order, right_index));
+
+        ggml_free(ctx);
+    }
 }
 
 static void bind_external_values(ggml::hrx::ValueMap & values) {
@@ -1271,6 +1456,7 @@ int main() {
     run_status_checks();
     run_graph_import_checks();
     run_graph_index_checks();
+    run_graph_traversal_checks();
     run_multi_dispatch_checks();
     run_transient_import_checks();
     run_chained_dispatch_requires_transients();

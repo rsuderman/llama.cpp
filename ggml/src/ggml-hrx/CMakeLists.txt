@@ -133,6 +133,8 @@ ggml_add_backend_library(ggml-hrx
     status.h
     graph/graph.cpp
     graph/graph.h
+    graph/graph-traversal.cpp
+    graph/graph-traversal.h
     graph/op-params.cpp
     graph/op-params.h
     ggml-hrx.cpp

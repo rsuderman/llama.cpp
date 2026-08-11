@@ -3,6 +3,7 @@
 #include "dispatch-add.h"
 #include "dispatch-rmsnorm.h"
 #include "ggml.h"
+#include "graph/graph-traversal.h"
 
 #include <cstddef>
 #include <string>
@@ -21,12 +22,18 @@ bool DispatchScheduler::schedule_graph(const Graph & graph) {
         plan_.status.log("HRX graph is missing graph index");
         return false;
     }
-    std::vector<bool> covered_nodes(nodes.size(), false);
-    for (size_t i = 0; i < nodes.size(); ++i) {
+    std::vector<bool>         covered_nodes(nodes.size(), false);
+    const GraphTraversalOrder traversal = GraphTraversalOrder::build(graph);
+    for (const GraphNode * node : traversal.nodes()) {
+        size_t i = 0;
+        if (node == nullptr || !graph.index().node_index(node, i)) {
+            plan_.status.log("HRX traversal references a node outside the graph");
+            plan_.dispatches.clear();
+            return false;
+        }
         if (covered_nodes[i]) {
             continue;
         }
-        const GraphNode * node = &nodes[i];
         if (try_match_add_f32_dispatch(graph, node, *this)) {
             covered_nodes[i] = true;
             continue;
