@@ -38,6 +38,27 @@ struct TransientAllocationRequest {
     size_t  required_size = 0;
 };
 
+struct TransientBindingTarget {
+    ValueId value;
+    size_t  offset = 0;
+};
+
+static TransientBindingTarget transient_binding_target(const Graph & graph, ValueId value) {
+    TransientBindingTarget target;
+    target.value              = value;
+    const Value * graph_value = graph.values().find(value);
+    if (graph_value == nullptr || graph_value->kind != ValueKind::Transient) {
+        return target;
+    }
+    const Value * root = graph.values().find(graph_value->storage_root);
+    if (root == nullptr || root->kind != ValueKind::Transient) {
+        return target;
+    }
+    target.value  = root->id;
+    target.offset = graph_value->storage_offset;
+    return target;
+}
+
 static const CommandPlanTransient * find_plan_transient(const CommandPlan & plan, ValueId value) {
     const auto found = std::find_if(plan.transients.begin(), plan.transients.end(),
                                     [&](const CommandPlanTransient & transient) { return transient.value == value; });
@@ -161,6 +182,16 @@ CommandProgram build_command_program(const Graph &        graph,
                 command_binding.origin = command_binding_origin(value->kind);
             } else {
                 command_binding.origin = CommandBindingOrigin::Transient;
+            }
+            if (command_binding.origin == CommandBindingOrigin::Transient) {
+                const TransientBindingTarget target = transient_binding_target(graph, binding.value);
+                command_binding.value               = target.value;
+                if (target.offset > std::numeric_limits<size_t>::max() - command_binding.offset) {
+                    result.status.log("command %u binding %zu transient alias offset overflows", command.ordinal,
+                                      binding_index);
+                } else {
+                    command_binding.offset += target.offset;
+                }
             }
             if (definition != nullptr && binding_index < definition->bindings.size()) {
                 command_binding.name   = string_value(definition->bindings[binding_index].name);

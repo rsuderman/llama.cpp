@@ -75,6 +75,22 @@ static std::string unsupported_node_message(const Graph & graph, size_t index, c
     return stream.str();
 }
 
+static bool value_is_available(const Graph & graph, ValueId value, const std::vector<bool> & covered_nodes) {
+    const GraphNode * producer = graph.index().producer(value);
+    if (producer == nullptr) {
+        return true;
+    }
+    size_t producer_index = 0;
+    return graph.index().node_index(producer, producer_index) && producer_index < covered_nodes.size() &&
+           covered_nodes[producer_index];
+}
+
+static bool can_elide_layout_alias_node(const Graph &             graph,
+                                        const GraphNode &         node,
+                                        const std::vector<bool> & covered_nodes) {
+    return is_layout_alias_node(graph, node) && value_is_available(graph, node.inputs[0], covered_nodes);
+}
+
 }  // namespace
 
 bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget & target) {
@@ -104,6 +120,10 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
         DispatchMatch match;
         const ValueId next_plan_value(static_cast<int32_t>(graph.values().size() + plan_.transients.size()));
         if (!try_match_registration(graph, node, i, covered_nodes, plan_, *registry, next_plan_value, match)) {
+            if (can_elide_layout_alias_node(graph, *node, covered_nodes)) {
+                covered_nodes[i] = true;
+                continue;
+            }
             const std::string message = unsupported_node_message(graph, i, *node);
             plan_.status.log("%s", message.c_str());
             clear_plan_results(plan_);
@@ -134,6 +154,10 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
     }
     for (size_t i = 0; i < nodes.size(); ++i) {
         if (!covered_nodes[i]) {
+            if (can_elide_layout_alias_node(graph, nodes[i], covered_nodes)) {
+                covered_nodes[i] = true;
+                continue;
+            }
             const std::string message = unsupported_node_message(graph, i, nodes[i]);
             plan_.status.log("%s", message.c_str());
             clear_plan_results(plan_);

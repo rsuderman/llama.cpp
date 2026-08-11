@@ -79,4 +79,7 @@ struct GraphImportResult {
 
 GraphImportResult import_ggml_graph(const ggml_cgraph & graph);
 
+bool is_layout_alias_op(ggml_op op);
+bool is_layout_alias_node(const Graph & graph, const GraphNode & node);
+
 }  // namespace ggml::hrx

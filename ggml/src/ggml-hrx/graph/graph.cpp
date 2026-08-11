@@ -154,4 +154,13 @@ GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
     return result;
 }
 
+bool is_layout_alias_op(ggml_op op) {
+    return op == GGML_OP_VIEW || op == GGML_OP_RESHAPE || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE;
+}
+
+bool is_layout_alias_node(const Graph & graph, const GraphNode & node) {
+    return is_layout_alias_op(node.op) && node.inputs.size() == 1 &&
+           graph.values().same_storage(node.output, node.inputs[0]);
+}
+
 }  // namespace ggml::hrx

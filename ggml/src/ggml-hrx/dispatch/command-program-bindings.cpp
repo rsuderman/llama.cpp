@@ -14,18 +14,19 @@ CommandProgramBindings CommandProgramBindings::from_value_map(const ValueMap & v
             result.status.log("external value %d does not exist", id.value);
             continue;
         }
-        if (!value->buffer.has_value()) {
+        const std::optional<ValueBufferBinding> buffer = values.resolve_buffer_binding(id);
+        if (!buffer.has_value()) {
             result.status.log("external value %d is not bound", id.value);
             continue;
         }
-        bindings.push_back({ value->id, value->buffer->buffer, value->buffer->offset, value->buffer->length,
-                             value->buffer->identity, value->buffer->generation, value->buffer->capacity });
+        bindings.push_back({ value->id, buffer->buffer, buffer->offset, buffer->length, buffer->identity,
+                             buffer->generation, buffer->capacity });
     }
     return from_bindings(std::move(bindings), result.status);
 }
 
 CommandProgramBindings CommandProgramBindings::from_bindings(std::vector<CommandProgramBinding> bindings,
-                                                             const Status &                   errors) {
+                                                             const Status &                     errors) {
     CommandProgramBindings result;
     result.status.append(errors);
     result.bindings_ = std::move(bindings);

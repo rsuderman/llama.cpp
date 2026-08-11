@@ -22,11 +22,27 @@ struct ValueId {
     int32_t value;
 };
 
+struct ValueStorageId {
+    ValueStorageId() : value(-1) {}
+
+    explicit ValueStorageId(int32_t value) : value(value) {}
+
+    int32_t value;
+};
+
 inline bool operator==(ValueId lhs, ValueId rhs) {
     return lhs.value == rhs.value;
 }
 
 inline bool operator!=(ValueId lhs, ValueId rhs) {
+    return !(lhs == rhs);
+}
+
+inline bool operator==(ValueStorageId lhs, ValueStorageId rhs) {
+    return lhs.value == rhs.value;
+}
+
+inline bool operator!=(ValueStorageId lhs, ValueStorageId rhs) {
     return !(lhs == rhs);
 }
 
@@ -47,6 +63,11 @@ struct ValueBufferBinding {
 struct Value {
     ValueId                            id;
     ValueKind                          kind;
+    ValueStorageId                     storage;
+    ValueId                            storage_root;
+    ValueId                            alias_source;
+    size_t                             storage_offset     = 0;
+    size_t                             storage_byte_count = 0;
     ggml_type                          type;
     std::array<int64_t, GGML_MAX_DIMS> ne;
     std::array<size_t, GGML_MAX_DIMS>  nb;
@@ -57,23 +78,38 @@ struct Value {
     std::optional<ValueBufferBinding>  buffer;
 };
 
+struct ValueStorage {
+    ValueStorageId id;
+    ValueId        root;
+    size_t         byte_count = 0;
+};
+
 class ValueMap {
   public:
     ValueMap() = default;
 
     ValueId get_or_add_tensor_value(const ggml_tensor * tensor, ValueKind kind);
 
-    const Value *        find(ValueId id) const;
-    const Value *        find_tensor(const ggml_tensor * tensor) const;
-    bool                 bind_buffer(ValueId id, ValueBufferBinding binding);
-    std::vector<ValueId> external_value_ids() const;
+    const Value *                     find(ValueId id) const;
+    const Value *                     find_tensor(const ggml_tensor * tensor) const;
+    const ValueStorage *              find_storage(ValueStorageId id) const;
+    bool                              bind_buffer(ValueId id, ValueBufferBinding binding);
+    std::optional<ValueBufferBinding> resolve_buffer_binding(ValueId id) const;
+    std::vector<ValueId>              external_value_ids() const;
+    ValueId                           storage_root(ValueId id) const;
+    bool                              same_storage(ValueId lhs, ValueId rhs) const;
 
     const std::vector<Value> & values() const { return values_; }
+
+    const std::vector<ValueStorage> & storages() const { return storages_; }
 
     size_t size() const { return values_.size(); }
 
   private:
+    const Value * find_alias_source(const ggml_tensor * tensor) const;
+
     std::vector<Value>                              values_;
+    std::vector<ValueStorage>                       storages_;
     std::unordered_map<const ggml_tensor *, size_t> tensor_values_;
 };
 
