@@ -54,6 +54,19 @@ static bool glu_params_equivalent(const OpParams & lhs, const OpParams & rhs) {
     return lhs_params != nullptr && rhs_params != nullptr && lhs_params->op == rhs_params->op;
 }
 
+static bool rope_params_equivalent(const OpParams & lhs, const OpParams & rhs) {
+    const RopeParams * lhs_params = op_params_as<RopeParams>(lhs);
+    const RopeParams * rhs_params = op_params_as<RopeParams>(rhs);
+    return lhs_params != nullptr && rhs_params != nullptr && lhs_params->n_dims == rhs_params->n_dims &&
+           lhs_params->mode == rhs_params->mode && lhs_params->n_ctx_orig == rhs_params->n_ctx_orig &&
+           nearly_equal(lhs_params->freq_base, rhs_params->freq_base) &&
+           nearly_equal(lhs_params->freq_scale, rhs_params->freq_scale) &&
+           nearly_equal(lhs_params->ext_factor, rhs_params->ext_factor) &&
+           nearly_equal(lhs_params->attn_factor, rhs_params->attn_factor) &&
+           nearly_equal(lhs_params->beta_fast, rhs_params->beta_fast) &&
+           nearly_equal(lhs_params->beta_slow, rhs_params->beta_slow);
+}
+
 }  // namespace
 
 OpParams import_op_params(const ggml_tensor & tensor) {
@@ -81,6 +94,14 @@ OpParams import_op_params(const ggml_tensor & tensor) {
             };
         case GGML_OP_GLU:
             return GluParams{ ggml_get_glu_op(&tensor) };
+        case GGML_OP_ROPE:
+            return RopeParams{
+                ggml_get_op_params_i32(&tensor, 1),  ggml_get_op_params_i32(&tensor, 2),
+                ggml_get_op_params_i32(&tensor, 4),  ggml_get_op_params_f32(&tensor, 5),
+                ggml_get_op_params_f32(&tensor, 6),  ggml_get_op_params_f32(&tensor, 7),
+                ggml_get_op_params_f32(&tensor, 8),  ggml_get_op_params_f32(&tensor, 9),
+                ggml_get_op_params_f32(&tensor, 10),
+            };
         default:
             return std::monostate{};
     }
@@ -100,6 +121,8 @@ bool op_params_equivalent(ggml_op op, const OpParams & lhs, const OpParams & rhs
             return clamp_params_equivalent(lhs, rhs);
         case GGML_OP_GLU:
             return glu_params_equivalent(lhs, rhs);
+        case GGML_OP_ROPE:
+            return rope_params_equivalent(lhs, rhs);
         default:
             return lhs.index() == rhs.index();
     }

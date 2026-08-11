@@ -376,6 +376,8 @@ static void run_dispatch_registry_checks() {
         has_dispatch_registration(registry.registrations_for_root(GGML_OP_RMS_NORM), "qwen.rmsnorm_f32.mul_weight"));
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_FLASH_ATTN_EXT),
                                       "qwen.flash_attention_f32_f16_wmma"));
+    REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_RESHAPE),
+                                      "qwen.attention_postprocess_f32_f16"));
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_SOFT_MAX), "qwen.router.top8_f32"));
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_MUL_MAT_ID),
                                       "qwen.moe.routed_gate_up_swiglu_q4k_f16_wmma"));
@@ -1090,6 +1092,235 @@ static void run_qwen_flash_attention_dispatch_checks() {
             build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true, false,
                                              kQwenFlashHeadSize, 1.0f / std::sqrt(128.0f), 1.0f);
         REQUIRE(!graph_is_supported(ctx, output));
+    }
+
+    ggml_free(ctx);
+}
+
+struct QwenAttentionPostprocessTensors {
+    ggml_tensor * query_raw           = nullptr;
+    ggml_tensor * key_raw             = nullptr;
+    ggml_tensor * value_raw           = nullptr;
+    ggml_tensor * query_reshape       = nullptr;
+    ggml_tensor * key_reshape         = nullptr;
+    ggml_tensor * value_reshape       = nullptr;
+    ggml_tensor * query_output        = nullptr;
+    ggml_tensor * key_cache           = nullptr;
+    ggml_tensor * value_cache         = nullptr;
+    ggml_tensor * key_output          = nullptr;
+    ggml_tensor * value_output        = nullptr;
+    ggml_tensor * positions           = nullptr;
+    ggml_tensor * key_cache_indices   = nullptr;
+    ggml_tensor * value_cache_indices = nullptr;
+};
+
+static QwenAttentionPostprocessTensors build_qwen_attention_postprocess_graph(ggml_context * ctx,
+                                                                              int64_t        token_count,
+                                                                              int64_t        query_head_count,
+                                                                              int64_t        key_value_head_count,
+                                                                              int64_t        cache_row_count,
+                                                                              float          rms_epsilon = 0.000001f,
+                                                                              bool include_inverse_frequencies = true) {
+    QwenAttentionPostprocessTensors tensors;
+    const int64_t                   query_size     = query_head_count * kQwenFlashHeadSize;
+    const int64_t                   key_value_size = key_value_head_count * kQwenFlashHeadSize;
+
+    ggml_tensor * input        = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenMoeHiddenSize, token_count);
+    ggml_tensor * query_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, kQwenMoeHiddenSize, query_size);
+    ggml_tensor * key_weight   = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, kQwenMoeHiddenSize, key_value_size);
+    ggml_tensor * value_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q6_K, kQwenMoeHiddenSize, key_value_size);
+    REQUIRE(input != nullptr);
+    REQUIRE(query_weight != nullptr);
+    REQUIRE(key_weight != nullptr);
+    REQUIRE(value_weight != nullptr);
+
+    tensors.query_raw = ggml_mul_mat(ctx, query_weight, input);
+    tensors.key_raw   = ggml_mul_mat(ctx, key_weight, input);
+    tensors.value_raw = ggml_mul_mat(ctx, value_weight, input);
+    REQUIRE(tensors.query_raw != nullptr);
+    REQUIRE(tensors.key_raw != nullptr);
+    REQUIRE(tensors.value_raw != nullptr);
+
+    tensors.query_reshape = ggml_reshape_3d(ctx, tensors.query_raw, kQwenFlashHeadSize, query_head_count, token_count);
+    tensors.key_reshape = ggml_reshape_3d(ctx, tensors.key_raw, kQwenFlashHeadSize, key_value_head_count, token_count);
+    tensors.value_reshape =
+        ggml_reshape_3d(ctx, tensors.value_raw, kQwenFlashHeadSize, key_value_head_count, token_count);
+    REQUIRE(tensors.query_reshape != nullptr);
+    REQUIRE(tensors.key_reshape != nullptr);
+    REQUIRE(tensors.value_reshape != nullptr);
+
+    ggml_tensor * query_norm_weight = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kQwenFlashHeadSize);
+    ggml_tensor * key_norm_weight   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kQwenFlashHeadSize);
+    tensors.positions               = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, token_count);
+    ggml_tensor * inverse_frequencies =
+        include_inverse_frequencies ? ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kQwenFlashHeadSize / 2) : nullptr;
+    REQUIRE(query_norm_weight != nullptr);
+    REQUIRE(key_norm_weight != nullptr);
+    REQUIRE(tensors.positions != nullptr);
+    REQUIRE(include_inverse_frequencies == (inverse_frequencies != nullptr));
+
+    ggml_tensor * query_norm = ggml_rms_norm(ctx, tensors.query_reshape, rms_epsilon);
+    ggml_tensor * query_mul  = ggml_mul(ctx, query_norm, query_norm_weight);
+    REQUIRE(query_norm != nullptr);
+    REQUIRE(query_mul != nullptr);
+    tensors.query_output = include_inverse_frequencies ?
+                               ggml_rope_ext(ctx, query_mul, tensors.positions, inverse_frequencies, kQwenFlashHeadSize,
+                                             GGML_ROPE_TYPE_NEOX, 0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f) :
+                               ggml_rope(ctx, query_mul, tensors.positions, kQwenFlashHeadSize, GGML_ROPE_TYPE_NEOX);
+    REQUIRE(tensors.query_output != nullptr);
+
+    ggml_tensor * key_norm = ggml_rms_norm(ctx, tensors.key_reshape, rms_epsilon);
+    ggml_tensor * key_mul  = ggml_mul(ctx, key_norm, key_norm_weight);
+    REQUIRE(key_norm != nullptr);
+    REQUIRE(key_mul != nullptr);
+    ggml_tensor * key_rope = include_inverse_frequencies ?
+                                 ggml_rope_ext(ctx, key_mul, tensors.positions, inverse_frequencies, kQwenFlashHeadSize,
+                                               GGML_ROPE_TYPE_NEOX, 0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f) :
+                                 ggml_rope(ctx, key_mul, tensors.positions, kQwenFlashHeadSize, GGML_ROPE_TYPE_NEOX);
+    REQUIRE(key_rope != nullptr);
+
+    ggml_tensor * key_cache_rows =
+        ggml_reshape_2d(ctx, key_rope, kQwenFlashHeadSize * key_value_head_count, token_count);
+    ggml_tensor * value_cache_rows =
+        ggml_reshape_2d(ctx, tensors.value_reshape, kQwenFlashHeadSize * key_value_head_count, token_count);
+    REQUIRE(key_cache_rows != nullptr);
+    REQUIRE(value_cache_rows != nullptr);
+
+    tensors.key_cache           = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, key_value_size, cache_row_count);
+    tensors.value_cache         = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, key_value_size, cache_row_count);
+    tensors.key_cache_indices   = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, token_count);
+    tensors.value_cache_indices = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, token_count);
+    REQUIRE(tensors.key_cache != nullptr);
+    REQUIRE(tensors.value_cache != nullptr);
+    REQUIRE(tensors.key_cache_indices != nullptr);
+    REQUIRE(tensors.value_cache_indices != nullptr);
+
+    tensors.key_output   = ggml_set_rows(ctx, tensors.key_cache, key_cache_rows, tensors.key_cache_indices);
+    tensors.value_output = ggml_set_rows(ctx, tensors.value_cache, value_cache_rows, tensors.value_cache_indices);
+    REQUIRE(tensors.key_output != nullptr);
+    REQUIRE(tensors.value_output != nullptr);
+    return tensors;
+}
+
+static ggml::hrx::GraphImportResult import_qwen_attention_postprocess_graph(
+    ggml_context *                          ctx,
+    const QwenAttentionPostprocessTensors & tensors) {
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, tensors.query_output);
+    ggml_build_forward_expand(graph, tensors.key_output);
+    ggml_build_forward_expand(graph, tensors.value_output);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    return imported;
+}
+
+static void schedule_qwen_attention_postprocess_command(ggml_context *                          ctx,
+                                                        const QwenAttentionPostprocessTensors & tensors,
+                                                        int64_t                                 token_count,
+                                                        int64_t                                 query_head_count,
+                                                        int64_t                                 key_value_head_count,
+                                                        int64_t                                 cache_row_count) {
+    ggml::hrx::GraphImportResult imported = import_qwen_attention_postprocess_graph(ctx, tensors);
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 4);
+
+    const ggml::hrx::Dispatch & dispatch    = scheduler.plan().dispatches.back();
+    const std::string           kernel_name = kernel_name_for_id(dispatch.kernel.kernel_id);
+    REQUIRE(kernel_name == "qwen3_moe:qwen3_moe_attention_postprocess_f32_f16");
+    REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == token_count);
+    REQUIRE(dispatch.kernel.integer_parameters.at("cache_row_count") == cache_row_count);
+    REQUIRE(dispatch.bindings.size() == 12);
+    require_compile_parameter(dispatch, "qwen3_moe.model.rms_epsilon", "0.000001");
+    require_compile_parameter(dispatch, "qwen3_moe.attention.head_size", std::to_string(kQwenFlashHeadSize));
+    require_compile_parameter(dispatch, "qwen3_moe.attention.query_size",
+                              std::to_string(query_head_count * kQwenFlashHeadSize));
+    require_compile_parameter(dispatch, "qwen3_moe.attention.key_value_size",
+                              std::to_string(key_value_head_count * kQwenFlashHeadSize));
+    require_compile_parameter(dispatch, "qwen3_moe.workload.token_capacity", std::to_string(token_count));
+
+    const ggml::hrx::Value * positions_value     = imported.graph.values().find_tensor(tensors.positions);
+    const ggml::hrx::Value * key_indices_value   = imported.graph.values().find_tensor(tensors.key_cache_indices);
+    const ggml::hrx::Value * value_indices_value = imported.graph.values().find_tensor(tensors.value_cache_indices);
+    const ggml::hrx::Value * query_raw_value     = imported.graph.values().find_tensor(tensors.query_raw);
+    const ggml::hrx::Value * key_raw_value       = imported.graph.values().find_tensor(tensors.key_raw);
+    const ggml::hrx::Value * value_raw_value     = imported.graph.values().find_tensor(tensors.value_raw);
+    const ggml::hrx::Value * query_output_value  = imported.graph.values().find_tensor(tensors.query_output);
+    const ggml::hrx::Value * key_cache_value     = imported.graph.values().find_tensor(tensors.key_cache);
+    const ggml::hrx::Value * value_cache_value   = imported.graph.values().find_tensor(tensors.value_cache);
+    REQUIRE(positions_value != nullptr);
+    REQUIRE(key_indices_value != nullptr);
+    REQUIRE(value_indices_value != nullptr);
+    REQUIRE(query_raw_value != nullptr);
+    REQUIRE(key_raw_value != nullptr);
+    REQUIRE(value_raw_value != nullptr);
+    REQUIRE(query_output_value != nullptr);
+    REQUIRE(key_cache_value != nullptr);
+    REQUIRE(value_cache_value != nullptr);
+    REQUIRE(dispatch.bindings[0].value == positions_value->id);
+    REQUIRE(dispatch.bindings[1].value == key_indices_value->id);
+    REQUIRE(dispatch.bindings[2].value == value_indices_value->id);
+    REQUIRE(dispatch.bindings[3].value == query_raw_value->id);
+    REQUIRE(dispatch.bindings[4].value == key_raw_value->id);
+    REQUIRE(dispatch.bindings[5].value == value_raw_value->id);
+    REQUIRE(dispatch.bindings[9].value == query_output_value->id);
+    REQUIRE(dispatch.bindings[10].value == key_cache_value->id);
+    REQUIRE(dispatch.bindings[11].value == value_cache_value->id);
+
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(commands.valid());
+    REQUIRE(commands.commands.size() == 4);
+    REQUIRE(command_program_verifies(commands));
+    REQUIRE(commands.commands.back().bindings.size() == 12);
+    REQUIRE(commands.commands.back().bindings[0].name == "positions");
+    REQUIRE(commands.commands.back().bindings[1].name == "key_cache_indices");
+    REQUIRE(commands.commands.back().bindings[2].name == "value_cache_indices");
+    REQUIRE(commands.commands.back().bindings[3].name == "query_input");
+    REQUIRE(commands.commands.back().bindings[4].name == "key_input");
+    REQUIRE(commands.commands.back().bindings[5].name == "value_input");
+    REQUIRE(commands.commands.back().bindings[6].name == "query_norm_weight");
+    REQUIRE(commands.commands.back().bindings[7].name == "key_norm_weight");
+    REQUIRE(commands.commands.back().bindings[8].name == "inverse_frequencies");
+    REQUIRE(commands.commands.back().bindings[9].name == "query_output");
+    REQUIRE(commands.commands.back().bindings[10].name == "key_cache");
+    REQUIRE(commands.commands.back().bindings[11].name == "value_cache");
+}
+
+static void run_qwen_attention_postprocess_dispatch_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 8 * 1024 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    {
+        constexpr int64_t                     token_count          = 4;
+        constexpr int64_t                     query_head_count     = 4;
+        constexpr int64_t                     key_value_head_count = 2;
+        constexpr int64_t                     cache_row_count      = 16;
+        const QwenAttentionPostprocessTensors tensors              = build_qwen_attention_postprocess_graph(
+            ctx, token_count, query_head_count, key_value_head_count, cache_row_count);
+        schedule_qwen_attention_postprocess_command(ctx, tensors, token_count, query_head_count, key_value_head_count,
+                                                    cache_row_count);
+    }
+
+    {
+        const QwenAttentionPostprocessTensors tensors =
+            build_qwen_attention_postprocess_graph(ctx, 4, 4, 2, 16, 0.00001f);
+        ggml::hrx::GraphImportResult imported = import_qwen_attention_postprocess_graph(ctx, tensors);
+        REQUIRE(!ggml::hrx::DispatchScheduler::can_schedule_graph(imported.graph, test_dispatch_target()));
+    }
+
+    {
+        const QwenAttentionPostprocessTensors tensors =
+            build_qwen_attention_postprocess_graph(ctx, 4, 4, 2, 16, 0.000001f, false);
+        ggml::hrx::GraphImportResult imported = import_qwen_attention_postprocess_graph(ctx, tensors);
+        REQUIRE(!ggml::hrx::DispatchScheduler::can_schedule_graph(imported.graph, test_dispatch_target()));
     }
 
     ggml_free(ctx);
@@ -2773,6 +3004,7 @@ int main() {
     run_graph_index_checks();
     run_graph_traversal_checks();
     run_qwen_flash_attention_dispatch_checks();
+    run_qwen_attention_postprocess_dispatch_checks();
     run_qwen_matmul_dispatch_checks();
     run_qwen_router_top8_dispatch_checks();
     run_qwen_routed_gate_up_dispatch_checks();

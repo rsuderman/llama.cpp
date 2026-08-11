@@ -1,6 +1,7 @@
 #include "dispatch-registry.h"
 
 #include "dispatch-add.h"
+#include "dispatch-qwen-attention-postprocess.h"
 #include "dispatch-qwen-flash-attention.h"
 #include "dispatch-qwen-matmul.h"
 #include "dispatch-qwen-moe.h"
@@ -30,6 +31,7 @@ static void sort_registrations(std::vector<DispatchRegistration> & registrations
 static DispatchRegistry build_qwen_registry() {
     DispatchRegistryBuilder builder;
     register_add_dispatch(builder);
+    register_qwen_attention_postprocess_dispatches(builder);
     register_qwen_flash_attention_dispatches(builder);
     register_qwen_matmul_dispatches(builder);
     register_qwen_moe_dispatches(builder);

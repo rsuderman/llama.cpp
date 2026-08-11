@@ -37,6 +37,18 @@ struct GluParams {
     ggml_glu_op op = GGML_GLU_OP_REGLU;
 };
 
+struct RopeParams {
+    int   n_dims      = 0;
+    int   mode        = 0;
+    int   n_ctx_orig  = 0;
+    float freq_base   = 0.0f;
+    float freq_scale  = 0.0f;
+    float ext_factor  = 0.0f;
+    float attn_factor = 0.0f;
+    float beta_fast   = 0.0f;
+    float beta_slow   = 0.0f;
+};
+
 // clang-format off
 using OpParams = std::variant<
     std::monostate,
@@ -45,7 +57,8 @@ using OpParams = std::variant<
     SoftMaxParams,
     ArgsortParams,
     ClampParams,
-    GluParams>;
+    GluParams,
+    RopeParams>;
 // clang-format on
 
 template <typename T> const T * op_params_as(const OpParams & params) {

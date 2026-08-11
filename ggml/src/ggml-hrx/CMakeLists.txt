@@ -130,6 +130,8 @@ ggml_add_backend_library(ggml-hrx
     dispatch/dispatch.h
     dispatch_registration/dispatch-add.cpp
     dispatch_registration/dispatch-add.h
+    dispatch_registration/dispatch-qwen-attention-postprocess.cpp
+    dispatch_registration/dispatch-qwen-attention-postprocess.h
     dispatch_registration/dispatch-qwen-flash-attention.cpp
     dispatch_registration/dispatch-qwen-flash-attention.h
     dispatch_registration/dispatch-qwen-matmul.cpp
