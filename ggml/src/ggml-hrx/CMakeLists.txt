@@ -125,12 +125,16 @@ ggml_add_backend_library(ggml-hrx
     dispatch/command-program-resolver.h
     dispatch/dispatch-add.cpp
     dispatch/dispatch-add.h
+    dispatch/dispatch-rmsnorm.cpp
+    dispatch/dispatch-rmsnorm.h
     dispatch/dispatch-scheduler.cpp
     dispatch/dispatch-scheduler.h
     dispatch/dispatch.h
     status.h
     graph/graph.cpp
     graph/graph.h
+    graph/op-params.cpp
+    graph/op-params.h
     ggml-hrx.cpp
     loom-jit.cpp
     graph/value-map.cpp

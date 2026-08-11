@@ -5,6 +5,7 @@
 
 #include <cstring>
 #include <limits>
+#include <map>
 #include <sstream>
 
 namespace ggml::hrx {
@@ -64,6 +65,9 @@ static std::string kernel_executable_key(const KernelDefinition & definition,
     }
     for (const KernelCompileConfig & config : definition.compile_config) {
         out << '|' << (config.key != nullptr ? config.key : "") << '=' << (config.value != nullptr ? config.value : "");
+    }
+    for (const auto & config : dispatch.kernel.compile_parameters) {
+        out << '|' << config.first << '=' << config.second;
     }
     return out.str();
 }
@@ -136,10 +140,17 @@ std::shared_ptr<KernelExecutable> KernelExecutableCache::prepare(const KernelExe
         });
     }
 
-    std::vector<ggml_hrx_loom_jit_config_binding> configs;
-    configs.reserve(definition.compile_config.size());
+    std::map<std::string, std::string> merged_configs;
     for (const KernelCompileConfig & config : definition.compile_config) {
-        configs.push_back({ config.key, config.value });
+        merged_configs[config.key != nullptr ? config.key : ""] = config.value != nullptr ? config.value : "";
+    }
+    for (const auto & config : dispatch.kernel.compile_parameters) {
+        merged_configs[config.first] = config.second;
+    }
+    std::vector<ggml_hrx_loom_jit_config_binding> configs;
+    configs.reserve(merged_configs.size());
+    for (const auto & config : merged_configs) {
+        configs.push_back({ config.first.c_str(), config.second.c_str() });
     }
     std::vector<int64_t> workload;
     workload.reserve(definition.workload_parameters.size());

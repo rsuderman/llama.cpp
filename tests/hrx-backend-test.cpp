@@ -403,6 +403,52 @@ static void run_graph_import_checks() {
     ggml_free(ctx);
 }
 
+static void run_graph_index_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 256 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 1);
+    ggml_tensor * weight = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 256);
+    REQUIRE(input != nullptr);
+    REQUIRE(weight != nullptr);
+    ggml_tensor * rms = ggml_rms_norm(ctx, input, 0.000001f);
+    REQUIRE(rms != nullptr);
+    ggml_tensor * out = ggml_mul(ctx, rms, weight);
+    REQUIRE(out != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, out);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    REQUIRE(imported.graph.has_index());
+    REQUIRE(imported.graph.nodes().size() == 2);
+    const ggml::hrx::GraphNode * rms_node = &imported.graph.nodes()[0];
+    const ggml::hrx::GraphNode * mul_node = &imported.graph.nodes()[1];
+    REQUIRE(rms_node->op == GGML_OP_RMS_NORM);
+    REQUIRE(mul_node->op == GGML_OP_MUL);
+    const ggml::hrx::RmsNormParams * rms_params = ggml::hrx::op_params_as<ggml::hrx::RmsNormParams>(rms_node->params);
+    REQUIRE(rms_params != nullptr);
+    REQUIRE(rms_params->eps == 0.000001f);
+    REQUIRE(imported.graph.index().producer(rms_node->output) == rms_node);
+    REQUIRE(imported.graph.index().producer(mul_node->output) == mul_node);
+    REQUIRE(imported.graph.index().has_single_consumer(rms_node->output));
+    const std::vector<const ggml::hrx::GraphNode *> & consumers = imported.graph.index().consumers(rms_node->output);
+    REQUIRE(consumers.size() == 1);
+    REQUIRE(consumers.front() == mul_node);
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(imported.graph));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 1);
+
+    ggml_free(ctx);
+}
+
 static void bind_external_values(ggml::hrx::ValueMap & values) {
     uintptr_t buffer = 0x1000;
     for (const ggml::hrx::ValueId id : values.external_value_ids()) {
@@ -1224,6 +1270,7 @@ static void run_unsupported_op_fails() {
 int main() {
     run_status_checks();
     run_graph_import_checks();
+    run_graph_index_checks();
     run_multi_dispatch_checks();
     run_transient_import_checks();
     run_chained_dispatch_requires_transients();

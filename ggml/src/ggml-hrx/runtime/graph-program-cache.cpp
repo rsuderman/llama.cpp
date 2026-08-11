@@ -24,6 +24,13 @@ static bool tensor_metadata_matches(const Value & value, const ggml_tensor * ten
     return true;
 }
 
+static bool graph_node_params_match(const GraphNode & cached_node, const ggml_tensor * current_node) {
+    if (current_node == nullptr) {
+        return false;
+    }
+    return op_params_equivalent(cached_node.op, cached_node.params, *current_node);
+}
+
 static Status bind_current_value(const ValueMap &                                   values,
                                  ValueId                                            expected,
                                  const ggml_tensor *                                tensor,
@@ -140,6 +147,10 @@ GraphProgramMatch GraphProgram::match_current_graph(const ggml_cgraph & current_
         if (cached_node.op != current_node->op) {
             result.status.log("node %zu cached op %s does not match current op %s", node_index,
                               ggml_op_name(cached_node.op), ggml_op_name(current_node->op));
+            return result;
+        }
+        if (!graph_node_params_match(cached_node, current_node)) {
+            result.status.log("node %zu cached op params do not match current graph", node_index);
             return result;
         }
 

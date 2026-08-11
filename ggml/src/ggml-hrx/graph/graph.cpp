@@ -2,6 +2,7 @@
 
 #include "ggml-impl.h"
 
+#include <cassert>
 #include <unordered_map>
 #include <utility>
 
@@ -19,9 +20,100 @@ static bool tensor_is_external(const ggml_tensor *                              
 
 }  // namespace
 
+GraphIndex GraphIndex::build(const Graph & graph) {
+    GraphIndex                     index;
+    const std::vector<GraphNode> & nodes = graph.nodes();
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        const GraphNode & node = nodes[i];
+        index.node_indices_.emplace(&node, i);
+        index.producers_.emplace(node.output.value, &node);
+        for (ValueId input : node.inputs) {
+            index.consumers_[input.value].push_back(&node);
+        }
+    }
+    return index;
+}
+
+const GraphNode * GraphIndex::producer(ValueId value) const {
+    const auto found = producers_.find(value.value);
+    return found == producers_.end() ? nullptr : found->second;
+}
+
+const std::vector<const GraphNode *> & GraphIndex::consumers(ValueId value) const {
+    static const std::vector<const GraphNode *> empty;
+    const auto                                  found = consumers_.find(value.value);
+    return found == consumers_.end() ? empty : found->second;
+}
+
+bool GraphIndex::has_single_consumer(ValueId value) const {
+    return consumers(value).size() == 1;
+}
+
+bool GraphIndex::node_index(const GraphNode * node, size_t & index) const {
+    const auto found = node_indices_.find(node);
+    if (found == node_indices_.end()) {
+        return false;
+    }
+    index = found->second;
+    return true;
+}
+
+Graph::Graph(const Graph & other) : values_(other.values_), nodes_(other.nodes_) {
+    if (other.has_index()) {
+        index_ = GraphIndex::build(*this);
+    }
+}
+
+Graph & Graph::operator=(const Graph & other) {
+    if (this == &other) {
+        return *this;
+    }
+    values_ = other.values_;
+    nodes_  = other.nodes_;
+    index_.reset();
+    if (other.has_index()) {
+        index_ = GraphIndex::build(*this);
+    }
+    return *this;
+}
+
+Graph::Graph(Graph && other) : values_(std::move(other.values_)), nodes_(std::move(other.nodes_)) {
+    if (other.has_index()) {
+        index_ = GraphIndex::build(*this);
+    }
+}
+
+Graph & Graph::operator=(Graph && other) {
+    if (this == &other) {
+        return *this;
+    }
+    values_ = std::move(other.values_);
+    nodes_  = std::move(other.nodes_);
+    index_.reset();
+    if (other.has_index()) {
+        index_ = GraphIndex::build(*this);
+    }
+    return *this;
+}
+
 GraphNode & Graph::add_node(ggml_op op, ValueId output, std::vector<ValueId> inputs) {
-    nodes_.push_back({ op, output, std::move(inputs) });
+    index_.reset();
+    GraphNode node;
+    node.op     = op;
+    node.output = output;
+    node.inputs = std::move(inputs);
+    nodes_.push_back(std::move(node));
     return nodes_.back();
+}
+
+Status Graph::build_index() {
+    index_ = GraphIndex::build(*this);
+    return {};
+}
+
+const GraphIndex & Graph::index() const {
+    assert(index_.has_value());
+    return *index_;
 }
 
 GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
@@ -54,9 +146,11 @@ GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
 
         const ValueKind output_kind = tensor_is_external(node, use_counts) ? ValueKind::External : ValueKind::Transient;
         const ValueId   output      = values.get_or_add_tensor_value(node, output_kind);
-        result.graph.add_node(node->op, output, std::move(inputs));
+        GraphNode &     graph_node  = result.graph.add_node(node->op, output, std::move(inputs));
+        graph_node.params           = import_op_params(*node);
     }
 
+    result.status.append(result.graph.build_index());
     return result;
 }
 
