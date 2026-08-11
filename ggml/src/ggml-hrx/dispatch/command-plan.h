@@ -1,5 +1,6 @@
 #pragma once
 
+#include "command-plan-metadata.h"
 #include "dispatch.h"
 #include "status.h"
 
@@ -19,9 +20,14 @@ struct CommandPlanTransient {
 struct CommandPlan {
     std::vector<Dispatch>             dispatches;
     std::vector<CommandPlanTransient> transients;
+    CommandPlanMetadata               metadata;
     Status                            status;
 
     bool valid() const { return status.success(); }
 };
+
+inline const CommandPlanAlternateValue * find_alternate_value(const CommandPlan & plan, ValueId graph_value) {
+    return plan.metadata.find_alternate_value(graph_value);
+}
 
 }  // namespace ggml::hrx

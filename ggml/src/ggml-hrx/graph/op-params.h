@@ -33,8 +33,20 @@ struct ClampParams {
     float max = 0.0f;
 };
 
-using OpParams =
-    std::variant<std::monostate, RmsNormParams, FlashAttnExtParams, SoftMaxParams, ArgsortParams, ClampParams>;
+struct GluParams {
+    ggml_glu_op op = GGML_GLU_OP_REGLU;
+};
+
+// clang-format off
+using OpParams = std::variant<
+    std::monostate,
+    RmsNormParams,
+    FlashAttnExtParams,
+    SoftMaxParams,
+    ArgsortParams,
+    ClampParams,
+    GluParams>;
+// clang-format on
 
 template <typename T> const T * op_params_as(const OpParams & params) {
     return std::get_if<T>(&params);

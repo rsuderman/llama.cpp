@@ -311,6 +311,34 @@ static bool match_qwen_router_top8_dispatch(const DispatchMatchContext & context
         { expert_table_value, "qwen.router.expert_table", expert_table_bytes, kQwenRouterPlanTransientAlignment });
     dispatch_match.transients.push_back({ partition_table_value, "qwen.router.partition_table", partition_table_bytes,
                                           kQwenRouterPlanTransientAlignment });
+    const CommandPlanResourceMetadata routing_metadata =
+        make_command_plan_resource_metadata(QwenMoeRoutingResourceMetadata{
+            router_match.token_count,
+            kQwenRouterRouteCount,
+            router_match.route_stride,
+            kQwenRouterExpertCount,
+        });
+    Status metadata_status;
+    if (!dispatch_match.metadata.append_generated_resource(
+            {
+                router_match.route_ids->id,
+                GeneratedResourceRole::QwenMoeExpertTable,
+                expert_table_value,
+                expert_table_bytes,
+                routing_metadata,
+            },
+            metadata_status) ||
+        !dispatch_match.metadata.append_generated_resource(
+            {
+                router_match.route_ids->id,
+                GeneratedResourceRole::QwenMoePartitionTable,
+                partition_table_value,
+                partition_table_bytes,
+                routing_metadata,
+            },
+            metadata_status)) {
+        return false;
+    }
 
     Dispatch expert_table_dispatch;
     expert_table_dispatch.kernel = make_kernel_specialization(kQwenBuildExpertTableKernel);

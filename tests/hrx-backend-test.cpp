@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #define REQUIRE(condition)                                                                           \
@@ -95,9 +96,11 @@ static void require_compile_parameter(const ggml::hrx::Dispatch & dispatch,
     REQUIRE(found->second == value);
 }
 
-static constexpr int64_t kQwenFlashHeadSize     = 128;
-static constexpr int64_t kQwenRouterExpertCount = 128;
-static constexpr int64_t kQwenRouterRouteCount  = 8;
+static constexpr int64_t kQwenFlashHeadSize       = 128;
+static constexpr int64_t kQwenRouterExpertCount   = 128;
+static constexpr int64_t kQwenRouterRouteCount    = 8;
+static constexpr int64_t kQwenMoeHiddenSize       = 2048;
+static constexpr int64_t kQwenMoeIntermediateSize = 768;
 
 static size_t qwen_expert_table_size(int64_t token_count) {
     return static_cast<size_t>(kQwenRouterExpertCount + kQwenRouterExpertCount * token_count) * sizeof(int32_t);
@@ -107,6 +110,10 @@ static size_t qwen_partition_table_size(int64_t token_count) {
     const int64_t assignment_count           = token_count * kQwenRouterRouteCount;
     const int64_t assignment_partition_count = (assignment_count + 31) / 32;
     return static_cast<size_t>(1 + assignment_partition_count + kQwenRouterExpertCount) * sizeof(int32_t);
+}
+
+static size_t qwen_routed_gate_up_f16_output_size(int64_t token_count) {
+    return static_cast<size_t>(token_count * kQwenRouterRouteCount * kQwenMoeIntermediateSize) * sizeof(ggml_fp16_t);
 }
 
 static void set_qwen_flash_query_layout(ggml_tensor * tensor, int64_t head_count) {
@@ -248,6 +255,38 @@ static void run_status_checks() {
     REQUIRE(status.errors()[2] == "third");
 }
 
+static void run_command_plan_metadata_checks() {
+    const ggml::hrx::QwenMoeRoutingResourceMetadata routing = {
+        4,
+        8,
+        128,
+        128,
+    };
+    const ggml::hrx::CommandPlanResourceMetadata metadata = ggml::hrx::make_command_plan_resource_metadata(routing);
+
+    REQUIRE(metadata.kind == ggml::hrx::CommandPlanResourceMetadataKind::QwenMoeRoutingResource);
+    ggml::hrx::QwenMoeRoutingResourceMetadata decoded;
+    REQUIRE(metadata.read(decoded));
+    REQUIRE(decoded.token_count == routing.token_count);
+    REQUIRE(decoded.route_count == routing.route_count);
+    REQUIRE(decoded.route_stride == routing.route_stride);
+    REQUIRE(decoded.expert_count == routing.expert_count);
+
+    const ggml::hrx::CommandPlanResourceMetadata empty;
+    REQUIRE(!empty.read(decoded));
+
+    ggml::hrx::CommandPlanMetadata metadata_plan;
+    ggml::hrx::Status              status;
+    REQUIRE(metadata_plan.append_alternate_value(
+        { ggml::hrx::ValueId(1), ggml::hrx::ValueId(2), GGML_TYPE_F16, 16, "alternate" }, status));
+    REQUIRE(metadata_plan.append_alternate_value(
+        { ggml::hrx::ValueId(1), ggml::hrx::ValueId(2), GGML_TYPE_F16, 16, "alternate" }, status));
+    REQUIRE(metadata_plan.alternate_values().size() == 1);
+    REQUIRE(!metadata_plan.append_alternate_value(
+        { ggml::hrx::ValueId(1), ggml::hrx::ValueId(3), GGML_TYPE_F16, 16, "alternate" }, status));
+    REQUIRE(!status.success());
+}
+
 static bool has_dispatch_registration(const std::vector<ggml::hrx::DispatchRegistration> & registrations,
                                       const char *                                         name) {
     for (const ggml::hrx::DispatchRegistration & registration : registrations) {
@@ -303,6 +342,8 @@ static void run_dispatch_registry_checks() {
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_FLASH_ATTN_EXT),
                                       "qwen.flash_attention_f32_f16_wmma"));
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_SOFT_MAX), "qwen.router.top8_f32"));
+    REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_MUL_MAT_ID),
+                                      "qwen.moe.routed_gate_up_swiglu_q4k_f16_wmma"));
     REQUIRE(registry.single_op_registrations().size() >= 5);
 
     ggml::hrx::DispatchRegistryBuilder builder;
@@ -337,12 +378,11 @@ static void run_dispatch_registry_checks() {
     REQUIRE(graph.build_index().success());
 
     const std::vector<bool>               covered_nodes(graph.nodes().size(), false);
+    const ggml::hrx::CommandPlan          plan;
     const ggml::hrx::DispatchMatchContext context = {
-        graph,
-        &graph.nodes().front(),
-        0,
-        covered_nodes,
-        ggml::hrx::ValueId(static_cast<int32_t>(graph.values().size())),
+        graph, &graph.nodes().front(),
+        0,     covered_nodes,
+        plan,  ggml::hrx::ValueId(static_cast<int32_t>(graph.values().size())),
     };
     ggml::hrx::DispatchMatch match;
     REQUIRE(ordering_registry.match(context, match));
@@ -1218,6 +1258,328 @@ static void schedule_qwen_router_top8_command(ggml_context * ctx, ggml_tensor * 
     REQUIRE(partition_table_allocation->size == partition_table_bytes);
 }
 
+struct QwenRoutedGateUpTensors {
+    ggml_tensor * route_ids     = nullptr;
+    ggml_tensor * route_weights = nullptr;
+    ggml_tensor * gate          = nullptr;
+    ggml_tensor * up            = nullptr;
+    ggml_tensor * glu           = nullptr;
+    ggml_tensor * output        = nullptr;
+};
+
+static QwenRoutedGateUpTensors build_qwen_routed_gate_up_graph(ggml_context * ctx,
+                                                               int64_t        token_count,
+                                                               ggml_glu_op    glu_op         = GGML_GLU_OP_SWIGLU,
+                                                               ggml_type      up_weight_type = GGML_TYPE_Q4_K,
+                                                               bool           include_down   = true) {
+    QwenRoutedGateUpTensors tensors;
+    ggml_tensor *           logits = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenRouterExpertCount, token_count);
+    REQUIRE(logits != nullptr);
+    tensors.route_weights = build_qwen_router_top8_graph(ctx, logits, &tensors.route_ids);
+    REQUIRE(tensors.route_weights != nullptr);
+    REQUIRE(tensors.route_ids != nullptr);
+
+    ggml_tensor * input = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, kQwenMoeHiddenSize, 1, token_count);
+    ggml_tensor * gate_weight =
+        ggml_new_tensor_3d(ctx, GGML_TYPE_Q4_K, kQwenMoeHiddenSize, kQwenMoeIntermediateSize, kQwenRouterExpertCount);
+    ggml_tensor * up_weight =
+        ggml_new_tensor_3d(ctx, up_weight_type, kQwenMoeHiddenSize, kQwenMoeIntermediateSize, kQwenRouterExpertCount);
+    REQUIRE(input != nullptr);
+    REQUIRE(gate_weight != nullptr);
+    REQUIRE(up_weight != nullptr);
+
+    tensors.gate = ggml_mul_mat_id(ctx, gate_weight, input, tensors.route_ids);
+    tensors.up   = ggml_mul_mat_id(ctx, up_weight, input, tensors.route_ids);
+    REQUIRE(tensors.gate != nullptr);
+    REQUIRE(tensors.up != nullptr);
+    tensors.glu = ggml_glu_split(ctx, tensors.gate, tensors.up, glu_op);
+    REQUIRE(tensors.glu != nullptr);
+
+    if (include_down) {
+        ggml_tensor * down_weight = ggml_new_tensor_3d(ctx, GGML_TYPE_Q6_K, kQwenMoeIntermediateSize,
+                                                       kQwenMoeHiddenSize, kQwenRouterExpertCount);
+        REQUIRE(down_weight != nullptr);
+        tensors.output = ggml_mul_mat_id(ctx, down_weight, tensors.glu, tensors.route_ids);
+        REQUIRE(tensors.output != nullptr);
+    } else {
+        tensors.output = tensors.glu;
+    }
+    return tensors;
+}
+
+static ggml::hrx::GraphImportResult import_qwen_routed_gate_up_graph(ggml_context *                  ctx,
+                                                                     const QwenRoutedGateUpTensors & tensors) {
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, tensors.route_weights);
+    ggml_build_forward_expand(graph, tensors.output);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    return imported;
+}
+
+static bool match_dispatch_at_index(const ggml::hrx::Graph &       graph,
+                                    const ggml::hrx::CommandPlan & plan,
+                                    const std::vector<bool> &      covered_nodes,
+                                    size_t                         node_index,
+                                    ggml::hrx::DispatchMatch &     match) {
+    REQUIRE(node_index < graph.nodes().size());
+    const ggml::hrx::DispatchMatchContext context = {
+        graph,      &graph.nodes()[node_index],
+        node_index, covered_nodes,
+        plan,       ggml::hrx::ValueId(static_cast<int32_t>(graph.values().size() + plan.transients.size())),
+    };
+    return test_dispatch_registry().match(context, match);
+}
+
+static void append_match_to_plan(ggml::hrx::CommandPlan &   plan,
+                                 ggml::hrx::DispatchMatch & match,
+                                 std::vector<bool> &        covered_nodes) {
+    for (ggml::hrx::Dispatch & dispatch : match.dispatches) {
+        plan.dispatches.push_back(std::move(dispatch));
+    }
+    for (ggml::hrx::CommandPlanTransient & transient : match.transients) {
+        plan.transients.push_back(std::move(transient));
+    }
+    REQUIRE(plan.metadata.append(std::move(match.metadata), plan.status));
+    for (const size_t covered_node : match.covered_nodes) {
+        REQUIRE(covered_node < covered_nodes.size());
+        REQUIRE(!covered_nodes[covered_node]);
+        covered_nodes[covered_node] = true;
+    }
+}
+
+static ggml::hrx::CommandPlan build_qwen_router_plan_for_graph(const ggml::hrx::Graph & graph,
+                                                               std::vector<bool> &      covered_nodes) {
+    ggml::hrx::CommandPlan plan;
+    size_t                 softmax_index = graph.nodes().size();
+    for (size_t i = 0; i < graph.nodes().size(); ++i) {
+        if (graph.nodes()[i].op == GGML_OP_SOFT_MAX) {
+            softmax_index = i;
+            break;
+        }
+    }
+    REQUIRE(softmax_index < graph.nodes().size());
+    ggml::hrx::DispatchMatch router_match;
+    REQUIRE(match_dispatch_at_index(graph, plan, covered_nodes, softmax_index, router_match));
+    append_match_to_plan(plan, router_match, covered_nodes);
+    return plan;
+}
+
+static void run_qwen_routed_gate_up_dispatch_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 4 * 1024 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    {
+        constexpr int64_t             token_count = 4;
+        const QwenRoutedGateUpTensors tensors     = build_qwen_routed_gate_up_graph(ctx, token_count);
+        ggml::hrx::GraphImportResult  imported    = import_qwen_routed_gate_up_graph(ctx, tensors);
+        REQUIRE(imported.graph.nodes().size() == 14);
+
+        const ggml::hrx::Value * route_ids_value     = imported.graph.values().find_tensor(tensors.route_ids);
+        const ggml::hrx::Value * route_weights_value = imported.graph.values().find_tensor(tensors.route_weights);
+        const ggml::hrx::Value * glu_value           = imported.graph.values().find_tensor(tensors.glu);
+        REQUIRE(route_ids_value != nullptr);
+        REQUIRE(route_weights_value != nullptr);
+        REQUIRE(glu_value != nullptr);
+        REQUIRE(route_ids_value->kind == ggml::hrx::ValueKind::Transient);
+        REQUIRE(route_weights_value->kind == ggml::hrx::ValueKind::External);
+        REQUIRE(glu_value->kind == ggml::hrx::ValueKind::Transient);
+
+        std::vector<bool>      covered_nodes(imported.graph.nodes().size(), false);
+        ggml::hrx::CommandPlan plan = build_qwen_router_plan_for_graph(imported.graph, covered_nodes);
+        const ggml::hrx::CommandPlanGeneratedResource * expert_table_resource = plan.metadata.find_generated_resource(
+            route_ids_value->id, ggml::hrx::GeneratedResourceRole::QwenMoeExpertTable);
+        const ggml::hrx::CommandPlanGeneratedResource * partition_table_resource =
+            plan.metadata.find_generated_resource(route_ids_value->id,
+                                                  ggml::hrx::GeneratedResourceRole::QwenMoePartitionTable);
+        REQUIRE(expert_table_resource != nullptr);
+        REQUIRE(partition_table_resource != nullptr);
+        ggml::hrx::QwenMoeRoutingResourceMetadata expert_metadata;
+        ggml::hrx::QwenMoeRoutingResourceMetadata partition_metadata;
+        REQUIRE(expert_table_resource->metadata.read(expert_metadata));
+        REQUIRE(partition_table_resource->metadata.read(partition_metadata));
+        REQUIRE(expert_metadata.token_count == token_count);
+        REQUIRE(expert_metadata.route_count == kQwenRouterRouteCount);
+        REQUIRE(expert_metadata.expert_count == kQwenRouterExpertCount);
+        REQUIRE(partition_metadata.route_stride == expert_metadata.route_stride);
+        REQUIRE(expert_table_resource->byte_count == qwen_expert_table_size(token_count));
+        REQUIRE(partition_table_resource->byte_count == qwen_partition_table_size(token_count));
+
+        const size_t             gate_index = producer_index_for_tensor(imported.graph, tensors.gate);
+        ggml::hrx::DispatchMatch gate_up_match;
+        REQUIRE(match_dispatch_at_index(imported.graph, plan, covered_nodes, gate_index, gate_up_match));
+        append_match_to_plan(plan, gate_up_match, covered_nodes);
+
+        REQUIRE(plan.dispatches.size() == 4);
+        REQUIRE(plan.transients.size() == 3);
+        REQUIRE(plan.metadata.alternate_values().size() == 1);
+        const ggml::hrx::CommandPlanTransient & f16_output_transient = plan.transients.back();
+        REQUIRE(f16_output_transient.name == "qwen.moe.gate_up_swiglu_f16");
+        REQUIRE(f16_output_transient.size == qwen_routed_gate_up_f16_output_size(token_count));
+        REQUIRE(plan.metadata.alternate_values().front().graph_value == glu_value->id);
+        REQUIRE(plan.metadata.alternate_values().front().alternate_value == f16_output_transient.value);
+        REQUIRE(plan.metadata.alternate_values().front().type == GGML_TYPE_F16);
+        REQUIRE(plan.metadata.alternate_values().front().byte_count == f16_output_transient.size);
+
+        const ggml::hrx::Dispatch & dispatch = plan.dispatches.back();
+        REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) ==
+                "qwen3_moe:qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma");
+        REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == token_count);
+        REQUIRE(dispatch.bindings.size() == 6);
+        REQUIRE(dispatch.bindings[1].value == expert_table_resource->generated_value);
+        REQUIRE(dispatch.bindings[1].length == qwen_expert_table_size(token_count));
+        REQUIRE(dispatch.bindings[2].value == partition_table_resource->generated_value);
+        REQUIRE(dispatch.bindings[2].length == qwen_partition_table_size(token_count));
+        REQUIRE(dispatch.bindings[5].value == f16_output_transient.value);
+        REQUIRE(dispatch.bindings[5].length == f16_output_transient.size);
+        require_compile_parameter(dispatch, "qwen3_moe.routed_gate_up.input_size", "2048");
+        require_compile_parameter(dispatch, "qwen3_moe.routed_gate_up.expert_count", "128");
+        require_compile_parameter(dispatch, "qwen3_moe.routed_gate_up.route_count", "8");
+        require_compile_parameter(dispatch, "qwen3_moe.routed_gate_up.output_size", "768");
+        require_compile_parameter(dispatch, "qwen3_moe.workload.token_capacity", std::to_string(token_count));
+
+        const ggml::hrx::CommandProgram commands =
+            ggml::hrx::build_command_program(imported.graph, plan, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(commands.valid());
+        REQUIRE(commands.commands.size() == 4);
+        REQUIRE(command_program_verifies(commands));
+        REQUIRE(commands.commands[3].bindings.size() == 6);
+        REQUIRE(commands.commands[3].bindings[0].name == "input");
+        REQUIRE(commands.commands[3].bindings[0].origin == ggml::hrx::CommandBindingOrigin::GraphValue);
+        REQUIRE(commands.commands[3].bindings[1].name == "expert_table");
+        REQUIRE(commands.commands[3].bindings[1].origin == ggml::hrx::CommandBindingOrigin::Transient);
+        REQUIRE(commands.commands[3].bindings[2].name == "partition_table");
+        REQUIRE(commands.commands[3].bindings[2].origin == ggml::hrx::CommandBindingOrigin::Transient);
+        REQUIRE(commands.commands[3].bindings[3].name == "gate_weight");
+        REQUIRE(commands.commands[3].bindings[3].origin == ggml::hrx::CommandBindingOrigin::GraphValue);
+        REQUIRE(commands.commands[3].bindings[4].name == "up_weight");
+        REQUIRE(commands.commands[3].bindings[4].origin == ggml::hrx::CommandBindingOrigin::GraphValue);
+        REQUIRE(commands.commands[3].bindings[5].name == "output");
+        REQUIRE(commands.commands[3].bindings[5].origin == ggml::hrx::CommandBindingOrigin::Transient);
+        REQUIRE(ggml::hrx::find_transient_allocation(commands.transients, f16_output_transient.value) != nullptr);
+    }
+
+    {
+        constexpr int64_t token_count     = 4;
+        ggml_tensor *     first_logits    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenRouterExpertCount, token_count);
+        ggml_tensor *     first_route_ids = nullptr;
+        REQUIRE(first_logits != nullptr);
+        ggml_tensor * first_route_weights = build_qwen_router_top8_graph(ctx, first_logits, &first_route_ids);
+        REQUIRE(first_route_ids != nullptr);
+        REQUIRE(first_route_weights != nullptr);
+
+        const QwenRoutedGateUpTensors tensors = build_qwen_routed_gate_up_graph(ctx, token_count);
+        ggml_cgraph *                 graph   = ggml_new_graph(ctx);
+        REQUIRE(graph != nullptr);
+        ggml_build_forward_expand(graph, first_route_weights);
+        ggml_build_forward_expand(graph, tensors.route_weights);
+        ggml_build_forward_expand(graph, tensors.output);
+
+        ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+
+        const ggml::hrx::Value * first_route_ids_value  = imported.graph.values().find_tensor(first_route_ids);
+        const ggml::hrx::Value * second_route_ids_value = imported.graph.values().find_tensor(tensors.route_ids);
+        REQUIRE(first_route_ids_value != nullptr);
+        REQUIRE(second_route_ids_value != nullptr);
+        REQUIRE(first_route_ids_value->id != second_route_ids_value->id);
+
+        std::vector<bool>      covered_nodes(imported.graph.nodes().size(), false);
+        ggml::hrx::CommandPlan plan;
+        size_t                 router_matches = 0;
+        for (size_t i = 0; i < imported.graph.nodes().size(); ++i) {
+            if (imported.graph.nodes()[i].op != GGML_OP_SOFT_MAX) {
+                continue;
+            }
+            ggml::hrx::DispatchMatch router_match;
+            REQUIRE(match_dispatch_at_index(imported.graph, plan, covered_nodes, i, router_match));
+            append_match_to_plan(plan, router_match, covered_nodes);
+            ++router_matches;
+        }
+        REQUIRE(router_matches == 2);
+        REQUIRE(plan.metadata.generated_resources().size() == 4);
+
+        const ggml::hrx::CommandPlanGeneratedResource * first_expert_table = plan.metadata.find_generated_resource(
+            first_route_ids_value->id, ggml::hrx::GeneratedResourceRole::QwenMoeExpertTable);
+        const ggml::hrx::CommandPlanGeneratedResource * second_expert_table = plan.metadata.find_generated_resource(
+            second_route_ids_value->id, ggml::hrx::GeneratedResourceRole::QwenMoeExpertTable);
+        const ggml::hrx::CommandPlanGeneratedResource * second_partition_table = plan.metadata.find_generated_resource(
+            second_route_ids_value->id, ggml::hrx::GeneratedResourceRole::QwenMoePartitionTable);
+        REQUIRE(first_expert_table != nullptr);
+        REQUIRE(second_expert_table != nullptr);
+        REQUIRE(second_partition_table != nullptr);
+        REQUIRE(first_expert_table->generated_value != second_expert_table->generated_value);
+
+        const size_t             gate_index = producer_index_for_tensor(imported.graph, tensors.gate);
+        ggml::hrx::DispatchMatch gate_up_match;
+        REQUIRE(match_dispatch_at_index(imported.graph, plan, covered_nodes, gate_index, gate_up_match));
+        append_match_to_plan(plan, gate_up_match, covered_nodes);
+
+        REQUIRE(plan.dispatches.size() == 7);
+        REQUIRE(plan.transients.size() == 5);
+        const ggml::hrx::Dispatch & dispatch = plan.dispatches.back();
+        REQUIRE(dispatch.bindings.size() == 6);
+        REQUIRE(dispatch.bindings[1].value == second_expert_table->generated_value);
+        REQUIRE(dispatch.bindings[1].value != first_expert_table->generated_value);
+        REQUIRE(dispatch.bindings[2].value == second_partition_table->generated_value);
+
+        const ggml::hrx::CommandProgram commands =
+            ggml::hrx::build_command_program(imported.graph, plan, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(commands.valid());
+        REQUIRE(commands.commands.size() == 7);
+        REQUIRE(command_program_verifies(commands));
+    }
+
+    {
+        const QwenRoutedGateUpTensors tensors    = build_qwen_routed_gate_up_graph(ctx, 4);
+        ggml::hrx::GraphImportResult  imported   = import_qwen_routed_gate_up_graph(ctx, tensors);
+        const size_t                  gate_index = producer_index_for_tensor(imported.graph, tensors.gate);
+        std::vector<bool>             covered_nodes(imported.graph.nodes().size(), false);
+        const ggml::hrx::CommandPlan  empty_plan;
+        ggml::hrx::DispatchMatch      gate_up_match;
+        REQUIRE(!match_dispatch_at_index(imported.graph, empty_plan, covered_nodes, gate_index, gate_up_match));
+    }
+
+    {
+        const QwenRoutedGateUpTensors tensors  = build_qwen_routed_gate_up_graph(ctx, 4, GGML_GLU_OP_GEGLU);
+        ggml::hrx::GraphImportResult  imported = import_qwen_routed_gate_up_graph(ctx, tensors);
+        std::vector<bool>             covered_nodes(imported.graph.nodes().size(), false);
+        ggml::hrx::CommandPlan        plan       = build_qwen_router_plan_for_graph(imported.graph, covered_nodes);
+        const size_t                  gate_index = producer_index_for_tensor(imported.graph, tensors.gate);
+        ggml::hrx::DispatchMatch      gate_up_match;
+        REQUIRE(!match_dispatch_at_index(imported.graph, plan, covered_nodes, gate_index, gate_up_match));
+    }
+
+    {
+        const QwenRoutedGateUpTensors tensors =
+            build_qwen_routed_gate_up_graph(ctx, 4, GGML_GLU_OP_SWIGLU, GGML_TYPE_Q6_K);
+        ggml::hrx::GraphImportResult imported = import_qwen_routed_gate_up_graph(ctx, tensors);
+        std::vector<bool>            covered_nodes(imported.graph.nodes().size(), false);
+        ggml::hrx::CommandPlan       plan       = build_qwen_router_plan_for_graph(imported.graph, covered_nodes);
+        const size_t                 gate_index = producer_index_for_tensor(imported.graph, tensors.gate);
+        ggml::hrx::DispatchMatch     gate_up_match;
+        REQUIRE(!match_dispatch_at_index(imported.graph, plan, covered_nodes, gate_index, gate_up_match));
+    }
+
+    {
+        const QwenRoutedGateUpTensors tensors =
+            build_qwen_routed_gate_up_graph(ctx, 4, GGML_GLU_OP_SWIGLU, GGML_TYPE_Q4_K, false);
+        ggml::hrx::GraphImportResult imported = import_qwen_routed_gate_up_graph(ctx, tensors);
+        std::vector<bool>            covered_nodes(imported.graph.nodes().size(), false);
+        ggml::hrx::CommandPlan       plan       = build_qwen_router_plan_for_graph(imported.graph, covered_nodes);
+        const size_t                 gate_index = producer_index_for_tensor(imported.graph, tensors.gate);
+        ggml::hrx::DispatchMatch     gate_up_match;
+        REQUIRE(!match_dispatch_at_index(imported.graph, plan, covered_nodes, gate_index, gate_up_match));
+    }
+
+    ggml_free(ctx);
+}
+
 static void run_qwen_router_top8_dispatch_checks() {
     ggml_init_params params = {};
     params.mem_size         = 2 * 1024 * 1024;
@@ -2080,6 +2442,7 @@ static void run_unsupported_op_fails() {
 
 int main() {
     run_status_checks();
+    run_command_plan_metadata_checks();
     run_dispatch_registry_checks();
     run_graph_import_checks();
     run_graph_index_checks();
@@ -2087,6 +2450,7 @@ int main() {
     run_qwen_flash_attention_dispatch_checks();
     run_qwen_matmul_dispatch_checks();
     run_qwen_router_top8_dispatch_checks();
+    run_qwen_routed_gate_up_dispatch_checks();
     run_multi_dispatch_checks();
     run_transient_import_checks();
     run_chained_dispatch_requires_transients();

@@ -114,6 +114,8 @@ ggml_add_backend_library(ggml-hrx
     backend-buffer-binding.cpp
     backend-buffer-binding.h
     backend-context.h
+    dispatch/command-plan-metadata.cpp
+    dispatch/command-plan-metadata.h
     dispatch/command-plan.h
     dispatch/command-program-bindings.cpp
     dispatch/command-program-bindings.h
@@ -132,6 +134,8 @@ ggml_add_backend_library(ggml-hrx
     dispatch_registration/dispatch-qwen-flash-attention.h
     dispatch_registration/dispatch-qwen-matmul.cpp
     dispatch_registration/dispatch-qwen-matmul.h
+    dispatch_registration/dispatch-qwen-moe.cpp
+    dispatch_registration/dispatch-qwen-moe.h
     dispatch_registration/dispatch-qwen-router.cpp
     dispatch_registration/dispatch-qwen-router.h
     dispatch_registration/dispatch-registry.cpp

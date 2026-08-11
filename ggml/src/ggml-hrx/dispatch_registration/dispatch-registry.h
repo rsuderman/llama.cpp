@@ -29,6 +29,7 @@ struct DispatchMatchContext {
     const GraphNode *         root_node  = nullptr;
     size_t                    root_index = 0;
     const std::vector<bool> & covered_nodes;
+    const CommandPlan &       plan;
     ValueId                   next_plan_value;
 };
 
@@ -36,6 +37,7 @@ struct DispatchMatch {
     std::vector<size_t>               covered_nodes;
     std::vector<Dispatch>             dispatches;
     std::vector<CommandPlanTransient> transients;
+    CommandPlanMetadata               metadata;
 };
 
 using DispatchMatcher = bool (*)(const DispatchMatchContext & context, DispatchMatch & match);

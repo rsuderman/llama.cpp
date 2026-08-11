@@ -28,13 +28,20 @@ static bool try_match_registration(const Graph &             graph,
                                    const GraphNode *         node,
                                    size_t                    node_index,
                                    const std::vector<bool> & covered_nodes,
+                                   const CommandPlan &       plan,
                                    const DispatchRegistry &  registry,
                                    ValueId                   next_plan_value,
                                    DispatchMatch &           match) {
     const DispatchMatchContext context = {
-        graph, node, node_index, covered_nodes, next_plan_value,
+        graph, node, node_index, covered_nodes, plan, next_plan_value,
     };
     return registry.match(context, match);
+}
+
+static void clear_plan_results(CommandPlan & plan) {
+    plan.dispatches.clear();
+    plan.transients.clear();
+    plan.metadata.clear();
 }
 
 }  // namespace
@@ -57,7 +64,7 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
         size_t i = 0;
         if (node == nullptr || !graph.index().node_index(node, i)) {
             plan_.status.log("HRX traversal references a node outside the graph");
-            plan_.dispatches.clear();
+            clear_plan_results(plan_);
             return false;
         }
         if (covered_nodes[i]) {
@@ -65,17 +72,15 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
         }
         DispatchMatch match;
         const ValueId next_plan_value(static_cast<int32_t>(graph.values().size() + plan_.transients.size()));
-        if (!try_match_registration(graph, node, i, covered_nodes, *registry, next_plan_value, match)) {
+        if (!try_match_registration(graph, node, i, covered_nodes, plan_, *registry, next_plan_value, match)) {
             plan_.status.log("unsupported HRX node %zu: %s", i, ggml_op_name(node->op));
-            plan_.dispatches.clear();
-            plan_.transients.clear();
+            clear_plan_results(plan_);
             return false;
         }
         if (match.covered_nodes.empty() || match.dispatches.empty() || !match_covers_root(match, i) ||
             match_overlaps_covered_nodes(match, covered_nodes)) {
             plan_.status.log("invalid HRX dispatch match for node %zu: %s", i, ggml_op_name(node->op));
-            plan_.dispatches.clear();
-            plan_.transients.clear();
+            clear_plan_results(plan_);
             return false;
         }
         for (Dispatch & dispatch : match.dispatches) {
@@ -84,6 +89,10 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
         for (CommandPlanTransient & transient : match.transients) {
             plan_.transients.push_back(std::move(transient));
         }
+        if (!plan_.metadata.append(std::move(match.metadata), plan_.status)) {
+            clear_plan_results(plan_);
+            return false;
+        }
         for (const size_t covered_node : match.covered_nodes) {
             covered_nodes[covered_node] = true;
         }
@@ -91,8 +100,7 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
     for (size_t i = 0; i < nodes.size(); ++i) {
         if (!covered_nodes[i]) {
             plan_.status.log("unsupported HRX node %zu: %s", i, ggml_op_name(nodes[i].op));
-            plan_.dispatches.clear();
-            plan_.transients.clear();
+            clear_plan_results(plan_);
             return false;
         }
     }
@@ -114,7 +122,8 @@ bool DispatchScheduler::supports_node(const Graph & graph, const GraphNode * nod
     const std::vector<bool> covered_nodes(graph.nodes().size(), false);
     DispatchMatch           match;
     const ValueId           next_plan_value(static_cast<int32_t>(graph.values().size()));
-    return try_match_registration(graph, node, node_index, covered_nodes, *registry, next_plan_value, match);
+    const CommandPlan       plan;
+    return try_match_registration(graph, node, node_index, covered_nodes, plan, *registry, next_plan_value, match);
 }
 
 bool DispatchScheduler::can_schedule_graph(const Graph & graph, const DispatchTarget & target) {
