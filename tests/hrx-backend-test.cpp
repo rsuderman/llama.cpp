@@ -282,9 +282,40 @@ static void run_command_plan_metadata_checks() {
     REQUIRE(metadata_plan.append_alternate_value(
         { ggml::hrx::ValueId(1), ggml::hrx::ValueId(2), GGML_TYPE_F16, 16, "alternate" }, status));
     REQUIRE(metadata_plan.alternate_values().size() == 1);
+    REQUIRE(metadata_plan.find_alternate_value(ggml::hrx::ValueId(1), GGML_TYPE_F16, 16) != nullptr);
+    REQUIRE(metadata_plan.find_alternate_value(ggml::hrx::ValueId(1), GGML_TYPE_F32, 16) == nullptr);
+    REQUIRE(metadata_plan.find_alternate_value(ggml::hrx::ValueId(1), GGML_TYPE_F16, 32) == nullptr);
     REQUIRE(!metadata_plan.append_alternate_value(
         { ggml::hrx::ValueId(1), ggml::hrx::ValueId(3), GGML_TYPE_F16, 16, "alternate" }, status));
     REQUIRE(!status.success());
+
+    ggml::hrx::CommandPlanMetadata                bundle_plan;
+    ggml::hrx::Status                             bundle_status;
+    const ggml::hrx::CommandPlanQwenRoutingBundle bundle = {
+        ggml::hrx::ValueId(10),
+        ggml::hrx::ValueId(11),
+        ggml::hrx::ValueId(12),
+        ggml::hrx::ValueId(13),
+        128,
+        64,
+        4,
+        8,
+        128,
+        128,
+    };
+    REQUIRE(bundle_plan.append_qwen_routing_bundle(bundle, bundle_status));
+    REQUIRE(bundle_plan.append_qwen_routing_bundle(bundle, bundle_status));
+    REQUIRE(bundle_plan.qwen_routing_bundles().size() == 1);
+    const ggml::hrx::CommandPlanQwenRoutingBundle * found_bundle =
+        bundle_plan.find_qwen_routing_bundle(ggml::hrx::ValueId(10));
+    REQUIRE(found_bundle != nullptr);
+    REQUIRE(found_bundle->route_weights == ggml::hrx::ValueId(11));
+    REQUIRE(found_bundle->expert_table == ggml::hrx::ValueId(12));
+    REQUIRE(found_bundle->partition_table == ggml::hrx::ValueId(13));
+    ggml::hrx::CommandPlanQwenRoutingBundle conflicting_bundle = bundle;
+    conflicting_bundle.route_weights                           = ggml::hrx::ValueId(14);
+    REQUIRE(!bundle_plan.append_qwen_routing_bundle(conflicting_bundle, bundle_status));
+    REQUIRE(!bundle_status.success());
 }
 
 static bool has_dispatch_registration(const std::vector<ggml::hrx::DispatchRegistration> & registrations,
@@ -1397,8 +1428,19 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         const ggml::hrx::CommandPlanGeneratedResource * partition_table_resource =
             plan.metadata.find_generated_resource(route_ids_value->id,
                                                   ggml::hrx::GeneratedResourceRole::QwenMoePartitionTable);
+        const ggml::hrx::CommandPlanQwenRoutingBundle * routing_bundle =
+            plan.metadata.find_qwen_routing_bundle(route_ids_value->id);
         REQUIRE(expert_table_resource != nullptr);
         REQUIRE(partition_table_resource != nullptr);
+        REQUIRE(routing_bundle != nullptr);
+        REQUIRE(routing_bundle->route_ids == route_ids_value->id);
+        REQUIRE(routing_bundle->route_weights == route_weights_value->id);
+        REQUIRE(routing_bundle->expert_table == expert_table_resource->generated_value);
+        REQUIRE(routing_bundle->partition_table == partition_table_resource->generated_value);
+        REQUIRE(routing_bundle->expert_table_byte_count == qwen_expert_table_size(token_count));
+        REQUIRE(routing_bundle->partition_table_byte_count == qwen_partition_table_size(token_count));
+        REQUIRE(routing_bundle->route_count == kQwenRouterRouteCount);
+        REQUIRE(routing_bundle->expert_count == kQwenRouterExpertCount);
         ggml::hrx::QwenMoeRoutingResourceMetadata expert_metadata;
         ggml::hrx::QwenMoeRoutingResourceMetadata partition_metadata;
         REQUIRE(expert_table_resource->metadata.read(expert_metadata));
@@ -1431,9 +1473,9 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
                 "qwen3_moe:qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma");
         REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == token_count);
         REQUIRE(dispatch.bindings.size() == 6);
-        REQUIRE(dispatch.bindings[1].value == expert_table_resource->generated_value);
+        REQUIRE(dispatch.bindings[1].value == routing_bundle->expert_table);
         REQUIRE(dispatch.bindings[1].length == qwen_expert_table_size(token_count));
-        REQUIRE(dispatch.bindings[2].value == partition_table_resource->generated_value);
+        REQUIRE(dispatch.bindings[2].value == routing_bundle->partition_table);
         REQUIRE(dispatch.bindings[2].length == qwen_partition_table_size(token_count));
         REQUIRE(dispatch.bindings[5].value == f16_output_transient.value);
         REQUIRE(dispatch.bindings[5].length == f16_output_transient.size);
@@ -1503,6 +1545,7 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         }
         REQUIRE(router_matches == 2);
         REQUIRE(plan.metadata.generated_resources().size() == 4);
+        REQUIRE(plan.metadata.qwen_routing_bundles().size() == 2);
 
         const ggml::hrx::CommandPlanGeneratedResource * first_expert_table = plan.metadata.find_generated_resource(
             first_route_ids_value->id, ggml::hrx::GeneratedResourceRole::QwenMoeExpertTable);
@@ -1510,9 +1553,14 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
             second_route_ids_value->id, ggml::hrx::GeneratedResourceRole::QwenMoeExpertTable);
         const ggml::hrx::CommandPlanGeneratedResource * second_partition_table = plan.metadata.find_generated_resource(
             second_route_ids_value->id, ggml::hrx::GeneratedResourceRole::QwenMoePartitionTable);
+        const ggml::hrx::CommandPlanQwenRoutingBundle * second_routing_bundle =
+            plan.metadata.find_qwen_routing_bundle(second_route_ids_value->id);
         REQUIRE(first_expert_table != nullptr);
         REQUIRE(second_expert_table != nullptr);
         REQUIRE(second_partition_table != nullptr);
+        REQUIRE(second_routing_bundle != nullptr);
+        REQUIRE(second_routing_bundle->expert_table == second_expert_table->generated_value);
+        REQUIRE(second_routing_bundle->partition_table == second_partition_table->generated_value);
         REQUIRE(first_expert_table->generated_value != second_expert_table->generated_value);
 
         const size_t             gate_index = producer_index_for_tensor(imported.graph, tensors.gate);
@@ -1524,9 +1572,9 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         REQUIRE(plan.transients.size() == 5);
         const ggml::hrx::Dispatch & dispatch = plan.dispatches.back();
         REQUIRE(dispatch.bindings.size() == 6);
-        REQUIRE(dispatch.bindings[1].value == second_expert_table->generated_value);
+        REQUIRE(dispatch.bindings[1].value == second_routing_bundle->expert_table);
         REQUIRE(dispatch.bindings[1].value != first_expert_table->generated_value);
-        REQUIRE(dispatch.bindings[2].value == second_partition_table->generated_value);
+        REQUIRE(dispatch.bindings[2].value == second_routing_bundle->partition_table);
 
         const ggml::hrx::CommandProgram commands =
             ggml::hrx::build_command_program(imported.graph, plan, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");

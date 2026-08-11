@@ -84,6 +84,19 @@ struct CommandPlanAlternateValue {
     std::string name;
 };
 
+struct CommandPlanQwenRoutingBundle {
+    ValueId route_ids;
+    ValueId route_weights;
+    ValueId expert_table;
+    ValueId partition_table;
+    size_t  expert_table_byte_count    = 0;
+    size_t  partition_table_byte_count = 0;
+    int64_t token_count                = 0;
+    int64_t route_count                = 0;
+    int64_t route_stride               = 0;
+    int64_t expert_count               = 0;
+};
+
 class CommandPlanMetadata {
   public:
     void clear();
@@ -94,18 +107,29 @@ class CommandPlanMetadata {
 
     bool append_alternate_value(CommandPlanAlternateValue alternate, Status & status);
 
+    bool append_qwen_routing_bundle(CommandPlanQwenRoutingBundle bundle, Status & status);
+
     const CommandPlanGeneratedResource * find_generated_resource(ValueId               source_value,
                                                                  GeneratedResourceRole role) const;
 
     const CommandPlanAlternateValue * find_alternate_value(ValueId graph_value) const;
 
+    const CommandPlanAlternateValue * find_alternate_value(ValueId   graph_value,
+                                                           ggml_type type,
+                                                           size_t    byte_count) const;
+
+    const CommandPlanQwenRoutingBundle * find_qwen_routing_bundle(ValueId route_ids) const;
+
     const std::vector<CommandPlanGeneratedResource> & generated_resources() const { return generated_resources_; }
 
     const std::vector<CommandPlanAlternateValue> & alternate_values() const { return alternate_values_; }
 
+    const std::vector<CommandPlanQwenRoutingBundle> & qwen_routing_bundles() const { return qwen_routing_bundles_; }
+
   private:
     std::vector<CommandPlanGeneratedResource> generated_resources_;
     std::vector<CommandPlanAlternateValue>    alternate_values_;
+    std::vector<CommandPlanQwenRoutingBundle> qwen_routing_bundles_;
 };
 
 }  // namespace ggml::hrx

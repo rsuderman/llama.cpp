@@ -103,37 +103,34 @@ static size_t f16_gate_up_output_size(int64_t token_count) {
 }
 
 struct RoutedGateUpMatch {
-    const Value *                        gate_weight              = nullptr;
-    const Value *                        up_weight                = nullptr;
-    const Value *                        input                    = nullptr;
-    const Value *                        route_ids                = nullptr;
-    const Value *                        gate_output              = nullptr;
-    const Value *                        up_output                = nullptr;
-    const Value *                        glu_output               = nullptr;
-    const CommandPlanGeneratedResource * expert_table_resource    = nullptr;
-    const CommandPlanGeneratedResource * partition_table_resource = nullptr;
-    const GraphNode *                    gate_node                = nullptr;
-    const GraphNode *                    up_node                  = nullptr;
-    const GraphNode *                    glu_node                 = nullptr;
-    int64_t                              token_count              = 0;
+    const Value *                        gate_weight    = nullptr;
+    const Value *                        up_weight      = nullptr;
+    const Value *                        input          = nullptr;
+    const Value *                        route_ids      = nullptr;
+    const Value *                        gate_output    = nullptr;
+    const Value *                        up_output      = nullptr;
+    const Value *                        glu_output     = nullptr;
+    const CommandPlanQwenRoutingBundle * routing_bundle = nullptr;
+    const GraphNode *                    gate_node      = nullptr;
+    const GraphNode *                    up_node        = nullptr;
+    const GraphNode *                    glu_node       = nullptr;
+    int64_t                              token_count    = 0;
 
     bool matched() const {
         return gate_weight != nullptr && up_weight != nullptr && input != nullptr && route_ids != nullptr &&
-               gate_output != nullptr && up_output != nullptr && glu_output != nullptr &&
-               expert_table_resource != nullptr && partition_table_resource != nullptr && gate_node != nullptr &&
-               up_node != nullptr && glu_node != nullptr && token_count > 0;
+               gate_output != nullptr && up_output != nullptr && glu_output != nullptr && routing_bundle != nullptr &&
+               gate_node != nullptr && up_node != nullptr && glu_node != nullptr && token_count > 0;
     }
 };
 
-static bool resource_matches_qwen_router(const CommandPlanGeneratedResource & resource,
-                                         ValueId                              route_ids,
-                                         int64_t                              token_count,
-                                         size_t                               expected_byte_count) {
-    QwenMoeRoutingResourceMetadata metadata;
-    return resource.source_value == route_ids && resource.generated_value.value >= 0 &&
-           resource.byte_count == expected_byte_count && resource.metadata.read(metadata) &&
-           metadata.token_count == token_count && metadata.route_count == kQwenMoeRouteCount &&
-           metadata.expert_count == kQwenMoeExpertCount && metadata.route_stride >= kQwenMoeRouteCount;
+static bool bundle_matches_qwen_router(const CommandPlanQwenRoutingBundle & bundle,
+                                       ValueId                              route_ids,
+                                       int64_t                              token_count) {
+    return bundle.route_ids == route_ids && bundle.route_weights.value >= 0 && bundle.expert_table.value >= 0 &&
+           bundle.partition_table.value >= 0 && bundle.expert_table_byte_count == expert_table_size(token_count) &&
+           bundle.partition_table_byte_count == partition_table_size(token_count) &&
+           bundle.token_count == token_count && bundle.route_count == kQwenMoeRouteCount &&
+           bundle.expert_count == kQwenMoeExpertCount && bundle.route_stride >= kQwenMoeRouteCount;
 }
 
 static bool match_same_route_projection(const Graph &     graph,
@@ -176,15 +173,8 @@ static RoutedGateUpMatch match_qwen_routed_gate_up_swiglu(const DispatchMatchCon
         return {};
     }
 
-    const CommandPlanGeneratedResource * expert_table_resource =
-        context.plan.metadata.find_generated_resource(route_ids->id, GeneratedResourceRole::QwenMoeExpertTable);
-    const CommandPlanGeneratedResource * partition_table_resource =
-        context.plan.metadata.find_generated_resource(route_ids->id, GeneratedResourceRole::QwenMoePartitionTable);
-    if (expert_table_resource == nullptr || partition_table_resource == nullptr ||
-        !resource_matches_qwen_router(*expert_table_resource, route_ids->id, token_count,
-                                      expert_table_size(token_count)) ||
-        !resource_matches_qwen_router(*partition_table_resource, route_ids->id, token_count,
-                                      partition_table_size(token_count))) {
+    const CommandPlanQwenRoutingBundle * routing_bundle = context.plan.metadata.find_qwen_routing_bundle(route_ids->id);
+    if (routing_bundle == nullptr || !bundle_matches_qwen_router(*routing_bundle, route_ids->id, token_count)) {
         return {};
     }
 
@@ -223,19 +213,18 @@ static RoutedGateUpMatch match_qwen_routed_gate_up_swiglu(const DispatchMatchCon
         return {};
     }
 
-    match.gate_weight              = gate_weight;
-    match.up_weight                = up_weight;
-    match.input                    = input;
-    match.route_ids                = route_ids;
-    match.gate_output              = gate_output;
-    match.up_output                = up_output;
-    match.glu_output               = glu_output;
-    match.expert_table_resource    = expert_table_resource;
-    match.partition_table_resource = partition_table_resource;
-    match.gate_node                = gate_node;
-    match.up_node                  = up_node;
-    match.glu_node                 = glu_node;
-    match.token_count              = token_count;
+    match.gate_weight    = gate_weight;
+    match.up_weight      = up_weight;
+    match.input          = input;
+    match.route_ids      = route_ids;
+    match.gate_output    = gate_output;
+    match.up_output      = up_output;
+    match.glu_output     = glu_output;
+    match.routing_bundle = routing_bundle;
+    match.gate_node      = gate_node;
+    match.up_node        = up_node;
+    match.glu_node       = glu_node;
+    match.token_count    = token_count;
     return match;
 }
 
@@ -272,9 +261,9 @@ static bool match_qwen_routed_gate_up_swiglu_q4k_f16_wmma_dispatch(const Dispatc
 
     dispatch.bindings.push_back({ match.input->id, 0, match.input->byte_count });
     dispatch.bindings.push_back(
-        { match.expert_table_resource->generated_value, 0, match.expert_table_resource->byte_count });
+        { match.routing_bundle->expert_table, 0, match.routing_bundle->expert_table_byte_count });
     dispatch.bindings.push_back(
-        { match.partition_table_resource->generated_value, 0, match.partition_table_resource->byte_count });
+        { match.routing_bundle->partition_table, 0, match.routing_bundle->partition_table_byte_count });
     dispatch.bindings.push_back({ match.gate_weight->id, 0, match.gate_weight->byte_count });
     dispatch.bindings.push_back({ match.up_weight->id, 0, match.up_weight->byte_count });
     dispatch.bindings.push_back({ f16_output, 0, f16_output_bytes });

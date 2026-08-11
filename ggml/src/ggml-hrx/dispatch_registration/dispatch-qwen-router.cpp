@@ -336,6 +336,20 @@ static bool match_qwen_router_top8_dispatch(const DispatchMatchContext & context
                 partition_table_bytes,
                 routing_metadata,
             },
+            metadata_status) ||
+        !dispatch_match.metadata.append_qwen_routing_bundle(
+            {
+                router_match.route_ids->id,
+                router_match.route_weights->id,
+                expert_table_value,
+                partition_table_value,
+                expert_table_bytes,
+                partition_table_bytes,
+                router_match.token_count,
+                kQwenRouterRouteCount,
+                router_match.route_stride,
+                kQwenRouterExpertCount,
+            },
             metadata_status)) {
         return false;
     }

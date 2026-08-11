@@ -22,11 +22,22 @@ static bool alternate_value_matches(const CommandPlanAlternateValue & lhs, const
            lhs.byte_count == rhs.byte_count && lhs.name == rhs.name;
 }
 
+static bool qwen_routing_bundle_matches(const CommandPlanQwenRoutingBundle & lhs,
+                                        const CommandPlanQwenRoutingBundle & rhs) {
+    return lhs.route_ids == rhs.route_ids && lhs.route_weights == rhs.route_weights &&
+           lhs.expert_table == rhs.expert_table && lhs.partition_table == rhs.partition_table &&
+           lhs.expert_table_byte_count == rhs.expert_table_byte_count &&
+           lhs.partition_table_byte_count == rhs.partition_table_byte_count && lhs.token_count == rhs.token_count &&
+           lhs.route_count == rhs.route_count && lhs.route_stride == rhs.route_stride &&
+           lhs.expert_count == rhs.expert_count;
+}
+
 }  // namespace
 
 void CommandPlanMetadata::clear() {
     generated_resources_.clear();
     alternate_values_.clear();
+    qwen_routing_bundles_.clear();
 }
 
 bool CommandPlanMetadata::append(CommandPlanMetadata && other, Status & status) {
@@ -37,6 +48,11 @@ bool CommandPlanMetadata::append(CommandPlanMetadata && other, Status & status) 
     }
     for (CommandPlanAlternateValue & alternate : other.alternate_values_) {
         if (!append_alternate_value(std::move(alternate), status)) {
+            return false;
+        }
+    }
+    for (CommandPlanQwenRoutingBundle & bundle : other.qwen_routing_bundles_) {
+        if (!append_qwen_routing_bundle(std::move(bundle), status)) {
             return false;
         }
     }
@@ -72,6 +88,20 @@ bool CommandPlanMetadata::append_alternate_value(CommandPlanAlternateValue alter
     return true;
 }
 
+bool CommandPlanMetadata::append_qwen_routing_bundle(CommandPlanQwenRoutingBundle bundle, Status & status) {
+    for (const CommandPlanQwenRoutingBundle & existing : qwen_routing_bundles_) {
+        if (existing.route_ids == bundle.route_ids) {
+            if (qwen_routing_bundle_matches(existing, bundle)) {
+                return true;
+            }
+            status.log("conflicting Qwen routing bundle for route ids value %d", bundle.route_ids.value);
+            return false;
+        }
+    }
+    qwen_routing_bundles_.push_back(std::move(bundle));
+    return true;
+}
+
 const CommandPlanGeneratedResource * CommandPlanMetadata::find_generated_resource(ValueId               source_value,
                                                                                   GeneratedResourceRole role) const {
     for (const CommandPlanGeneratedResource & resource : generated_resources_) {
@@ -86,6 +116,25 @@ const CommandPlanAlternateValue * CommandPlanMetadata::find_alternate_value(Valu
     for (const CommandPlanAlternateValue & alternate : alternate_values_) {
         if (alternate.graph_value == graph_value) {
             return &alternate;
+        }
+    }
+    return nullptr;
+}
+
+const CommandPlanAlternateValue * CommandPlanMetadata::find_alternate_value(ValueId   graph_value,
+                                                                            ggml_type type,
+                                                                            size_t    byte_count) const {
+    const CommandPlanAlternateValue * alternate = find_alternate_value(graph_value);
+    if (alternate == nullptr || alternate->type != type || alternate->byte_count != byte_count) {
+        return nullptr;
+    }
+    return alternate;
+}
+
+const CommandPlanQwenRoutingBundle * CommandPlanMetadata::find_qwen_routing_bundle(ValueId route_ids) const {
+    for (const CommandPlanQwenRoutingBundle & bundle : qwen_routing_bundles_) {
+        if (bundle.route_ids == route_ids) {
+            return &bundle;
         }
     }
     return nullptr;

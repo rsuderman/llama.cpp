@@ -30,4 +30,11 @@ inline const CommandPlanAlternateValue * find_alternate_value(const CommandPlan 
     return plan.metadata.find_alternate_value(graph_value);
 }
 
+inline const CommandPlanAlternateValue * find_alternate_value(const CommandPlan & plan,
+                                                              ValueId             graph_value,
+                                                              ggml_type           type,
+                                                              size_t              byte_count) {
+    return plan.metadata.find_alternate_value(graph_value, type, byte_count);
+}
+
 }  // namespace ggml::hrx
