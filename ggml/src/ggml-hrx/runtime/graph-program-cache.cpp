@@ -311,8 +311,9 @@ bool can_execute_standalone_op_as_graph(const ggml_tensor * op, const std::strin
         }
         inputs.push_back(graph.values().get_or_add_tensor_value(source, ValueKind::External));
     }
-    const ValueId     output = graph.values().get_or_add_tensor_value(op, ValueKind::External);
-    const GraphNode & node   = graph.add_node(op->op, output, std::move(inputs));
+    const ValueId output = graph.values().get_or_add_tensor_value(op, ValueKind::External);
+    GraphNode &   node   = graph.add_node(op->op, output, std::move(inputs));
+    node.params          = import_op_params(*op);
     if (!graph.build_index().success()) {
         return false;
     }

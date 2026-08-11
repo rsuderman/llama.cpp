@@ -12,7 +12,14 @@ struct RmsNormParams {
     float eps = 0.0f;
 };
 
-using OpParams = std::variant<std::monostate, RmsNormParams>;
+struct FlashAttnExtParams {
+    float     scale         = 0.0f;
+    float     max_bias      = 0.0f;
+    float     logit_softcap = 0.0f;
+    ggml_prec prec          = GGML_PREC_DEFAULT;
+};
+
+using OpParams = std::variant<std::monostate, RmsNormParams, FlashAttnExtParams>;
 
 template <typename T> const T * op_params_as(const OpParams & params) {
     return std::get_if<T>(&params);

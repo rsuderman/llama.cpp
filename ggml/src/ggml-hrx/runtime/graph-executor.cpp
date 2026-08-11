@@ -82,9 +82,11 @@ GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
     const KernelCorpus & corpus = get_qwen_kernel_corpus();
     GraphProgramLookup   lookup = context_.graph_programs.get_or_build(graph, corpus, context_.device->architecture);
     if (!lookup.valid()) {
-        result.status.log("build HRX graph program failed");
         result.status.append(lookup.status);
         result.status.append(lookup.match.status);
+        if (result.status.success()) {
+            result.status.log("build HRX graph program failed");
+        }
         return result;
     }
 

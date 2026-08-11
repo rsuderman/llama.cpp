@@ -94,6 +94,64 @@ static void require_compile_parameter(const ggml::hrx::Dispatch & dispatch,
     REQUIRE(found->second == value);
 }
 
+static constexpr int64_t kQwenFlashHeadSize = 128;
+
+static void set_qwen_flash_query_layout(ggml_tensor * tensor, int64_t head_count) {
+    REQUIRE(tensor != nullptr);
+    tensor->nb[0] = sizeof(float);
+    tensor->nb[1] = static_cast<size_t>(head_count * kQwenFlashHeadSize) * sizeof(float);
+    tensor->nb[2] = static_cast<size_t>(kQwenFlashHeadSize) * sizeof(float);
+}
+
+static void set_qwen_flash_key_value_layout(ggml_tensor * tensor, int64_t head_count) {
+    REQUIRE(tensor != nullptr);
+    tensor->nb[0] = sizeof(ggml_fp16_t);
+    tensor->nb[1] = static_cast<size_t>(head_count * kQwenFlashHeadSize) * sizeof(ggml_fp16_t);
+    tensor->nb[2] = static_cast<size_t>(kQwenFlashHeadSize) * sizeof(ggml_fp16_t);
+}
+
+static ggml_tensor * build_qwen_flash_attention_graph(ggml_context * ctx,
+                                                      int64_t        query_token_count,
+                                                      int64_t        key_value_token_count,
+                                                      int64_t        query_head_count,
+                                                      int64_t        key_value_head_count,
+                                                      ggml_type      query_type     = GGML_TYPE_F32,
+                                                      ggml_type      key_value_type = GGML_TYPE_F16,
+                                                      bool           include_mask   = true,
+                                                      bool           include_sinks  = false,
+                                                      int64_t        head_size      = kQwenFlashHeadSize,
+                                                      float          scale          = 1.0f / std::sqrt(128.0f),
+                                                      float          max_bias       = 0.0f,
+                                                      float          logit_softcap  = 0.0f) {
+    ggml_tensor * query = ggml_new_tensor_3d(ctx, query_type, head_size, query_token_count, query_head_count);
+    ggml_tensor * key = ggml_new_tensor_3d(ctx, key_value_type, head_size, key_value_token_count, key_value_head_count);
+    ggml_tensor * value =
+        ggml_new_tensor_3d(ctx, key_value_type, head_size, key_value_token_count, key_value_head_count);
+    REQUIRE(query != nullptr);
+    REQUIRE(key != nullptr);
+    REQUIRE(value != nullptr);
+    if (query_type == GGML_TYPE_F32) {
+        set_qwen_flash_query_layout(query, query_head_count);
+    }
+    if (key_value_type == GGML_TYPE_F16) {
+        set_qwen_flash_key_value_layout(key, key_value_head_count);
+        set_qwen_flash_key_value_layout(value, key_value_head_count);
+    }
+    ggml_tensor * mask = nullptr;
+    if (include_mask) {
+        mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, key_value_token_count, query_token_count);
+        REQUIRE(mask != nullptr);
+    }
+    ggml_tensor * output = ggml_flash_attn_ext(ctx, query, key, value, mask, scale, max_bias, logit_softcap);
+    REQUIRE(output != nullptr);
+    if (include_sinks) {
+        ggml_tensor * sinks = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, query_head_count);
+        REQUIRE(sinks != nullptr);
+        ggml_flash_attn_ext_add_sinks(output, sinks);
+    }
+    return output;
+}
+
 static std::vector<size_t> traversal_indices(const ggml::hrx::Graph & graph) {
     const ggml::hrx::GraphTraversalOrder order = ggml::hrx::GraphTraversalOrder::build(graph);
     std::vector<size_t>                  indices;
@@ -197,7 +255,9 @@ static void run_dispatch_registry_checks() {
                                       "qwen.matmul.router_projection_f32_four_row_wave32"));
     REQUIRE(
         has_dispatch_registration(registry.registrations_for_root(GGML_OP_RMS_NORM), "qwen.rmsnorm_f32.mul_weight"));
-    REQUIRE(registry.single_op_registrations().size() >= 4);
+    REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_FLASH_ATTN_EXT),
+                                      "qwen.flash_attention_f32_f16_wmma"));
+    REQUIRE(registry.single_op_registrations().size() >= 5);
 
     ggml::hrx::DispatchRegistryBuilder builder;
     builder.add({
@@ -815,6 +875,98 @@ static bool matmul_graph_is_supported(ggml_context * ctx, ggml_tensor * output) 
     ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
     REQUIRE(imported.valid());
     return ggml::hrx::DispatchScheduler::can_schedule_graph(imported.graph, test_dispatch_target());
+}
+
+static bool graph_is_supported(ggml_context * ctx, ggml_tensor * output) {
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    return ggml::hrx::DispatchScheduler::can_schedule_graph(imported.graph, test_dispatch_target());
+}
+
+static void schedule_qwen_flash_attention_command(ggml_context * ctx, ggml_tensor * output) {
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    REQUIRE(imported.graph.nodes().size() == 1);
+    REQUIRE(imported.graph.nodes()[0].op == GGML_OP_FLASH_ATTN_EXT);
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 1);
+
+    const ggml::hrx::Dispatch & dispatch    = scheduler.plan().dispatches.front();
+    const std::string           kernel_name = kernel_name_for_id(dispatch.kernel.kernel_id);
+    REQUIRE(kernel_name == "qwen3_moe:qwen3_moe_flash_attention_f32_f16_wmma");
+    REQUIRE(dispatch.kernel.integer_parameters.at("query_token_count") == 4);
+    REQUIRE(dispatch.kernel.integer_parameters.at("key_value_token_count") == 8);
+    REQUIRE(dispatch.bindings.size() == 5);
+    require_compile_parameter(dispatch, "qwen3_moe.attention.query_head_count", "4");
+    require_compile_parameter(dispatch, "qwen3_moe.attention.key_value_head_count", "2");
+    require_compile_parameter(dispatch, "qwen3_moe.workload.token_capacity", "4");
+
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(commands.valid());
+    REQUIRE(commands.commands.size() == 1);
+    REQUIRE(command_program_verifies(commands));
+    REQUIRE(commands.commands.front().bindings.size() == 5);
+    REQUIRE(commands.commands.front().bindings[0].name == "query");
+    REQUIRE(commands.commands.front().bindings[1].name == "key");
+    REQUIRE(commands.commands.front().bindings[2].name == "value");
+    REQUIRE(commands.commands.front().bindings[3].name == "mask");
+    REQUIRE(commands.commands.front().bindings[4].name == "output");
+}
+
+static void run_qwen_flash_attention_dispatch_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 4 * 1024 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    {
+        ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2);
+        schedule_qwen_flash_attention_command(ctx, output);
+    }
+    {
+        ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2, GGML_TYPE_F32, GGML_TYPE_F32);
+        REQUIRE(!graph_is_supported(ctx, output));
+    }
+    {
+        ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, false);
+        REQUIRE(!graph_is_supported(ctx, output));
+    }
+    {
+        ggml_tensor * output =
+            build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true, true);
+        REQUIRE(!graph_is_supported(ctx, output));
+    }
+    {
+        ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true,
+                                                                false, 64, 1.0f / std::sqrt(64.0f));
+        REQUIRE(!graph_is_supported(ctx, output));
+    }
+    {
+        ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true,
+                                                                false, kQwenFlashHeadSize, 1.0f);
+        REQUIRE(!graph_is_supported(ctx, output));
+    }
+    {
+        ggml_tensor * output =
+            build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true, false,
+                                             kQwenFlashHeadSize, 1.0f / std::sqrt(128.0f), 1.0f);
+        REQUIRE(!graph_is_supported(ctx, output));
+    }
+
+    ggml_free(ctx);
 }
 
 static void run_qwen_matmul_dispatch_checks() {
@@ -1722,6 +1874,7 @@ int main() {
     run_graph_import_checks();
     run_graph_index_checks();
     run_graph_traversal_checks();
+    run_qwen_flash_attention_dispatch_checks();
     run_qwen_matmul_dispatch_checks();
     run_multi_dispatch_checks();
     run_transient_import_checks();

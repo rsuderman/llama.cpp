@@ -5,9 +5,11 @@
 #include "ggml.h"
 #include "runtime/graph-executor.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <vector>
 
 #define REQUIRE(condition)                                                                           \
@@ -18,7 +20,8 @@
         }                                                                                            \
     } while (false)
 
-static constexpr float kQwenRmsNormEps = 0.000001f;
+static constexpr float   kQwenRmsNormEps    = 0.000001f;
+static constexpr int64_t kQwenFlashHeadSize = 128;
 
 static std::vector<float> make_input(int64_t hidden_size, int64_t token_count) {
     std::vector<float> data(hidden_size * token_count);
@@ -49,6 +52,34 @@ static std::vector<float> make_router_weight(int64_t hidden_size, int64_t expert
     for (int64_t expert = 0; expert < expert_count; ++expert) {
         for (int64_t column = 0; column < hidden_size; ++column) {
             data[expert * hidden_size + column] = static_cast<float>(((expert + column) % 31) - 15) * 0.0025f;
+        }
+    }
+    return data;
+}
+
+static std::vector<float> make_flash_query(int64_t token_count) {
+    std::vector<float> data(kQwenFlashHeadSize * token_count);
+    for (int64_t i = 0; i < static_cast<int64_t>(data.size()); ++i) {
+        data[i] = static_cast<float>((i % 37) - 18) * 0.01f;
+    }
+    return data;
+}
+
+static std::vector<ggml_fp16_t> make_flash_key_value(int64_t token_count, int offset) {
+    std::vector<ggml_fp16_t> data(kQwenFlashHeadSize * token_count);
+    for (int64_t i = 0; i < static_cast<int64_t>(data.size()); ++i) {
+        const float value = static_cast<float>(((i + offset) % 31) - 15) * 0.015f;
+        data[i]           = ggml_fp32_to_fp16(value);
+    }
+    return data;
+}
+
+static std::vector<ggml_fp16_t> make_flash_mask(int64_t query_token_count, int64_t key_value_token_count) {
+    std::vector<ggml_fp16_t> data(query_token_count * key_value_token_count);
+    for (int64_t query = 0; query < query_token_count; ++query) {
+        for (int64_t key = 0; key < key_value_token_count; ++key) {
+            const float value                         = key <= query + 1 ? 0.0f : -10000.0f;
+            data[query * key_value_token_count + key] = ggml_fp32_to_fp16(value);
         }
     }
     return data;
@@ -91,6 +122,45 @@ static std::vector<float> router_projection_reference(const std::vector<float> &
     return output;
 }
 
+static std::vector<float> flash_attention_reference(const std::vector<float> &       query,
+                                                    const std::vector<ggml_fp16_t> & key,
+                                                    const std::vector<ggml_fp16_t> & value,
+                                                    const std::vector<ggml_fp16_t> & mask,
+                                                    int64_t                          query_token_count,
+                                                    int64_t                          key_value_token_count) {
+    std::vector<float> output(query_token_count * kQwenFlashHeadSize);
+    const float        scale = 1.0f / std::sqrt(static_cast<float>(kQwenFlashHeadSize));
+    for (int64_t query_token = 0; query_token < query_token_count; ++query_token) {
+        std::vector<float> scores(key_value_token_count);
+        float              max_score = -std::numeric_limits<float>::infinity();
+        for (int64_t key_token = 0; key_token < key_value_token_count; ++key_token) {
+            float dot = 0.0f;
+            for (int64_t channel = 0; channel < kQwenFlashHeadSize; ++channel) {
+                dot += query[query_token * kQwenFlashHeadSize + channel] *
+                       ggml_fp16_to_fp32(key[key_token * kQwenFlashHeadSize + channel]);
+            }
+            const float score = dot * scale + ggml_fp16_to_fp32(mask[query_token * key_value_token_count + key_token]);
+            scores[key_token] = score;
+            max_score         = std::max(max_score, score);
+        }
+
+        float sum = 0.0f;
+        for (float & score : scores) {
+            score = std::exp(score - max_score);
+            sum += score;
+        }
+        for (int64_t channel = 0; channel < kQwenFlashHeadSize; ++channel) {
+            float weighted_sum = 0.0f;
+            for (int64_t key_token = 0; key_token < key_value_token_count; ++key_token) {
+                const float probability = scores[key_token] / sum;
+                weighted_sum += probability * ggml_fp16_to_fp32(value[key_token * kQwenFlashHeadSize + channel]);
+            }
+            output[query_token * kQwenFlashHeadSize + channel] = weighted_sum;
+        }
+    }
+    return output;
+}
+
 static ggml_tensor * build_rmsnorm_mul_graph(ggml_context * ctx,
                                              ggml_tensor *  input,
                                              ggml_tensor *  weight,
@@ -98,6 +168,17 @@ static ggml_tensor * build_rmsnorm_mul_graph(ggml_context * ctx,
     ggml_tensor * rms = ggml_rms_norm(ctx, input, eps);
     REQUIRE(rms != nullptr);
     ggml_tensor * output = ggml_mul(ctx, rms, weight);
+    REQUIRE(output != nullptr);
+    return output;
+}
+
+static ggml_tensor * build_qwen_flash_attention_graph(ggml_context * ctx,
+                                                      ggml_tensor *  query,
+                                                      ggml_tensor *  key,
+                                                      ggml_tensor *  value,
+                                                      ggml_tensor *  mask) {
+    ggml_tensor * output = ggml_flash_attn_ext(ctx, query, key, value, mask,
+                                               1.0f / std::sqrt(static_cast<float>(kQwenFlashHeadSize)), 0.0f, 0.0f);
     REQUIRE(output != nullptr);
     return output;
 }
@@ -254,6 +335,63 @@ static void run_router_projection_case(int64_t token_count) {
     ggml_backend_free(backend);
 }
 
+static void run_qwen_flash_attention_case() {
+    static constexpr int64_t kQueryTokenCount    = 2;
+    static constexpr int64_t kKeyValueTokenCount = 4;
+
+    ggml_backend_t backend = ggml_backend_hrx_init(0);
+    REQUIRE(backend != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size         = 2 * 1024 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * query = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, kQwenFlashHeadSize, kQueryTokenCount, 1);
+    ggml_tensor * key   = ggml_new_tensor_3d(ctx, GGML_TYPE_F16, kQwenFlashHeadSize, kKeyValueTokenCount, 1);
+    ggml_tensor * value = ggml_new_tensor_3d(ctx, GGML_TYPE_F16, kQwenFlashHeadSize, kKeyValueTokenCount, 1);
+    ggml_tensor * mask  = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, kKeyValueTokenCount, kQueryTokenCount);
+    REQUIRE(query != nullptr);
+    REQUIRE(key != nullptr);
+    REQUIRE(value != nullptr);
+    REQUIRE(mask != nullptr);
+    ggml_tensor * output = build_qwen_flash_attention_graph(ctx, query, key, value, mask);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    REQUIRE(buffer != nullptr);
+
+    const std::vector<float>       query_data = make_flash_query(kQueryTokenCount);
+    const std::vector<ggml_fp16_t> key_data   = make_flash_key_value(kKeyValueTokenCount, 3);
+    const std::vector<ggml_fp16_t> value_data = make_flash_key_value(kKeyValueTokenCount, 11);
+    const std::vector<ggml_fp16_t> mask_data  = make_flash_mask(kQueryTokenCount, kKeyValueTokenCount);
+    const std::vector<float>       expected =
+        flash_attention_reference(query_data, key_data, value_data, mask_data, kQueryTokenCount, kKeyValueTokenCount);
+
+    ggml_backend_tensor_set(query, query_data.data(), 0, query_data.size() * sizeof(float));
+    ggml_backend_tensor_set(key, key_data.data(), 0, key_data.size() * sizeof(ggml_fp16_t));
+    ggml_backend_tensor_set(value, value_data.data(), 0, value_data.size() * sizeof(ggml_fp16_t));
+    ggml_backend_tensor_set(mask, mask_data.data(), 0, mask_data.size() * sizeof(ggml_fp16_t));
+
+    REQUIRE(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(backend);
+
+    std::vector<float> actual(expected.size());
+    ggml_backend_tensor_get(output, actual.data(), 0, actual.size() * sizeof(float));
+    for (size_t i = 0; i < actual.size(); ++i) {
+        const float diff = std::fabs(actual[i] - expected[i]);
+        REQUIRE(diff <= 5.0e-2f);
+    }
+
+    ggml_backend_buffer_free(buffer);
+    ggml_free(ctx);
+    ggml_backend_free(backend);
+}
+
 int main() {
     run_rmsnorm_support_checks();
 
@@ -266,5 +404,6 @@ int main() {
     run_rmsnorm_mul_case(256, 4);
     run_rmsnorm_mul_case(2048, 1);
     run_router_projection_case(4);
+    run_qwen_flash_attention_case();
     return 0;
 }
