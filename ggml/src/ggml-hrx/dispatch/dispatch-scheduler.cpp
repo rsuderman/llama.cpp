@@ -29,12 +29,10 @@ static bool try_match_registration(const Graph &             graph,
                                    size_t                    node_index,
                                    const std::vector<bool> & covered_nodes,
                                    const DispatchRegistry &  registry,
+                                   ValueId                   next_plan_value,
                                    DispatchMatch &           match) {
     const DispatchMatchContext context = {
-        graph,
-        node,
-        node_index,
-        covered_nodes,
+        graph, node, node_index, covered_nodes, next_plan_value,
     };
     return registry.match(context, match);
 }
@@ -66,19 +64,25 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
             continue;
         }
         DispatchMatch match;
-        if (!try_match_registration(graph, node, i, covered_nodes, *registry, match)) {
+        const ValueId next_plan_value(static_cast<int32_t>(graph.values().size() + plan_.transients.size()));
+        if (!try_match_registration(graph, node, i, covered_nodes, *registry, next_plan_value, match)) {
             plan_.status.log("unsupported HRX node %zu: %s", i, ggml_op_name(node->op));
             plan_.dispatches.clear();
+            plan_.transients.clear();
             return false;
         }
         if (match.covered_nodes.empty() || match.dispatches.empty() || !match_covers_root(match, i) ||
             match_overlaps_covered_nodes(match, covered_nodes)) {
             plan_.status.log("invalid HRX dispatch match for node %zu: %s", i, ggml_op_name(node->op));
             plan_.dispatches.clear();
+            plan_.transients.clear();
             return false;
         }
         for (Dispatch & dispatch : match.dispatches) {
             plan_.dispatches.push_back(std::move(dispatch));
+        }
+        for (CommandPlanTransient & transient : match.transients) {
+            plan_.transients.push_back(std::move(transient));
         }
         for (const size_t covered_node : match.covered_nodes) {
             covered_nodes[covered_node] = true;
@@ -88,6 +92,7 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
         if (!covered_nodes[i]) {
             plan_.status.log("unsupported HRX node %zu: %s", i, ggml_op_name(nodes[i].op));
             plan_.dispatches.clear();
+            plan_.transients.clear();
             return false;
         }
     }
@@ -108,7 +113,8 @@ bool DispatchScheduler::supports_node(const Graph & graph, const GraphNode * nod
     }
     const std::vector<bool> covered_nodes(graph.nodes().size(), false);
     DispatchMatch           match;
-    return try_match_registration(graph, node, node_index, covered_nodes, *registry, match);
+    const ValueId           next_plan_value(static_cast<int32_t>(graph.values().size()));
+    return try_match_registration(graph, node, node_index, covered_nodes, *registry, next_plan_value, match);
 }
 
 bool DispatchScheduler::can_schedule_graph(const Graph & graph, const DispatchTarget & target) {

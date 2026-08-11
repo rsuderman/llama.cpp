@@ -13,9 +13,14 @@ namespace {
 
 static constexpr KernelCatalogRef kQwenRouterTop8F32Kernel =
     GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_router_top8_f32");
+static constexpr KernelCatalogRef kQwenBuildExpertTableKernel =
+    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_build_expert_table");
+static constexpr KernelCatalogRef kQwenBuildExpertPartitionTableKernel =
+    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_build_expert_partition_table");
 
-static constexpr int64_t kQwenRouterExpertCount = 128;
-static constexpr int64_t kQwenRouterRouteCount  = 8;
+static constexpr int64_t kQwenRouterExpertCount            = 128;
+static constexpr int64_t kQwenRouterRouteCount             = 8;
+static constexpr size_t  kQwenRouterPlanTransientAlignment = 256;
 
 static const Value * graph_value(const Graph & graph, ValueId id) {
     return graph.values().find(id);
@@ -94,6 +99,16 @@ static bool is_qwen_topk_clamp(const GraphNode & node) {
 
 static std::string to_config_value(int64_t value) {
     return std::to_string(value);
+}
+
+static size_t expert_table_size(int64_t token_count) {
+    return static_cast<size_t>(kQwenRouterExpertCount + kQwenRouterExpertCount * token_count) * sizeof(int32_t);
+}
+
+static size_t partition_table_size(int64_t token_count) {
+    const int64_t assignment_count           = token_count * kQwenRouterRouteCount;
+    const int64_t assignment_partition_count = (assignment_count + 31) / 32;
+    return static_cast<size_t>(1 + assignment_partition_count + kQwenRouterExpertCount) * sizeof(int32_t);
 }
 
 static bool append_covered_node(const DispatchMatchContext & context, const GraphNode * node, DispatchMatch & match) {
@@ -252,6 +267,13 @@ static bool append_qwen_router_top8_coverage(const DispatchMatchContext & contex
            append_covered_node(context, div, match) && append_covered_node(context, output_reshape, match);
 }
 
+static void add_routed_gate_up_compile_parameters(Dispatch & dispatch) {
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_gate_up.expert_count",
+                                               to_config_value(kQwenRouterExpertCount));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_gate_up.route_count",
+                                               to_config_value(kQwenRouterRouteCount));
+}
+
 }  // namespace
 
 static bool match_qwen_router_top8_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
@@ -280,6 +302,40 @@ static bool match_qwen_router_top8_dispatch(const DispatchMatchContext & context
         return false;
     }
     dispatch_match.dispatches.push_back(std::move(dispatch));
+
+    const ValueId expert_table_value(context.next_plan_value.value);
+    const ValueId partition_table_value(context.next_plan_value.value + 1);
+    const size_t  expert_table_bytes    = expert_table_size(router_match.token_count);
+    const size_t  partition_table_bytes = partition_table_size(router_match.token_count);
+    dispatch_match.transients.push_back(
+        { expert_table_value, "qwen.router.expert_table", expert_table_bytes, kQwenRouterPlanTransientAlignment });
+    dispatch_match.transients.push_back({ partition_table_value, "qwen.router.partition_table", partition_table_bytes,
+                                          kQwenRouterPlanTransientAlignment });
+
+    Dispatch expert_table_dispatch;
+    expert_table_dispatch.kernel = make_kernel_specialization(kQwenBuildExpertTableKernel);
+    expert_table_dispatch.kernel.integer_parameters.emplace("token_count", router_match.token_count);
+    expert_table_dispatch.kernel.integer_parameters.emplace("route_count", kQwenRouterRouteCount);
+    expert_table_dispatch.kernel.integer_parameters.emplace("route_stride", router_match.route_stride);
+    expert_table_dispatch.kernel.integer_parameters.emplace("expert_count", kQwenRouterExpertCount);
+    expert_table_dispatch.kernel.compile_parameters.emplace("qwen3_moe.workload.token_capacity",
+                                                            to_config_value(router_match.token_count));
+    add_routed_gate_up_compile_parameters(expert_table_dispatch);
+    expert_table_dispatch.bindings.push_back({ router_match.route_ids->id, 0, route_id_length });
+    expert_table_dispatch.bindings.push_back({ expert_table_value, 0, expert_table_bytes });
+    dispatch_match.dispatches.push_back(std::move(expert_table_dispatch));
+
+    Dispatch partition_table_dispatch;
+    partition_table_dispatch.kernel = make_kernel_specialization(kQwenBuildExpertPartitionTableKernel);
+    partition_table_dispatch.kernel.integer_parameters.emplace("token_count", router_match.token_count);
+    partition_table_dispatch.kernel.integer_parameters.emplace("route_count", kQwenRouterRouteCount);
+    partition_table_dispatch.kernel.integer_parameters.emplace("expert_count", kQwenRouterExpertCount);
+    partition_table_dispatch.kernel.compile_parameters.emplace("qwen3_moe.workload.token_capacity",
+                                                               to_config_value(router_match.token_count));
+    add_routed_gate_up_compile_parameters(partition_table_dispatch);
+    partition_table_dispatch.bindings.push_back({ expert_table_value, 0, expert_table_bytes });
+    partition_table_dispatch.bindings.push_back({ partition_table_value, 0, partition_table_bytes });
+    dispatch_match.dispatches.push_back(std::move(partition_table_dispatch));
     return true;
 }
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dispatch/dispatch.h"
+#include "dispatch/command-plan.h"
 #include "ggml.h"
 #include "graph/graph.h"
 
@@ -29,11 +29,13 @@ struct DispatchMatchContext {
     const GraphNode *         root_node  = nullptr;
     size_t                    root_index = 0;
     const std::vector<bool> & covered_nodes;
+    ValueId                   next_plan_value;
 };
 
 struct DispatchMatch {
-    std::vector<size_t>   covered_nodes;
-    std::vector<Dispatch> dispatches;
+    std::vector<size_t>               covered_nodes;
+    std::vector<Dispatch>             dispatches;
+    std::vector<CommandPlanTransient> transients;
 };
 
 using DispatchMatcher = bool (*)(const DispatchMatchContext & context, DispatchMatch & match);

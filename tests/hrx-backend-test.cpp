@@ -99,6 +99,16 @@ static constexpr int64_t kQwenFlashHeadSize     = 128;
 static constexpr int64_t kQwenRouterExpertCount = 128;
 static constexpr int64_t kQwenRouterRouteCount  = 8;
 
+static size_t qwen_expert_table_size(int64_t token_count) {
+    return static_cast<size_t>(kQwenRouterExpertCount + kQwenRouterExpertCount * token_count) * sizeof(int32_t);
+}
+
+static size_t qwen_partition_table_size(int64_t token_count) {
+    const int64_t assignment_count           = token_count * kQwenRouterRouteCount;
+    const int64_t assignment_partition_count = (assignment_count + 31) / 32;
+    return static_cast<size_t>(1 + assignment_partition_count + kQwenRouterExpertCount) * sizeof(int32_t);
+}
+
 static void set_qwen_flash_query_layout(ggml_tensor * tensor, int64_t head_count) {
     REQUIRE(tensor != nullptr);
     tensor->nb[0] = sizeof(float);
@@ -332,6 +342,7 @@ static void run_dispatch_registry_checks() {
         &graph.nodes().front(),
         0,
         covered_nodes,
+        ggml::hrx::ValueId(static_cast<int32_t>(graph.values().size())),
     };
     ggml::hrx::DispatchMatch match;
     REQUIRE(ordering_registry.match(context, match));
@@ -1105,37 +1116,106 @@ static void schedule_qwen_router_top8_command(ggml_context * ctx, ggml_tensor * 
     ggml::hrx::DispatchScheduler scheduler;
     REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
     REQUIRE(scheduler.plan().valid());
-    REQUIRE(scheduler.plan().dispatches.size() == 1);
+    REQUIRE(scheduler.plan().dispatches.size() == 3);
+    REQUIRE(scheduler.plan().transients.size() == 2);
 
-    const ggml::hrx::Dispatch & dispatch    = scheduler.plan().dispatches.front();
+    const int64_t                           token_count           = output->ne[2];
+    const size_t                            route_id_length       = static_cast<size_t>(token_count) * route_ids->nb[1];
+    const size_t                            expert_table_bytes    = qwen_expert_table_size(token_count);
+    const size_t                            partition_table_bytes = qwen_partition_table_size(token_count);
+    const ggml::hrx::CommandPlanTransient & expert_table_transient    = scheduler.plan().transients[0];
+    const ggml::hrx::CommandPlanTransient & partition_table_transient = scheduler.plan().transients[1];
+    REQUIRE(expert_table_transient.value.value == static_cast<int32_t>(imported.graph.values().size()));
+    REQUIRE(expert_table_transient.name == "qwen.router.expert_table");
+    REQUIRE(expert_table_transient.size == expert_table_bytes);
+    REQUIRE(partition_table_transient.value.value == expert_table_transient.value.value + 1);
+    REQUIRE(partition_table_transient.name == "qwen.router.partition_table");
+    REQUIRE(partition_table_transient.size == partition_table_bytes);
+
+    const ggml::hrx::Dispatch & dispatch    = scheduler.plan().dispatches[0];
     const std::string           kernel_name = kernel_name_for_id(dispatch.kernel.kernel_id);
     REQUIRE(kernel_name == "qwen3_moe:qwen3_moe_router_top8_f32");
-    REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == output->ne[2]);
+    REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == token_count);
     REQUIRE(dispatch.kernel.integer_parameters.at("route_id_stride") == route_ids->nb[1] / sizeof(int32_t));
     REQUIRE(dispatch.bindings.size() == 3);
     REQUIRE(dispatch.bindings[1].value == route_ids_value->id);
-    REQUIRE(dispatch.bindings[1].length == static_cast<size_t>(output->ne[2]) * route_ids->nb[1]);
+    REQUIRE(dispatch.bindings[1].length == route_id_length);
     REQUIRE(dispatch.bindings[2].value == output_value->id);
     require_compile_parameter(dispatch, "qwen3_moe.router.expert_count", "128");
     require_compile_parameter(dispatch, "qwen3_moe.router.route_count", "8");
-    require_compile_parameter(dispatch, "qwen3_moe.workload.token_capacity", std::to_string(output->ne[2]));
+    require_compile_parameter(dispatch, "qwen3_moe.workload.token_capacity", std::to_string(token_count));
+
+    const ggml::hrx::Dispatch & expert_table_dispatch = scheduler.plan().dispatches[1];
+    REQUIRE(kernel_name_for_id(expert_table_dispatch.kernel.kernel_id) == "qwen3_moe:qwen3_moe_build_expert_table");
+    REQUIRE(expert_table_dispatch.kernel.integer_parameters.at("token_count") == token_count);
+    REQUIRE(expert_table_dispatch.kernel.integer_parameters.at("route_count") == kQwenRouterRouteCount);
+    REQUIRE(expert_table_dispatch.kernel.integer_parameters.at("route_stride") == route_ids->nb[1] / sizeof(int32_t));
+    REQUIRE(expert_table_dispatch.kernel.integer_parameters.at("expert_count") == kQwenRouterExpertCount);
+    REQUIRE(expert_table_dispatch.bindings.size() == 2);
+    REQUIRE(expert_table_dispatch.bindings[0].value == route_ids_value->id);
+    REQUIRE(expert_table_dispatch.bindings[0].length == route_id_length);
+    REQUIRE(expert_table_dispatch.bindings[1].value == expert_table_transient.value);
+    REQUIRE(expert_table_dispatch.bindings[1].length == expert_table_bytes);
+    require_compile_parameter(expert_table_dispatch, "qwen3_moe.routed_gate_up.expert_count", "128");
+    require_compile_parameter(expert_table_dispatch, "qwen3_moe.routed_gate_up.route_count", "8");
+    require_compile_parameter(expert_table_dispatch, "qwen3_moe.workload.token_capacity", std::to_string(token_count));
+
+    const ggml::hrx::Dispatch & partition_table_dispatch = scheduler.plan().dispatches[2];
+    REQUIRE(kernel_name_for_id(partition_table_dispatch.kernel.kernel_id) ==
+            "qwen3_moe:qwen3_moe_build_expert_partition_table");
+    REQUIRE(partition_table_dispatch.kernel.integer_parameters.at("token_count") == token_count);
+    REQUIRE(partition_table_dispatch.kernel.integer_parameters.at("route_count") == kQwenRouterRouteCount);
+    REQUIRE(partition_table_dispatch.kernel.integer_parameters.at("expert_count") == kQwenRouterExpertCount);
+    REQUIRE(partition_table_dispatch.bindings.size() == 2);
+    REQUIRE(partition_table_dispatch.bindings[0].value == expert_table_transient.value);
+    REQUIRE(partition_table_dispatch.bindings[0].length == expert_table_bytes);
+    REQUIRE(partition_table_dispatch.bindings[1].value == partition_table_transient.value);
+    REQUIRE(partition_table_dispatch.bindings[1].length == partition_table_bytes);
+    require_compile_parameter(partition_table_dispatch, "qwen3_moe.routed_gate_up.expert_count", "128");
+    require_compile_parameter(partition_table_dispatch, "qwen3_moe.routed_gate_up.route_count", "8");
+    require_compile_parameter(partition_table_dispatch, "qwen3_moe.workload.token_capacity",
+                              std::to_string(token_count));
 
     const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
         imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
     REQUIRE(commands.valid());
-    REQUIRE(commands.commands.size() == 1);
+    REQUIRE(commands.commands.size() == 3);
     REQUIRE(command_program_verifies(commands));
-    REQUIRE(commands.commands.front().bindings.size() == 3);
-    REQUIRE(commands.commands.front().bindings[0].name == "logits");
-    REQUIRE(commands.commands.front().bindings[1].name == "route_ids");
-    REQUIRE(commands.commands.front().bindings[1].origin == ggml::hrx::CommandBindingOrigin::Transient);
-    REQUIRE(commands.commands.front().bindings[1].length == dispatch.bindings[1].length);
-    REQUIRE(commands.commands.front().bindings[2].name == "route_weights");
-    REQUIRE(commands.transients.allocations.size() == 1);
+    REQUIRE(commands.commands[0].bindings.size() == 3);
+    REQUIRE(commands.commands[0].bindings[0].name == "logits");
+    REQUIRE(commands.commands[0].bindings[1].name == "route_ids");
+    REQUIRE(commands.commands[0].bindings[1].origin == ggml::hrx::CommandBindingOrigin::Transient);
+    REQUIRE(commands.commands[0].bindings[1].length == dispatch.bindings[1].length);
+    REQUIRE(commands.commands[0].bindings[2].name == "route_weights");
+    REQUIRE(commands.commands[1].dependencies.size() == 1);
+    REQUIRE(commands.commands[1].dependencies[0] == 0);
+    REQUIRE(commands.commands[1].bindings.size() == 2);
+    REQUIRE(commands.commands[1].bindings[0].name == "route_ids");
+    REQUIRE(commands.commands[1].bindings[0].origin == ggml::hrx::CommandBindingOrigin::Transient);
+    REQUIRE(commands.commands[1].bindings[1].name == "expert_table");
+    REQUIRE(commands.commands[1].bindings[1].origin == ggml::hrx::CommandBindingOrigin::Transient);
+    REQUIRE(commands.commands[1].bindings[1].length == expert_table_bytes);
+    REQUIRE(commands.commands[2].dependencies.size() == 1);
+    REQUIRE(commands.commands[2].dependencies[0] == 1);
+    REQUIRE(commands.commands[2].bindings.size() == 2);
+    REQUIRE(commands.commands[2].bindings[0].name == "expert_table");
+    REQUIRE(commands.commands[2].bindings[0].origin == ggml::hrx::CommandBindingOrigin::Transient);
+    REQUIRE(commands.commands[2].bindings[1].name == "partition_table");
+    REQUIRE(commands.commands[2].bindings[1].origin == ggml::hrx::CommandBindingOrigin::Transient);
+    REQUIRE(commands.commands[2].bindings[1].length == partition_table_bytes);
+    REQUIRE(commands.transients.allocations.size() == 3);
     const ggml::hrx::TransientAllocation * route_ids_allocation =
         ggml::hrx::find_transient_allocation(commands.transients, route_ids_value->id);
     REQUIRE(route_ids_allocation != nullptr);
     REQUIRE(route_ids_allocation->size == dispatch.bindings[1].length);
+    const ggml::hrx::TransientAllocation * expert_table_allocation =
+        ggml::hrx::find_transient_allocation(commands.transients, expert_table_transient.value);
+    REQUIRE(expert_table_allocation != nullptr);
+    REQUIRE(expert_table_allocation->size == expert_table_bytes);
+    const ggml::hrx::TransientAllocation * partition_table_allocation =
+        ggml::hrx::find_transient_allocation(commands.transients, partition_table_transient.value);
+    REQUIRE(partition_table_allocation != nullptr);
+    REQUIRE(partition_table_allocation->size == partition_table_bytes);
 }
 
 static void run_qwen_router_top8_dispatch_checks() {

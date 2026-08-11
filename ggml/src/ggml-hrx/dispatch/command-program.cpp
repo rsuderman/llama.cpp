@@ -38,6 +38,12 @@ struct TransientAllocationRequest {
     size_t  required_size = 0;
 };
 
+static const CommandPlanTransient * find_plan_transient(const CommandPlan & plan, ValueId value) {
+    const auto found = std::find_if(plan.transients.begin(), plan.transients.end(),
+                                    [&](const CommandPlanTransient & transient) { return transient.value == value; });
+    return found == plan.transients.end() ? nullptr : &*found;
+}
+
 static void add_transient_allocation_request(std::vector<TransientAllocationRequest> & requests,
                                              ValueId                                   value,
                                              size_t                                    required_size) {
@@ -51,28 +57,35 @@ static void add_transient_allocation_request(std::vector<TransientAllocationRequ
 }
 
 static void add_transient_allocation(const Graph &                      graph,
+                                     const CommandPlan &                command_plan,
                                      const TransientAllocationRequest & request,
                                      TransientPlan &                    plan,
                                      Status &                           errors) {
-    const Value * graph_value = graph.values().find(request.value);
-    if (graph_value == nullptr) {
-        errors.log("transient value %d is missing from graph values", request.value.value);
+    const Value *                graph_value    = graph.values().find(request.value);
+    const CommandPlanTransient * plan_transient = find_plan_transient(command_plan, request.value);
+    if (graph_value == nullptr && plan_transient == nullptr) {
+        errors.log("transient value %d is missing from graph values and command plan transients", request.value.value);
         return;
     }
-    if (graph_value->kind != ValueKind::Transient) {
+    if (graph_value != nullptr && graph_value->kind != ValueKind::Transient) {
+        errors.log("transient value %d aliases a non-transient graph value", request.value.value);
         return;
     }
 
     TransientAllocation allocation;
-    allocation.value        = request.value;
-    allocation.size         = std::max(graph_value->byte_count, request.required_size);
-    allocation.alignment    = 256;
+    allocation.value = request.value;
+    allocation.size =
+        std::max(graph_value != nullptr ? graph_value->byte_count : plan_transient->size, request.required_size);
+    allocation.alignment    = plan_transient != nullptr ? plan_transient->alignment : 256;
     allocation.arena_offset = align_up(plan.arena_size, allocation.alignment);
     plan.arena_size         = allocation.arena_offset + allocation.size;
     plan.allocations.push_back(allocation);
 }
 
-static TransientPlan build_transient_plan(const Graph & graph, const std::vector<Command> & commands, Status & errors) {
+static TransientPlan build_transient_plan(const Graph &                graph,
+                                          const CommandPlan &          command_plan,
+                                          const std::vector<Command> & commands,
+                                          Status &                     errors) {
     TransientPlan plan;
     plan.arena_alignment = 256;
     std::vector<TransientAllocationRequest> requests;
@@ -88,7 +101,7 @@ static TransientPlan build_transient_plan(const Graph & graph, const std::vector
         }
     }
     for (const TransientAllocationRequest & request : requests) {
-        add_transient_allocation(graph, request, plan, errors);
+        add_transient_allocation(graph, command_plan, request, plan, errors);
     }
     plan.arena_size = align_up(plan.arena_size, plan.arena_alignment);
     return plan;
@@ -136,15 +149,18 @@ CommandProgram build_command_program(const Graph &        graph,
         for (size_t binding_index = 0; binding_index < dispatch.bindings.size(); ++binding_index) {
             const DispatchBinding & binding = dispatch.bindings[binding_index];
             CommandBinding          command_binding;
-            command_binding.value  = binding.value;
-            command_binding.offset = binding.offset;
-            command_binding.length = binding.length;
-            const Value * value    = graph.values().find(binding.value);
-            if (value == nullptr) {
-                result.status.log("command %u binding %zu references missing graph value %d", command.ordinal,
-                                  binding_index, binding.value.value);
-            } else {
+            command_binding.value                       = binding.value;
+            command_binding.offset                      = binding.offset;
+            command_binding.length                      = binding.length;
+            const Value *                value          = graph.values().find(binding.value);
+            const CommandPlanTransient * plan_transient = find_plan_transient(plan, binding.value);
+            if (value == nullptr && plan_transient == nullptr) {
+                result.status.log("command %u binding %zu references missing value %d", command.ordinal, binding_index,
+                                  binding.value.value);
+            } else if (value != nullptr) {
                 command_binding.origin = command_binding_origin(value->kind);
+            } else {
+                command_binding.origin = CommandBindingOrigin::Transient;
             }
             if (definition != nullptr && binding_index < definition->bindings.size()) {
                 command_binding.name   = string_value(definition->bindings[binding_index].name);
@@ -154,7 +170,7 @@ CommandProgram build_command_program(const Graph &        graph,
         }
         result.commands.push_back(std::move(command));
     }
-    result.transients = build_transient_plan(graph, result.commands, result.status);
+    result.transients = build_transient_plan(graph, plan, result.commands, result.status);
     return result;
 }
 
