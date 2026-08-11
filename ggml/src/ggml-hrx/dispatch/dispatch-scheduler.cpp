@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -45,6 +46,35 @@ static void clear_plan_results(CommandPlan & plan) {
     plan.metadata.clear();
 }
 
+static void append_value_summary(std::ostringstream & stream, const Graph & graph, ValueId value_id) {
+    const Value * value = graph.values().find(value_id);
+    if (value == nullptr) {
+        stream << value_id.value << ":missing";
+        return;
+    }
+    stream << value_id.value << ":" << ggml_type_name(value->type) << "[" << value->ne[0] << "," << value->ne[1] << ","
+           << value->ne[2] << "," << value->ne[3] << "]";
+    const GraphNode * producer = graph.index().producer(value_id);
+    if (producer != nullptr) {
+        stream << "<-" << ggml_op_name(producer->op);
+    }
+}
+
+static std::string unsupported_node_message(const Graph & graph, size_t index, const GraphNode & node) {
+    std::ostringstream stream;
+    stream << "unsupported HRX node " << index << ": " << ggml_op_name(node.op) << " output=";
+    append_value_summary(stream, graph, node.output);
+    stream << " inputs=[";
+    for (size_t i = 0; i < node.inputs.size(); ++i) {
+        if (i > 0) {
+            stream << ", ";
+        }
+        append_value_summary(stream, graph, node.inputs[i]);
+    }
+    stream << "]";
+    return stream.str();
+}
+
 }  // namespace
 
 bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget & target) {
@@ -74,7 +104,8 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
         DispatchMatch match;
         const ValueId next_plan_value(static_cast<int32_t>(graph.values().size() + plan_.transients.size()));
         if (!try_match_registration(graph, node, i, covered_nodes, plan_, *registry, next_plan_value, match)) {
-            plan_.status.log("unsupported HRX node %zu: %s", i, ggml_op_name(node->op));
+            const std::string message = unsupported_node_message(graph, i, *node);
+            plan_.status.log("%s", message.c_str());
             clear_plan_results(plan_);
             return false;
         }
@@ -103,7 +134,8 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
     }
     for (size_t i = 0; i < nodes.size(); ++i) {
         if (!covered_nodes[i]) {
-            plan_.status.log("unsupported HRX node %zu: %s", i, ggml_op_name(nodes[i].op));
+            const std::string message = unsupported_node_message(graph, i, nodes[i]);
+            plan_.status.log("%s", message.c_str());
             clear_plan_results(plan_);
             return false;
         }
