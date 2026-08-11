@@ -53,10 +53,18 @@ struct TransientPlan {
     std::vector<TransientAllocation> allocations;
 };
 
+struct ConstantInitialization {
+    ValueId              value;
+    std::string          name;
+    size_t               offset = 0;
+    std::vector<uint8_t> data;
+};
+
 struct CommandProgram {
-    std::vector<Command> commands;
-    TransientPlan        transients;
-    Status               status;
+    std::vector<Command>                commands;
+    TransientPlan                       transients;
+    std::vector<ConstantInitialization> constant_initializations;
+    Status                              status;
 
     bool valid() const { return status.success(); }
 };

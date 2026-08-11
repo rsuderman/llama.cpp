@@ -171,6 +171,15 @@ CommandProgram build_command_program(const Graph &        graph,
         result.commands.push_back(std::move(command));
     }
     result.transients = build_transient_plan(graph, plan, result.commands, result.status);
+    result.constant_initializations.reserve(plan.constant_initializations.size());
+    for (const CommandPlanConstantInitialization & initialization : plan.constant_initializations) {
+        result.constant_initializations.push_back({
+            initialization.value,
+            initialization.name,
+            initialization.offset,
+            initialization.data,
+        });
+    }
     return result;
 }
 
@@ -266,6 +275,22 @@ VerificationResult verify_command_program(const CommandProgram & program,
             if (overlap) {
                 result.status.log("transient allocations overlap");
             }
+        }
+    }
+    for (const ConstantInitialization & initialization : program.constant_initializations) {
+        const TransientAllocation * allocation = find_transient_allocation(program.transients, initialization.value);
+        if (allocation == nullptr) {
+            result.status.log("constant initialization %s references missing transient value %d",
+                              initialization.name.c_str(), initialization.value.value);
+            continue;
+        }
+        if (initialization.data.empty()) {
+            result.status.log("constant initialization %s has no data", initialization.name.c_str());
+        }
+        if (initialization.offset > allocation->size ||
+            initialization.data.size() > allocation->size - initialization.offset) {
+            result.status.log("constant initialization %s is outside transient allocation length %zu",
+                              initialization.name.c_str(), allocation->size);
         }
     }
     return result;

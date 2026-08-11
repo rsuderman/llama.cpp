@@ -91,6 +91,40 @@ static Status ensure_transient_arena(const CommandProgramExecutionContext & cont
     return status;
 }
 
+static Status initialize_command_program_constants(const CommandProgramExecutionContext & context,
+                                                   const CommandProgram &                 commands,
+                                                   const TransientArenaAllocationRef &    allocation) {
+    Status status;
+    if (commands.constant_initializations.empty()) {
+        return status;
+    }
+    if (allocation.buffer == nullptr) {
+        status.log("command program has constant initializations without a transient arena allocation");
+        return status;
+    }
+    for (const ConstantInitialization & initialization : commands.constant_initializations) {
+        const TransientAllocation * transient = find_transient_allocation(commands.transients, initialization.value);
+        if (transient == nullptr) {
+            status.log("constant initialization %s references missing transient value %d", initialization.name.c_str(),
+                       initialization.value.value);
+            continue;
+        }
+        if (initialization.offset > transient->size ||
+            initialization.data.size() > transient->size - initialization.offset) {
+            status.log("constant initialization %s is outside transient allocation length %zu",
+                       initialization.name.c_str(), transient->size);
+            continue;
+        }
+        // TODO: Track initialized transient arena allocation ids so constants are not transferred every invocation.
+        if (ErrorResult error = take_status(
+                hrx_stream_copy_h2d(context.stream, initialization.data.data(), allocation.buffer,
+                                    transient->arena_offset + initialization.offset, initialization.data.size()))) {
+            status.log("failed to upload constant initialization %s: %s", initialization.name.c_str(), error->c_str());
+        }
+    }
+    return status;
+}
+
 static std::string format_resolved_command_context(const ResolvedCommand & command) {
     std::ostringstream out;
     out << "command " << command.ordinal << " kind=" << command_kind_name(command.kind)
@@ -306,6 +340,11 @@ bool bind_and_execute_prepared_command_program(const CommandProgramExecutionCont
         return execute_prepared_command_program(context, prepared);
     }
     if (commands.transients.arena_size == 0) {
+        Status status = initialize_command_program_constants(context, commands, {});
+        if (!status.success()) {
+            GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
+            return false;
+        }
         return bind_prepared_command_program_transients(commands, {}, prepared) &&
                execute_prepared_command_program(context, prepared);
     }
@@ -322,8 +361,15 @@ bool bind_and_execute_prepared_command_program(const CommandProgramExecutionCont
         GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
         return false;
     }
-    return bind_prepared_command_program_transients(commands, lease.current_allocation(), prepared) &&
-           execute_prepared_command_program(context, prepared);
+    if (!bind_prepared_command_program_transients(commands, lease.current_allocation(), prepared)) {
+        return false;
+    }
+    status = initialize_command_program_constants(context, commands, lease.current_allocation());
+    if (!status.success()) {
+        GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
+        return false;
+    }
+    return execute_prepared_command_program(context, prepared);
 }
 
 bool execute_prepared_command_program(const CommandProgramExecutionContext & context,

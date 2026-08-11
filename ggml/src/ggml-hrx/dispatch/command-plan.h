@@ -5,6 +5,7 @@
 #include "status.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -17,11 +18,19 @@ struct CommandPlanTransient {
     size_t      alignment = 256;
 };
 
+struct CommandPlanConstantInitialization {
+    ValueId              value;
+    std::string          name;
+    size_t               offset = 0;
+    std::vector<uint8_t> data;
+};
+
 struct CommandPlan {
-    std::vector<Dispatch>             dispatches;
-    std::vector<CommandPlanTransient> transients;
-    CommandPlanMetadata               metadata;
-    Status                            status;
+    std::vector<Dispatch>                          dispatches;
+    std::vector<CommandPlanTransient>              transients;
+    std::vector<CommandPlanConstantInitialization> constant_initializations;
+    CommandPlanMetadata                            metadata;
+    Status                                         status;
 
     bool valid() const { return status.success(); }
 };
