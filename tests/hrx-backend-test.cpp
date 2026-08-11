@@ -1298,12 +1298,17 @@ static void schedule_qwen_router_top8_command(ggml_context * ctx, ggml_tensor * 
 }
 
 struct QwenRoutedGateUpTensors {
-    ggml_tensor * route_ids     = nullptr;
-    ggml_tensor * route_weights = nullptr;
-    ggml_tensor * gate          = nullptr;
-    ggml_tensor * up            = nullptr;
-    ggml_tensor * glu           = nullptr;
-    ggml_tensor * output        = nullptr;
+    ggml_tensor *              route_ids     = nullptr;
+    ggml_tensor *              route_weights = nullptr;
+    ggml_tensor *              gate          = nullptr;
+    ggml_tensor *              up            = nullptr;
+    ggml_tensor *              glu           = nullptr;
+    ggml_tensor *              output        = nullptr;
+    ggml_tensor *              weighted      = nullptr;
+    ggml_tensor *              residual      = nullptr;
+    ggml_tensor *              next_rms      = nullptr;
+    ggml_tensor *              next_output   = nullptr;
+    std::vector<ggml_tensor *> route_views;
 };
 
 static QwenRoutedGateUpTensors build_qwen_routed_gate_up_graph(ggml_context * ctx,
@@ -1347,12 +1352,55 @@ static QwenRoutedGateUpTensors build_qwen_routed_gate_up_graph(ggml_context * ct
     return tensors;
 }
 
+static void append_qwen_weighted_reduce_tail(ggml_context *            ctx,
+                                             QwenRoutedGateUpTensors & tensors,
+                                             bool                      include_next_rmsnorm = false) {
+    REQUIRE(tensors.output != nullptr);
+    REQUIRE(tensors.route_weights != nullptr);
+    tensors.weighted = ggml_mul(ctx, tensors.output, tensors.route_weights);
+    REQUIRE(tensors.weighted != nullptr);
+    tensors.route_views.clear();
+    for (int64_t route = 0; route < kQwenRouterRouteCount; ++route) {
+        ggml_tensor * view =
+            ggml_view_2d(ctx, tensors.weighted, kQwenMoeHiddenSize, tensors.weighted->ne[2], tensors.weighted->nb[2],
+                         static_cast<size_t>(route) * tensors.weighted->nb[1]);
+        REQUIRE(view != nullptr);
+        tensors.route_views.push_back(view);
+    }
+
+    ggml_tensor * reduced = tensors.route_views.front();
+    for (size_t i = 1; i < tensors.route_views.size(); ++i) {
+        reduced = ggml_add(ctx, reduced, tensors.route_views[i]);
+        REQUIRE(reduced != nullptr);
+    }
+
+    ggml_tensor * hidden_state = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenMoeHiddenSize, tensors.output->ne[2]);
+    REQUIRE(hidden_state != nullptr);
+    tensors.residual = ggml_add(ctx, hidden_state, reduced);
+    REQUIRE(tensors.residual != nullptr);
+
+    if (include_next_rmsnorm) {
+        ggml_tensor * next_norm_weight = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kQwenMoeHiddenSize);
+        REQUIRE(next_norm_weight != nullptr);
+        tensors.next_rms = ggml_rms_norm(ctx, tensors.residual, 0.000001f);
+        REQUIRE(tensors.next_rms != nullptr);
+        tensors.next_output = ggml_mul(ctx, tensors.next_rms, next_norm_weight);
+        REQUIRE(tensors.next_output != nullptr);
+    }
+}
+
 static ggml::hrx::GraphImportResult import_qwen_routed_gate_up_graph(ggml_context *                  ctx,
                                                                      const QwenRoutedGateUpTensors & tensors) {
     ggml_cgraph * graph = ggml_new_graph(ctx);
     REQUIRE(graph != nullptr);
     ggml_build_forward_expand(graph, tensors.route_weights);
     ggml_build_forward_expand(graph, tensors.output);
+    if (tensors.residual != nullptr) {
+        ggml_build_forward_expand(graph, tensors.residual);
+    }
+    if (tensors.next_output != nullptr) {
+        ggml_build_forward_expand(graph, tensors.next_output);
+    }
 
     ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
     REQUIRE(imported.valid());
@@ -1430,10 +1478,20 @@ static void append_qwen_routed_down_for_graph(const ggml::hrx::Graph &        gr
     REQUIRE(plan.dispatches.size() >= 1);
     REQUIRE(plan.transients.size() >= 1);
     const ggml::hrx::Value * route_ids_value = graph.values().find_tensor(tensors.route_ids);
+    const ggml::hrx::Value * glu_value       = graph.values().find_tensor(tensors.glu);
+    const ggml::hrx::Value * output_value    = graph.values().find_tensor(tensors.output);
     REQUIRE(route_ids_value != nullptr);
+    REQUIRE(glu_value != nullptr);
+    REQUIRE(output_value != nullptr);
     const ggml::hrx::CommandPlanQwenRoutingBundle * routing_bundle =
         plan.metadata.find_qwen_routing_bundle(route_ids_value->id);
+    const ggml::hrx::CommandPlanAlternateValue * gate_up_alternate = plan.metadata.find_alternate_value(
+        glu_value->id, GGML_TYPE_F16, qwen_routed_gate_up_f16_output_size(tensors.output->ne[2]));
+    const ggml::hrx::CommandPlanAlternateValue * routed_down_alternate = plan.metadata.find_alternate_value(
+        output_value->id, GGML_TYPE_F16, qwen_routed_down_f16_output_size(tensors.output->ne[2]));
     REQUIRE(routing_bundle != nullptr);
+    REQUIRE(gate_up_alternate != nullptr);
+    REQUIRE(routed_down_alternate != nullptr);
     const ggml::hrx::Dispatch &             dispatch              = plan.dispatches.back();
     const ggml::hrx::CommandPlanTransient & routed_down_transient = plan.transients.back();
     REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == expected_kernel_name);
@@ -1441,10 +1499,12 @@ static void append_qwen_routed_down_for_graph(const ggml::hrx::Graph &        gr
     REQUIRE(dispatch.bindings.size() == 4);
     REQUIRE(routed_down_transient.name == "qwen.moe.routed_down_f16");
     REQUIRE(routed_down_transient.size == qwen_routed_down_f16_output_size(tensors.output->ne[2]));
-    REQUIRE(dispatch.bindings[0].value == plan.metadata.alternate_values().back().alternate_value);
+    REQUIRE(dispatch.bindings[0].value == gate_up_alternate->alternate_value);
     REQUIRE(dispatch.bindings[0].length == qwen_routed_gate_up_f16_output_size(tensors.output->ne[2]));
     REQUIRE(dispatch.bindings[1].value == routing_bundle->expert_table);
     REQUIRE(dispatch.bindings[1].length == routing_bundle->expert_table_byte_count);
+    REQUIRE(routed_down_alternate->alternate_value == routed_down_transient.value);
+    REQUIRE(routed_down_alternate->byte_count == routed_down_transient.size);
     REQUIRE(dispatch.bindings[3].value == routed_down_transient.value);
     REQUIRE(dispatch.bindings[3].length == routed_down_transient.size);
     require_compile_parameter(dispatch, "qwen3_moe.routed_down.input_size", "768");
@@ -1452,6 +1512,49 @@ static void append_qwen_routed_down_for_graph(const ggml::hrx::Graph &        gr
     require_compile_parameter(dispatch, "qwen3_moe.routed_down.expert_count", "128");
     require_compile_parameter(dispatch, "qwen3_moe.routed_down.output_size", "2048");
     require_compile_parameter(dispatch, "qwen3_moe.workload.token_capacity", std::to_string(tensors.output->ne[2]));
+}
+
+static void append_qwen_weighted_reduce_for_graph(const ggml::hrx::Graph &        graph,
+                                                  const QwenRoutedGateUpTensors & tensors,
+                                                  std::vector<bool> &             covered_nodes,
+                                                  ggml::hrx::CommandPlan &        plan,
+                                                  const char *                    expected_kernel_name) {
+    REQUIRE(tensors.weighted != nullptr);
+    REQUIRE(tensors.residual != nullptr);
+    const size_t             weighted_index = producer_index_for_tensor(graph, tensors.weighted);
+    ggml::hrx::DispatchMatch weighted_match;
+    REQUIRE(match_dispatch_at_index(graph, plan, covered_nodes, weighted_index, weighted_match));
+    append_match_to_plan(plan, weighted_match, covered_nodes);
+
+    const ggml::hrx::Value * route_weights_value = graph.values().find_tensor(tensors.route_weights);
+    const ggml::hrx::Value * routed_output_value = graph.values().find_tensor(tensors.output);
+    const ggml::hrx::Value * residual_value      = graph.values().find_tensor(tensors.residual);
+    REQUIRE(route_weights_value != nullptr);
+    REQUIRE(routed_output_value != nullptr);
+    REQUIRE(residual_value != nullptr);
+
+    const ggml::hrx::Dispatch & dispatch = plan.dispatches.back();
+    REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == expected_kernel_name);
+    REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == tensors.output->ne[2]);
+    REQUIRE(dispatch.bindings.size() == (tensors.next_output != nullptr ? 5 : 3));
+    REQUIRE(dispatch.bindings[0].value == route_weights_value->id);
+    REQUIRE(dispatch.bindings[0].length == route_weights_value->byte_count);
+    REQUIRE(dispatch.bindings[1].value == plan.metadata.alternate_values().back().alternate_value);
+    REQUIRE(dispatch.bindings[1].length == qwen_routed_down_f16_output_size(tensors.output->ne[2]));
+    REQUIRE(dispatch.bindings[2].value == residual_value->id);
+    REQUIRE(dispatch.bindings[2].length == residual_value->byte_count);
+    require_compile_parameter(dispatch, "qwen3_moe.routed_down.route_count", "8");
+    require_compile_parameter(dispatch, "qwen3_moe.routed_down.output_size", "2048");
+    require_compile_parameter(dispatch, "qwen3_moe.workload.token_capacity", std::to_string(tensors.output->ne[2]));
+
+    if (tensors.next_output != nullptr) {
+        const ggml::hrx::Value * next_output_value = graph.values().find_tensor(tensors.next_output);
+        REQUIRE(next_output_value != nullptr);
+        REQUIRE(dispatch.bindings[4].value == next_output_value->id);
+        REQUIRE(dispatch.bindings[4].length == next_output_value->byte_count);
+        require_compile_parameter(dispatch, "qwen3_moe.model.hidden_size", "2048");
+        require_compile_parameter(dispatch, "qwen3_moe.model.rms_epsilon", "0.000001");
+    }
 }
 
 static void run_qwen_routed_gate_up_dispatch_checks() {
@@ -1657,6 +1760,62 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         REQUIRE(commands.commands.size() == 5);
         REQUIRE(command_program_verifies(commands));
         REQUIRE(ggml::hrx::find_transient_allocation(commands.transients, plan.transients.back().value) != nullptr);
+    }
+
+    {
+        constexpr int64_t       token_count = 4;
+        QwenRoutedGateUpTensors tensors     = build_qwen_routed_gate_up_graph(ctx, token_count);
+        append_qwen_weighted_reduce_tail(ctx, tensors);
+        ggml::hrx::GraphImportResult imported = import_qwen_routed_gate_up_graph(ctx, tensors);
+        std::vector<bool>            covered_nodes(imported.graph.nodes().size(), false);
+        ggml::hrx::CommandPlan       plan = build_qwen_router_plan_for_graph(imported.graph, covered_nodes);
+        append_qwen_routed_gate_up_for_graph(imported.graph, tensors, covered_nodes, plan);
+        append_qwen_routed_down_for_graph(imported.graph, tensors, covered_nodes, plan,
+                                          "qwen3_moe:qwen3_moe_routed_down_q6k_f16_wmma_grouped");
+        append_qwen_weighted_reduce_for_graph(imported.graph, tensors, covered_nodes, plan,
+                                              "qwen3_moe:qwen3_moe_routed_down_weighted_reduce_f16_f32");
+
+        REQUIRE(plan.dispatches.size() == 6);
+        REQUIRE(plan.transients.size() == 4);
+        const ggml::hrx::CommandProgram commands =
+            ggml::hrx::build_command_program(imported.graph, plan, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(commands.valid());
+        REQUIRE(commands.commands.size() == 6);
+        REQUIRE(command_program_verifies(commands));
+        REQUIRE(commands.commands.back().bindings.size() == 3);
+        REQUIRE(commands.commands.back().bindings[0].name == "route_weights");
+        REQUIRE(commands.commands.back().bindings[1].name == "routed_output");
+        REQUIRE(commands.commands.back().bindings[1].origin == ggml::hrx::CommandBindingOrigin::Transient);
+        REQUIRE(commands.commands.back().bindings[2].name == "output");
+    }
+
+    {
+        constexpr int64_t       token_count = 4;
+        QwenRoutedGateUpTensors tensors     = build_qwen_routed_gate_up_graph(ctx, token_count);
+        append_qwen_weighted_reduce_tail(ctx, tensors, true);
+        ggml::hrx::GraphImportResult imported = import_qwen_routed_gate_up_graph(ctx, tensors);
+        std::vector<bool>            covered_nodes(imported.graph.nodes().size(), false);
+        ggml::hrx::CommandPlan       plan = build_qwen_router_plan_for_graph(imported.graph, covered_nodes);
+        append_qwen_routed_gate_up_for_graph(imported.graph, tensors, covered_nodes, plan);
+        append_qwen_routed_down_for_graph(imported.graph, tensors, covered_nodes, plan,
+                                          "qwen3_moe:qwen3_moe_routed_down_q6k_f16_wmma_grouped");
+        append_qwen_weighted_reduce_for_graph(imported.graph, tensors, covered_nodes, plan,
+                                              "qwen3_moe:qwen3_moe_routed_down_weighted_reduce_next_rmsnorm_f32");
+
+        REQUIRE(plan.dispatches.size() == 6);
+        REQUIRE(plan.transients.size() == 4);
+        const ggml::hrx::CommandProgram commands =
+            ggml::hrx::build_command_program(imported.graph, plan, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(commands.valid());
+        REQUIRE(commands.commands.size() == 6);
+        REQUIRE(command_program_verifies(commands));
+        REQUIRE(commands.commands.back().bindings.size() == 5);
+        REQUIRE(commands.commands.back().bindings[0].name == "route_weights");
+        REQUIRE(commands.commands.back().bindings[1].name == "routed_output");
+        REQUIRE(commands.commands.back().bindings[1].origin == ggml::hrx::CommandBindingOrigin::Transient);
+        REQUIRE(commands.commands.back().bindings[2].name == "hidden_state");
+        REQUIRE(commands.commands.back().bindings[3].name == "next_norm_weight");
+        REQUIRE(commands.commands.back().bindings[4].name == "next_projection_input");
     }
 
     {
