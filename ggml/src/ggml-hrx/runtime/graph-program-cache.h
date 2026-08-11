@@ -107,6 +107,6 @@ class GraphProgramCache {
     GraphProgramCacheStats                                      stats_;
 };
 
-bool can_execute_standalone_op_as_graph(const ggml_tensor * op);
+bool can_execute_standalone_op_as_graph(const ggml_tensor * op, const std::string & target);
 
 }  // namespace ggml::hrx

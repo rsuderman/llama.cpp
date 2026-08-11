@@ -1,6 +1,5 @@
 #include "dispatch-add.h"
 
-#include "dispatch-scheduler.h"
 #include "ggml.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
@@ -25,7 +24,7 @@ static const Value * graph_value(const Graph & graph, ValueId id) {
     return graph.values().find(id);
 }
 
-bool supports_add_f32_dispatch(const Graph & graph, const GraphNode * node) {
+static bool supports_add_f32_dispatch(const Graph & graph, const GraphNode * node) {
     if (node == nullptr || node->op != GGML_OP_ADD || node->inputs.size() != 2) {
         return false;
     }
@@ -41,13 +40,13 @@ bool supports_add_f32_dispatch(const Graph & graph, const GraphNode * node) {
            static_cast<uint64_t>(output->element_count) <= std::numeric_limits<uint32_t>::max();
 }
 
-bool try_match_add_f32_dispatch(const Graph & graph, const GraphNode * node, DispatchScheduler & scheduler) {
-    if (!supports_add_f32_dispatch(graph, node)) {
+static bool match_add_f32_dispatch(const DispatchMatchContext & context, DispatchMatch & match) {
+    if (!supports_add_f32_dispatch(context.graph, context.root_node)) {
         return false;
     }
-    const Value * output = graph_value(graph, node->output);
-    const Value * a      = graph_value(graph, node->inputs[0]);
-    const Value * b      = graph_value(graph, node->inputs[1]);
+    const Value * output = graph_value(context.graph, context.root_node->output);
+    const Value * a      = graph_value(context.graph, context.root_node->inputs[0]);
+    const Value * b      = graph_value(context.graph, context.root_node->inputs[1]);
     if (output == nullptr || a == nullptr || b == nullptr) {
         return false;
     }
@@ -59,8 +58,20 @@ bool try_match_add_f32_dispatch(const Graph & graph, const GraphNode * node, Dis
     dispatch.bindings.push_back({ b->id, 0, b->byte_count });
     dispatch.bindings.push_back({ output->id, 0, output->byte_count });
 
-    scheduler.enqueue(std::move(dispatch));
+    match.covered_nodes.push_back(context.root_index);
+    match.dispatches.push_back(std::move(dispatch));
     return true;
+}
+
+void register_add_dispatch(DispatchRegistryBuilder & registry) {
+    registry.add({
+        "common.add_f32",
+        GGML_OP_ADD,
+        DispatchMatchKind::SingleOp,
+        0,
+        DispatchSource::Common,
+        match_add_f32_dispatch,
+    });
 }
 
 }  // namespace ggml::hrx

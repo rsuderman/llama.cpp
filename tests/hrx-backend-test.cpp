@@ -3,6 +3,7 @@
 #include "dispatch/command-program-resolver.h"
 #include "dispatch/command-program.h"
 #include "dispatch/dispatch-scheduler.h"
+#include "dispatch_registration/dispatch-registry.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-hrx.h"
@@ -10,6 +11,7 @@
 #include "ggml.h"
 #include "graph/graph-traversal.h"
 #include "graph/graph.h"
+#include "kernel-corpus/kernel-corpus.h"
 #include "runtime/command-program-executor.h"
 #include "runtime/graph-executor.h"
 #include "runtime/graph-program-cache.h"
@@ -67,6 +69,31 @@ static bool string_contains(const std::string & value, const char * text) {
     return value.find(text) != std::string::npos;
 }
 
+static ggml::hrx::DispatchTarget test_dispatch_target() {
+    return { "gfx1151" };
+}
+
+static const ggml::hrx::DispatchRegistry & test_dispatch_registry() {
+    const ggml::hrx::DispatchRegistry * registry = ggml::hrx::find_dispatch_registry(test_dispatch_target());
+    REQUIRE(registry != nullptr);
+    return *registry;
+}
+
+static std::string kernel_name_for_id(uint64_t kernel_id) {
+    const ggml::hrx::KernelResolveResult resolved =
+        ggml::hrx::resolve_kernel_definition(ggml::hrx::get_qwen_kernel_corpus(), "gfx1151", kernel_id);
+    REQUIRE(resolved.found());
+    return ggml::hrx::kernel_definition_name(*resolved.definition);
+}
+
+static void require_compile_parameter(const ggml::hrx::Dispatch & dispatch,
+                                      const char *                name,
+                                      const std::string &         value) {
+    const auto found = dispatch.kernel.compile_parameters.find(name);
+    REQUIRE(found != dispatch.kernel.compile_parameters.end());
+    REQUIRE(found->second == value);
+}
+
 static std::vector<size_t> traversal_indices(const ggml::hrx::Graph & graph) {
     const ggml::hrx::GraphTraversalOrder order = ggml::hrx::GraphTraversalOrder::build(graph);
     std::vector<size_t>                  indices;
@@ -118,6 +145,104 @@ static void run_status_checks() {
     REQUIRE(status.errors()[2] == "third");
 }
 
+static bool has_dispatch_registration(const std::vector<ggml::hrx::DispatchRegistration> & registrations,
+                                      const char *                                         name) {
+    for (const ggml::hrx::DispatchRegistration & registration : registrations) {
+        if (std::string(registration.name) == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool match_test_single_dispatch(const ggml::hrx::DispatchMatchContext & context,
+                                       ggml::hrx::DispatchMatch &              match) {
+    ggml::hrx::Dispatch dispatch;
+    dispatch.kernel.integer_parameters.emplace("route", 1);
+    match.covered_nodes.push_back(context.root_index);
+    match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
+
+static bool match_test_fused_dispatch(const ggml::hrx::DispatchMatchContext & context,
+                                      ggml::hrx::DispatchMatch &              match) {
+    ggml::hrx::Dispatch dispatch;
+    dispatch.kernel.integer_parameters.emplace("route", 2);
+    match.covered_nodes.push_back(context.root_index);
+    match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
+
+static bool match_test_wrong_root_dispatch(const ggml::hrx::DispatchMatchContext & context,
+                                           ggml::hrx::DispatchMatch &              match) {
+    ggml::hrx::Dispatch dispatch;
+    dispatch.kernel.integer_parameters.emplace("route", 3);
+    match.covered_nodes.push_back(context.root_index);
+    match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
+
+static void run_dispatch_registry_checks() {
+    const ggml::hrx::DispatchRegistry & registry = test_dispatch_registry();
+    REQUIRE(ggml::hrx::find_dispatch_registry({ "gfx1100" }) != nullptr);
+    REQUIRE(ggml::hrx::find_dispatch_registry({ "gfx1151" }) != nullptr);
+    REQUIRE(ggml::hrx::find_dispatch_registry({ "gfx0000" }) == nullptr);
+
+    REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_ADD), "common.add_f32"));
+    REQUIRE(
+        has_dispatch_registration(registry.registrations_for_root(GGML_OP_MUL_MAT), "qwen.matmul.dense_q4k_f16_wmma"));
+    REQUIRE(
+        has_dispatch_registration(registry.registrations_for_root(GGML_OP_MUL_MAT), "qwen.matmul.dense_q6k_f16_wmma"));
+    REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_MUL_MAT),
+                                      "qwen.matmul.router_projection_f32_four_row_wave32"));
+    REQUIRE(
+        has_dispatch_registration(registry.registrations_for_root(GGML_OP_RMS_NORM), "qwen.rmsnorm_f32.mul_weight"));
+    REQUIRE(registry.single_op_registrations().size() >= 4);
+
+    ggml::hrx::DispatchRegistryBuilder builder;
+    builder.add({
+        "test.single_add",
+        GGML_OP_ADD,
+        ggml::hrx::DispatchMatchKind::SingleOp,
+        1000,
+        ggml::hrx::DispatchSource::Common,
+        match_test_single_dispatch,
+    });
+    builder.add({
+        "test.fused_add",
+        GGML_OP_ADD,
+        ggml::hrx::DispatchMatchKind::Fused,
+        0,
+        ggml::hrx::DispatchSource::Common,
+        match_test_fused_dispatch,
+    });
+    builder.add({
+        "test.wrong_root",
+        GGML_OP_MUL_MAT,
+        ggml::hrx::DispatchMatchKind::Fused,
+        2000,
+        ggml::hrx::DispatchSource::Common,
+        match_test_wrong_root_dispatch,
+    });
+    const ggml::hrx::DispatchRegistry ordering_registry = builder.build();
+
+    ggml::hrx::Graph graph;
+    graph.add_node(GGML_OP_ADD, ggml::hrx::ValueId(0), {});
+    REQUIRE(graph.build_index().success());
+
+    const std::vector<bool>               covered_nodes(graph.nodes().size(), false);
+    const ggml::hrx::DispatchMatchContext context = {
+        graph,
+        &graph.nodes().front(),
+        0,
+        covered_nodes,
+    };
+    ggml::hrx::DispatchMatch match;
+    REQUIRE(ordering_registry.match(context, match));
+    REQUIRE(match.dispatches.size() == 1);
+    REQUIRE(match.dispatches.front().kernel.integer_parameters.at("route") == 2);
+}
+
 static void run_graph_import_checks() {
     ggml_init_params params = {};
     params.mem_size         = 256 * 1024;
@@ -141,7 +266,7 @@ static void run_graph_import_checks() {
     REQUIRE(node->op == GGML_OP_ADD);
     REQUIRE(node->inputs.size() == 2);
     REQUIRE(node->inputs[0] == node->inputs[1]);
-    REQUIRE(ggml::hrx::DispatchScheduler::supports_node(imported.graph, node));
+    REQUIRE(ggml::hrx::DispatchScheduler::supports_node(imported.graph, node, test_dispatch_target()));
 
     const ggml::hrx::Value * a_value   = imported.graph.values().find_tensor(a);
     const ggml::hrx::Value * out_value = imported.graph.values().find_tensor(out);
@@ -158,7 +283,7 @@ static void run_graph_import_checks() {
     REQUIRE(contains_value_id(external_ids, out_value->id));
 
     ggml::hrx::DispatchScheduler scheduler;
-    REQUIRE(scheduler.schedule_graph(imported.graph));
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
     REQUIRE(scheduler.plan().valid());
     REQUIRE(scheduler.plan().dispatches.size() == 1);
     REQUIRE(scheduler.plan().dispatches.front().bindings.size() == 3);
@@ -473,7 +598,7 @@ static void run_graph_index_checks() {
     REQUIRE(consumers.front() == mul_node);
 
     ggml::hrx::DispatchScheduler scheduler;
-    REQUIRE(scheduler.schedule_graph(imported.graph));
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
     REQUIRE(scheduler.plan().valid());
     REQUIRE(scheduler.plan().dispatches.size() == 1);
 
@@ -634,6 +759,145 @@ static void run_graph_traversal_checks() {
     }
 }
 
+static void schedule_single_matmul_command(ggml_context * ctx,
+                                           ggml_tensor *  output,
+                                           const char *   expected_kernel_name,
+                                           int64_t        expected_token_count,
+                                           int64_t        expected_input_size,
+                                           int64_t        expected_output_size) {
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    REQUIRE(imported.graph.nodes().size() == 1);
+    REQUIRE(imported.graph.nodes()[0].op == GGML_OP_MUL_MAT);
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 1);
+
+    const ggml::hrx::Dispatch & dispatch    = scheduler.plan().dispatches.front();
+    const std::string           kernel_name = kernel_name_for_id(dispatch.kernel.kernel_id);
+    REQUIRE(kernel_name == expected_kernel_name);
+    REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == expected_token_count);
+    REQUIRE(dispatch.bindings.size() == 3);
+    require_compile_parameter(dispatch, "qwen3_moe.workload.token_capacity", std::to_string(expected_token_count));
+    if (string_contains(kernel_name, "dense_linear")) {
+        require_compile_parameter(dispatch, "qwen3_moe.dense_quantized.input_size",
+                                  std::to_string(expected_input_size));
+        require_compile_parameter(dispatch, "qwen3_moe.dense_quantized.output_size",
+                                  std::to_string(expected_output_size));
+        require_compile_parameter(dispatch, "qwen3_moe.dense_quantized.output_accumulation", "0");
+    } else {
+        require_compile_parameter(dispatch, "qwen3_moe.model.hidden_size", std::to_string(expected_input_size));
+        require_compile_parameter(dispatch, "qwen3_moe.router.expert_count", std::to_string(expected_output_size));
+    }
+
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(commands.valid());
+    REQUIRE(commands.commands.size() == 1);
+    REQUIRE(command_program_verifies(commands));
+    REQUIRE(commands.commands.front().bindings.size() == 3);
+    REQUIRE(commands.commands.front().bindings[0].name == "input");
+    REQUIRE(commands.commands.front().bindings[1].name == "weight");
+    REQUIRE(commands.commands.front().bindings[2].name == "output");
+}
+
+static bool matmul_graph_is_supported(ggml_context * ctx, ggml_tensor * output) {
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    return ggml::hrx::DispatchScheduler::can_schedule_graph(imported.graph, test_dispatch_target());
+}
+
+static void run_qwen_matmul_dispatch_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 2 * 1024 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 2048, 128);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 4);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        schedule_single_matmul_command(ctx, output, "qwen3_moe:qwen3_moe_dense_linear_q4k_f16_wmma", 4, 2048, 128);
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q6_K, 2048, 128);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 2);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        schedule_single_matmul_command(ctx, output, "qwen3_moe:qwen3_moe_dense_linear_q6k_f16_wmma", 2, 2048, 128);
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 128);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 4);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        schedule_single_matmul_command(ctx, output, "qwen3_moe:qwen3_moe_router_projection_f32_four_row_wave32", 4,
+                                       2048, 128);
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, 2048, 128);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 4);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        REQUIRE(!matmul_graph_is_supported(ctx, output));
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 2048, 128);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, 2048, 4);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        REQUIRE(!matmul_graph_is_supported(ctx, output));
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 2048, 128, 2);
+        ggml_tensor * input  = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 2048, 4, 2);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        REQUIRE(!matmul_graph_is_supported(ctx, output));
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1024, 128);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1024, 4);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        REQUIRE(!matmul_graph_is_supported(ctx, output));
+    }
+
+    ggml_free(ctx);
+}
+
 static void bind_external_values(ggml::hrx::ValueMap & values) {
     uintptr_t buffer = 0x1000;
     for (const ggml::hrx::ValueId id : values.external_value_ids()) {
@@ -681,7 +945,7 @@ static void run_multi_dispatch_checks() {
     REQUIRE(imported.graph.nodes()[1].output == out1_value->id);
 
     ggml::hrx::DispatchScheduler scheduler;
-    REQUIRE(scheduler.schedule_graph(imported.graph));
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
     REQUIRE(scheduler.plan().valid());
     REQUIRE(scheduler.plan().dispatches.size() == 2);
 
@@ -746,7 +1010,7 @@ static void run_transient_import_checks() {
         !imported.graph.values().bind_buffer(sum_value->id, { dummy_hrx_buffer(0x3000), 0, sum_value->byte_count }));
 
     ggml::hrx::DispatchScheduler scheduler;
-    REQUIRE(!scheduler.schedule_graph(imported.graph));
+    REQUIRE(!scheduler.schedule_graph(imported.graph, test_dispatch_target()));
     REQUIRE(!scheduler.plan().valid());
     REQUIRE(scheduler.plan().dispatches.empty());
     REQUIRE(status_contains(scheduler.plan().status, "unsupported HRX node 1"));
@@ -787,7 +1051,7 @@ static void run_chained_dispatch_requires_transients() {
     REQUIRE(sum_value->kind == ggml::hrx::ValueKind::Transient);
 
     ggml::hrx::DispatchScheduler scheduler;
-    REQUIRE(scheduler.schedule_graph(imported.graph));
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
     REQUIRE(scheduler.plan().valid());
     REQUIRE(scheduler.plan().dispatches.size() == 2);
 
@@ -945,7 +1209,7 @@ static void run_multiple_transient_plan_checks() {
     REQUIRE(sum1_value->kind == ggml::hrx::ValueKind::Transient);
 
     ggml::hrx::DispatchScheduler scheduler;
-    REQUIRE(scheduler.schedule_graph(imported.graph));
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
     REQUIRE(scheduler.plan().valid());
     REQUIRE(scheduler.plan().dispatches.size() == 3);
 
@@ -1454,9 +1718,11 @@ static void run_unsupported_op_fails() {
 
 int main() {
     run_status_checks();
+    run_dispatch_registry_checks();
     run_graph_import_checks();
     run_graph_index_checks();
     run_graph_traversal_checks();
+    run_qwen_matmul_dispatch_checks();
     run_multi_dispatch_checks();
     run_transient_import_checks();
     run_chained_dispatch_requires_transients();

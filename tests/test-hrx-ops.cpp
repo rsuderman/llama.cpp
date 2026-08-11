@@ -36,6 +36,24 @@ static std::vector<float> make_weight(int64_t hidden_size) {
     return data;
 }
 
+static std::vector<float> make_router_input(int64_t hidden_size, int64_t token_count) {
+    std::vector<float> data(hidden_size * token_count);
+    for (int64_t i = 0; i < static_cast<int64_t>(data.size()); ++i) {
+        data[i] = static_cast<float>((i % 41) - 20) * 0.01f;
+    }
+    return data;
+}
+
+static std::vector<float> make_router_weight(int64_t hidden_size, int64_t expert_count) {
+    std::vector<float> data(hidden_size * expert_count);
+    for (int64_t expert = 0; expert < expert_count; ++expert) {
+        for (int64_t column = 0; column < hidden_size; ++column) {
+            data[expert * hidden_size + column] = static_cast<float>(((expert + column) % 31) - 15) * 0.0025f;
+        }
+    }
+    return data;
+}
+
 static std::vector<float> rmsnorm_mul_reference(const std::vector<float> & input,
                                                 const std::vector<float> & weight,
                                                 int64_t                    hidden_size,
@@ -50,6 +68,24 @@ static std::vector<float> rmsnorm_mul_reference(const std::vector<float> & input
         const float scale = 1.0f / std::sqrt(sum_squares / static_cast<float>(hidden_size) + kQwenRmsNormEps);
         for (int64_t column = 0; column < hidden_size; ++column) {
             output[token * hidden_size + column] = input[token * hidden_size + column] * scale * weight[column];
+        }
+    }
+    return output;
+}
+
+static std::vector<float> router_projection_reference(const std::vector<float> & input,
+                                                      const std::vector<float> & weight,
+                                                      int64_t                    hidden_size,
+                                                      int64_t                    expert_count,
+                                                      int64_t                    token_count) {
+    std::vector<float> output(expert_count * token_count);
+    for (int64_t token = 0; token < token_count; ++token) {
+        for (int64_t expert = 0; expert < expert_count; ++expert) {
+            float sum = 0.0f;
+            for (int64_t column = 0; column < hidden_size; ++column) {
+                sum += input[token * hidden_size + column] * weight[expert * hidden_size + column];
+            }
+            output[token * expert_count + expert] = sum;
         }
     }
     return output;
@@ -166,6 +202,58 @@ static void run_rmsnorm_mul_case(int64_t hidden_size, int64_t token_count) {
     ggml_backend_free(backend);
 }
 
+static void run_router_projection_case(int64_t token_count) {
+    static constexpr int64_t kHiddenSize  = 2048;
+    static constexpr int64_t kExpertCount = 128;
+
+    ggml_backend_t backend = ggml_backend_hrx_init(0);
+    REQUIRE(backend != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size         = static_cast<size_t>(
+        (kHiddenSize * token_count + kHiddenSize * kExpertCount + kExpertCount * token_count) * sizeof(float) * 4 +
+        1024 * 1024);
+    params.no_alloc    = true;
+    ggml_context * ctx = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kHiddenSize, kExpertCount);
+    ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kHiddenSize, token_count);
+    REQUIRE(weight != nullptr);
+    REQUIRE(input != nullptr);
+    ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+    REQUIRE(output != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    REQUIRE(buffer != nullptr);
+
+    const std::vector<float> input_data  = make_router_input(kHiddenSize, token_count);
+    const std::vector<float> weight_data = make_router_weight(kHiddenSize, kExpertCount);
+    const std::vector<float> expected =
+        router_projection_reference(input_data, weight_data, kHiddenSize, kExpertCount, token_count);
+
+    ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+    ggml_backend_tensor_set(weight, weight_data.data(), 0, weight_data.size() * sizeof(float));
+
+    REQUIRE(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(backend);
+
+    std::vector<float> actual(expected.size());
+    ggml_backend_tensor_get(output, actual.data(), 0, actual.size() * sizeof(float));
+    for (size_t i = 0; i < actual.size(); ++i) {
+        const float diff = std::fabs(actual[i] - expected[i]);
+        REQUIRE(diff <= 1.0e-2f);
+    }
+
+    ggml_backend_buffer_free(buffer);
+    ggml_free(ctx);
+    ggml_backend_free(backend);
+}
+
 int main() {
     run_rmsnorm_support_checks();
 
@@ -177,5 +265,6 @@ int main() {
     run_rmsnorm_mul_case(256, 1);
     run_rmsnorm_mul_case(256, 4);
     run_rmsnorm_mul_case(2048, 1);
+    run_router_projection_case(4);
     return 0;
 }

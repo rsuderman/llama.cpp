@@ -1,6 +1,5 @@
 #include "dispatch-rmsnorm.h"
 
-#include "dispatch-scheduler.h"
 #include "ggml.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
@@ -144,48 +143,47 @@ static std::string to_config_value(int64_t value) {
 
 }  // namespace
 
-bool supports_qwen_rmsnorm_f32_dispatch(const Graph & graph, const GraphNode * node) {
-    if (node == nullptr || !graph.has_index()) {
+static bool match_qwen_rmsnorm_f32_dispatch(const DispatchMatchContext & context, DispatchMatch & match) {
+    const std::vector<GraphNode> & nodes = context.graph.nodes();
+    if (context.root_index >= nodes.size()) {
         return false;
     }
-    size_t node_index = 0;
-    if (!graph.index().node_index(node, node_index)) {
-        return false;
-    }
-    return match_qwen_rmsnorm_f32(graph, node, node_index).matched();
-}
-
-bool try_match_qwen_rmsnorm_f32_dispatch(const Graph &       graph,
-                                         size_t              node_index,
-                                         std::vector<bool> & covered_nodes,
-                                         DispatchScheduler & scheduler) {
-    const std::vector<GraphNode> & nodes = graph.nodes();
-    if (node_index >= nodes.size()) {
-        return false;
-    }
-    const RmsNormMatch match = match_qwen_rmsnorm_f32(graph, &nodes[node_index], node_index);
-    if (!match.matched() || match.rms_node_index >= covered_nodes.size() ||
-        match.mul_node_index >= covered_nodes.size() || covered_nodes[match.rms_node_index] ||
-        covered_nodes[match.mul_node_index]) {
+    const RmsNormMatch rms_match =
+        match_qwen_rmsnorm_f32(context.graph, &nodes[context.root_index], context.root_index);
+    if (!rms_match.matched() || rms_match.rms_node_index >= context.covered_nodes.size() ||
+        rms_match.mul_node_index >= context.covered_nodes.size() || context.covered_nodes[rms_match.rms_node_index] ||
+        context.covered_nodes[rms_match.mul_node_index]) {
         return false;
     }
 
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kQwenRmsNormF32Kernel);
-    dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
-    dispatch.kernel.compile_parameters.emplace("qwen3_moe.model.hidden_size", to_config_value(match.hidden_size));
+    dispatch.kernel.integer_parameters.emplace("token_count", rms_match.token_count);
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.model.hidden_size", to_config_value(rms_match.hidden_size));
     dispatch.kernel.compile_parameters.emplace("qwen3_moe.model.rms_epsilon", "0.000001");
-    dispatch.kernel.compile_parameters.emplace("qwen3_moe.workload.token_capacity", to_config_value(match.token_count));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.workload.token_capacity",
+                                               to_config_value(rms_match.token_count));
     dispatch.kernel.compile_parameters.emplace("ggml.quantize_q8_1_x4.group_capacity",
-                                               to_config_value(match.q8_group_count));
-    dispatch.bindings.push_back({ match.input->id, 0, match.input->byte_count });
-    dispatch.bindings.push_back({ match.weight->id, 0, match.weight->byte_count });
-    dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
+                                               to_config_value(rms_match.q8_group_count));
+    dispatch.bindings.push_back({ rms_match.input->id, 0, rms_match.input->byte_count });
+    dispatch.bindings.push_back({ rms_match.weight->id, 0, rms_match.weight->byte_count });
+    dispatch.bindings.push_back({ rms_match.output->id, 0, rms_match.output->byte_count });
 
-    scheduler.enqueue(std::move(dispatch));
-    covered_nodes[match.rms_node_index] = true;
-    covered_nodes[match.mul_node_index] = true;
+    match.covered_nodes.push_back(rms_match.rms_node_index);
+    match.covered_nodes.push_back(rms_match.mul_node_index);
+    match.dispatches.push_back(std::move(dispatch));
     return true;
+}
+
+void register_qwen_rmsnorm_dispatches(DispatchRegistryBuilder & registry) {
+    registry.add({
+        "qwen.rmsnorm_f32.mul_weight",
+        GGML_OP_RMS_NORM,
+        DispatchMatchKind::Fused,
+        1000,
+        DispatchSource::Qwen,
+        match_qwen_rmsnorm_f32_dispatch,
+    });
 }
 
 }  // namespace ggml::hrx

@@ -472,8 +472,7 @@ static ggml_backend_buffer_type_t device_buffer_type(ggml_backend_dev_t device) 
 }
 
 static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op) {
-    GGML_UNUSED(device);
-    return ggml::hrx::can_execute_standalone_op_as_graph(op);
+    return ggml::hrx::can_execute_standalone_op_as_graph(op, device_context(device)->architecture);
 }
 
 static bool device_supports_buffer_type(ggml_backend_dev_t device, ggml_backend_buffer_type_t buft) {

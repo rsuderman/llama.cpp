@@ -1,6 +1,7 @@
 #pragma once
 
 #include "command-plan.h"
+#include "dispatch_registration/dispatch-registry.h"
 #include "graph/graph.h"
 
 #include <string>
@@ -10,8 +11,7 @@ namespace ggml::hrx {
 
 class DispatchScheduler {
   public:
-    void enqueue(Dispatch dispatch);
-    bool schedule_graph(const Graph & graph);
+    bool schedule_graph(const Graph & graph, const DispatchTarget & target);
 
     const CommandPlan & plan() const { return plan_; }
 
@@ -22,8 +22,8 @@ class DispatchScheduler {
         return plan_.status.errors().empty() ? empty : plan_.status.errors().front();
     }
 
-    static bool supports_node(const Graph & graph, const GraphNode * node);
-    static bool can_schedule_graph(const Graph & graph);
+    static bool supports_node(const Graph & graph, const GraphNode * node, const DispatchTarget & target);
+    static bool can_schedule_graph(const Graph & graph, const DispatchTarget & target);
 
   private:
     CommandPlan plan_;

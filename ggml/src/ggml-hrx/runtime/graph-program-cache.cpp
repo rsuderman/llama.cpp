@@ -281,9 +281,8 @@ std::unique_ptr<GraphProgram> GraphProgramCache::build_program(const ggml_cgraph
         errors.append(imported.status);
         return nullptr;
     }
-
     DispatchScheduler scheduler;
-    if (!scheduler.schedule_graph(imported.graph)) {
+    if (!scheduler.schedule_graph(imported.graph, { target })) {
         errors.append(scheduler.plan().status);
         return nullptr;
     }
@@ -300,7 +299,7 @@ std::unique_ptr<GraphProgram> GraphProgramCache::build_program(const ggml_cgraph
                                           std::move(command_shape));
 }
 
-bool can_execute_standalone_op_as_graph(const ggml_tensor * op) {
+bool can_execute_standalone_op_as_graph(const ggml_tensor * op, const std::string & target) {
     if (op == nullptr) {
         return false;
     }
@@ -314,7 +313,10 @@ bool can_execute_standalone_op_as_graph(const ggml_tensor * op) {
     }
     const ValueId     output = graph.values().get_or_add_tensor_value(op, ValueKind::External);
     const GraphNode & node   = graph.add_node(op->op, output, std::move(inputs));
-    return DispatchScheduler::supports_node(graph, &node);
+    if (!graph.build_index().success()) {
+        return false;
+    }
+    return DispatchScheduler::supports_node(graph, &node, { target });
 }
 
 }  // namespace ggml::hrx

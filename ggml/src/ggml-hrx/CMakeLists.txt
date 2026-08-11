@@ -123,13 +123,17 @@ ggml_add_backend_library(ggml-hrx
     dispatch/command-program.h
     dispatch/command-program-resolver.cpp
     dispatch/command-program-resolver.h
-    dispatch/dispatch-add.cpp
-    dispatch/dispatch-add.h
-    dispatch/dispatch-rmsnorm.cpp
-    dispatch/dispatch-rmsnorm.h
     dispatch/dispatch-scheduler.cpp
     dispatch/dispatch-scheduler.h
     dispatch/dispatch.h
+    dispatch_registration/dispatch-add.cpp
+    dispatch_registration/dispatch-add.h
+    dispatch_registration/dispatch-qwen-matmul.cpp
+    dispatch_registration/dispatch-qwen-matmul.h
+    dispatch_registration/dispatch-registry.cpp
+    dispatch_registration/dispatch-registry.h
+    dispatch_registration/dispatch-rmsnorm.cpp
+    dispatch_registration/dispatch-rmsnorm.h
     status.h
     graph/graph.cpp
     graph/graph.h
