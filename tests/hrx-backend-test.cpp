@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -94,7 +95,9 @@ static void require_compile_parameter(const ggml::hrx::Dispatch & dispatch,
     REQUIRE(found->second == value);
 }
 
-static constexpr int64_t kQwenFlashHeadSize = 128;
+static constexpr int64_t kQwenFlashHeadSize     = 128;
+static constexpr int64_t kQwenRouterExpertCount = 128;
+static constexpr int64_t kQwenRouterRouteCount  = 8;
 
 static void set_qwen_flash_query_layout(ggml_tensor * tensor, int64_t head_count) {
     REQUIRE(tensor != nullptr);
@@ -149,6 +152,38 @@ static ggml_tensor * build_qwen_flash_attention_graph(ggml_context * ctx,
         REQUIRE(sinks != nullptr);
         ggml_flash_attn_ext_add_sinks(output, sinks);
     }
+    return output;
+}
+
+static ggml_tensor * build_qwen_router_top8_graph(ggml_context *  ctx,
+                                                  ggml_tensor *   logits,
+                                                  ggml_tensor **  route_ids   = nullptr,
+                                                  ggml_sort_order order       = GGML_SORT_ORDER_DESC,
+                                                  int64_t         route_count = kQwenRouterRouteCount,
+                                                  float           clamp_min   = 1.0e-7f) {
+    ggml_tensor * probs = ggml_soft_max(ctx, logits);
+    REQUIRE(probs != nullptr);
+    ggml_tensor * probs_reshaped = ggml_reshape_3d(ctx, probs, 1, logits->ne[0], logits->ne[1]);
+    REQUIRE(probs_reshaped != nullptr);
+    ggml_tensor * argsort = ggml_argsort(ctx, probs, order);
+    REQUIRE(argsort != nullptr);
+    ggml_tensor * topk = ggml_view_2d(ctx, argsort, route_count, logits->ne[1], argsort->nb[1], 0);
+    REQUIRE(topk != nullptr);
+    if (route_ids != nullptr) {
+        *route_ids = topk;
+    }
+    ggml_tensor * selected = ggml_get_rows(ctx, probs_reshaped, topk);
+    REQUIRE(selected != nullptr);
+    ggml_tensor * selected_reshaped = ggml_reshape_2d(ctx, selected, route_count, logits->ne[1]);
+    REQUIRE(selected_reshaped != nullptr);
+    ggml_tensor * sum = ggml_sum_rows(ctx, selected_reshaped);
+    REQUIRE(sum != nullptr);
+    ggml_tensor * clamped_sum = ggml_clamp(ctx, sum, clamp_min, std::numeric_limits<float>::infinity());
+    REQUIRE(clamped_sum != nullptr);
+    ggml_tensor * normalized = ggml_div(ctx, selected_reshaped, clamped_sum);
+    REQUIRE(normalized != nullptr);
+    ggml_tensor * output = ggml_reshape_3d(ctx, normalized, 1, route_count, logits->ne[1]);
+    REQUIRE(output != nullptr);
     return output;
 }
 
@@ -257,6 +292,7 @@ static void run_dispatch_registry_checks() {
         has_dispatch_registration(registry.registrations_for_root(GGML_OP_RMS_NORM), "qwen.rmsnorm_f32.mul_weight"));
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_FLASH_ATTN_EXT),
                                       "qwen.flash_attention_f32_f16_wmma"));
+    REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_SOFT_MAX), "qwen.router.top8_f32"));
     REQUIRE(registry.single_op_registrations().size() >= 5);
 
     ggml::hrx::DispatchRegistryBuilder builder;
@@ -1045,6 +1081,100 @@ static void run_qwen_matmul_dispatch_checks() {
         ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
         REQUIRE(output != nullptr);
         REQUIRE(!matmul_graph_is_supported(ctx, output));
+    }
+
+    ggml_free(ctx);
+}
+
+static void schedule_qwen_router_top8_command(ggml_context * ctx, ggml_tensor * output, ggml_tensor * route_ids) {
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    REQUIRE(imported.graph.nodes().size() == 10);
+
+    const ggml::hrx::Value * route_ids_value = imported.graph.values().find_tensor(route_ids);
+    const ggml::hrx::Value * output_value    = imported.graph.values().find_tensor(output);
+    REQUIRE(route_ids_value != nullptr);
+    REQUIRE(output_value != nullptr);
+    REQUIRE(route_ids_value->kind == ggml::hrx::ValueKind::Transient);
+    REQUIRE(output_value->kind == ggml::hrx::ValueKind::External);
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 1);
+
+    const ggml::hrx::Dispatch & dispatch    = scheduler.plan().dispatches.front();
+    const std::string           kernel_name = kernel_name_for_id(dispatch.kernel.kernel_id);
+    REQUIRE(kernel_name == "qwen3_moe:qwen3_moe_router_top8_f32");
+    REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == output->ne[2]);
+    REQUIRE(dispatch.kernel.integer_parameters.at("route_id_stride") == route_ids->nb[1] / sizeof(int32_t));
+    REQUIRE(dispatch.bindings.size() == 3);
+    REQUIRE(dispatch.bindings[1].value == route_ids_value->id);
+    REQUIRE(dispatch.bindings[1].length == static_cast<size_t>(output->ne[2]) * route_ids->nb[1]);
+    REQUIRE(dispatch.bindings[2].value == output_value->id);
+    require_compile_parameter(dispatch, "qwen3_moe.router.expert_count", "128");
+    require_compile_parameter(dispatch, "qwen3_moe.router.route_count", "8");
+    require_compile_parameter(dispatch, "qwen3_moe.workload.token_capacity", std::to_string(output->ne[2]));
+
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(commands.valid());
+    REQUIRE(commands.commands.size() == 1);
+    REQUIRE(command_program_verifies(commands));
+    REQUIRE(commands.commands.front().bindings.size() == 3);
+    REQUIRE(commands.commands.front().bindings[0].name == "logits");
+    REQUIRE(commands.commands.front().bindings[1].name == "route_ids");
+    REQUIRE(commands.commands.front().bindings[1].origin == ggml::hrx::CommandBindingOrigin::Transient);
+    REQUIRE(commands.commands.front().bindings[1].length == dispatch.bindings[1].length);
+    REQUIRE(commands.commands.front().bindings[2].name == "route_weights");
+    REQUIRE(commands.transients.allocations.size() == 1);
+    const ggml::hrx::TransientAllocation * route_ids_allocation =
+        ggml::hrx::find_transient_allocation(commands.transients, route_ids_value->id);
+    REQUIRE(route_ids_allocation != nullptr);
+    REQUIRE(route_ids_allocation->size == dispatch.bindings[1].length);
+}
+
+static void run_qwen_router_top8_dispatch_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 2 * 1024 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    {
+        ggml_tensor * logits    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenRouterExpertCount, 4);
+        ggml_tensor * route_ids = nullptr;
+        REQUIRE(logits != nullptr);
+        ggml_tensor * output = build_qwen_router_top8_graph(ctx, logits, &route_ids);
+        schedule_qwen_router_top8_command(ctx, output, route_ids);
+    }
+    {
+        ggml_tensor * logits = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenRouterExpertCount, 4);
+        REQUIRE(logits != nullptr);
+        ggml_tensor * output = build_qwen_router_top8_graph(ctx, logits, nullptr, GGML_SORT_ORDER_ASC);
+        REQUIRE(!graph_is_supported(ctx, output));
+    }
+    {
+        ggml_tensor * logits = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenRouterExpertCount, 4);
+        REQUIRE(logits != nullptr);
+        ggml_tensor * output = build_qwen_router_top8_graph(ctx, logits, nullptr, GGML_SORT_ORDER_DESC, 4);
+        REQUIRE(!graph_is_supported(ctx, output));
+    }
+    {
+        ggml_tensor * logits = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 64, 4);
+        REQUIRE(logits != nullptr);
+        ggml_tensor * output = build_qwen_router_top8_graph(ctx, logits);
+        REQUIRE(!graph_is_supported(ctx, output));
+    }
+    {
+        ggml_tensor * logits = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, kQwenRouterExpertCount, 4);
+        REQUIRE(logits != nullptr);
+        ggml_tensor * output = build_qwen_router_top8_graph(ctx, logits);
+        REQUIRE(!graph_is_supported(ctx, output));
     }
 
     ggml_free(ctx);
@@ -1876,6 +2006,7 @@ int main() {
     run_graph_traversal_checks();
     run_qwen_flash_attention_dispatch_checks();
     run_qwen_matmul_dispatch_checks();
+    run_qwen_router_top8_dispatch_checks();
     run_multi_dispatch_checks();
     run_transient_import_checks();
     run_chained_dispatch_requires_transients();

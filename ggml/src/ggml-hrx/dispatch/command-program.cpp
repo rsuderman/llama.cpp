@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -32,17 +33,30 @@ static CommandBindingOrigin command_binding_origin(ValueKind kind) {
     return CommandBindingOrigin::GraphValue;
 }
 
-static bool has_transient_allocation(const TransientPlan & plan, ValueId value) {
-    return find_transient_allocation(plan, value) != nullptr;
+struct TransientAllocationRequest {
+    ValueId value;
+    size_t  required_size = 0;
+};
+
+static void add_transient_allocation_request(std::vector<TransientAllocationRequest> & requests,
+                                             ValueId                                   value,
+                                             size_t                                    required_size) {
+    for (TransientAllocationRequest & request : requests) {
+        if (request.value == value) {
+            request.required_size = std::max(request.required_size, required_size);
+            return;
+        }
+    }
+    requests.push_back({ value, required_size });
 }
 
-static void add_transient_allocation(const Graph & graph, ValueId value, TransientPlan & plan, Status & errors) {
-    if (has_transient_allocation(plan, value)) {
-        return;
-    }
-    const Value * graph_value = graph.values().find(value);
+static void add_transient_allocation(const Graph &                      graph,
+                                     const TransientAllocationRequest & request,
+                                     TransientPlan &                    plan,
+                                     Status &                           errors) {
+    const Value * graph_value = graph.values().find(request.value);
     if (graph_value == nullptr) {
-        errors.log("transient value %d is missing from graph values", value.value);
+        errors.log("transient value %d is missing from graph values", request.value.value);
         return;
     }
     if (graph_value->kind != ValueKind::Transient) {
@@ -50,25 +64,31 @@ static void add_transient_allocation(const Graph & graph, ValueId value, Transie
     }
 
     TransientAllocation allocation;
-    allocation.value        = value;
-    allocation.size         = graph_value->byte_count;
+    allocation.value        = request.value;
+    allocation.size         = std::max(graph_value->byte_count, request.required_size);
     allocation.alignment    = 256;
     allocation.arena_offset = align_up(plan.arena_size, allocation.alignment);
     plan.arena_size         = allocation.arena_offset + allocation.size;
     plan.allocations.push_back(allocation);
 }
 
-static TransientPlan build_transient_plan(const Graph &                graph,
-                                          const std::vector<Command> & commands,
-                                          Status &                   errors) {
+static TransientPlan build_transient_plan(const Graph & graph, const std::vector<Command> & commands, Status & errors) {
     TransientPlan plan;
     plan.arena_alignment = 256;
+    std::vector<TransientAllocationRequest> requests;
     for (const Command & command : commands) {
         for (const CommandBinding & binding : command.bindings) {
             if (binding.origin == CommandBindingOrigin::Transient) {
-                add_transient_allocation(graph, binding.value, plan, errors);
+                if (binding.offset > std::numeric_limits<size_t>::max() - binding.length) {
+                    errors.log("transient value %d binding range overflows", binding.value.value);
+                    continue;
+                }
+                add_transient_allocation_request(requests, binding.value, binding.offset + binding.length);
             }
         }
+    }
+    for (const TransientAllocationRequest & request : requests) {
+        add_transient_allocation(graph, request, plan, errors);
     }
     plan.arena_size = align_up(plan.arena_size, plan.arena_alignment);
     return plan;

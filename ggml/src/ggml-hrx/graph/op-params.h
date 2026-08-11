@@ -19,7 +19,22 @@ struct FlashAttnExtParams {
     ggml_prec prec          = GGML_PREC_DEFAULT;
 };
 
-using OpParams = std::variant<std::monostate, RmsNormParams, FlashAttnExtParams>;
+struct SoftMaxParams {
+    float scale    = 0.0f;
+    float max_bias = 0.0f;
+};
+
+struct ArgsortParams {
+    ggml_sort_order order = GGML_SORT_ORDER_ASC;
+};
+
+struct ClampParams {
+    float min = 0.0f;
+    float max = 0.0f;
+};
+
+using OpParams =
+    std::variant<std::monostate, RmsNormParams, FlashAttnExtParams, SoftMaxParams, ArgsortParams, ClampParams>;
 
 template <typename T> const T * op_params_as(const OpParams & params) {
     return std::get_if<T>(&params);
