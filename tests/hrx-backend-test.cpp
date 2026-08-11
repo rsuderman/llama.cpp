@@ -1221,7 +1221,8 @@ static void schedule_qwen_attention_postprocess_command(ggml_context *          
                                                         int64_t                                 token_count,
                                                         int64_t                                 query_head_count,
                                                         int64_t                                 key_value_head_count,
-                                                        int64_t                                 cache_row_count) {
+                                                        int64_t                                 cache_row_count,
+                                                        bool expect_synthetic_inverse_frequencies = false) {
     ggml::hrx::GraphImportResult imported = import_qwen_attention_postprocess_graph(ctx, tensors);
 
     ggml::hrx::DispatchScheduler scheduler;
@@ -1270,6 +1271,17 @@ static void schedule_qwen_attention_postprocess_command(ggml_context *          
     REQUIRE(dispatch.bindings[9].value == query_output_value->id);
     REQUIRE(dispatch.bindings[10].value == key_cache_value->id);
     REQUIRE(dispatch.bindings[11].value == value_cache_value->id);
+    if (expect_synthetic_inverse_frequencies) {
+        REQUIRE(scheduler.plan().transients.size() == 1);
+        REQUIRE(scheduler.plan().constant_initializations.size() == 1);
+        REQUIRE(dispatch.bindings[8].value == scheduler.plan().transients[0].value);
+        REQUIRE(scheduler.plan().constant_initializations[0].value == dispatch.bindings[8].value);
+        REQUIRE(scheduler.plan().constant_initializations[0].data.size() ==
+                static_cast<size_t>(kQwenFlashHeadSize / 2) * sizeof(float));
+    } else {
+        REQUIRE(scheduler.plan().transients.empty());
+        REQUIRE(scheduler.plan().constant_initializations.empty());
+    }
 
     const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
         imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
@@ -1289,6 +1301,7 @@ static void schedule_qwen_attention_postprocess_command(ggml_context *          
     REQUIRE(commands.commands.back().bindings[9].name == "query_output");
     REQUIRE(commands.commands.back().bindings[10].name == "key_cache");
     REQUIRE(commands.commands.back().bindings[11].name == "value_cache");
+    REQUIRE(commands.constant_initializations.size() == (expect_synthetic_inverse_frequencies ? 1 : 0));
 }
 
 static void run_qwen_attention_postprocess_dispatch_checks() {
@@ -1319,8 +1332,7 @@ static void run_qwen_attention_postprocess_dispatch_checks() {
     {
         const QwenAttentionPostprocessTensors tensors =
             build_qwen_attention_postprocess_graph(ctx, 4, 4, 2, 16, 0.000001f, false);
-        ggml::hrx::GraphImportResult imported = import_qwen_attention_postprocess_graph(ctx, tensors);
-        REQUIRE(!ggml::hrx::DispatchScheduler::can_schedule_graph(imported.graph, test_dispatch_target()));
+        schedule_qwen_attention_postprocess_command(ctx, tensors, 4, 4, 2, 16, true);
     }
 
     ggml_free(ctx);

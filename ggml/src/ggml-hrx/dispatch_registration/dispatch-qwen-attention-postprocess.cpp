@@ -5,8 +5,10 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace ggml::hrx {
 namespace {
@@ -37,6 +39,28 @@ static bool is_supported_head_count(int64_t head_count) {
 
 static bool is_qwen_rms_norm_epsilon(float eps) {
     return eps >= 0.0000009f && eps <= 0.0000011f;
+}
+
+static bool is_qwen_implicit_rope_contract(const RopeParams & params) {
+    return params.n_dims == kQwenAttentionHeadSize && params.mode == GGML_ROPE_TYPE_NEOX &&
+           std::isfinite(params.freq_base) && params.freq_base > 0.0f && std::isfinite(params.freq_scale) &&
+           params.freq_scale > 0.0f && params.ext_factor == 0.0f && params.attn_factor == 1.0f;
+}
+
+static bool build_inverse_frequency_table(const GraphNode & rope, std::vector<uint8_t> & data) {
+    const RopeParams * params = op_params_as<RopeParams>(rope.params);
+    if (params == nullptr || !is_qwen_implicit_rope_contract(*params)) {
+        return false;
+    }
+
+    data.resize(static_cast<size_t>(params->n_dims / 2) * sizeof(float));
+    const float theta_scale = std::pow(params->freq_base, -2.0f / static_cast<float>(params->n_dims));
+    float       theta       = params->freq_scale;
+    for (int i = 0; i < params->n_dims / 2; ++i) {
+        std::memcpy(data.data() + static_cast<size_t>(i) * sizeof(float), &theta, sizeof(theta));
+        theta *= theta_scale;
+    }
+    return true;
 }
 
 static bool is_supported_cache_index_type(ggml_type type) {
@@ -86,25 +110,27 @@ static std::string to_config_value(int64_t value) {
 }
 
 struct NormRopeChain {
-    const GraphNode * projection_node = nullptr;
-    const GraphNode * reshape_node    = nullptr;
-    const GraphNode * rms_node        = nullptr;
-    const GraphNode * mul_node        = nullptr;
-    const GraphNode * rope_node       = nullptr;
-    const Value *     raw_input       = nullptr;
-    const Value *     reshaped        = nullptr;
-    const Value *     norm_weight     = nullptr;
-    const Value *     positions       = nullptr;
-    const Value *     inverse_freqs   = nullptr;
-    const Value *     output          = nullptr;
-    int64_t           token_count     = 0;
-    int64_t           head_count      = 0;
+    const GraphNode *    projection_node          = nullptr;
+    const GraphNode *    reshape_node             = nullptr;
+    const GraphNode *    rms_node                 = nullptr;
+    const GraphNode *    mul_node                 = nullptr;
+    const GraphNode *    rope_node                = nullptr;
+    const Value *        raw_input                = nullptr;
+    const Value *        reshaped                 = nullptr;
+    const Value *        norm_weight              = nullptr;
+    const Value *        positions                = nullptr;
+    const Value *        inverse_freqs            = nullptr;
+    size_t               inverse_freqs_byte_count = 0;
+    std::vector<uint8_t> inverse_freqs_data;
+    const Value *        output      = nullptr;
+    int64_t              token_count = 0;
+    int64_t              head_count  = 0;
 
     bool matched() const {
         return projection_node != nullptr && reshape_node != nullptr && rms_node != nullptr && mul_node != nullptr &&
                rope_node != nullptr && raw_input != nullptr && reshaped != nullptr && norm_weight != nullptr &&
-               positions != nullptr && inverse_freqs != nullptr && output != nullptr && token_count > 0 &&
-               head_count > 0;
+               positions != nullptr && (inverse_freqs != nullptr || !inverse_freqs_data.empty()) &&
+               inverse_freqs_byte_count > 0 && output != nullptr && token_count > 0 && head_count > 0;
     }
 };
 
@@ -149,6 +175,14 @@ struct AttentionPostprocessMatch {
 
     bool matched() const { return query.matched() && key.matched_key() && value.matched(); }
 };
+
+static bool matching_inverse_frequencies(const NormRopeChain & lhs, const NormRopeChain & rhs) {
+    if (lhs.inverse_freqs != nullptr || rhs.inverse_freqs != nullptr) {
+        return lhs.inverse_freqs != nullptr && rhs.inverse_freqs != nullptr &&
+               lhs.inverse_freqs->id == rhs.inverse_freqs->id;
+    }
+    return lhs.inverse_freqs_data == rhs.inverse_freqs_data;
+}
 
 static bool has_qwen_rope_params(const GraphNode & node) {
     const RopeParams * params = op_params_as<RopeParams>(node.params);
@@ -228,26 +262,41 @@ static bool match_norm_rope_chain_from_reshape(const Graph & graph, const GraphN
     }
 
     const GraphNode * rope = find_single_consumer_with_op(graph, mul->output, GGML_OP_ROPE);
-    if (rope == nullptr || rope->inputs.size() < 3 || rope->inputs[0] != mul->output || !has_qwen_rope_params(*rope)) {
+    if (rope == nullptr || rope->inputs.size() < 2 || rope->inputs.size() > 3 || rope->inputs[0] != mul->output ||
+        !has_qwen_rope_params(*rope)) {
         return false;
     }
-    const Value * positions     = graph_value(graph, rope->inputs[1]);
-    const Value * inverse_freqs = graph_value(graph, rope->inputs[2]);
-    const Value * output        = graph_value(graph, rope->output);
-    if (positions == nullptr || inverse_freqs == nullptr || output == nullptr || positions->type != GGML_TYPE_I32 ||
-        !is_shape(*positions, chain.token_count, 1, 1, 1) || !is_inverse_frequency_table(*inverse_freqs) ||
-        output->type != GGML_TYPE_F32 ||
+    const Value *        positions                = graph_value(graph, rope->inputs[1]);
+    const Value *        output                   = graph_value(graph, rope->output);
+    size_t               inverse_freqs_byte_count = 0;
+    const Value *        inverse_freqs            = nullptr;
+    std::vector<uint8_t> inverse_freqs_data;
+    if (rope->inputs.size() == 3) {
+        inverse_freqs = graph_value(graph, rope->inputs[2]);
+        if (inverse_freqs == nullptr || !is_inverse_frequency_table(*inverse_freqs)) {
+            return false;
+        }
+        inverse_freqs_byte_count = inverse_freqs->byte_count;
+    } else if (build_inverse_frequency_table(*rope, inverse_freqs_data)) {
+        inverse_freqs_byte_count = inverse_freqs_data.size();
+    } else {
+        return false;
+    }
+    if (positions == nullptr || output == nullptr || positions->type != GGML_TYPE_I32 ||
+        !is_shape(*positions, chain.token_count, 1, 1, 1) || output->type != GGML_TYPE_F32 ||
         !is_shape(*output, kQwenAttentionHeadSize, chain.head_count, chain.token_count, 1)) {
         return false;
     }
 
-    chain.rms_node      = rms;
-    chain.mul_node      = mul;
-    chain.rope_node     = rope;
-    chain.norm_weight   = norm_weight;
-    chain.positions     = positions;
-    chain.inverse_freqs = inverse_freqs;
-    chain.output        = output;
+    chain.rms_node                 = rms;
+    chain.mul_node                 = mul;
+    chain.rope_node                = rope;
+    chain.norm_weight              = norm_weight;
+    chain.positions                = positions;
+    chain.inverse_freqs            = inverse_freqs;
+    chain.inverse_freqs_byte_count = inverse_freqs_byte_count;
+    chain.inverse_freqs_data       = std::move(inverse_freqs_data);
+    chain.output                   = output;
     return true;
 }
 
@@ -398,7 +447,7 @@ static AttentionPostprocessMatch match_qwen_attention_postprocess(const Graph & 
     if (match.query.token_count != match.key.key.token_count || match.query.token_count != match.value.token_count ||
         match.key.key.head_count != match.value.head_count ||
         match.query.positions->id != match.key.key.positions->id ||
-        match.query.inverse_freqs->id != match.key.key.inverse_freqs->id ||
+        !matching_inverse_frequencies(match.query, match.key.key) ||
         match.key.cache_row_count != match.value.cache_row_count) {
         return {};
     }
@@ -441,8 +490,12 @@ static bool match_qwen_attention_postprocess_dispatch(const DispatchMatchContext
         return false;
     }
 
-    Dispatch dispatch;
-    dispatch.kernel = make_kernel_specialization(kQwenAttentionPostprocessF32F16Kernel);
+    Dispatch      dispatch;
+    const bool    synthetic_inverse_frequencies = match.query.inverse_freqs == nullptr;
+    const ValueId inverse_frequencies_value =
+        synthetic_inverse_frequencies ? context.next_plan_value : match.query.inverse_freqs->id;
+    const size_t inverse_frequencies_size = match.query.inverse_freqs_byte_count;
+    dispatch.kernel                       = make_kernel_specialization(kQwenAttentionPostprocessF32F16Kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", match.query.token_count);
     dispatch.kernel.integer_parameters.emplace("cache_row_count", match.key.cache_row_count);
     dispatch.kernel.compile_parameters.emplace("qwen3_moe.model.rms_epsilon", "0.000001");
@@ -462,12 +515,23 @@ static bool match_qwen_attention_postprocess_dispatch(const DispatchMatchContext
     dispatch.bindings.push_back({ match.value.raw_input->id, 0, match.value.raw_input->byte_count });
     dispatch.bindings.push_back({ match.query.norm_weight->id, 0, match.query.norm_weight->byte_count });
     dispatch.bindings.push_back({ match.key.key.norm_weight->id, 0, match.key.key.norm_weight->byte_count });
-    dispatch.bindings.push_back({ match.query.inverse_freqs->id, 0, match.query.inverse_freqs->byte_count });
+    dispatch.bindings.push_back({ inverse_frequencies_value, 0, inverse_frequencies_size });
     dispatch.bindings.push_back({ match.query.output->id, 0, match.query.output->byte_count });
     dispatch.bindings.push_back({ match.key.cache->id, 0, match.key.cache->byte_count });
     dispatch.bindings.push_back({ match.value.cache->id, 0, match.value.cache->byte_count });
 
     dispatch_match.dispatches.push_back(std::move(dispatch));
+    if (synthetic_inverse_frequencies) {
+        dispatch_match.transients.push_back({ inverse_frequencies_value,
+                                              "qwen.attention_postprocess.inverse_frequencies",
+                                              inverse_frequencies_size, 256 });
+        dispatch_match.constant_initializations.push_back({
+            inverse_frequencies_value,
+            "qwen.attention_postprocess.inverse_frequencies",
+            0,
+            match.query.inverse_freqs_data,
+        });
+    }
     return true;
 }
 
