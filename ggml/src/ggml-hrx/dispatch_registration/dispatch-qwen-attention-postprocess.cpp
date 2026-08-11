@@ -1,6 +1,7 @@
 #include "dispatch-qwen-attention-postprocess.h"
 
 #include "ggml.h"
+#include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
 #include <cmath>
@@ -86,23 +87,8 @@ static const GraphNode * producer_with_op(const Graph & graph, ValueId value, gg
     return producer != nullptr && producer->op == op ? producer : nullptr;
 }
 
-static bool node_index(const Graph & graph, const GraphNode * node, size_t & index) {
-    return node != nullptr && graph.index().node_index(node, index);
-}
-
 static bool append_covered_node(const DispatchMatchContext & context, const GraphNode * node, DispatchMatch & match) {
-    size_t index = 0;
-    if (!node_index(context.graph, node, index) || index >= context.covered_nodes.size() ||
-        context.covered_nodes[index]) {
-        return false;
-    }
-    for (const size_t covered : match.covered_nodes) {
-        if (covered == index) {
-            return true;
-        }
-    }
-    match.covered_nodes.push_back(index);
-    return true;
+    return append_covered_node_index_once(context.graph, context.covered_nodes, node, match.covered_nodes);
 }
 
 static std::string to_config_value(int64_t value) {
@@ -316,30 +302,9 @@ static bool match_norm_rope_chain_from_reshape(const Graph & graph, const GraphN
     return true;
 }
 
-static bool layout_op(ggml_op op) {
-    return op == GGML_OP_VIEW || op == GGML_OP_RESHAPE;
-}
-
-static const GraphNode * find_single_layout_consumer(const Graph & graph, ValueId value) {
-    const GraphNode * match = nullptr;
-    for (const GraphNode * consumer : graph.index().consumers(value)) {
-        if (consumer == nullptr || !layout_op(consumer->op)) {
-            continue;
-        }
-        if (match != nullptr) {
-            return nullptr;
-        }
-        match = consumer;
-    }
-    return match;
-}
-
 static const GraphNode * find_cache_read_layout(const Graph & graph, const Value & cache, int64_t head_count) {
     const GraphNode * match = nullptr;
-    for (const GraphNode * consumer : graph.index().consumers(cache.id)) {
-        if (consumer == nullptr || !layout_op(consumer->op)) {
-            continue;
-        }
+    for (const GraphNode * consumer : layout_alias_consumers(graph, cache.id)) {
         const Value * output = graph_value(graph, consumer->output);
         if (output == nullptr || output->type != GGML_TYPE_F16 || output->ne[0] != kQwenAttentionHeadSize ||
             output->ne[1] != head_count || output->ne[3] != 1) {
@@ -371,7 +336,7 @@ static bool match_key_publish_chain(const Graph & graph, const GraphNode * set_r
         return false;
     }
     const GraphNode * layout = graph.index().producer(set_rows->inputs[0]);
-    if (layout == nullptr || !layout_op(layout->op) || layout->inputs.size() != 1) {
+    if (layout == nullptr || !is_layout_alias_node(graph, *layout) || layout->inputs.size() != 1) {
         return false;
     }
 
@@ -425,7 +390,7 @@ static bool match_value_publish_chain(const Graph & graph, const GraphNode * set
         return false;
     }
     const GraphNode * layout = graph.index().producer(set_rows->inputs[0]);
-    if (layout == nullptr || !layout_op(layout->op) || layout->inputs.size() != 1) {
+    if (layout == nullptr || !is_layout_alias_node(graph, *layout) || layout->inputs.size() != 1) {
         return false;
     }
 
@@ -468,7 +433,7 @@ static bool match_value_publish_chain(const Graph & graph, const GraphNode * set
 
 static FlashInputLayoutChain match_flash_input_layouts(const Graph & graph, const AttentionPostprocessMatch & match) {
     FlashInputLayoutChain layouts;
-    const GraphNode *     query_layout = find_single_layout_consumer(graph, match.query.output->id);
+    const GraphNode *     query_layout = find_single_layout_alias_consumer(graph, match.query.output->id);
     if (query_layout == nullptr) {
         return layouts;
     }

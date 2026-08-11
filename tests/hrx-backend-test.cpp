@@ -9,6 +9,7 @@
 #include "ggml-hrx.h"
 #include "ggml-impl.h"
 #include "ggml.h"
+#include "graph/graph-matcher.h"
 #include "graph/graph-traversal.h"
 #include "graph/graph.h"
 #include "kernel-corpus/kernel-corpus.h"
@@ -1434,6 +1435,24 @@ static void schedule_qwen_router_top8_command(ggml_context * ctx, ggml_tensor * 
     REQUIRE(output_value != nullptr);
     REQUIRE(route_ids_value->kind == ggml::hrx::ValueKind::Transient);
     REQUIRE(output_value->kind == ggml::hrx::ValueKind::External);
+
+    const ggml::hrx::GraphNode * softmax_node  = nullptr;
+    const ggml::hrx::GraphNode * get_rows_node = nullptr;
+    for (const ggml::hrx::GraphNode & node : imported.graph.nodes()) {
+        if (node.op == GGML_OP_SOFT_MAX) {
+            softmax_node = &node;
+        } else if (node.op == GGML_OP_GET_ROWS) {
+            get_rows_node = &node;
+        }
+    }
+    REQUIRE(softmax_node != nullptr);
+    REQUIRE(get_rows_node != nullptr);
+    const ggml::hrx::GraphNode * probs_reshape =
+        ggml::hrx::find_single_layout_alias_consumer_with_op(imported.graph, softmax_node->output, GGML_OP_RESHAPE);
+    REQUIRE(probs_reshape != nullptr);
+    REQUIRE(ggml::hrx::is_layout_alias_node(imported.graph, *probs_reshape));
+    REQUIRE(ggml::hrx::find_single_consumer_with_op_through_layout_aliases(imported.graph, softmax_node->output,
+                                                                           GGML_OP_GET_ROWS) == get_rows_node);
 
     ggml::hrx::DispatchScheduler scheduler;
     REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));

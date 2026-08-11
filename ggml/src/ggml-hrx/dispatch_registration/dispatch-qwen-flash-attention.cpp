@@ -1,6 +1,7 @@
 #include "dispatch-qwen-flash-attention.h"
 
 #include "ggml.h"
+#include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
 #include <cmath>
@@ -81,24 +82,6 @@ struct QwenFlashAttentionMatch {
     }
 };
 
-static bool layout_op(ggml_op op) {
-    return op == GGML_OP_VIEW || op == GGML_OP_RESHAPE;
-}
-
-static const GraphNode * find_single_layout_consumer(const Graph & graph, ValueId value) {
-    const GraphNode * match = nullptr;
-    for (const GraphNode * consumer : graph.index().consumers(value)) {
-        if (consumer == nullptr || !layout_op(consumer->op)) {
-            continue;
-        }
-        if (match != nullptr) {
-            return nullptr;
-        }
-        match = consumer;
-    }
-    return match;
-}
-
 static bool has_qwen_flash_attention_params(const GraphNode & node) {
     const FlashAttnExtParams * params = op_params_as<FlashAttnExtParams>(node.params);
     if (params == nullptr) {
@@ -163,7 +146,7 @@ static QwenFlashAttentionMatch match_qwen_flash_attention(const Graph & graph, c
     match.value                 = value;
     match.mask                  = mask;
     match.output                = output;
-    match.output_layout         = find_single_layout_consumer(graph, output->id);
+    match.output_layout         = find_single_layout_alias_consumer(graph, output->id);
     match.query_token_count     = query_token_count;
     match.key_value_token_count = key_value_token_count;
     match.query_head_count      = query_head_count;
@@ -197,12 +180,10 @@ static bool match_qwen_flash_attention_dispatch(const DispatchMatchContext & con
 
     dispatch_match.covered_nodes.push_back(context.root_index);
     if (match.output_layout != nullptr) {
-        size_t layout_index = 0;
-        if (!context.graph.index().node_index(match.output_layout, layout_index) ||
-            layout_index >= context.covered_nodes.size() || context.covered_nodes[layout_index]) {
+        if (!append_covered_node_index_once(context.graph, context.covered_nodes, match.output_layout,
+                                            dispatch_match.covered_nodes)) {
             return false;
         }
-        dispatch_match.covered_nodes.push_back(layout_index);
     }
     dispatch_match.dispatches.push_back(std::move(dispatch));
     return true;

@@ -1,6 +1,7 @@
 #include "dispatch-qwen-moe.h"
 
 #include "ggml.h"
+#include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
 #include <cstdint>
@@ -105,23 +106,8 @@ static const GraphNode * producer_with_op(const Graph & graph, ValueId value, gg
     return producer != nullptr && producer->op == op ? producer : nullptr;
 }
 
-static bool node_index(const Graph & graph, const GraphNode * node, size_t & index) {
-    return node != nullptr && graph.index().node_index(node, index);
-}
-
 static bool append_covered_node(const DispatchMatchContext & context, const GraphNode * node, DispatchMatch & match) {
-    size_t index = 0;
-    if (!node_index(context.graph, node, index) || index >= context.covered_nodes.size() ||
-        context.covered_nodes[index]) {
-        return false;
-    }
-    for (const size_t covered : match.covered_nodes) {
-        if (covered == index) {
-            return true;
-        }
-    }
-    match.covered_nodes.push_back(index);
-    return true;
+    return append_covered_node_index_once(context.graph, context.covered_nodes, node, match.covered_nodes);
 }
 
 static std::string to_config_value(int64_t value) {
@@ -420,7 +406,7 @@ static bool append_node_if_uncovered(const DispatchMatchContext &     context,
                                      const GraphNode *                node,
                                      std::vector<const GraphNode *> & nodes) {
     size_t index = 0;
-    if (!node_index(context.graph, node, index) || index >= context.covered_nodes.size() ||
+    if (node == nullptr || !context.graph.index().node_index(node, index) || index >= context.covered_nodes.size() ||
         context.covered_nodes[index]) {
         return false;
     }
@@ -483,7 +469,8 @@ static WeightedReduceMatch match_qwen_routed_down_weighted_reduce(const Dispatch
         return {};
     }
 
-    std::vector<const GraphNode *> views = find_consumers_with_op(context.graph, weighted->output, GGML_OP_VIEW);
+    std::vector<const GraphNode *> views =
+        layout_alias_consumers_with_op(context.graph, weighted->output, GGML_OP_VIEW);
     if (views.size() != kQwenMoeRouteCount) {
         return {};
     }

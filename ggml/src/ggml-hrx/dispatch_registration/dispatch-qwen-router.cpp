@@ -1,12 +1,14 @@
 #include "dispatch-qwen-router.h"
 
 #include "ggml.h"
+#include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
 #include <cmath>
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace ggml::hrx {
 namespace {
@@ -30,38 +32,21 @@ static bool nearly_equal(float lhs, float rhs) {
     return std::fabs(lhs - rhs) <= 1.0e-12f;
 }
 
-static bool has_input(const GraphNode & node, ValueId input) {
-    for (ValueId candidate : node.inputs) {
-        if (candidate == input) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static const GraphNode * find_consumer_with_op(const Graph & graph, ValueId value, ggml_op op) {
-    for (const GraphNode * consumer : graph.index().consumers(value)) {
-        if (consumer != nullptr && consumer->op == op) {
-            return consumer;
-        }
-    }
-    return nullptr;
+    const std::vector<const GraphNode *> consumers = consumers_with_op_through_layout_aliases(graph, value, op);
+    return consumers.empty() ? nullptr : consumers.front();
 }
 
 static const GraphNode * find_consumer_with_op_and_input(const Graph & graph,
                                                          ValueId       value,
                                                          ggml_op       op,
                                                          ValueId       input) {
-    for (const GraphNode * consumer : graph.index().consumers(value)) {
-        if (consumer != nullptr && consumer->op == op && has_input(*consumer, input)) {
+    for (const GraphNode * consumer : consumers_with_op_through_layout_aliases(graph, value, op)) {
+        if (consumer != nullptr && node_has_input_or_alias(graph, *consumer, input)) {
             return consumer;
         }
     }
     return nullptr;
-}
-
-static bool node_index(const Graph & graph, const GraphNode * node, size_t & index) {
-    return node != nullptr && graph.index().node_index(node, index);
 }
 
 static bool is_shape(const Value & value, int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3) {
@@ -112,13 +97,7 @@ static size_t partition_table_size(int64_t token_count) {
 }
 
 static bool append_covered_node(const DispatchMatchContext & context, const GraphNode * node, DispatchMatch & match) {
-    size_t index = 0;
-    if (!node_index(context.graph, node, index) || index >= context.covered_nodes.size() ||
-        context.covered_nodes[index]) {
-        return false;
-    }
-    match.covered_nodes.push_back(index);
-    return true;
+    return append_covered_node_index_once(context.graph, context.covered_nodes, node, match.covered_nodes);
 }
 
 struct RouterTop8Match {
