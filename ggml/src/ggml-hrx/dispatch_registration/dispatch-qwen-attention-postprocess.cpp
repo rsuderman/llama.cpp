@@ -168,10 +168,26 @@ struct ValuePublishChain {
     }
 };
 
+struct FlashInputLayoutChain {
+    const GraphNode * query_layout  = nullptr;
+    const GraphNode * query_permute = nullptr;
+    const GraphNode * key_layout    = nullptr;
+    const GraphNode * key_permute   = nullptr;
+    const GraphNode * value_layout  = nullptr;
+    const GraphNode * value_permute = nullptr;
+    const GraphNode * flash         = nullptr;
+
+    bool matched() const {
+        return query_layout != nullptr && query_permute != nullptr && key_layout != nullptr && key_permute != nullptr &&
+               value_layout != nullptr && value_permute != nullptr && flash != nullptr;
+    }
+};
+
 struct AttentionPostprocessMatch {
-    NormRopeChain     query;
-    CachePublishChain key;
-    ValuePublishChain value;
+    NormRopeChain         query;
+    CachePublishChain     key;
+    ValuePublishChain     value;
+    FlashInputLayoutChain flash_layouts;
 
     bool matched() const { return query.matched() && key.matched_key() && value.matched(); }
 };
@@ -304,6 +320,39 @@ static bool layout_op(ggml_op op) {
     return op == GGML_OP_VIEW || op == GGML_OP_RESHAPE;
 }
 
+static const GraphNode * find_single_layout_consumer(const Graph & graph, ValueId value) {
+    const GraphNode * match = nullptr;
+    for (const GraphNode * consumer : graph.index().consumers(value)) {
+        if (consumer == nullptr || !layout_op(consumer->op)) {
+            continue;
+        }
+        if (match != nullptr) {
+            return nullptr;
+        }
+        match = consumer;
+    }
+    return match;
+}
+
+static const GraphNode * find_cache_read_layout(const Graph & graph, const Value & cache, int64_t head_count) {
+    const GraphNode * match = nullptr;
+    for (const GraphNode * consumer : graph.index().consumers(cache.id)) {
+        if (consumer == nullptr || !layout_op(consumer->op)) {
+            continue;
+        }
+        const Value * output = graph_value(graph, consumer->output);
+        if (output == nullptr || output->type != GGML_TYPE_F16 || output->ne[0] != kQwenAttentionHeadSize ||
+            output->ne[1] != head_count || output->ne[3] != 1) {
+            continue;
+        }
+        if (match != nullptr) {
+            return nullptr;
+        }
+        match = consumer;
+    }
+    return match;
+}
+
 static int64_t cache_row_count_for_value(const Value & cache, int64_t head_count) {
     if (cache.type != GGML_TYPE_F16 || head_count <= 0) {
         return 0;
@@ -417,6 +466,51 @@ static bool match_value_publish_chain(const Graph & graph, const GraphNode * set
     return true;
 }
 
+static FlashInputLayoutChain match_flash_input_layouts(const Graph & graph, const AttentionPostprocessMatch & match) {
+    FlashInputLayoutChain layouts;
+    const GraphNode *     query_layout = find_single_layout_consumer(graph, match.query.output->id);
+    if (query_layout == nullptr) {
+        return layouts;
+    }
+    const GraphNode * query_permute = find_single_consumer_with_op(graph, query_layout->output, GGML_OP_PERMUTE);
+    if (query_permute == nullptr) {
+        return {};
+    }
+
+    const GraphNode * key_layout = find_cache_read_layout(graph, *match.key.cache, match.key.key.head_count);
+    if (key_layout == nullptr) {
+        return {};
+    }
+    const GraphNode * key_permute = find_single_consumer_with_op(graph, key_layout->output, GGML_OP_PERMUTE);
+    if (key_permute == nullptr) {
+        return {};
+    }
+
+    const GraphNode * value_layout = find_cache_read_layout(graph, *match.value.cache, match.value.head_count);
+    if (value_layout == nullptr) {
+        return {};
+    }
+    const GraphNode * value_permute = find_single_consumer_with_op(graph, value_layout->output, GGML_OP_PERMUTE);
+    if (value_permute == nullptr) {
+        return {};
+    }
+
+    const GraphNode * flash = find_single_consumer_with_op(graph, query_permute->output, GGML_OP_FLASH_ATTN_EXT);
+    if (flash == nullptr || flash->inputs.size() != 4 || flash->inputs[0] != query_permute->output ||
+        flash->inputs[1] != key_permute->output || flash->inputs[2] != value_permute->output) {
+        return {};
+    }
+
+    layouts.query_layout  = query_layout;
+    layouts.query_permute = query_permute;
+    layouts.key_layout    = key_layout;
+    layouts.key_permute   = key_permute;
+    layouts.value_layout  = value_layout;
+    layouts.value_permute = value_permute;
+    layouts.flash         = flash;
+    return layouts;
+}
+
 static AttentionPostprocessMatch match_qwen_attention_postprocess(const Graph & graph, const GraphNode * root) {
     AttentionPostprocessMatch match;
     if (root == nullptr || root->op != GGML_OP_RESHAPE || !graph.has_index()) {
@@ -451,6 +545,7 @@ static AttentionPostprocessMatch match_qwen_attention_postprocess(const Graph & 
         match.key.cache_row_count != match.value.cache_row_count) {
         return {};
     }
+    match.flash_layouts = match_flash_input_layouts(graph, match);
     return match;
 }
 
@@ -473,6 +568,15 @@ static bool append_postprocess_covered_nodes(const DispatchMatchContext &      c
         !append_covered_node(context, postprocess.value.reshape_node, dispatch_match) ||
         !append_covered_node(context, postprocess.value.layout_node, dispatch_match) ||
         !append_covered_node(context, postprocess.value.set_rows_node, dispatch_match)) {
+        return false;
+    }
+    if (postprocess.flash_layouts.matched() &&
+        (!append_covered_node(context, postprocess.flash_layouts.query_layout, dispatch_match) ||
+         !append_covered_node(context, postprocess.flash_layouts.query_permute, dispatch_match) ||
+         !append_covered_node(context, postprocess.flash_layouts.key_layout, dispatch_match) ||
+         !append_covered_node(context, postprocess.flash_layouts.key_permute, dispatch_match) ||
+         !append_covered_node(context, postprocess.flash_layouts.value_layout, dispatch_match) ||
+         !append_covered_node(context, postprocess.flash_layouts.value_permute, dispatch_match))) {
         return false;
     }
     return true;

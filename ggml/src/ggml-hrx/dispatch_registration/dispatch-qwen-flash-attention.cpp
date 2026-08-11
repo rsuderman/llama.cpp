@@ -65,20 +65,39 @@ static std::string to_config_value(int64_t value) {
 }
 
 struct QwenFlashAttentionMatch {
-    const Value * query                 = nullptr;
-    const Value * key                   = nullptr;
-    const Value * value                 = nullptr;
-    const Value * mask                  = nullptr;
-    const Value * output                = nullptr;
-    int64_t       query_token_count     = 0;
-    int64_t       key_value_token_count = 0;
-    int64_t       query_head_count      = 0;
-    int64_t       key_value_head_count  = 0;
+    const Value *     query                 = nullptr;
+    const Value *     key                   = nullptr;
+    const Value *     value                 = nullptr;
+    const Value *     mask                  = nullptr;
+    const Value *     output                = nullptr;
+    const GraphNode * output_layout         = nullptr;
+    int64_t           query_token_count     = 0;
+    int64_t           key_value_token_count = 0;
+    int64_t           query_head_count      = 0;
+    int64_t           key_value_head_count  = 0;
 
     bool matched() const {
         return query != nullptr && key != nullptr && value != nullptr && mask != nullptr && output != nullptr;
     }
 };
+
+static bool layout_op(ggml_op op) {
+    return op == GGML_OP_VIEW || op == GGML_OP_RESHAPE;
+}
+
+static const GraphNode * find_single_layout_consumer(const Graph & graph, ValueId value) {
+    const GraphNode * match = nullptr;
+    for (const GraphNode * consumer : graph.index().consumers(value)) {
+        if (consumer == nullptr || !layout_op(consumer->op)) {
+            continue;
+        }
+        if (match != nullptr) {
+            return nullptr;
+        }
+        match = consumer;
+    }
+    return match;
+}
 
 static bool has_qwen_flash_attention_params(const GraphNode & node) {
     const FlashAttnExtParams * params = op_params_as<FlashAttnExtParams>(node.params);
@@ -144,6 +163,7 @@ static QwenFlashAttentionMatch match_qwen_flash_attention(const Graph & graph, c
     match.value                 = value;
     match.mask                  = mask;
     match.output                = output;
+    match.output_layout         = find_single_layout_consumer(graph, output->id);
     match.query_token_count     = query_token_count;
     match.key_value_token_count = key_value_token_count;
     match.query_head_count      = query_head_count;
@@ -176,6 +196,14 @@ static bool match_qwen_flash_attention_dispatch(const DispatchMatchContext & con
     dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
 
     dispatch_match.covered_nodes.push_back(context.root_index);
+    if (match.output_layout != nullptr) {
+        size_t layout_index = 0;
+        if (!context.graph.index().node_index(match.output_layout, layout_index) ||
+            layout_index >= context.covered_nodes.size() || context.covered_nodes[layout_index]) {
+            return false;
+        }
+        dispatch_match.covered_nodes.push_back(layout_index);
+    }
     dispatch_match.dispatches.push_back(std::move(dispatch));
     return true;
 }
