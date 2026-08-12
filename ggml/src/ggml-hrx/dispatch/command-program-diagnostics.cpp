@@ -70,7 +70,10 @@ std::string format_command_program(const CommandProgram & program) {
     std::ostringstream out;
     out << "command_program commands=" << program.commands.size()
         << " transient_arena=" << program.transients.arena_size
-        << " transient_allocations=" << program.transients.allocations.size();
+        << " transient_allocations=" << program.transients.allocations.size()
+        << " completion_counters=" << program.completion_counters.count << " completion_counter_range=["
+        << program.completion_counters.arena_offset << ", "
+        << program.completion_counters.arena_offset + program.completion_counters.byte_count << ")";
     for (const Command & command : program.commands) {
         out << '\n' << format_command(command);
         for (const CommandBinding & binding : command.bindings) {

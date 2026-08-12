@@ -60,9 +60,16 @@ struct ConstantInitialization {
     std::vector<uint8_t> data;
 };
 
+struct CompletionCounterPlan {
+    size_t   arena_offset = 0;
+    size_t   byte_count   = 0;
+    uint32_t count        = 0;
+};
+
 struct CommandProgram {
     std::vector<Command>                commands;
     TransientPlan                       transients;
+    CompletionCounterPlan               completion_counters;
     std::vector<ConstantInitialization> constant_initializations;
     Status                              status;
 

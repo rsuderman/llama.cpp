@@ -35,12 +35,13 @@ struct DispatchMatchContext {
 };
 
 struct DispatchMatch {
-    std::vector<size_t>                            covered_nodes;
-    std::vector<Dispatch>                          dispatches;
-    std::vector<CommandPlanTransient>              transients;
-    std::vector<CommandPlanConstantInitialization> constant_initializations;
-    CommandPlanMetadata                            metadata;
-    Status                                         status;
+    std::vector<size_t>                              covered_nodes;
+    std::vector<Dispatch>                            dispatches;
+    std::vector<CommandPlanTransient>                transients;
+    std::vector<CommandPlanConstantInitialization>   constant_initializations;
+    std::vector<CommandPlanCompletionCounterRequest> completion_counter_requests;
+    CommandPlanMetadata                              metadata;
+    Status                                           status;
 };
 
 using DispatchMatcher = bool (*)(const DispatchMatchContext & context, DispatchMatch & match);

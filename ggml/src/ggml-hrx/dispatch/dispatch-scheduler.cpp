@@ -43,6 +43,7 @@ static void clear_plan_results(CommandPlan & plan) {
     plan.dispatches.clear();
     plan.transients.clear();
     plan.constant_initializations.clear();
+    plan.completion_counter_requests.clear();
     plan.metadata.clear();
 }
 
@@ -140,7 +141,8 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
             continue;
         }
         DispatchMatch match;
-        const ValueId next_plan_value(static_cast<int32_t>(graph.values().size() + plan_.transients.size()));
+        const ValueId next_plan_value(static_cast<int32_t>(graph.values().size() + plan_.transients.size() +
+                                                           plan_.completion_counter_requests.size()));
         if (!try_match_registration(graph, node, i, covered_nodes, plan_, *registry, next_plan_value, match)) {
             if (can_elide_layout_alias_node(graph, *node, covered_nodes)) {
                 pending_diagnostics.append(match.status);
@@ -168,6 +170,9 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
         }
         for (CommandPlanConstantInitialization & initialization : match.constant_initializations) {
             plan_.constant_initializations.push_back(std::move(initialization));
+        }
+        for (CommandPlanCompletionCounterRequest & request : match.completion_counter_requests) {
+            plan_.completion_counter_requests.push_back(std::move(request));
         }
         if (!plan_.metadata.append(std::move(match.metadata), plan_.status)) {
             clear_plan_results(plan_);

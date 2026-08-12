@@ -25,12 +25,19 @@ struct CommandPlanConstantInitialization {
     std::vector<uint8_t> data;
 };
 
+struct CommandPlanCompletionCounterRequest {
+    ValueId     value;
+    std::string name;
+    uint32_t    count = 0;
+};
+
 struct CommandPlan {
-    std::vector<Dispatch>                          dispatches;
-    std::vector<CommandPlanTransient>              transients;
-    std::vector<CommandPlanConstantInitialization> constant_initializations;
-    CommandPlanMetadata                            metadata;
-    Status                                         status;
+    std::vector<Dispatch>                            dispatches;
+    std::vector<CommandPlanTransient>                transients;
+    std::vector<CommandPlanConstantInitialization>   constant_initializations;
+    std::vector<CommandPlanCompletionCounterRequest> completion_counter_requests;
+    CommandPlanMetadata                              metadata;
+    Status                                           status;
 
     bool valid() const { return status.success(); }
 };

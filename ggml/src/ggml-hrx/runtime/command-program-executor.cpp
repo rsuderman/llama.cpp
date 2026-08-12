@@ -125,6 +125,33 @@ static Status initialize_command_program_constants(const CommandProgramExecution
     return status;
 }
 
+static Status initialize_command_program_completion_counters(const CommandProgramExecutionContext & context,
+                                                             const CommandProgram &                 commands,
+                                                             const TransientArenaAllocationRef &    allocation) {
+    Status status;
+    if (commands.completion_counters.byte_count == 0) {
+        return status;
+    }
+    if (allocation.buffer == nullptr) {
+        status.log("command program has completion counters without a transient arena allocation");
+        return status;
+    }
+    if (commands.completion_counters.arena_offset > commands.transients.arena_size ||
+        commands.completion_counters.byte_count >
+            commands.transients.arena_size - commands.completion_counters.arena_offset) {
+        status.log("completion counter initialization is outside transient arena length %zu",
+                   commands.transients.arena_size);
+        return status;
+    }
+    const uint32_t zero_pattern = 0;
+    if (ErrorResult error = take_status(
+            hrx_stream_fill_buffer(context.stream, allocation.buffer, commands.completion_counters.arena_offset,
+                                   commands.completion_counters.byte_count, &zero_pattern, sizeof(zero_pattern)))) {
+        status.log("failed to initialize completion counters: %s", error->c_str());
+    }
+    return status;
+}
+
 static std::string format_resolved_command_context(const ResolvedCommand & command) {
     std::ostringstream out;
     out << "command " << command.ordinal << " kind=" << command_kind_name(command.kind)
@@ -345,6 +372,11 @@ bool bind_and_execute_prepared_command_program(const CommandProgramExecutionCont
             GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
             return false;
         }
+        status = initialize_command_program_completion_counters(context, commands, {});
+        if (!status.success()) {
+            GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
+            return false;
+        }
         return bind_prepared_command_program_transients(commands, {}, prepared) &&
                execute_prepared_command_program(context, prepared);
     }
@@ -365,6 +397,11 @@ bool bind_and_execute_prepared_command_program(const CommandProgramExecutionCont
         return false;
     }
     status = initialize_command_program_constants(context, commands, lease.current_allocation());
+    if (!status.success()) {
+        GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
+        return false;
+    }
+    status = initialize_command_program_completion_counters(context, commands, lease.current_allocation());
     if (!status.success()) {
         GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
         return false;

@@ -65,6 +65,14 @@ static const CommandPlanTransient * find_plan_transient(const CommandPlan & plan
     return found == plan.transients.end() ? nullptr : &*found;
 }
 
+static const CommandPlanCompletionCounterRequest * find_plan_completion_counter_request(const CommandPlan & plan,
+                                                                                        ValueId             value) {
+    const auto found =
+        std::find_if(plan.completion_counter_requests.begin(), plan.completion_counter_requests.end(),
+                     [&](const CommandPlanCompletionCounterRequest & request) { return request.value == value; });
+    return found == plan.completion_counter_requests.end() ? nullptr : &*found;
+}
+
 static void add_transient_allocation_request(std::vector<TransientAllocationRequest> & requests,
                                              ValueId                                   value,
                                              size_t                                    required_size) {
@@ -75,6 +83,14 @@ static void add_transient_allocation_request(std::vector<TransientAllocationRequ
         }
     }
     requests.push_back({ value, required_size });
+}
+
+static const TransientAllocationRequest * find_transient_allocation_request(
+    const std::vector<TransientAllocationRequest> & requests,
+    ValueId                                         value) {
+    const auto found = std::find_if(requests.begin(), requests.end(),
+                                    [&](const TransientAllocationRequest & request) { return request.value == value; });
+    return found == requests.end() ? nullptr : &*found;
 }
 
 static void add_transient_allocation(const Graph &                      graph,
@@ -103,13 +119,64 @@ static void add_transient_allocation(const Graph &                      graph,
     plan.allocations.push_back(allocation);
 }
 
+static void add_completion_counter_allocations(const CommandPlan &                             command_plan,
+                                               const std::vector<TransientAllocationRequest> & binding_requests,
+                                               TransientPlan &                                 plan,
+                                               CompletionCounterPlan &                         completion_counters,
+                                               Status &                                        errors) {
+    for (size_t i = 0; i < command_plan.completion_counter_requests.size(); ++i) {
+        const CommandPlanCompletionCounterRequest & request = command_plan.completion_counter_requests[i];
+        if (request.value.value < 0) {
+            errors.log("completion counter request %s has invalid value %d", request.name.c_str(), request.value.value);
+            continue;
+        }
+        if (request.count == 0) {
+            errors.log("completion counter request %s has zero counters", request.name.c_str());
+            continue;
+        }
+        for (size_t j = i + 1; j < command_plan.completion_counter_requests.size(); ++j) {
+            if (request.value == command_plan.completion_counter_requests[j].value) {
+                errors.log("duplicate completion counter request value %d", request.value.value);
+            }
+        }
+        const size_t                       byte_count = static_cast<size_t>(request.count) * sizeof(int32_t);
+        const TransientAllocationRequest * binding_request =
+            find_transient_allocation_request(binding_requests, request.value);
+        if (binding_request != nullptr && binding_request->required_size > byte_count) {
+            errors.log("completion counter request %s requires %zu bytes but binding uses %zu bytes",
+                       request.name.c_str(), byte_count, binding_request->required_size);
+            continue;
+        }
+        if (completion_counters.count > std::numeric_limits<uint32_t>::max() - request.count) {
+            errors.log("completion counter count overflows");
+            continue;
+        }
+
+        TransientAllocation allocation;
+        allocation.value        = request.value;
+        allocation.size         = byte_count;
+        allocation.alignment    = 16;
+        allocation.arena_offset = align_up(plan.arena_size, allocation.alignment);
+        if (completion_counters.byte_count == 0) {
+            completion_counters.arena_offset = allocation.arena_offset;
+        }
+        plan.arena_size = allocation.arena_offset + allocation.size;
+        completion_counters.byte_count =
+            plan.arena_size > completion_counters.arena_offset ? plan.arena_size - completion_counters.arena_offset : 0;
+        completion_counters.count += request.count;
+        plan.allocations.push_back(allocation);
+    }
+}
+
 static TransientPlan build_transient_plan(const Graph &                graph,
                                           const CommandPlan &          command_plan,
                                           const std::vector<Command> & commands,
+                                          CompletionCounterPlan &      completion_counters,
                                           Status &                     errors) {
     TransientPlan plan;
     plan.arena_alignment = 256;
-    std::vector<TransientAllocationRequest> requests;
+    std::vector<TransientAllocationRequest> transient_requests;
+    std::vector<TransientAllocationRequest> completion_counter_binding_requests;
     for (const Command & command : commands) {
         for (const CommandBinding & binding : command.bindings) {
             if (binding.origin == CommandBindingOrigin::Transient) {
@@ -117,11 +184,19 @@ static TransientPlan build_transient_plan(const Graph &                graph,
                     errors.log("transient value %d binding range overflows", binding.value.value);
                     continue;
                 }
-                add_transient_allocation_request(requests, binding.value, binding.offset + binding.length);
+                if (find_plan_completion_counter_request(command_plan, binding.value) != nullptr) {
+                    add_transient_allocation_request(completion_counter_binding_requests, binding.value,
+                                                     binding.offset + binding.length);
+                } else {
+                    add_transient_allocation_request(transient_requests, binding.value,
+                                                     binding.offset + binding.length);
+                }
             }
         }
     }
-    for (const TransientAllocationRequest & request : requests) {
+    add_completion_counter_allocations(command_plan, completion_counter_binding_requests, plan, completion_counters,
+                                       errors);
+    for (const TransientAllocationRequest & request : transient_requests) {
         add_transient_allocation(graph, command_plan, request, plan, errors);
     }
     plan.arena_size = align_up(plan.arena_size, plan.arena_alignment);
@@ -170,12 +245,14 @@ CommandProgram build_command_program(const Graph &        graph,
         for (size_t binding_index = 0; binding_index < dispatch.bindings.size(); ++binding_index) {
             const DispatchBinding & binding = dispatch.bindings[binding_index];
             CommandBinding          command_binding;
-            command_binding.value                       = binding.value;
-            command_binding.offset                      = binding.offset;
-            command_binding.length                      = binding.length;
-            const Value *                value          = graph.values().find(binding.value);
-            const CommandPlanTransient * plan_transient = find_plan_transient(plan, binding.value);
-            if (value == nullptr && plan_transient == nullptr) {
+            command_binding.value                                      = binding.value;
+            command_binding.offset                                     = binding.offset;
+            command_binding.length                                     = binding.length;
+            const Value *                               value          = graph.values().find(binding.value);
+            const CommandPlanTransient *                plan_transient = find_plan_transient(plan, binding.value);
+            const CommandPlanCompletionCounterRequest * completion_counter =
+                find_plan_completion_counter_request(plan, binding.value);
+            if (value == nullptr && plan_transient == nullptr && completion_counter == nullptr) {
                 result.status.log("command %u binding %zu references missing value %d", command.ordinal, binding_index,
                                   binding.value.value);
             } else if (value != nullptr) {
@@ -201,7 +278,7 @@ CommandProgram build_command_program(const Graph &        graph,
         }
         result.commands.push_back(std::move(command));
     }
-    result.transients = build_transient_plan(graph, plan, result.commands, result.status);
+    result.transients = build_transient_plan(graph, plan, result.commands, result.completion_counters, result.status);
     result.constant_initializations.reserve(plan.constant_initializations.size());
     for (const CommandPlanConstantInitialization & initialization : plan.constant_initializations) {
         result.constant_initializations.push_back({
@@ -290,6 +367,26 @@ VerificationResult verify_command_program(const CommandProgram & program,
     }
     if (program.transients.arena_alignment == 0) {
         result.status.log("transient arena has zero alignment");
+    }
+    if (program.completion_counters.count == 0) {
+        if (program.completion_counters.byte_count != 0) {
+            result.status.log("completion counter region has bytes but no counters");
+        }
+    } else {
+        if (program.completion_counters.byte_count == 0) {
+            result.status.log("completion counter region has counters but no bytes");
+        }
+        if (program.completion_counters.byte_count % sizeof(int32_t) != 0) {
+            result.status.log("completion counter region byte count is not i32 aligned");
+        }
+        if (program.completion_counters.arena_offset % 16 != 0) {
+            result.status.log("completion counter region is not 16-byte aligned");
+        }
+        if (program.completion_counters.arena_offset > program.transients.arena_size ||
+            program.completion_counters.byte_count >
+                program.transients.arena_size - program.completion_counters.arena_offset) {
+            result.status.log("completion counter region is outside transient arena");
+        }
     }
     for (const TransientAllocation & allocation : program.transients.allocations) {
         if (allocation.value.value < 0 || allocation.size == 0 || allocation.alignment == 0 ||
