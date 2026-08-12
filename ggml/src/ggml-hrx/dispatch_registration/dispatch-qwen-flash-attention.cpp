@@ -1,5 +1,6 @@
 #include "dispatch-qwen-flash-attention.h"
 
+#include "dispatch-qwen-shapes.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
@@ -22,10 +23,6 @@ static const Value * graph_value(const Graph & graph, ValueId id) {
 
 static bool nearly_equal(float lhs, float rhs) {
     return std::fabs(lhs - rhs) <= 1.0e-6f;
-}
-
-static bool is_supported_token_count(int64_t token_count) {
-    return token_count >= 1 && token_count <= 2048;
 }
 
 static bool is_supported_key_value_token_count(int64_t token_count) {
@@ -125,9 +122,9 @@ static QwenFlashAttentionMatch match_qwen_flash_attention(const Graph & graph, c
     const int64_t query_head_count      = query->ne[2];
     const int64_t key_value_token_count = key->ne[1];
     const int64_t key_value_head_count  = key->ne[2];
-    if (!is_supported_token_count(query_token_count) || !is_supported_key_value_token_count(key_value_token_count) ||
-        !is_supported_head_count(query_head_count) || !is_supported_head_count(key_value_head_count) ||
-        query_head_count % key_value_head_count != 0) {
+    if (!is_qwen_prefill_query_length(query_token_count) ||
+        !is_supported_key_value_token_count(key_value_token_count) || !is_supported_head_count(query_head_count) ||
+        !is_supported_head_count(key_value_head_count) || query_head_count % key_value_head_count != 0) {
         return {};
     }
     if (value->ne[1] != key_value_token_count || value->ne[2] != key_value_head_count ||

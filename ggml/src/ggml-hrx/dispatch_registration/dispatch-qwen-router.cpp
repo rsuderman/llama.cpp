@@ -1,5 +1,6 @@
 #include "dispatch-qwen-router.h"
 
+#include "dispatch-qwen-shapes.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
@@ -61,10 +62,6 @@ static bool same_shape(const Value & lhs, const Value & rhs) {
         }
     }
     return true;
-}
-
-static bool is_supported_token_count(int64_t token_count) {
-    return token_count >= 1 && token_count <= 2048;
 }
 
 static bool is_supported_expert_count(int64_t expert_count) {
@@ -172,7 +169,9 @@ struct RouterTop8Match {
 };
 
 static bool supports_fused_prefill_expert_table_partition(const RouterTop8Match & router_match) {
-    return router_match.token_count == 512 && router_match.route_count == 8 && router_match.expert_count == 128;
+    // Matches the reference prefill recipe gate; q=1 uses decode routing paths.
+    return is_qwen_prefill_512_query_length(router_match.token_count) && router_match.route_count == 8 &&
+           router_match.expert_count == 128;
 }
 
 static RouterTop8Match match_qwen_router_top8(const Graph & graph, const GraphNode * softmax_node, Status * status) {
@@ -192,7 +191,7 @@ static RouterTop8Match match_qwen_router_top8(const Graph & graph, const GraphNo
     const int64_t expert_count = logits->ne[0];
     const int64_t token_count  = logits->ne[1];
     if (!is_shape(*logits, expert_count, token_count, 1, 1) || !is_supported_expert_count(expert_count) ||
-        !is_supported_token_count(token_count)) {
+        !is_qwen_supported_query_length(token_count)) {
         log_router_reject(status, graph, softmax_node, "unsupported logits expert/token shape");
         return {};
     }

@@ -1,5 +1,6 @@
 #include "dispatch-qwen-moe.h"
 
+#include "dispatch-qwen-shapes.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
@@ -51,10 +52,6 @@ static bool same_shape(const Value & lhs, const Value & rhs) {
 
 static bool is_qwen_rms_norm_epsilon(float eps) {
     return eps >= 0.0000009f && eps <= 0.0000011f;
-}
-
-static bool is_supported_token_count(int64_t token_count) {
-    return token_count >= 1 && token_count <= 2048;
 }
 
 static bool is_qwen_routed_weight(const Value & value) {
@@ -255,7 +252,7 @@ static RoutedDownMatch match_qwen_routed_down_grouped(const DispatchMatchContext
     }
 
     const int64_t token_count = input->ne[2];
-    if (!is_supported_token_count(token_count) || !is_qwen_routed_down_output(*root_output, token_count)) {
+    if (!is_qwen_prefill_query_length(token_count) || !is_qwen_routed_down_output(*root_output, token_count)) {
         return {};
     }
 
@@ -301,7 +298,7 @@ static RoutedGateUpMatch match_qwen_routed_gate_up_swiglu(const DispatchMatchCon
     }
 
     const int64_t token_count = input->ne[2];
-    if (!is_supported_token_count(token_count) || !is_qwen_routed_projection_output(*root_output, token_count)) {
+    if (!is_qwen_prefill_query_length(token_count) || !is_qwen_routed_projection_output(*root_output, token_count)) {
         return {};
     }
 
@@ -448,7 +445,7 @@ static WeightedReduceMatch match_qwen_routed_down_weighted_reduce(const Dispatch
     }
 
     const int64_t token_count = routed_output->ne[2];
-    if (!is_supported_token_count(token_count)) {
+    if (!is_qwen_prefill_query_length(token_count)) {
         return {};
     }
     const CommandPlanAlternateValue * routed_alternate =

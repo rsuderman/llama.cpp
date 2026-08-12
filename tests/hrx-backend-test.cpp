@@ -1793,6 +1793,10 @@ static void run_qwen_flash_attention_dispatch_checks() {
         schedule_qwen_flash_attention_command(ctx, output);
     }
     {
+        ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 1, 8, 4, 2);
+        REQUIRE(!graph_is_supported(ctx, output));
+    }
+    {
         ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2, GGML_TYPE_F32, GGML_TYPE_F32);
         REQUIRE(!graph_is_supported(ctx, output));
     }
@@ -2130,6 +2134,16 @@ static void run_qwen_matmul_dispatch_checks() {
     }
 
     {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 2048, 128);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        REQUIRE(!matmul_graph_is_supported(ctx, output));
+    }
+
+    {
         ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q6_K, 2048, 128);
         ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 2);
         REQUIRE(weight != nullptr);
@@ -2137,6 +2151,16 @@ static void run_qwen_matmul_dispatch_checks() {
         ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
         REQUIRE(output != nullptr);
         schedule_single_matmul_command(ctx, output, "qwen3_moe:qwen3_moe_dense_linear_q6k_f16_wmma", 2, 2048, 128);
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q6_K, 2048, 128);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        REQUIRE(!matmul_graph_is_supported(ctx, output));
     }
 
     {
@@ -2148,6 +2172,16 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(output != nullptr);
         schedule_single_matmul_command(ctx, output, "qwen3_moe:qwen3_moe_router_projection_f32_four_row_wave32", 4,
                                        2048, 128);
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 128);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        REQUIRE(!matmul_graph_is_supported(ctx, output));
     }
 
     {
@@ -2831,6 +2865,18 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
     }
 
     {
+        constexpr int64_t             token_count = 1;
+        const QwenRoutedGateUpTensors tensors     = build_qwen_routed_gate_up_graph(ctx, token_count);
+        ggml::hrx::GraphImportResult  imported    = import_qwen_routed_gate_up_graph(ctx, tensors);
+        std::vector<bool>             covered_nodes(imported.graph.nodes().size(), false);
+        ggml::hrx::CommandPlan        plan       = build_qwen_router_plan_for_graph(imported.graph, covered_nodes);
+        const size_t                  gate_index = producer_index_for_tensor(imported.graph, tensors.gate);
+        ggml::hrx::DispatchMatch      gate_up_match;
+        REQUIRE(!match_dispatch_at_index(imported.graph, plan, covered_nodes, gate_index, gate_up_match));
+        REQUIRE(!ggml::hrx::DispatchScheduler::can_schedule_graph(imported.graph, test_dispatch_target()));
+    }
+
+    {
         constexpr int64_t token_count     = 4;
         ggml_tensor *     first_logits    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenRouterExpertCount, token_count);
         ggml_tensor *     first_route_ids = nullptr;
@@ -3079,6 +3125,13 @@ static void run_qwen_router_top8_dispatch_checks() {
 
     {
         ggml_tensor * logits    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenRouterExpertCount, 4);
+        ggml_tensor * route_ids = nullptr;
+        REQUIRE(logits != nullptr);
+        ggml_tensor * output = build_qwen_router_top8_graph(ctx, logits, &route_ids);
+        schedule_qwen_router_top8_command(ctx, output, route_ids);
+    }
+    {
+        ggml_tensor * logits    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenRouterExpertCount, 1);
         ggml_tensor * route_ids = nullptr;
         REQUIRE(logits != nullptr);
         ggml_tensor * output = build_qwen_router_top8_graph(ctx, logits, &route_ids);

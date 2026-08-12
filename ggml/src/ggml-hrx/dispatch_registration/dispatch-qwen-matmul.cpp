@@ -1,5 +1,6 @@
 #include "dispatch-qwen-matmul.h"
 
+#include "dispatch-qwen-shapes.h"
 #include "ggml.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
@@ -29,10 +30,6 @@ static const Value * graph_value(const Graph & graph, ValueId id) {
 
 static bool is_2d(const Value & value) {
     return value.ne[0] > 0 && value.ne[1] > 0 && value.ne[2] == 1 && value.ne[3] == 1;
-}
-
-static bool is_supported_token_count(int64_t token_count) {
-    return token_count >= 1 && token_count <= 2048;
 }
 
 static bool is_supported_dense_input_size(int64_t input_size) {
@@ -106,7 +103,7 @@ static QwenMatmulMatch match_qwen_matmul(const Graph & graph, const GraphNode * 
     if (input->ne[0] != input_size || output->ne[0] != output_size || output->ne[1] != token_count) {
         return {};
     }
-    if (!is_supported_token_count(token_count)) {
+    if (!is_qwen_prefill_query_length(token_count)) {
         return {};
     }
 
@@ -175,8 +172,8 @@ static QwenMatmulMatch match_qwen_q6k_q8_matmul(const Graph & graph, const Graph
     if (input->ne[0] != input_size || output->ne[0] != output_size || output->ne[1] != token_count) {
         return {};
     }
-    if (token_count != 1 || input_size != kQwenHiddenSize || output_size != kQwenVocabularyCount ||
-        !is_supported_token_count(token_count) || !is_supported_dense_input_size(input_size) ||
+    if (!is_qwen_decode_query_length(token_count) || input_size != kQwenHiddenSize ||
+        output_size != kQwenVocabularyCount || !is_supported_dense_input_size(input_size) ||
         !is_supported_dense_output_size(output_size)) {
         return {};
     }
