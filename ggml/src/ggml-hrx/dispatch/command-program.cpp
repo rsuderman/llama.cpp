@@ -170,6 +170,7 @@ static void add_completion_counter_allocations(const CommandPlan &              
 
 static TransientPlan build_transient_plan(const Graph &                graph,
                                           const CommandPlan &          command_plan,
+                                          const std::vector<Command> & initialization_commands,
                                           const std::vector<Command> & commands,
                                           CompletionCounterPlan &      completion_counters,
                                           Status &                     errors) {
@@ -177,23 +178,28 @@ static TransientPlan build_transient_plan(const Graph &                graph,
     plan.arena_alignment = 256;
     std::vector<TransientAllocationRequest> transient_requests;
     std::vector<TransientAllocationRequest> completion_counter_binding_requests;
-    for (const Command & command : commands) {
-        for (const CommandBinding & binding : command.bindings) {
-            if (binding.origin == CommandBindingOrigin::Transient) {
+    auto                                    append_command_bindings = [&](const std::vector<Command> & command_list) {
+        for (const Command & command : command_list) {
+            for (const CommandBinding & binding : command.bindings) {
+                if (binding.origin != CommandBindingOrigin::Transient) {
+                    continue;
+                }
                 if (binding.offset > std::numeric_limits<size_t>::max() - binding.length) {
                     errors.log("transient value %d binding range overflows", binding.value.value);
                     continue;
                 }
                 if (find_plan_completion_counter_request(command_plan, binding.value) != nullptr) {
                     add_transient_allocation_request(completion_counter_binding_requests, binding.value,
-                                                     binding.offset + binding.length);
+                                                                                        binding.offset + binding.length);
                 } else {
                     add_transient_allocation_request(transient_requests, binding.value,
-                                                     binding.offset + binding.length);
+                                                                                        binding.offset + binding.length);
                 }
             }
         }
-    }
+    };
+    append_command_bindings(initialization_commands);
+    append_command_bindings(commands);
     add_completion_counter_allocations(command_plan, completion_counter_binding_requests, plan, completion_counters,
                                        errors);
     for (const TransientAllocationRequest & request : transient_requests) {
@@ -201,6 +207,140 @@ static TransientPlan build_transient_plan(const Graph &                graph,
     }
     plan.arena_size = align_up(plan.arena_size, plan.arena_alignment);
     return plan;
+}
+
+static void append_command(const Graph &          graph,
+                           const CommandPlan &    plan,
+                           const KernelCorpus &   corpus,
+                           const std::string &    target,
+                           const Dispatch &       dispatch,
+                           bool                   linear_dependency,
+                           std::vector<Command> & commands,
+                           Status &               status) {
+    Command command;
+    command.ordinal = static_cast<uint32_t>(commands.size());
+    command.kind    = CommandKind::Kernel;
+    command.kernel  = dispatch.kernel;
+    // TODO: replace this linear ordinal dependency with real graph/resource dependency analysis.
+    if (linear_dependency && command.ordinal > 0) {
+        command.dependencies.push_back(command.ordinal - 1);
+    }
+    const KernelResolveResult resolved   = resolve_kernel_definition(corpus, target, command.kernel.kernel_id);
+    const KernelDefinition *  definition = resolved.definition;
+    if (!resolved.found()) {
+        status.log("%s", format_kernel_resolve_error(resolved, command.kernel.kernel_id).c_str());
+        definition = nullptr;
+    } else if (dispatch.bindings.size() != definition->bindings.size()) {
+        status.log("command %u kernel %s has %zu bindings but its ABI requires %zu", command.ordinal,
+                   kernel_definition_name(*definition).c_str(), dispatch.bindings.size(), definition->bindings.size());
+    }
+    command.bindings.reserve(dispatch.bindings.size());
+    for (size_t binding_index = 0; binding_index < dispatch.bindings.size(); ++binding_index) {
+        const DispatchBinding & binding = dispatch.bindings[binding_index];
+        CommandBinding          command_binding;
+        command_binding.value                                      = binding.value;
+        command_binding.offset                                     = binding.offset;
+        command_binding.length                                     = binding.length;
+        const Value *                               value          = graph.values().find(binding.value);
+        const CommandPlanTransient *                plan_transient = find_plan_transient(plan, binding.value);
+        const CommandPlanCompletionCounterRequest * completion_counter =
+            find_plan_completion_counter_request(plan, binding.value);
+        if (value == nullptr && plan_transient == nullptr && completion_counter == nullptr) {
+            status.log("command %u binding %zu references missing value %d", command.ordinal, binding_index,
+                       binding.value.value);
+        } else if (value != nullptr) {
+            command_binding.origin = command_binding_origin(value->kind);
+        } else {
+            command_binding.origin = CommandBindingOrigin::Transient;
+        }
+        if (command_binding.origin == CommandBindingOrigin::Transient) {
+            const TransientBindingTarget binding_target = transient_binding_target(graph, binding.value);
+            command_binding.value                       = binding_target.value;
+            if (binding_target.offset > std::numeric_limits<size_t>::max() - command_binding.offset) {
+                status.log("command %u binding %zu transient alias offset overflows", command.ordinal, binding_index);
+            } else {
+                command_binding.offset += binding_target.offset;
+            }
+        }
+        if (definition != nullptr && binding_index < definition->bindings.size()) {
+            command_binding.name   = string_value(definition->bindings[binding_index].name);
+            command_binding.access = definition->bindings[binding_index].access;
+        }
+        command.bindings.push_back(std::move(command_binding));
+    }
+    commands.push_back(std::move(command));
+}
+
+static void verify_command_list(const std::vector<Command> & commands,
+                                const TransientPlan &        transients,
+                                const KernelCorpus &         corpus,
+                                const std::string &          target,
+                                Status &                     status) {
+    for (size_t i = 0; i < commands.size(); ++i) {
+        const Command &   command         = commands[i];
+        const std::string command_context = format_command(command);
+        if (command.ordinal != i) {
+            status.log("%s has non-contiguous ordinal at index %zu", command_context.c_str(), i);
+        }
+        if (command.kind != CommandKind::Kernel) {
+            status.log("%s is not a kernel command", command_context.c_str());
+        }
+        KernelResolveResult      resolved;
+        const KernelDefinition * definition = nullptr;
+        if (command.kind == CommandKind::Kernel) {
+            resolved   = resolve_kernel_definition(corpus, target, command.kernel.kernel_id);
+            definition = resolved.definition;
+        }
+        if (command.kind == CommandKind::Kernel && !resolved.found()) {
+            status.log("%s: %s", command_context.c_str(),
+                       format_kernel_resolve_error(resolved, command.kernel.kernel_id).c_str());
+        } else if (definition != nullptr) {
+            if (command.bindings.size() != definition->bindings.size()) {
+                status.log("%s kernel %s has %zu bindings but its ABI requires %zu", command_context.c_str(),
+                           kernel_definition_name(*definition).c_str(), command.bindings.size(),
+                           definition->bindings.size());
+            }
+            const size_t shared_count = std::min(command.bindings.size(), definition->bindings.size());
+            for (size_t binding_index = 0; binding_index < shared_count; ++binding_index) {
+                const CommandBinding &          binding = command.bindings[binding_index];
+                const KernelBindingDefinition & abi     = definition->bindings[binding_index];
+                if (!string_equal(binding.name.c_str(), abi.name) || binding.access != abi.access) {
+                    status.log("%s %s does not match ABI binding %zu", command_context.c_str(),
+                               format_command_binding(binding).c_str(), binding_index);
+                }
+            }
+        }
+        if (command.bindings.empty()) {
+            status.log("%s has no bindings", command_context.c_str());
+        }
+        for (uint32_t dependency : command.dependencies) {
+            if (dependency >= command.ordinal) {
+                status.log("%s has forward dependency %u", command_context.c_str(), dependency);
+            }
+        }
+        for (const CommandBinding & binding : command.bindings) {
+            const std::string binding_context = format_command_binding(binding);
+            if (binding.origin != CommandBindingOrigin::GraphValue &&
+                binding.origin != CommandBindingOrigin::Transient) {
+                status.log("%s %s has an unsupported binding origin", command_context.c_str(), binding_context.c_str());
+            }
+            if (binding.origin == CommandBindingOrigin::Transient) {
+                const TransientAllocation * allocation = find_transient_allocation(transients, binding.value);
+                if (allocation == nullptr) {
+                    status.log("%s %s has no transient allocation", command_context.c_str(), binding_context.c_str());
+                } else if (binding.offset > allocation->size || binding.length > allocation->size - binding.offset) {
+                    status.log("%s %s is outside transient allocation length %zu", command_context.c_str(),
+                               binding_context.c_str(), allocation->size);
+                }
+            }
+            if (binding.value.value < 0) {
+                status.log("%s %s has an invalid value id", command_context.c_str(), binding_context.c_str());
+            }
+            if (binding.length == 0) {
+                status.log("%s %s has an empty binding", command_context.c_str(), binding_context.c_str());
+            }
+        }
+    }
 }
 
 }  // namespace
@@ -221,64 +361,15 @@ CommandProgram build_command_program(const Graph &        graph,
         return result;
     }
 
-    result.commands.reserve(plan.dispatches.size());
-    for (const Dispatch & dispatch : plan.dispatches) {
-        Command command;
-        command.ordinal = static_cast<uint32_t>(result.commands.size());
-        command.kind    = CommandKind::Kernel;
-        command.kernel  = dispatch.kernel;
-        // TODO: replace this linear ordinal dependency with real graph/resource dependency analysis.
-        if (command.ordinal > 0) {
-            command.dependencies.push_back(command.ordinal - 1);
-        }
-        const KernelResolveResult resolved   = resolve_kernel_definition(corpus, target, command.kernel.kernel_id);
-        const KernelDefinition *  definition = resolved.definition;
-        if (!resolved.found()) {
-            result.status.log("%s", format_kernel_resolve_error(resolved, command.kernel.kernel_id).c_str());
-            definition = nullptr;
-        } else if (dispatch.bindings.size() != definition->bindings.size()) {
-            result.status.log("command %u kernel %s has %zu bindings but its ABI requires %zu", command.ordinal,
-                              kernel_definition_name(*definition).c_str(), dispatch.bindings.size(),
-                              definition->bindings.size());
-        }
-        command.bindings.reserve(dispatch.bindings.size());
-        for (size_t binding_index = 0; binding_index < dispatch.bindings.size(); ++binding_index) {
-            const DispatchBinding & binding = dispatch.bindings[binding_index];
-            CommandBinding          command_binding;
-            command_binding.value                                      = binding.value;
-            command_binding.offset                                     = binding.offset;
-            command_binding.length                                     = binding.length;
-            const Value *                               value          = graph.values().find(binding.value);
-            const CommandPlanTransient *                plan_transient = find_plan_transient(plan, binding.value);
-            const CommandPlanCompletionCounterRequest * completion_counter =
-                find_plan_completion_counter_request(plan, binding.value);
-            if (value == nullptr && plan_transient == nullptr && completion_counter == nullptr) {
-                result.status.log("command %u binding %zu references missing value %d", command.ordinal, binding_index,
-                                  binding.value.value);
-            } else if (value != nullptr) {
-                command_binding.origin = command_binding_origin(value->kind);
-            } else {
-                command_binding.origin = CommandBindingOrigin::Transient;
-            }
-            if (command_binding.origin == CommandBindingOrigin::Transient) {
-                const TransientBindingTarget target = transient_binding_target(graph, binding.value);
-                command_binding.value               = target.value;
-                if (target.offset > std::numeric_limits<size_t>::max() - command_binding.offset) {
-                    result.status.log("command %u binding %zu transient alias offset overflows", command.ordinal,
-                                      binding_index);
-                } else {
-                    command_binding.offset += target.offset;
-                }
-            }
-            if (definition != nullptr && binding_index < definition->bindings.size()) {
-                command_binding.name   = string_value(definition->bindings[binding_index].name);
-                command_binding.access = definition->bindings[binding_index].access;
-            }
-            command.bindings.push_back(std::move(command_binding));
-        }
-        result.commands.push_back(std::move(command));
+    result.initialization_commands.reserve(plan.initialization_dispatches.size());
+    for (const Dispatch & dispatch : plan.initialization_dispatches) {
+        append_command(graph, plan, corpus, target, dispatch, false, result.initialization_commands, result.status);
     }
-    result.transients = build_transient_plan(graph, plan, result.commands, result.completion_counters, result.status);
+    for (const Dispatch & dispatch : plan.dispatches) {
+        append_command(graph, plan, corpus, target, dispatch, true, result.commands, result.status);
+    }
+    result.transients = build_transient_plan(graph, plan, result.initialization_commands, result.commands,
+                                             result.completion_counters, result.status);
     result.constant_initializations.reserve(plan.constant_initializations.size());
     for (const CommandPlanConstantInitialization & initialization : plan.constant_initializations) {
         result.constant_initializations.push_back({
@@ -298,73 +389,8 @@ VerificationResult verify_command_program(const CommandProgram & program,
     if (!program.valid()) {
         result.status.append(program.status);
     }
-    for (size_t i = 0; i < program.commands.size(); ++i) {
-        const Command &   command         = program.commands[i];
-        const std::string command_context = format_command(command);
-        if (command.ordinal != i) {
-            result.status.log("%s has non-contiguous ordinal at index %zu", command_context.c_str(), i);
-        }
-        if (command.kind != CommandKind::Kernel) {
-            result.status.log("%s is not a kernel command", command_context.c_str());
-        }
-        KernelResolveResult      resolved;
-        const KernelDefinition * definition = nullptr;
-        if (command.kind == CommandKind::Kernel) {
-            resolved   = resolve_kernel_definition(corpus, target, command.kernel.kernel_id);
-            definition = resolved.definition;
-        }
-        if (command.kind == CommandKind::Kernel && !resolved.found()) {
-            result.status.log("%s: %s", command_context.c_str(),
-                              format_kernel_resolve_error(resolved, command.kernel.kernel_id).c_str());
-        } else if (definition != nullptr) {
-            if (command.bindings.size() != definition->bindings.size()) {
-                result.status.log("%s kernel %s has %zu bindings but its ABI requires %zu", command_context.c_str(),
-                                  kernel_definition_name(*definition).c_str(), command.bindings.size(),
-                                  definition->bindings.size());
-            }
-            const size_t shared_count = std::min(command.bindings.size(), definition->bindings.size());
-            for (size_t binding_index = 0; binding_index < shared_count; ++binding_index) {
-                const CommandBinding &          binding = command.bindings[binding_index];
-                const KernelBindingDefinition & abi     = definition->bindings[binding_index];
-                if (!string_equal(binding.name.c_str(), abi.name) || binding.access != abi.access) {
-                    result.status.log("%s %s does not match ABI binding %zu", command_context.c_str(),
-                                      format_command_binding(binding).c_str(), binding_index);
-                }
-            }
-        }
-        if (command.bindings.empty()) {
-            result.status.log("%s has no bindings", command_context.c_str());
-        }
-        for (uint32_t dependency : command.dependencies) {
-            if (dependency >= command.ordinal) {
-                result.status.log("%s has forward dependency %u", command_context.c_str(), dependency);
-            }
-        }
-        for (const CommandBinding & binding : command.bindings) {
-            const std::string binding_context = format_command_binding(binding);
-            if (binding.origin != CommandBindingOrigin::GraphValue &&
-                binding.origin != CommandBindingOrigin::Transient) {
-                result.status.log("%s %s has an unsupported binding origin", command_context.c_str(),
-                                  binding_context.c_str());
-            }
-            if (binding.origin == CommandBindingOrigin::Transient) {
-                const TransientAllocation * allocation = find_transient_allocation(program.transients, binding.value);
-                if (allocation == nullptr) {
-                    result.status.log("%s %s has no transient allocation", command_context.c_str(),
-                                      binding_context.c_str());
-                } else if (binding.offset > allocation->size || binding.length > allocation->size - binding.offset) {
-                    result.status.log("%s %s is outside transient allocation length %zu", command_context.c_str(),
-                                      binding_context.c_str(), allocation->size);
-                }
-            }
-            if (binding.value.value < 0) {
-                result.status.log("%s %s has an invalid value id", command_context.c_str(), binding_context.c_str());
-            }
-            if (binding.length == 0) {
-                result.status.log("%s %s has an empty binding", command_context.c_str(), binding_context.c_str());
-            }
-        }
-    }
+    verify_command_list(program.initialization_commands, program.transients, corpus, target, result.status);
+    verify_command_list(program.commands, program.transients, corpus, target, result.status);
     if (program.transients.arena_alignment == 0) {
         result.status.log("transient arena has zero alignment");
     }

@@ -77,6 +77,35 @@ static Status resolve_command_binding(const Command &                     comman
 
 }  // namespace
 
+static void resolve_command_list(const CommandProgram &              program,
+                                 const std::vector<Command> &        commands,
+                                 const CommandProgramBindings &      bindings,
+                                 const TransientArenaAllocationRef * transient_arena,
+                                 std::vector<ResolvedCommand> &      resolved_commands,
+                                 Status &                            status) {
+    resolved_commands.reserve(commands.size());
+    for (const Command & command : commands) {
+        ResolvedCommand resolved_command;
+        resolved_command.ordinal = command.ordinal;
+        resolved_command.kind    = command.kind;
+        resolved_command.kernel  = command.kernel;
+        resolved_command.bindings.reserve(command.bindings.size());
+
+        for (const CommandBinding & binding : command.bindings) {
+            ResolvedCommandBinding resolved_binding;
+            resolved_binding.binding = binding;
+            Status binding_status =
+                resolve_command_binding(command, program, binding, bindings, transient_arena, resolved_binding.ref);
+            if (binding_status.success()) {
+                resolved_command.bindings.push_back(resolved_binding);
+            } else {
+                status.append(binding_status);
+            }
+        }
+        resolved_commands.push_back(resolved_command);
+    }
+}
+
 ResolvedCommandProgram resolve_command_program_bindings(const CommandProgram &              program,
                                                         const CommandProgramBindings &      bindings,
                                                         const TransientArenaAllocationRef * transient_arena) {
@@ -88,27 +117,9 @@ ResolvedCommandProgram resolve_command_program_bindings(const CommandProgram &  
         result.status.append(bindings.status);
     }
 
-    result.commands.reserve(program.commands.size());
-    for (const Command & command : program.commands) {
-        ResolvedCommand resolved_command;
-        resolved_command.ordinal = command.ordinal;
-        resolved_command.kind    = command.kind;
-        resolved_command.kernel  = command.kernel;
-        resolved_command.bindings.reserve(command.bindings.size());
-
-        for (const CommandBinding & binding : command.bindings) {
-            ResolvedCommandBinding resolved_binding;
-            resolved_binding.binding = binding;
-            Status status =
-                resolve_command_binding(command, program, binding, bindings, transient_arena, resolved_binding.ref);
-            if (status.success()) {
-                resolved_command.bindings.push_back(resolved_binding);
-            } else {
-                result.status.append(status);
-            }
-        }
-        result.commands.push_back(resolved_command);
-    }
+    resolve_command_list(program, program.initialization_commands, bindings, transient_arena,
+                         result.initialization_commands, result.status);
+    resolve_command_list(program, program.commands, bindings, transient_arena, result.commands, result.status);
     return result;
 }
 

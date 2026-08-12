@@ -195,26 +195,30 @@ struct GraphValueAccess {
 
 static std::unordered_map<int32_t, GraphValueAccess> collect_graph_value_access(const CommandProgram & commands) {
     std::unordered_map<int32_t, GraphValueAccess> access_by_value;
-    for (const Command & command : commands.commands) {
-        for (const CommandBinding & binding : command.bindings) {
-            if (binding.origin != CommandBindingOrigin::GraphValue) {
-                continue;
-            }
-            GraphValueAccess & access = access_by_value[binding.value.value];
-            switch (binding.access) {
-                case ResourceAccess::Read:
-                    access.read = true;
-                    break;
-                case ResourceAccess::Write:
-                    access.write = true;
-                    break;
-                case ResourceAccess::ReadWrite:
-                    access.read  = true;
-                    access.write = true;
-                    break;
+    auto append_command_list_access = [&](const std::vector<Command> & command_list) {
+        for (const Command & command : command_list) {
+            for (const CommandBinding & binding : command.bindings) {
+                if (binding.origin != CommandBindingOrigin::GraphValue) {
+                    continue;
+                }
+                GraphValueAccess & access = access_by_value[binding.value.value];
+                switch (binding.access) {
+                    case ResourceAccess::Read:
+                        access.read = true;
+                        break;
+                    case ResourceAccess::Write:
+                        access.write = true;
+                        break;
+                    case ResourceAccess::ReadWrite:
+                        access.read  = true;
+                        access.write = true;
+                        break;
+                }
             }
         }
-    }
+    };
+    append_command_list_access(commands.initialization_commands);
+    append_command_list_access(commands.commands);
     return access_by_value;
 }
 
@@ -418,6 +422,64 @@ static bool execute_prepared_kernel_command(const CommandProgramExecutionContext
     return true;
 }
 
+static void prepare_command_list(const CommandProgramExecutionContext & context,
+                                 const std::vector<ResolvedCommand> &   commands,
+                                 std::vector<PreparedCommand> &         prepared_commands,
+                                 Status &                               status) {
+    prepared_commands.reserve(commands.size());
+    for (const ResolvedCommand & command : commands) {
+        PreparedCommand prepared_command;
+        Status          command_status = prepare_kernel_command(context, command, prepared_command);
+        if (command_status.success()) {
+            prepared_commands.push_back(std::move(prepared_command));
+        } else {
+            status.append(command_status);
+        }
+    }
+}
+
+static bool bind_prepared_command_list_transients(const CommandProgram &              commands,
+                                                  const TransientArenaAllocationRef & transient_allocation,
+                                                  std::vector<PreparedCommand> &      prepared_commands) {
+    for (PreparedCommand & command : prepared_commands) {
+        for (PreparedCommandBinding & binding : command.kernel.bindings) {
+            if (binding.binding.origin != CommandBindingOrigin::Transient) {
+                continue;
+            }
+            const TransientAllocation * allocation =
+                find_transient_allocation(commands.transients, binding.binding.value);
+            if (allocation == nullptr) {
+                GGML_LOG_ERROR("%s: %s has no transient allocation\n", __func__,
+                               format_command_binding(binding.binding).c_str());
+                return false;
+            }
+            if (binding.binding.offset > allocation->size ||
+                binding.binding.length > allocation->size - binding.binding.offset ||
+                commands.transients.arena_size > transient_allocation.capacity) {
+                GGML_LOG_ERROR("%s: %s is outside transient arena\n", __func__,
+                               format_command_binding(binding.binding).c_str());
+                return false;
+            }
+            binding.ref = {
+                transient_allocation.buffer,
+                allocation->arena_offset + binding.binding.offset,
+                binding.binding.length,
+            };
+        }
+    }
+    return true;
+}
+
+static bool execute_prepared_command_list(const CommandProgramExecutionContext & context,
+                                          const std::vector<PreparedCommand> &   commands) {
+    for (const PreparedCommand & command : commands) {
+        if (!execute_prepared_kernel_command(context, command)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 PreparedCommandProgram prepare_command_program(const CommandProgramExecutionContext & context,
@@ -466,16 +528,8 @@ PreparedCommandProgram prepare_command_program(const CommandProgramExecutionCont
         return prepared;
     }
 
-    prepared.commands.reserve(resolved.commands.size());
-    for (const ResolvedCommand & command : resolved.commands) {
-        PreparedCommand prepared_command;
-        Status          status = prepare_kernel_command(context, command, prepared_command);
-        if (status.success()) {
-            prepared.commands.push_back(std::move(prepared_command));
-        } else {
-            prepared.status.append(status);
-        }
-    }
+    prepare_command_list(context, resolved.initialization_commands, prepared.initialization_commands, prepared.status);
+    prepare_command_list(context, resolved.commands, prepared.commands, prepared.status);
     prepared.bound_transient_arena_allocation_id = transient_allocation.allocation_id;
     return prepared;
 }
@@ -498,31 +552,9 @@ bool bind_prepared_command_program_transients(const CommandProgram &            
     if (prepared.bound_transient_arena_allocation_id == transient_allocation.allocation_id) {
         return true;
     }
-    for (PreparedCommand & command : prepared.commands) {
-        for (PreparedCommandBinding & binding : command.kernel.bindings) {
-            if (binding.binding.origin != CommandBindingOrigin::Transient) {
-                continue;
-            }
-            const TransientAllocation * allocation =
-                find_transient_allocation(commands.transients, binding.binding.value);
-            if (allocation == nullptr) {
-                GGML_LOG_ERROR("%s: %s has no transient allocation\n", __func__,
-                               format_command_binding(binding.binding).c_str());
-                return false;
-            }
-            if (binding.binding.offset > allocation->size ||
-                binding.binding.length > allocation->size - binding.binding.offset ||
-                commands.transients.arena_size > transient_allocation.capacity) {
-                GGML_LOG_ERROR("%s: %s is outside transient arena\n", __func__,
-                               format_command_binding(binding.binding).c_str());
-                return false;
-            }
-            binding.ref = {
-                transient_allocation.buffer,
-                allocation->arena_offset + binding.binding.offset,
-                binding.binding.length,
-            };
-        }
+    if (!bind_prepared_command_list_transients(commands, transient_allocation, prepared.initialization_commands) ||
+        !bind_prepared_command_list_transients(commands, transient_allocation, prepared.commands)) {
+        return false;
     }
     prepared.bound_transient_arena_allocation_id = transient_allocation.allocation_id;
     return true;
@@ -597,10 +629,9 @@ bool execute_prepared_command_program(const CommandProgramExecutionContext & con
         GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(upload_status));
         return false;
     }
-    for (const PreparedCommand & command : commands.commands) {
-        if (!execute_prepared_kernel_command(context, command)) {
-            return false;
-        }
+    if (!execute_prepared_command_list(context, commands.initialization_commands) ||
+        !execute_prepared_command_list(context, commands.commands)) {
+        return false;
     }
     Status download_status = download_prepared_host_staging(context, commands);
     if (!download_status.success()) {

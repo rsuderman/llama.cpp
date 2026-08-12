@@ -51,6 +51,7 @@ struct PreparedCommand {
 };
 
 struct PreparedCommandProgram {
+    std::vector<PreparedCommand>   initialization_commands;
     std::vector<PreparedCommand>   commands;
     std::vector<HostStagingBuffer> host_staging;
     std::vector<HostWeightLease>   resident_host_weights;

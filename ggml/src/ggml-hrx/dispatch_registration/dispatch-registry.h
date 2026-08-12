@@ -35,6 +35,7 @@ struct DispatchMatchContext {
 };
 
 struct DispatchMatch {
+    std::vector<Dispatch>                            initialization_dispatches;
     std::vector<size_t>                              covered_nodes;
     std::vector<Dispatch>                            dispatches;
     std::vector<CommandPlanTransient>                transients;

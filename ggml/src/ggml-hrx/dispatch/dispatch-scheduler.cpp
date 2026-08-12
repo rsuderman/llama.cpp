@@ -41,6 +41,7 @@ static bool try_match_registration(const Graph &              graph,
 }
 
 static void clear_plan_results(CommandPlan & plan) {
+    plan.initialization_dispatches.clear();
     plan.dispatches.clear();
     plan.transients.clear();
     plan.constant_initializations.clear();
@@ -185,6 +186,9 @@ bool DispatchScheduler::schedule_graph(const Graph &                 graph,
             }
             clear_plan_results(plan_);
             return false;
+        }
+        for (Dispatch & dispatch : match.initialization_dispatches) {
+            plan_.initialization_dispatches.push_back(std::move(dispatch));
         }
         for (Dispatch & dispatch : match.dispatches) {
             plan_.dispatches.push_back(std::move(dispatch));

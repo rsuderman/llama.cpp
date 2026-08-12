@@ -32,6 +32,7 @@ struct CommandPlanCompletionCounterRequest {
 };
 
 struct CommandPlan {
+    std::vector<Dispatch>                            initialization_dispatches;
     std::vector<Dispatch>                            dispatches;
     std::vector<CommandPlanTransient>                transients;
     std::vector<CommandPlanConstantInitialization>   constant_initializations;

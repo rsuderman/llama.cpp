@@ -37,6 +37,7 @@ struct ResolvedCommand {
 };
 
 struct ResolvedCommandProgram {
+    std::vector<ResolvedCommand> initialization_commands;
     std::vector<ResolvedCommand> commands;
     Status                       status;
 

@@ -67,6 +67,7 @@ struct CompletionCounterPlan {
 };
 
 struct CommandProgram {
+    std::vector<Command>                initialization_commands;
     std::vector<Command>                commands;
     TransientPlan                       transients;
     CompletionCounterPlan               completion_counters;

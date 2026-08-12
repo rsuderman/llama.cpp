@@ -17,6 +17,10 @@ namespace {
 
 static constexpr KernelCatalogRef kQwenAttentionPostprocessF32F16Kernel =
     GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_attention_postprocess_f32_f16");
+static constexpr KernelCatalogRef kQwenAttentionContextBaseCaptureKernel =
+    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen_attention_context_base_capture");
+static constexpr KernelCatalogRef kQwenAttentionMetadataBringupKernel =
+    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen_attention_metadata_bringup_workaround");
 static constexpr int64_t kQwenAttentionHeadSize = 128;
 
 static const Value * graph_value(const Graph & graph, ValueId id) {
@@ -702,6 +706,57 @@ static bool append_postprocess_covered_nodes(const DispatchMatchContext &      c
     return true;
 }
 
+static bool has_attention_metadata_initialization(const CommandPlan & plan) {
+    for (const Dispatch & dispatch : plan.initialization_dispatches) {
+        if (dispatch.kernel.kernel_id == kQwenAttentionMetadataBringupKernel.id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static ValueId next_match_transient_value(const DispatchMatchContext & context, const DispatchMatch & dispatch_match) {
+    return ValueId(context.next_plan_value.value + static_cast<int32_t>(dispatch_match.transients.size()) +
+                   static_cast<int32_t>(dispatch_match.completion_counter_requests.size()));
+}
+
+static bool append_attention_metadata_initialization(const DispatchMatchContext &      context,
+                                                     const AttentionPostprocessMatch & match,
+                                                     DispatchMatch &                   dispatch_match) {
+    if (has_attention_metadata_initialization(context.plan)) {
+        return true;
+    }
+    if (!match.flash_layouts.matched() || match.flash_layouts.flash->inputs.size() != 4) {
+        return true;
+    }
+
+    const Value * mask = graph_value(context.graph, match.flash_layouts.flash->inputs[3]);
+    if (mask == nullptr || mask->type != GGML_TYPE_F16 || mask->ne[0] <= 0 || mask->ne[1] != match.query.token_count) {
+        return false;
+    }
+
+    const ValueId control = next_match_transient_value(context, dispatch_match);
+    dispatch_match.transients.push_back({ control, "qwen.attention.control", sizeof(int32_t), 16 });
+
+    Dispatch context_capture;
+    context_capture.kernel = make_kernel_specialization(kQwenAttentionContextBaseCaptureKernel);
+    context_capture.bindings.push_back({ match.query.positions->id, 0, match.query.positions->byte_count });
+    context_capture.bindings.push_back({ control, 0, sizeof(int32_t) });
+    dispatch_match.initialization_dispatches.push_back(std::move(context_capture));
+
+    Dispatch metadata;
+    metadata.kernel = make_kernel_specialization(kQwenAttentionMetadataBringupKernel);
+    metadata.kernel.integer_parameters.emplace("token_count", match.query.token_count);
+    metadata.kernel.integer_parameters.emplace("context_capacity", mask->ne[0]);
+    metadata.bindings.push_back({ control, 0, sizeof(int32_t) });
+    metadata.bindings.push_back({ match.query.positions->id, 0, match.query.positions->byte_count });
+    metadata.bindings.push_back({ match.key.cache_indices->id, 0, match.key.cache_indices->byte_count });
+    metadata.bindings.push_back({ match.value.cache_indices->id, 0, match.value.cache_indices->byte_count });
+    metadata.bindings.push_back({ mask->id, 0, mask->byte_count });
+    dispatch_match.initialization_dispatches.push_back(std::move(metadata));
+    return true;
+}
+
 }  // namespace
 
 static bool match_qwen_attention_postprocess_dispatch(const DispatchMatchContext & context,
@@ -714,13 +769,17 @@ static bool match_qwen_attention_postprocess_dispatch(const DispatchMatchContext
     if (!append_postprocess_covered_nodes(context, match, dispatch_match, &dispatch_match.status)) {
         return false;
     }
+    if (!append_attention_metadata_initialization(context, match, dispatch_match)) {
+        return false;
+    }
 
     Dispatch      dispatch;
     const bool    synthetic_inverse_frequencies = match.query.inverse_freqs == nullptr;
-    const ValueId inverse_frequencies_value =
-        synthetic_inverse_frequencies ? context.next_plan_value : match.query.inverse_freqs->id;
-    const size_t inverse_frequencies_size = match.query.inverse_freqs_byte_count;
-    dispatch.kernel                       = make_kernel_specialization(kQwenAttentionPostprocessF32F16Kernel);
+    const ValueId inverse_frequencies_value     = synthetic_inverse_frequencies ?
+                                                      next_match_transient_value(context, dispatch_match) :
+                                                      match.query.inverse_freqs->id;
+    const size_t  inverse_frequencies_size      = match.query.inverse_freqs_byte_count;
+    dispatch.kernel                             = make_kernel_specialization(kQwenAttentionPostprocessF32F16Kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", match.query.token_count);
     dispatch.kernel.integer_parameters.emplace("cache_row_count", match.key.cache_row_count);
     dispatch.kernel.compile_parameters.emplace("qwen3_moe.model.rms_epsilon", "0.000001");
