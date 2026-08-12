@@ -383,6 +383,7 @@ static void run_dispatch_registry_checks() {
                                       "qwen.attention_postprocess_f32_f16"));
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_GET_ROWS),
                                       "qwen.preamble.token_embedding_q4k"));
+    REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_GET_ROWS), "common.gather_add_f32"));
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_SOFT_MAX), "qwen.router.top8_f32"));
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_MUL_MAT_ID),
                                       "qwen.moe.routed_gate_up_swiglu_q4k_f16_wmma"));
@@ -1201,6 +1202,149 @@ static void run_qwen_token_embedding_dispatch_checks() {
         !manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_Q4_K, GGML_TYPE_I32, GGML_TYPE_F32, 1024, 151936, 1));
     REQUIRE(!manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_Q4_K, GGML_TYPE_I32, GGML_TYPE_F32, 2048, 151936,
                                                        1, 2048, 2));
+
+    ggml_free(ctx);
+}
+
+static ggml::hrx::Graph build_manual_gather_add_graph(ggml_context * ctx,
+                                                      int64_t        hidden_size,
+                                                      int64_t        source_token_count,
+                                                      int64_t        output_token_count,
+                                                      bool           shared_row_ids,
+                                                      int64_t        second_source_hidden_size = -1) {
+    if (second_source_hidden_size < 0) {
+        second_source_hidden_size = hidden_size;
+    }
+
+    ggml::hrx::Graph graph;
+
+    ggml_tensor * attention = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hidden_size, source_token_count);
+    ggml_tensor * residual  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, second_source_hidden_size, source_token_count);
+    ggml_tensor * row_ids0  = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, output_token_count);
+    ggml_tensor * row_ids1  = shared_row_ids ? row_ids0 : ggml_new_tensor_1d(ctx, GGML_TYPE_I32, output_token_count);
+    ggml_tensor * selected0 = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hidden_size, output_token_count);
+    ggml_tensor * selected1 = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hidden_size, output_token_count);
+    ggml_tensor * output    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hidden_size, output_token_count);
+    REQUIRE(attention != nullptr);
+    REQUIRE(residual != nullptr);
+    REQUIRE(row_ids0 != nullptr);
+    REQUIRE(row_ids1 != nullptr);
+    REQUIRE(selected0 != nullptr);
+    REQUIRE(selected1 != nullptr);
+    REQUIRE(output != nullptr);
+
+    const ggml::hrx::ValueId attention_value =
+        graph.values().get_or_add_tensor_value(attention, ggml::hrx::ValueKind::External);
+    const ggml::hrx::ValueId residual_value =
+        graph.values().get_or_add_tensor_value(residual, ggml::hrx::ValueKind::External);
+    const ggml::hrx::ValueId row_ids0_value =
+        graph.values().get_or_add_tensor_value(row_ids0, ggml::hrx::ValueKind::External);
+    const ggml::hrx::ValueId row_ids1_value =
+        graph.values().get_or_add_tensor_value(row_ids1, ggml::hrx::ValueKind::External);
+    const ggml::hrx::ValueId selected0_value =
+        graph.values().get_or_add_tensor_value(selected0, ggml::hrx::ValueKind::Transient);
+    const ggml::hrx::ValueId selected1_value =
+        graph.values().get_or_add_tensor_value(selected1, ggml::hrx::ValueKind::Transient);
+    const ggml::hrx::ValueId output_value =
+        graph.values().get_or_add_tensor_value(output, ggml::hrx::ValueKind::External);
+
+    graph.add_node(GGML_OP_GET_ROWS, selected0_value, { attention_value, row_ids0_value });
+    graph.add_node(GGML_OP_GET_ROWS, selected1_value, { residual_value, row_ids1_value });
+    graph.add_node(GGML_OP_ADD, output_value, { selected0_value, selected1_value });
+    REQUIRE(graph.build_index().success());
+    return graph;
+}
+
+static bool manual_gather_add_graph_is_supported(ggml_context * ctx,
+                                                 int64_t        hidden_size,
+                                                 int64_t        source_token_count,
+                                                 int64_t        output_token_count,
+                                                 bool           shared_row_ids,
+                                                 int64_t        second_source_hidden_size = -1) {
+    ggml::hrx::Graph graph = build_manual_gather_add_graph(ctx, hidden_size, source_token_count, output_token_count,
+                                                           shared_row_ids, second_source_hidden_size);
+    return ggml::hrx::DispatchScheduler::can_schedule_graph(graph, test_dispatch_target());
+}
+
+static bool partial_gather_add_graph_is_supported(ggml_context * ctx) {
+    ggml::hrx::Graph graph;
+
+    ggml_tensor * attention  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 13);
+    ggml_tensor * row_ids    = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+    ggml_tensor * selected   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
+    ggml_tensor * add_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
+    ggml_tensor * add_output = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
+    REQUIRE(attention != nullptr);
+    REQUIRE(row_ids != nullptr);
+    REQUIRE(selected != nullptr);
+    REQUIRE(add_input != nullptr);
+    REQUIRE(add_output != nullptr);
+
+    const ggml::hrx::ValueId attention_value =
+        graph.values().get_or_add_tensor_value(attention, ggml::hrx::ValueKind::External);
+    const ggml::hrx::ValueId row_ids_value =
+        graph.values().get_or_add_tensor_value(row_ids, ggml::hrx::ValueKind::External);
+    const ggml::hrx::ValueId selected_value =
+        graph.values().get_or_add_tensor_value(selected, ggml::hrx::ValueKind::Transient);
+    const ggml::hrx::ValueId add_input_value =
+        graph.values().get_or_add_tensor_value(add_input, ggml::hrx::ValueKind::External);
+    const ggml::hrx::ValueId add_output_value =
+        graph.values().get_or_add_tensor_value(add_output, ggml::hrx::ValueKind::External);
+
+    graph.add_node(GGML_OP_GET_ROWS, selected_value, { attention_value, row_ids_value });
+    graph.add_node(GGML_OP_ADD, add_output_value, { selected_value, add_input_value });
+    REQUIRE(graph.build_index().success());
+    return ggml::hrx::DispatchScheduler::can_schedule_graph(graph, test_dispatch_target());
+}
+
+static void schedule_gather_add_command(ggml::hrx::Graph & graph,
+                                        int64_t            expected_hidden_size,
+                                        int64_t            expected_source_token_count,
+                                        int64_t            expected_output_token_count) {
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(graph, test_dispatch_target()));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 1);
+
+    const ggml::hrx::Dispatch & dispatch = scheduler.plan().dispatches.front();
+    REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "qwen3_moe:ggml_gather_add_f32");
+    REQUIRE(dispatch.kernel.integer_parameters.at("hidden_size") == expected_hidden_size);
+    REQUIRE(dispatch.kernel.integer_parameters.at("source_token_count") == expected_source_token_count);
+    REQUIRE(dispatch.kernel.integer_parameters.at("output_token_count") == expected_output_token_count);
+    REQUIRE(dispatch.bindings.size() == 4);
+
+    const ggml::hrx::CommandProgram commands =
+        ggml::hrx::build_command_program(graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(commands.valid());
+    REQUIRE(commands.commands.size() == 1);
+    REQUIRE(command_program_verifies(commands));
+    REQUIRE(commands.commands.front().bindings.size() == 4);
+    REQUIRE(commands.commands.front().bindings[0].name == "attention");
+    REQUIRE(commands.commands.front().bindings[1].name == "residual");
+    REQUIRE(commands.commands.front().bindings[2].name == "output_ids");
+    REQUIRE(commands.commands.front().bindings[3].name == "output");
+}
+
+static void run_gather_add_dispatch_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 4 * 1024 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    {
+        ggml::hrx::Graph graph = build_manual_gather_add_graph(ctx, 2048, 13, 1, true);
+        schedule_gather_add_command(graph, 2048, 13, 1);
+    }
+    {
+        ggml::hrx::Graph graph = build_manual_gather_add_graph(ctx, 2048, 128, 8, true);
+        schedule_gather_add_command(graph, 2048, 128, 8);
+    }
+
+    REQUIRE(!manual_gather_add_graph_is_supported(ctx, 2048, 13, 1, false));
+    REQUIRE(!manual_gather_add_graph_is_supported(ctx, 2048, 13, 1, true, 1024));
+    REQUIRE(!manual_gather_add_graph_is_supported(ctx, 96, 13, 1, true));
+    REQUIRE(!partial_gather_add_graph_is_supported(ctx));
 
     ggml_free(ctx);
 }
@@ -3491,6 +3635,7 @@ int main() {
     run_graph_index_checks();
     run_graph_traversal_checks();
     run_qwen_token_embedding_dispatch_checks();
+    run_gather_add_dispatch_checks();
     run_qwen_flash_attention_dispatch_checks();
     run_qwen_attention_postprocess_dispatch_checks();
     run_qwen_matmul_dispatch_checks();
