@@ -16,10 +16,18 @@ namespace {
 
 static constexpr KernelCatalogRef kQwenRoutedGateUpSwiGLUQ4KF16WmmaKernel =
     GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma");
+static constexpr KernelCatalogRef kQwenRoutedGateUpSwiGLUQ4KQ8Kernel =
+    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_gate_up_swiglu_q4k_q8");
+static constexpr KernelCatalogRef kQwenRoutedGateUpSwiGLUQ4KQ8NextQ8Kernel =
+    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8");
 static constexpr KernelCatalogRef kQwenRoutedDownQ4KF16WmmaGroupedKernel =
     GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_down_q4k_f16_wmma_grouped");
 static constexpr KernelCatalogRef kQwenRoutedDownQ6KF16WmmaGroupedKernel =
     GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_down_q6k_f16_wmma_grouped");
+static constexpr KernelCatalogRef kQwenRoutedDownQ4KQ8NextQ8Kernel =
+    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_down_q4k_q8_1_x4_next_q8");
+static constexpr KernelCatalogRef kQwenRoutedDownQ6KF32Wave64NextQ8Kernel =
+    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_down_q6k_f32_wave64_next_q8");
 static constexpr KernelCatalogRef kQwenRoutedDownWeightedReduceF16F32Kernel =
     GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_down_weighted_reduce_f16_f32");
 static constexpr KernelCatalogRef kQwenRoutedDownWeightedReduceNextRmsNormF32Kernel =
@@ -32,6 +40,8 @@ static constexpr int64_t      kQwenMoeRouteCount              = 8;
 static constexpr size_t       kQwenMoePlanTransientAlignment  = 256;
 static constexpr const char * kQwenMoeF16GateUpOutputName     = "qwen.moe.gate_up_swiglu_f16";
 static constexpr const char * kQwenMoeF16RoutedDownOutputName = "qwen.moe.routed_down_f16";
+static constexpr const char * kQwenMoeQ8GateUpOutputName      = "qwen.decode.moe.gate_up_swiglu_q8";
+static constexpr const char * kQwenMoeQ8HiddenOutputName      = "qwen.decode.moe.hidden_q8";
 
 static const Value * graph_value(const Graph & graph, ValueId id) {
     return graph.values().find(id);
@@ -129,6 +139,18 @@ static size_t f16_routed_down_output_size(int64_t token_count) {
     return static_cast<size_t>(token_count * kQwenMoeRouteCount * kQwenMoeInputSize) * sizeof(ggml_fp16_t);
 }
 
+static size_t q8_1_x4_byte_count(int64_t row_count, int64_t input_size) {
+    if (row_count <= 0 || input_size <= 0) {
+        return 0;
+    }
+    return static_cast<size_t>(row_count) * ggml_row_size(GGML_TYPE_Q8_1, input_size);
+}
+
+static uint32_t gate_up_completion_counter_count(int64_t token_count) {
+    const int64_t physical_group_count = (kQwenMoeOutputSize + 127) / 128;
+    return static_cast<uint32_t>(token_count * kQwenMoeRouteCount * physical_group_count);
+}
+
 static void add_routed_down_compile_parameters(Dispatch & dispatch, int64_t token_count) {
     dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_down.input_size", to_config_value(kQwenMoeOutputSize));
     dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_down.route_count",
@@ -157,6 +179,30 @@ struct RoutedGateUpMatch {
         return gate_weight != nullptr && up_weight != nullptr && input != nullptr && route_ids != nullptr &&
                gate_output != nullptr && up_output != nullptr && glu_output != nullptr && routing_bundle != nullptr &&
                gate_node != nullptr && up_node != nullptr && glu_node != nullptr && token_count > 0;
+    }
+};
+
+struct DecodeRoutedGateUpMatch {
+    const Value *                     gate_weight     = nullptr;
+    const Value *                     up_weight       = nullptr;
+    const Value *                     input           = nullptr;
+    const Value *                     route_ids       = nullptr;
+    const Value *                     glu_output      = nullptr;
+    const CommandPlanAlternateValue * input_alternate = nullptr;
+    const GraphNode *                 down_node       = nullptr;
+    const Value *                     down_weight     = nullptr;
+    const GraphNode *                 gate_node       = nullptr;
+    const GraphNode *                 up_node         = nullptr;
+    const GraphNode *                 glu_node        = nullptr;
+    int64_t                           token_count     = 0;
+    int64_t                           route_stride    = 0;
+    bool                              publish_q8      = false;
+
+    bool matched() const {
+        return gate_weight != nullptr && up_weight != nullptr && input != nullptr && route_ids != nullptr &&
+               glu_output != nullptr && input_alternate != nullptr && down_node != nullptr && down_weight != nullptr &&
+               gate_node != nullptr && up_node != nullptr && glu_node != nullptr && token_count == 1 &&
+               route_stride >= kQwenMoeRouteCount;
     }
 };
 
@@ -201,10 +247,30 @@ struct WeightedReduceMatch {
     WeightedReduceNextRmsNormMatch    next_rmsnorm;
     int64_t                           token_count = 0;
 
+    bool topology_matched() const {
+        return route_weights != nullptr && routed_output != nullptr && residual_input != nullptr && output != nullptr &&
+               weighted_node != nullptr && !views.empty() && residual != nullptr && token_count > 0;
+    }
+
+    bool matched() const { return topology_matched() && routed_alternate != nullptr; }
+};
+
+struct DecodeRoutedDownMatch {
+    const Value *                     input_graph_value = nullptr;
+    const CommandPlanAlternateValue * input_alternate   = nullptr;
+    const Value *                     weight            = nullptr;
+    const Value *                     output            = nullptr;
+    const Value *                     route_ids         = nullptr;
+    WeightedReduceMatch               reduce;
+    KernelCatalogRef                  kernel       = {};
+    int64_t                           token_count  = 0;
+    int64_t                           route_stride = 0;
+    bool                              input_is_q8  = false;
+
     bool matched() const {
-        return route_weights != nullptr && routed_output != nullptr && routed_alternate != nullptr &&
-               residual_input != nullptr && output != nullptr && weighted_node != nullptr && !views.empty() &&
-               residual != nullptr && token_count > 0;
+        return input_graph_value != nullptr && weight != nullptr && output != nullptr && route_ids != nullptr &&
+               reduce.topology_matched() && reduce.next_rmsnorm.matched() && kernel.id != kUncatalogedKernelId &&
+               token_count == 1 && route_stride >= kQwenMoeRouteCount && (!input_is_q8 || input_alternate != nullptr);
     }
 };
 
@@ -358,6 +424,88 @@ static RoutedGateUpMatch match_qwen_routed_gate_up_swiglu(const DispatchMatchCon
     return match;
 }
 
+static DecodeRoutedGateUpMatch match_qwen_decode_routed_gate_up_swiglu(const DispatchMatchContext & context) {
+    DecodeRoutedGateUpMatch match;
+    const GraphNode *       root = context.root_node;
+    if (root == nullptr || root->op != GGML_OP_MUL_MAT_ID || root->inputs.size() != 3 || !context.graph.has_index()) {
+        return match;
+    }
+
+    const Value * root_weight = graph_value(context.graph, root->inputs[0]);
+    const Value * input       = graph_value(context.graph, root->inputs[1]);
+    const Value * route_ids   = graph_value(context.graph, root->inputs[2]);
+    const Value * root_output = graph_value(context.graph, root->output);
+    if (root_weight == nullptr || input == nullptr || route_ids == nullptr || root_output == nullptr ||
+        !is_qwen_routed_weight(*root_weight) || input->type != GGML_TYPE_F32 || !input->contiguous ||
+        !is_shape(*input, kQwenMoeInputSize, 1, 1, 1) || route_ids->type != GGML_TYPE_I32 ||
+        !is_shape(*route_ids, kQwenMoeRouteCount, 1, 1, 1) || !is_qwen_routed_projection_output(*root_output, 1)) {
+        return {};
+    }
+
+    const int64_t                     route_stride    = static_cast<int64_t>(route_ids->nb[1] / sizeof(int32_t));
+    const CommandPlanAlternateValue * input_alternate = find_alternate_value(
+        context.graph, context.plan, input->id, GGML_TYPE_Q8_1, q8_1_x4_byte_count(1, kQwenMoeInputSize));
+    if (input_alternate == nullptr) {
+        return {};
+    }
+
+    const GraphNode * glu_node = find_consumer_with_op(context.graph, root->output, GGML_OP_GLU);
+    if (glu_node == nullptr || glu_node->inputs.size() != 2) {
+        return {};
+    }
+    const GluParams * glu_params = op_params_as<GluParams>(glu_node->params);
+    if (glu_params == nullptr || glu_params->op != GGML_GLU_OP_SWIGLU) {
+        return {};
+    }
+
+    const GraphNode * gate_node = producer_with_op(context.graph, glu_node->inputs[0], GGML_OP_MUL_MAT_ID);
+    const GraphNode * up_node   = producer_with_op(context.graph, glu_node->inputs[1], GGML_OP_MUL_MAT_ID);
+    if (gate_node == nullptr || up_node == nullptr || gate_node == up_node || (gate_node != root && up_node != root)) {
+        return {};
+    }
+
+    const Value * gate_weight = nullptr;
+    const Value * gate_output = nullptr;
+    const Value * up_weight   = nullptr;
+    const Value * up_output   = nullptr;
+    if (!match_same_route_projection(context.graph, *gate_node, input->id, route_ids->id, 1, gate_weight,
+                                     gate_output) ||
+        !match_same_route_projection(context.graph, *up_node, input->id, route_ids->id, 1, up_weight, up_output) ||
+        !same_shape(*gate_output, *up_output)) {
+        return {};
+    }
+
+    const Value * glu_output = graph_value(context.graph, glu_node->output);
+    if (glu_output == nullptr || glu_output->kind != ValueKind::Transient ||
+        !is_qwen_routed_projection_output(*glu_output, 1)) {
+        return {};
+    }
+
+    const GraphNode * down_node   = find_single_consumer_with_op(context.graph, glu_output->id, GGML_OP_MUL_MAT_ID);
+    const Value *     down_weight = down_node == nullptr || down_node->inputs.size() != 3 ?
+                                        nullptr :
+                                        graph_value(context.graph, down_node->inputs[0]);
+    if (down_node == nullptr || down_weight == nullptr || !is_qwen_routed_down_weight(*down_weight)) {
+        return {};
+    }
+
+    match.gate_weight     = gate_weight;
+    match.up_weight       = up_weight;
+    match.input           = input;
+    match.route_ids       = route_ids;
+    match.glu_output      = glu_output;
+    match.input_alternate = input_alternate;
+    match.down_node       = down_node;
+    match.down_weight     = down_weight;
+    match.gate_node       = gate_node;
+    match.up_node         = up_node;
+    match.glu_node        = glu_node;
+    match.token_count     = 1;
+    match.route_stride    = route_stride;
+    match.publish_q8      = down_weight->type == GGML_TYPE_Q4_K;
+    return match;
+}
+
 static WeightedReduceNextRmsNormMatch match_qwen_weighted_reduce_next_rmsnorm(const DispatchMatchContext & context,
                                                                               const Value &                residual) {
     WeightedReduceNextRmsNormMatch match;
@@ -437,53 +585,61 @@ static bool residual_input_is_safe_for_in_place(const DispatchMatchContext & con
     return true;
 }
 
-static WeightedReduceMatch match_qwen_routed_down_weighted_reduce(const DispatchMatchContext & context) {
+static const Value * find_qwen_route_weights_for_route_ids(const Graph & graph,
+                                                           ValueId       route_ids,
+                                                           int64_t       token_count) {
+    const GraphNode * get_rows = find_single_consumer_with_op(graph, route_ids, GGML_OP_GET_ROWS);
+    if (get_rows == nullptr || get_rows->inputs.size() != 2) {
+        return nullptr;
+    }
+    const Value * selected = graph_value(graph, get_rows->output);
+    if (selected == nullptr || selected->type != GGML_TYPE_F32 ||
+        !is_shape(*selected, 1, kQwenMoeRouteCount, token_count, 1)) {
+        return nullptr;
+    }
+    const GraphNode * reshape      = find_single_consumer_with_op(graph, get_rows->output, GGML_OP_RESHAPE);
+    const Value *     flat_weights = reshape == nullptr ? nullptr : graph_value(graph, reshape->output);
+    if (flat_weights == nullptr || flat_weights->type != GGML_TYPE_F32 ||
+        !is_shape(*flat_weights, kQwenMoeRouteCount, token_count, 1, 1)) {
+        return nullptr;
+    }
+    const GraphNode * sum_rows = find_single_consumer_with_op(graph, reshape->output, GGML_OP_SUM_ROWS);
+    const GraphNode * clamp =
+        sum_rows == nullptr ? nullptr : find_single_consumer_with_op(graph, sum_rows->output, GGML_OP_CLAMP);
+    const GraphNode * div =
+        clamp == nullptr ? nullptr : find_single_consumer_with_op(graph, clamp->output, GGML_OP_DIV);
+    const GraphNode * output_reshape =
+        div == nullptr ? nullptr : find_single_consumer_with_op(graph, div->output, GGML_OP_RESHAPE);
+    const Value * weights = output_reshape == nullptr ? nullptr : graph_value(graph, output_reshape->output);
+    if (weights == nullptr || weights->type != GGML_TYPE_F32 ||
+        !is_shape(*weights, 1, kQwenMoeRouteCount, token_count, 1)) {
+        return nullptr;
+    }
+    return weights;
+}
+
+static WeightedReduceMatch match_qwen_routed_down_weighted_reduce_topology(const DispatchMatchContext & context,
+                                                                           const GraphNode *            weighted,
+                                                                           const Value *                routed_output,
+                                                                           const Value *                route_weights) {
     WeightedReduceMatch match;
-    const GraphNode *   weighted = context.root_node;
     if (weighted == nullptr || weighted->op != GGML_OP_MUL || weighted->inputs.size() != 2 ||
-        !context.graph.has_index()) {
+        routed_output == nullptr || route_weights == nullptr || !context.graph.has_index()) {
         return match;
     }
-
-    const Value * routed_output = nullptr;
-    const Value * route_weights = nullptr;
-    for (ValueId input : weighted->inputs) {
-        const Value * value = graph_value(context.graph, input);
-        if (value == nullptr) {
-            return {};
-        }
-        if (is_qwen_routed_down_output(*value, value->ne[2])) {
-            routed_output = value;
-        } else if (value->type == GGML_TYPE_F32 && value->contiguous &&
-                   is_shape(*value, 1, kQwenMoeRouteCount, value->ne[2], 1)) {
-            route_weights = value;
-        }
+    if (!node_has_input_or_alias(context.graph, *weighted, routed_output->id) ||
+        !node_has_input_or_alias(context.graph, *weighted, route_weights->id)) {
+        return {};
     }
     const Value * weighted_output = graph_value(context.graph, weighted->output);
-    if (routed_output == nullptr || route_weights == nullptr || weighted_output == nullptr ||
-        routed_output->ne[2] != route_weights->ne[2] || !same_shape(*weighted_output, *routed_output)) {
+    if (!is_qwen_routed_down_output(*routed_output, routed_output->ne[2]) || route_weights->type != GGML_TYPE_F32 ||
+        !route_weights->contiguous || !is_shape(*route_weights, 1, kQwenMoeRouteCount, routed_output->ne[2], 1) ||
+        weighted_output == nullptr || !same_shape(*weighted_output, *routed_output)) {
         return {};
     }
 
     const int64_t token_count = routed_output->ne[2];
     if (!is_qwen_supported_query_length(token_count)) {
-        return {};
-    }
-    const CommandPlanAlternateValue * routed_alternate =
-        find_alternate_value(context.plan, routed_output->id, GGML_TYPE_F16, f16_routed_down_output_size(token_count));
-    if (routed_alternate == nullptr) {
-        return {};
-    }
-
-    bool known_route_weights = false;
-    for (const CommandPlanQwenRoutingBundle & bundle : context.plan.metadata.qwen_routing_bundles()) {
-        if (bundle.route_weights == route_weights->id &&
-            bundle_matches_qwen_router(bundle, bundle.route_ids, token_count)) {
-            known_route_weights = true;
-            break;
-        }
-    }
-    if (!known_route_weights) {
         return {};
     }
 
@@ -588,17 +744,65 @@ static WeightedReduceMatch match_qwen_routed_down_weighted_reduce(const Dispatch
         return {};
     }
 
-    match.route_weights    = route_weights;
-    match.routed_output    = routed_output;
+    match.route_weights  = route_weights;
+    match.routed_output  = routed_output;
+    match.residual_input = residual_input;
+    match.output         = output;
+    match.weighted_node  = weighted;
+    match.views          = std::move(owned_views);
+    match.reductions     = std::move(reductions);
+    match.residual       = residual;
+    match.next_rmsnorm   = match_qwen_weighted_reduce_next_rmsnorm(context, *output);
+    match.token_count    = token_count;
+    return match;
+}
+
+static WeightedReduceMatch match_qwen_routed_down_weighted_reduce(const DispatchMatchContext & context) {
+    WeightedReduceMatch match;
+    const GraphNode *   weighted = context.root_node;
+    if (weighted == nullptr || weighted->op != GGML_OP_MUL || weighted->inputs.size() != 2 ||
+        !context.graph.has_index()) {
+        return match;
+    }
+
+    const Value * routed_output = nullptr;
+    const Value * route_weights = nullptr;
+    for (ValueId input : weighted->inputs) {
+        const Value * value = graph_value(context.graph, input);
+        if (value == nullptr) {
+            return {};
+        }
+        if (is_qwen_routed_down_output(*value, value->ne[2])) {
+            routed_output = value;
+        } else if (value->type == GGML_TYPE_F32 && value->contiguous &&
+                   is_shape(*value, 1, kQwenMoeRouteCount, value->ne[2], 1)) {
+            route_weights = value;
+        }
+    }
+    match = match_qwen_routed_down_weighted_reduce_topology(context, weighted, routed_output, route_weights);
+    if (!match.topology_matched()) {
+        return {};
+    }
+    const int64_t                     token_count = match.token_count;
+    const CommandPlanAlternateValue * routed_alternate =
+        find_alternate_value(context.plan, routed_output->id, GGML_TYPE_F16, f16_routed_down_output_size(token_count));
+    if (routed_alternate == nullptr) {
+        return {};
+    }
+
+    bool known_route_weights = false;
+    for (const CommandPlanQwenRoutingBundle & bundle : context.plan.metadata.qwen_routing_bundles()) {
+        if (bundle.route_weights == route_weights->id &&
+            bundle_matches_qwen_router(bundle, bundle.route_ids, token_count)) {
+            known_route_weights = true;
+            break;
+        }
+    }
+    if (!known_route_weights) {
+        return {};
+    }
+
     match.routed_alternate = routed_alternate;
-    match.residual_input   = residual_input;
-    match.output           = output;
-    match.weighted_node    = weighted;
-    match.views            = std::move(owned_views);
-    match.reductions       = std::move(reductions);
-    match.residual         = residual;
-    match.next_rmsnorm     = match_qwen_weighted_reduce_next_rmsnorm(context, *output);
-    match.token_count      = token_count;
     return match;
 }
 
@@ -647,6 +851,216 @@ static bool match_qwen_routed_gate_up_swiglu_q4k_f16_wmma_dispatch(const Dispatc
         !append_covered_node(context, match.glu_node, dispatch_match)) {
         return false;
     }
+    dispatch_match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
+
+static bool match_qwen_decode_routed_gate_up_swiglu_q4k_q8_dispatch(const DispatchMatchContext & context,
+                                                                    DispatchMatch &              dispatch_match) {
+    const DecodeRoutedGateUpMatch match = match_qwen_decode_routed_gate_up_swiglu(context);
+    if (!match.matched()) {
+        return false;
+    }
+
+    const size_t  q8_output_bytes     = q8_1_x4_byte_count(match.token_count * kQwenMoeRouteCount, kQwenMoeOutputSize);
+    const ValueId q8_output           = match.publish_q8 ? ValueId(context.next_plan_value.value) : ValueId();
+    const ValueId completion_counters = match.publish_q8 ? ValueId(context.next_plan_value.value + 1) : ValueId();
+
+    Dispatch dispatch;
+    dispatch.kernel = make_kernel_specialization(match.publish_q8 ? kQwenRoutedGateUpSwiGLUQ4KQ8NextQ8Kernel :
+                                                                    kQwenRoutedGateUpSwiGLUQ4KQ8Kernel);
+    dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
+    dispatch.kernel.integer_parameters.emplace("route_count", kQwenMoeRouteCount);
+    dispatch.kernel.integer_parameters.emplace("route_stride", match.route_stride);
+    dispatch.kernel.integer_parameters.emplace("expert_count", kQwenMoeExpertCount);
+    dispatch.kernel.integer_parameters.emplace("output_size", kQwenMoeOutputSize);
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_gate_up.input_size",
+                                               to_config_value(kQwenMoeInputSize));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_gate_up.expert_count",
+                                               to_config_value(kQwenMoeExpertCount));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_gate_up.route_count",
+                                               to_config_value(kQwenMoeRouteCount));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_gate_up.output_size",
+                                               to_config_value(kQwenMoeOutputSize));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.workload.token_capacity", to_config_value(match.token_count));
+
+    const size_t route_id_length = static_cast<size_t>(match.token_count * match.route_stride) * sizeof(int32_t);
+    dispatch.bindings.push_back({ match.input_alternate->alternate_value, 0, match.input_alternate->byte_count });
+    dispatch.bindings.push_back({ match.route_ids->id, 0, route_id_length });
+    dispatch.bindings.push_back({ match.gate_weight->id, 0, match.gate_weight->byte_count });
+    dispatch.bindings.push_back({ match.up_weight->id, 0, match.up_weight->byte_count });
+    dispatch.bindings.push_back({ match.glu_output->id, 0, match.glu_output->byte_count });
+    if (match.publish_q8) {
+        dispatch.bindings.push_back(
+            { completion_counters, 0, gate_up_completion_counter_count(match.token_count) * sizeof(int32_t) });
+        dispatch.bindings.push_back({ q8_output, 0, q8_output_bytes });
+        dispatch_match.completion_counter_requests.push_back({
+            completion_counters,
+            "qwen.decode.moe.gate_up_completion_counters",
+            gate_up_completion_counter_count(match.token_count),
+        });
+        dispatch_match.transients.push_back(
+            { q8_output, kQwenMoeQ8GateUpOutputName, q8_output_bytes, kQwenMoePlanTransientAlignment });
+        Status metadata_status;
+        if (!dispatch_match.metadata.append_alternate_value(
+                { match.glu_output->id, q8_output, GGML_TYPE_Q8_1, q8_output_bytes, kQwenMoeQ8GateUpOutputName },
+                metadata_status)) {
+            dispatch_match.status.append(metadata_status);
+            return false;
+        }
+    }
+
+    if (!append_covered_node(context, match.gate_node, dispatch_match) ||
+        !append_covered_node(context, match.up_node, dispatch_match) ||
+        !append_covered_node(context, match.glu_node, dispatch_match)) {
+        return false;
+    }
+    dispatch_match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
+
+static DecodeRoutedDownMatch match_qwen_decode_routed_down_next_q8(const DispatchMatchContext & context) {
+    DecodeRoutedDownMatch match;
+    const GraphNode *     root = context.root_node;
+    if (root == nullptr || root->op != GGML_OP_MUL_MAT_ID || root->inputs.size() != 3 || !context.graph.has_index()) {
+        return match;
+    }
+
+    const Value * weight      = graph_value(context.graph, root->inputs[0]);
+    const Value * input       = graph_value(context.graph, root->inputs[1]);
+    const Value * route_ids   = graph_value(context.graph, root->inputs[2]);
+    const Value * root_output = graph_value(context.graph, root->output);
+    if (weight == nullptr || input == nullptr || route_ids == nullptr || root_output == nullptr ||
+        !is_qwen_routed_down_weight(*weight) || !is_qwen_routed_projection_output(*input, 1) ||
+        !is_qwen_routed_down_output(*root_output, 1) || route_ids->type != GGML_TYPE_I32 ||
+        route_ids->nb[0] != sizeof(int32_t) || route_ids->nb[1] % sizeof(int32_t) != 0 ||
+        !is_shape(*route_ids, kQwenMoeRouteCount, 1, 1, 1)) {
+        return {};
+    }
+
+    const int64_t                     route_stride = static_cast<int64_t>(route_ids->nb[1] / sizeof(int32_t));
+    const GraphNode *                 glu_node     = producer_with_op(context.graph, input->id, GGML_OP_GLU);
+    const GraphNode *                 gate_node    = glu_node == nullptr || glu_node->inputs.size() != 2 ?
+                                                         nullptr :
+                                                         producer_with_op(context.graph, glu_node->inputs[0], GGML_OP_MUL_MAT_ID);
+    const Value *                     gate_input   = gate_node == nullptr || gate_node->inputs.size() != 3 ?
+                                                         nullptr :
+                                                         graph_value(context.graph, gate_node->inputs[1]);
+    const CommandPlanAlternateValue * gate_input_q8 =
+        gate_input == nullptr ? nullptr :
+                                find_alternate_value(context.graph, context.plan, gate_input->id, GGML_TYPE_Q8_1,
+                                                     q8_1_x4_byte_count(1, kQwenMoeInputSize));
+    if (gate_input_q8 == nullptr) {
+        return {};
+    }
+
+    const Value *     route_weights = find_qwen_route_weights_for_route_ids(context.graph, route_ids->id, 1);
+    const GraphNode * weighted =
+        find_single_consumer_with_op_through_layout_aliases(context.graph, root_output->id, GGML_OP_MUL);
+    WeightedReduceMatch reduce =
+        match_qwen_routed_down_weighted_reduce_topology(context, weighted, root_output, route_weights);
+    if (!reduce.topology_matched() || !reduce.next_rmsnorm.matched() ||
+        !residual_input_is_safe_for_in_place(context, reduce)) {
+        return {};
+    }
+
+    const bool                        input_is_q8 = weight->type == GGML_TYPE_Q4_K;
+    const CommandPlanAlternateValue * input_alternate =
+        input_is_q8 ? find_alternate_value(context.graph, context.plan, input->id, GGML_TYPE_Q8_1,
+                                           q8_1_x4_byte_count(kQwenMoeRouteCount, kQwenMoeOutputSize)) :
+                      nullptr;
+    if (input_is_q8 && input_alternate == nullptr) {
+        return {};
+    }
+
+    match.input_graph_value = input;
+    match.input_alternate   = input_alternate;
+    match.weight            = weight;
+    match.output            = reduce.output;
+    match.route_ids         = route_ids;
+    match.reduce            = std::move(reduce);
+    match.kernel =
+        weight->type == GGML_TYPE_Q4_K ? kQwenRoutedDownQ4KQ8NextQ8Kernel : kQwenRoutedDownQ6KF32Wave64NextQ8Kernel;
+    match.token_count  = 1;
+    match.route_stride = route_stride;
+    match.input_is_q8  = input_is_q8;
+    return match;
+}
+
+static bool match_qwen_decode_routed_down_next_q8_dispatch(const DispatchMatchContext & context,
+                                                           DispatchMatch &              dispatch_match) {
+    const DecodeRoutedDownMatch match = match_qwen_decode_routed_down_next_q8(context);
+    if (!match.matched()) {
+        return false;
+    }
+
+    const ValueId completion_counter_value(context.next_plan_value.value);
+    const ValueId q8_output(context.next_plan_value.value + 1);
+    const size_t  q8_output_bytes = q8_1_x4_byte_count(match.token_count, kQwenMoeInputSize);
+
+    Dispatch dispatch;
+    dispatch.kernel = make_kernel_specialization(match.kernel);
+    dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
+    dispatch.kernel.integer_parameters.emplace("input_size", kQwenMoeOutputSize);
+    dispatch.kernel.integer_parameters.emplace("route_count", kQwenMoeRouteCount);
+    dispatch.kernel.integer_parameters.emplace("route_id_stride", match.route_stride);
+    dispatch.kernel.integer_parameters.emplace("expert_count", kQwenMoeExpertCount);
+    dispatch.kernel.integer_parameters.emplace("output_size", kQwenMoeInputSize);
+    add_routed_down_compile_parameters(dispatch, match.token_count);
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.model.hidden_size", to_config_value(kQwenMoeInputSize));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.model.rms_epsilon", "0.000001");
+
+    const size_t route_id_length = static_cast<size_t>(match.token_count * match.route_stride) * sizeof(int32_t);
+    if (match.input_is_q8) {
+        dispatch.bindings.push_back({ match.input_alternate->alternate_value, 0, match.input_alternate->byte_count });
+    } else {
+        dispatch.bindings.push_back({ match.input_graph_value->id, 0, match.input_graph_value->byte_count });
+    }
+    dispatch.bindings.push_back({ match.route_ids->id, 0, route_id_length });
+    dispatch.bindings.push_back({ match.reduce.route_weights->id, 0, match.reduce.route_weights->byte_count });
+    dispatch.bindings.push_back({ match.weight->id, 0, match.weight->byte_count });
+    dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
+    dispatch.bindings.push_back(
+        { match.reduce.next_rmsnorm.norm_weight->id, 0, match.reduce.next_rmsnorm.norm_weight->byte_count });
+    dispatch.bindings.push_back({ completion_counter_value, 0, sizeof(int32_t) });
+    dispatch.bindings.push_back({ q8_output, 0, q8_output_bytes });
+
+    dispatch_match.value_aliases.push_back({ match.reduce.residual_input->id, match.output->id });
+    dispatch_match.completion_counter_requests.push_back({
+        completion_counter_value,
+        "qwen.decode.moe.routed_down_completion_counter",
+        1,
+    });
+    dispatch_match.transients.push_back(
+        { q8_output, kQwenMoeQ8HiddenOutputName, q8_output_bytes, kQwenMoePlanTransientAlignment });
+    Status metadata_status;
+    if (!dispatch_match.metadata.append_alternate_value({ match.reduce.next_rmsnorm.output->id, q8_output,
+                                                          GGML_TYPE_Q8_1, q8_output_bytes, kQwenMoeQ8HiddenOutputName },
+                                                        metadata_status)) {
+        dispatch_match.status.append(metadata_status);
+        return false;
+    }
+
+    if (!append_covered_node(context, context.root_node, dispatch_match) ||
+        !append_covered_node(context, match.reduce.weighted_node, dispatch_match)) {
+        return false;
+    }
+    for (const GraphNode * view : match.reduce.views) {
+        if (!append_covered_node(context, view, dispatch_match)) {
+            return false;
+        }
+    }
+    for (const GraphNode * reduction : match.reduce.reductions) {
+        if (!append_covered_node(context, reduction, dispatch_match)) {
+            return false;
+        }
+    }
+    if (!append_covered_node(context, match.reduce.residual, dispatch_match) ||
+        !append_covered_node(context, match.reduce.next_rmsnorm.rms_node, dispatch_match) ||
+        !append_covered_node(context, match.reduce.next_rmsnorm.mul_node, dispatch_match)) {
+        return false;
+    }
+
     dispatch_match.dispatches.push_back(std::move(dispatch));
     return true;
 }
@@ -753,6 +1167,22 @@ static bool match_qwen_routed_down_q6k_f16_wmma_grouped_dispatch(const DispatchM
 }  // namespace
 
 void register_qwen_moe_dispatches(DispatchRegistryBuilder & registry) {
+    registry.add({
+        "qwen.moe.decode_routed_gate_up_swiglu_q4k_q8",
+        GGML_OP_MUL_MAT_ID,
+        DispatchMatchKind::Fused,
+        1200,
+        DispatchSource::Qwen,
+        match_qwen_decode_routed_gate_up_swiglu_q4k_q8_dispatch,
+    });
+    registry.add({
+        "qwen.moe.decode_routed_down_next_q8",
+        GGML_OP_MUL_MAT_ID,
+        DispatchMatchKind::Fused,
+        1150,
+        DispatchSource::Qwen,
+        match_qwen_decode_routed_down_next_q8_dispatch,
+    });
     registry.add({
         "qwen.moe.routed_gate_up_swiglu_q4k_f16_wmma",
         GGML_OP_MUL_MAT_ID,

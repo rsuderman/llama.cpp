@@ -34,6 +34,33 @@ static constexpr int64_t kQwenHiddenSize        = 2048;
 static constexpr int64_t kQwenMoeIntermediate   = 768;
 static constexpr int64_t kQwenVocabularyCount   = 151936;
 
+static ggml::hrx::Value make_test_value(ggml::hrx::ValueId        id,
+                                        ggml::hrx::ValueStorageId storage,
+                                        ggml::hrx::ValueId        storage_root,
+                                        ggml::hrx::ValueId        alias_source,
+                                        size_t                    storage_offset,
+                                        size_t                    storage_byte_count,
+                                        ggml_type                 type,
+                                        int64_t                   element_count) {
+    ggml::hrx::Value value   = {};
+    value.id                 = id;
+    value.kind               = ggml::hrx::ValueKind::Transient;
+    value.storage            = storage;
+    value.storage_root       = storage_root;
+    value.alias_source       = alias_source;
+    value.storage_offset     = storage_offset;
+    value.storage_byte_count = storage_byte_count;
+    value.type               = type;
+    value.ne                 = { element_count, 1, 1, 1 };
+    value.nb                 = { ggml_type_size(type), ggml_type_size(type) * static_cast<size_t>(element_count),
+                                 ggml_type_size(type) * static_cast<size_t>(element_count),
+                                 ggml_type_size(type) * static_cast<size_t>(element_count) };
+    value.element_count      = element_count;
+    value.byte_count         = ggml_row_size(type, element_count);
+    value.contiguous         = true;
+    return value;
+}
+
 static std::vector<float> make_input(int64_t hidden_size, int64_t token_count) {
     std::vector<float> data(hidden_size * token_count);
     for (int64_t i = 0; i < static_cast<int64_t>(data.size()); ++i) {
@@ -278,8 +305,28 @@ static std::string kernel_name_for_id(uint64_t kernel_id) {
 static std::vector<std::string> scheduled_kernel_sequence(ggml_cgraph * graph) {
     ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
     REQUIRE(imported.valid());
-    ggml::hrx::DispatchScheduler scheduler;
-    REQUIRE(scheduler.schedule_graph(imported.graph, { "gfx1151" }));
+    ggml::hrx::DispatchScheduler           scheduler;
+    ggml::hrx::DispatchScheduleDiagnostics diagnostics;
+    if (!scheduler.schedule_graph(imported.graph, { "gfx1151" }, &diagnostics)) {
+        for (const std::string & error : scheduler.plan().status.errors()) {
+            std::fprintf(stderr, "scheduler error: %s\n", error.c_str());
+        }
+        std::fprintf(stderr, "unsupported: %s\n", diagnostics.unsupported_message.c_str());
+        for (const ggml::hrx::DispatchRegistrationAttempt & attempt : diagnostics.match.attempts) {
+            std::fprintf(stderr, "  attempt %s matched=%d\n", attempt.name.c_str(), attempt.matched ? 1 : 0);
+            if (!attempt.covered_nodes.empty()) {
+                std::fprintf(stderr, "    covered:");
+                for (size_t node : attempt.covered_nodes) {
+                    std::fprintf(stderr, " %zu", node);
+                }
+                std::fprintf(stderr, "\n");
+            }
+            for (const std::string & error : attempt.errors) {
+                std::fprintf(stderr, "    %s\n", error.c_str());
+            }
+        }
+        std::abort();
+    }
     REQUIRE(scheduler.plan().valid());
 
     std::vector<std::string> names;
@@ -297,9 +344,59 @@ static void require_kernel_subsequence(const std::vector<std::string> & sequence
         while (sequence_index < sequence.size() && sequence[sequence_index] != name) {
             ++sequence_index;
         }
-        REQUIRE(sequence_index < sequence.size());
+        if (sequence_index >= sequence.size()) {
+            std::fprintf(stderr, "missing expected kernel: %s\nscheduled kernels:\n", name.c_str());
+            for (const std::string & scheduled : sequence) {
+                std::fprintf(stderr, "  %s\n", scheduled.c_str());
+            }
+            std::abort();
+        }
         ++sequence_index;
     }
+}
+
+static void run_alternate_value_alias_lookup_checks() {
+    constexpr int64_t element_count = 2048;
+    const size_t      full_bytes    = ggml_row_size(GGML_TYPE_F32, element_count);
+    const size_t      q8_bytes      = ggml_row_size(GGML_TYPE_Q8_1, element_count);
+
+    ggml::hrx::Graph       graph;
+    ggml::hrx::Status      status;
+    ggml::hrx::CommandPlan plan;
+
+    const ggml::hrx::ValueId        root(0);
+    const ggml::hrx::ValueId        full_alias(1);
+    const ggml::hrx::ValueId        partial_alias(2);
+    const ggml::hrx::ValueId        q8_alternate(100);
+    const ggml::hrx::ValueStorageId storage(0);
+
+    status = graph.values().add_snapshot_storage({ storage, root, full_bytes });
+    REQUIRE(status.success());
+    status = graph.values().add_snapshot_value(
+        make_test_value(root, storage, root, ggml::hrx::ValueId(), 0, full_bytes, GGML_TYPE_F32, element_count));
+    REQUIRE(status.success());
+    status = graph.values().add_snapshot_value(
+        make_test_value(full_alias, storage, root, root, 0, full_bytes, GGML_TYPE_F32, element_count));
+    REQUIRE(status.success());
+    status = graph.values().add_snapshot_value(
+        make_test_value(partial_alias, storage, root, root, 0, full_bytes, GGML_TYPE_F32, element_count / 2));
+    REQUIRE(status.success());
+
+    REQUIRE(plan.metadata.append_alternate_value({ root, q8_alternate, GGML_TYPE_Q8_1, q8_bytes, "q8" }, status));
+
+    const ggml::hrx::CommandPlanAlternateValue * exact =
+        ggml::hrx::find_alternate_value(graph, plan, root, GGML_TYPE_Q8_1, q8_bytes);
+    REQUIRE(exact != nullptr);
+    REQUIRE(exact->alternate_value == q8_alternate);
+
+    const ggml::hrx::CommandPlanAlternateValue * through_full_alias =
+        ggml::hrx::find_alternate_value(graph, plan, full_alias, GGML_TYPE_Q8_1, q8_bytes);
+    REQUIRE(through_full_alias != nullptr);
+    REQUIRE(through_full_alias->alternate_value == q8_alternate);
+
+    const ggml::hrx::CommandPlanAlternateValue * through_partial_alias =
+        ggml::hrx::find_alternate_value(graph, plan, partial_alias, GGML_TYPE_Q8_1, q8_bytes);
+    REQUIRE(through_partial_alias == nullptr);
 }
 
 static std::vector<float> make_pattern_f32(size_t element_count, int seed, float scale = 0.01f) {
@@ -501,6 +598,66 @@ static AttentionPostprocessGraph build_attention_postprocess_graph(ggml_context 
     REQUIRE(graph.key_cache_indices != nullptr);
     REQUIRE(graph.value_cache_indices != nullptr);
 
+    graph.key_output   = ggml_set_rows(ctx, graph.key_cache, key_cache_rows, graph.key_cache_indices);
+    graph.value_output = ggml_set_rows(ctx, graph.value_cache, value_cache_rows, graph.value_cache_indices);
+    REQUIRE(graph.key_output != nullptr);
+    REQUIRE(graph.value_output != nullptr);
+    return graph;
+}
+
+static AttentionPostprocessGraph build_decode_attention_qkv_graph(ggml_context * ctx) {
+    constexpr int64_t         token_count          = 1;
+    constexpr int64_t         query_head_count     = 32;
+    constexpr int64_t         key_value_head_count = 4;
+    constexpr int64_t         cache_row_count      = 1024;
+    AttentionPostprocessGraph graph =
+        build_attention_postprocess_graph(ctx, token_count, query_head_count, key_value_head_count, cache_row_count);
+
+    ggml_tensor * hidden_state     = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenHiddenSize, token_count);
+    ggml_tensor * attention_weight = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kQwenHiddenSize);
+    REQUIRE(hidden_state != nullptr);
+    REQUIRE(attention_weight != nullptr);
+    ggml_tensor * attention_rms = ggml_rms_norm(ctx, hidden_state, kQwenRmsNormEps);
+    REQUIRE(attention_rms != nullptr);
+    graph.input = ggml_mul(ctx, attention_rms, attention_weight);
+    REQUIRE(graph.input != nullptr);
+
+    const int64_t key_value_size = key_value_head_count * kQwenFlashHeadSize;
+    ggml_tensor * query_raw      = ggml_mul_mat(ctx, graph.query_weight, graph.input);
+    ggml_tensor * key_raw        = ggml_mul_mat(ctx, graph.key_weight, graph.input);
+    ggml_tensor * value_raw      = ggml_mul_mat(ctx, graph.value_weight, graph.input);
+    REQUIRE(query_raw != nullptr);
+    REQUIRE(key_raw != nullptr);
+    REQUIRE(value_raw != nullptr);
+
+    ggml_tensor * query_reshape = ggml_reshape_3d(ctx, query_raw, kQwenFlashHeadSize, query_head_count, token_count);
+    ggml_tensor * key_reshape   = ggml_reshape_3d(ctx, key_raw, kQwenFlashHeadSize, key_value_head_count, token_count);
+    ggml_tensor * value_reshape =
+        ggml_reshape_3d(ctx, value_raw, kQwenFlashHeadSize, key_value_head_count, token_count);
+    REQUIRE(query_reshape != nullptr);
+    REQUIRE(key_reshape != nullptr);
+    REQUIRE(value_reshape != nullptr);
+
+    ggml_tensor * query_norm = ggml_rms_norm(ctx, query_reshape, kQwenRmsNormEps);
+    ggml_tensor * query_mul  = ggml_mul(ctx, query_norm, graph.query_norm_weight);
+    REQUIRE(query_norm != nullptr);
+    REQUIRE(query_mul != nullptr);
+    graph.query_output = ggml_rope_ext(ctx, query_mul, graph.positions, graph.inverse_frequencies, kQwenFlashHeadSize,
+                                       GGML_ROPE_TYPE_NEOX, 0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+    REQUIRE(graph.query_output != nullptr);
+
+    ggml_tensor * key_norm = ggml_rms_norm(ctx, key_reshape, kQwenRmsNormEps);
+    ggml_tensor * key_mul  = ggml_mul(ctx, key_norm, graph.key_norm_weight);
+    REQUIRE(key_norm != nullptr);
+    REQUIRE(key_mul != nullptr);
+    ggml_tensor * key_rope = ggml_rope_ext(ctx, key_mul, graph.positions, graph.inverse_frequencies, kQwenFlashHeadSize,
+                                           GGML_ROPE_TYPE_NEOX, 0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+    REQUIRE(key_rope != nullptr);
+
+    ggml_tensor * key_cache_rows   = ggml_reshape_2d(ctx, key_rope, key_value_size, token_count);
+    ggml_tensor * value_cache_rows = ggml_reshape_2d(ctx, value_reshape, key_value_size, token_count);
+    REQUIRE(key_cache_rows != nullptr);
+    REQUIRE(value_cache_rows != nullptr);
     graph.key_output   = ggml_set_rows(ctx, graph.key_cache, key_cache_rows, graph.key_cache_indices);
     graph.value_output = ggml_set_rows(ctx, graph.value_cache, value_cache_rows, graph.value_cache_indices);
     REQUIRE(graph.key_output != nullptr);
@@ -1339,8 +1496,119 @@ static void run_routed_moe_cpu_reference_case(ggml_type down_weight_type, bool i
     ggml_backend_free(hrx_backend);
 }
 
+static void run_decode_routed_moe_scheduling_case(ggml_type down_weight_type, bool alias_gate_input = false) {
+    ggml_init_params params = {};
+    params.mem_size         = 128 * 1024 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * hidden_state     = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenHiddenSize, 1);
+    ggml_tensor * attention_weight = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kQwenHiddenSize);
+    REQUIRE(hidden_state != nullptr);
+    REQUIRE(attention_weight != nullptr);
+    ggml_tensor * attention_rms = ggml_rms_norm(ctx, hidden_state, kQwenRmsNormEps);
+    REQUIRE(attention_rms != nullptr);
+    ggml_tensor * attention_prepared = ggml_mul(ctx, attention_rms, attention_weight);
+    REQUIRE(attention_prepared != nullptr);
+    ggml_tensor * moe_input = attention_prepared;
+    if (alias_gate_input) {
+        moe_input = ggml_reshape_2d(ctx, attention_prepared, kQwenHiddenSize, 1);
+        REQUIRE(moe_input != nullptr);
+    }
+
+    ggml_tensor * router_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenHiddenSize, kQwenRouterExpertCount);
+    REQUIRE(router_weight != nullptr);
+    ggml_tensor * logits = ggml_mul_mat(ctx, router_weight, attention_prepared);
+    REQUIRE(logits != nullptr);
+    ggml_tensor * route_ids     = nullptr;
+    ggml_tensor * route_weights = build_qwen_router_top8_graph(ctx, logits, &route_ids);
+    REQUIRE(route_ids != nullptr);
+    REQUIRE(route_weights != nullptr);
+
+    ggml_tensor * gate_weight =
+        ggml_new_tensor_3d(ctx, GGML_TYPE_Q4_K, kQwenHiddenSize, kQwenMoeIntermediate, kQwenRouterExpertCount);
+    ggml_tensor * up_weight =
+        ggml_new_tensor_3d(ctx, GGML_TYPE_Q4_K, kQwenHiddenSize, kQwenMoeIntermediate, kQwenRouterExpertCount);
+    ggml_tensor * down_weight =
+        ggml_new_tensor_3d(ctx, down_weight_type, kQwenMoeIntermediate, kQwenHiddenSize, kQwenRouterExpertCount);
+    REQUIRE(gate_weight != nullptr);
+    REQUIRE(up_weight != nullptr);
+    REQUIRE(down_weight != nullptr);
+
+    ggml_tensor * gate = ggml_mul_mat_id(ctx, gate_weight, moe_input, route_ids);
+    ggml_tensor * up   = ggml_mul_mat_id(ctx, up_weight, moe_input, route_ids);
+    REQUIRE(gate != nullptr);
+    REQUIRE(up != nullptr);
+    ggml_tensor * glu = ggml_glu_split(ctx, gate, up, GGML_GLU_OP_SWIGLU);
+    REQUIRE(glu != nullptr);
+    ggml_tensor * down = ggml_mul_mat_id(ctx, down_weight, glu, route_ids);
+    REQUIRE(down != nullptr);
+    ggml_tensor * weighted = ggml_mul(ctx, down, route_weights);
+    REQUIRE(weighted != nullptr);
+
+    std::vector<ggml_tensor *> route_views;
+    route_views.reserve(kQwenRouterRouteCount);
+    for (int64_t route = 0; route < kQwenRouterRouteCount; ++route) {
+        ggml_tensor * view = ggml_view_2d(ctx, weighted, kQwenHiddenSize, 1, weighted->nb[2],
+                                          static_cast<size_t>(route) * weighted->nb[1]);
+        REQUIRE(view != nullptr);
+        route_views.push_back(view);
+    }
+
+    ggml_tensor * reduced = route_views.front();
+    for (size_t i = 1; i < route_views.size(); ++i) {
+        reduced = ggml_add(ctx, reduced, route_views[i]);
+        REQUIRE(reduced != nullptr);
+    }
+    ggml_tensor * residual = ggml_add(ctx, hidden_state, reduced);
+    REQUIRE(residual != nullptr);
+    ggml_tensor * next_norm_weight = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kQwenHiddenSize);
+    REQUIRE(next_norm_weight != nullptr);
+    ggml_tensor * next_rms = ggml_rms_norm(ctx, residual, kQwenRmsNormEps);
+    REQUIRE(next_rms != nullptr);
+    ggml_tensor * output = ggml_mul(ctx, next_rms, next_norm_weight);
+    REQUIRE(output != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    std::vector<std::string> expected = {
+        "qwen3_moe:qwen3_moe_rmsnorm_f32_quantize_q8_1_x4",
+        "qwen3_moe:qwen3_moe_router_projection_top8_fused_decode_f32",
+        down_weight_type == GGML_TYPE_Q4_K ? "qwen3_moe:qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8" :
+                                             "qwen3_moe:qwen3_moe_routed_gate_up_swiglu_q4k_q8",
+        down_weight_type == GGML_TYPE_Q4_K ? "qwen3_moe:qwen3_moe_routed_down_q4k_q8_1_x4_next_q8" :
+                                             "qwen3_moe:qwen3_moe_routed_down_q6k_f32_wave64_next_q8",
+    };
+    require_kernel_subsequence(scheduled_kernel_sequence(graph), expected);
+    ggml_free(ctx);
+}
+
+static void run_decode_attention_qkv_scheduling_case() {
+    ggml_init_params params = {};
+    params.mem_size         = 128 * 1024 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    AttentionPostprocessGraph graph  = build_decode_attention_qkv_graph(ctx);
+    ggml_cgraph *             cgraph = ggml_new_graph(ctx);
+    REQUIRE(cgraph != nullptr);
+    ggml_build_forward_expand(cgraph, graph.query_output);
+    ggml_build_forward_expand(cgraph, graph.key_output);
+    ggml_build_forward_expand(cgraph, graph.value_output);
+
+    require_kernel_subsequence(scheduled_kernel_sequence(cgraph),
+                               { "qwen3_moe:qwen3_moe_rmsnorm_f32_quantize_q8_1_x4",
+                                 "qwen3_moe:qwen3_moe_attention_qkv_postprocess_fused_decode" });
+    ggml_free(ctx);
+}
+
 int main() {
     run_rmsnorm_support_checks();
+    run_alternate_value_alias_lookup_checks();
 
     if (ggml_backend_hrx_get_device_count() == 0) {
         std::fprintf(stderr, "test skipped: no HRX devices available\n");
@@ -1356,6 +1624,10 @@ int main() {
     run_attention_postprocess_cpu_reference_case();
     run_routed_moe_cpu_reference_case(GGML_TYPE_Q4_K, true);
     run_routed_moe_cpu_reference_case(GGML_TYPE_Q6_K, false);
+    run_decode_attention_qkv_scheduling_case();
+    run_decode_routed_moe_scheduling_case(GGML_TYPE_Q4_K);
+    run_decode_routed_moe_scheduling_case(GGML_TYPE_Q6_K);
+    run_decode_routed_moe_scheduling_case(GGML_TYPE_Q6_K, true);
     run_rmsnorm_mul_case(256, 1);
     run_rmsnorm_mul_case(256, 4);
     run_rmsnorm_mul_case(2048, 1);

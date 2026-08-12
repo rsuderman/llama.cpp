@@ -17,6 +17,8 @@ namespace {
 
 static constexpr KernelCatalogRef kQwenRouterTop8F32Kernel =
     GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_router_top8_f32");
+static constexpr KernelCatalogRef kQwenRouterProjectionTop8FusedDecodeF32Kernel =
+    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_router_projection_top8_fused_decode_f32");
 static constexpr KernelCatalogRef kQwenBuildExpertTableKernel =
     GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_build_expert_table");
 static constexpr KernelCatalogRef kQwenBuildExpertPartitionTableKernel =
@@ -37,6 +39,11 @@ static bool nearly_equal(float lhs, float rhs) {
 static const GraphNode * find_consumer_with_op(const Graph & graph, ValueId value, ggml_op op) {
     const std::vector<const GraphNode *> consumers = consumers_with_op_through_layout_aliases(graph, value, op);
     return consumers.empty() ? nullptr : consumers.front();
+}
+
+static const GraphNode * find_single_consumer_with_op(const Graph & graph, ValueId value, ggml_op op) {
+    const std::vector<const GraphNode *> consumers = consumers_with_op_through_layout_aliases(graph, value, op);
+    return consumers.size() == 1 ? consumers.front() : nullptr;
 }
 
 static const GraphNode * find_consumer_with_op_and_input(const Graph & graph,
@@ -324,6 +331,20 @@ static bool append_qwen_router_top8_coverage(const DispatchMatchContext & contex
            append_covered_node(context, div, match) && append_covered_node(context, output_reshape, match);
 }
 
+static bool append_qwen_router_top8_coverage_from_softmax(const DispatchMatchContext & context,
+                                                          const GraphNode *            softmax,
+                                                          DispatchMatch &              match) {
+    if (softmax == nullptr) {
+        return false;
+    }
+    DispatchMatchContext softmax_context = context;
+    softmax_context.root_node            = softmax;
+    if (!context.graph.index().node_index(softmax, softmax_context.root_index)) {
+        return false;
+    }
+    return append_qwen_router_top8_coverage(softmax_context, match);
+}
+
 static void add_routed_gate_up_compile_parameters(Dispatch & dispatch, const RouterTop8Match & router_match) {
     dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_gate_up.expert_count",
                                                to_config_value(router_match.expert_count));
@@ -331,7 +352,96 @@ static void add_routed_gate_up_compile_parameters(Dispatch & dispatch, const Rou
                                                to_config_value(router_match.route_count));
 }
 
+struct RouterProjectionTop8Match {
+    const GraphNode * projection = nullptr;
+    const GraphNode * softmax    = nullptr;
+    const Value *     input      = nullptr;
+    const Value *     weight     = nullptr;
+    const Value *     logits     = nullptr;
+    RouterTop8Match   top8;
+
+    bool matched() const {
+        return projection != nullptr && softmax != nullptr && input != nullptr && weight != nullptr &&
+               logits != nullptr && top8.matched();
+    }
+};
+
+static RouterProjectionTop8Match match_qwen_router_projection_top8_decode(const DispatchMatchContext & context,
+                                                                          Status *                     status) {
+    RouterProjectionTop8Match match;
+    const GraphNode *         projection = context.root_node;
+    if (projection == nullptr || projection->op != GGML_OP_MUL_MAT || projection->inputs.size() != 2 ||
+        !context.graph.has_index()) {
+        return match;
+    }
+
+    const Value * weight = graph_value(context.graph, projection->inputs[0]);
+    const Value * input  = graph_value(context.graph, projection->inputs[1]);
+    const Value * logits = graph_value(context.graph, projection->output);
+    if (weight == nullptr || input == nullptr || logits == nullptr || weight->type != GGML_TYPE_F32 ||
+        input->type != GGML_TYPE_F32 || logits->type != GGML_TYPE_F32 || !weight->contiguous || !input->contiguous ||
+        !logits->contiguous || !is_shape(*input, 2048, 1, 1, 1) || !is_shape(*weight, 2048, 128, 1, 1) ||
+        !is_shape(*logits, 128, 1, 1, 1)) {
+        return {};
+    }
+
+    const GraphNode * softmax = find_single_consumer_with_op(context.graph, projection->output, GGML_OP_SOFT_MAX);
+    RouterTop8Match   top8    = match_qwen_router_top8(context.graph, softmax, status);
+    if (!top8.matched() || top8.token_count != 1) {
+        return {};
+    }
+
+    match.projection = projection;
+    match.softmax    = softmax;
+    match.input      = input;
+    match.weight     = weight;
+    match.logits     = logits;
+    match.top8       = top8;
+    return match;
+}
+
 }  // namespace
+
+static bool match_qwen_router_projection_top8_fused_decode_dispatch(const DispatchMatchContext & context,
+                                                                    DispatchMatch &              dispatch_match) {
+    const RouterProjectionTop8Match match = match_qwen_router_projection_top8_decode(context, &dispatch_match.status);
+    if (!match.matched()) {
+        return false;
+    }
+
+    const ValueId completion_counter_value = context.next_plan_value;
+    Dispatch      dispatch;
+    dispatch.kernel = make_kernel_specialization(kQwenRouterProjectionTop8FusedDecodeF32Kernel);
+    dispatch.kernel.integer_parameters.emplace("token_count", match.top8.token_count);
+    dispatch.kernel.integer_parameters.emplace("route_id_stride", match.top8.route_stride);
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.model.hidden_size", "2048");
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.router.expert_count",
+                                               to_config_value(match.top8.expert_count));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.router.route_count", to_config_value(match.top8.route_count));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.workload.token_capacity",
+                                               to_config_value(match.top8.token_count));
+
+    const size_t route_id_length =
+        static_cast<size_t>(match.top8.token_count * match.top8.route_stride) * sizeof(int32_t);
+    dispatch.bindings.push_back({ match.input->id, 0, match.input->byte_count });
+    dispatch.bindings.push_back({ match.weight->id, 0, match.weight->byte_count });
+    dispatch.bindings.push_back({ match.logits->id, 0, match.logits->byte_count });
+    dispatch.bindings.push_back({ completion_counter_value, 0, sizeof(int32_t) });
+    dispatch.bindings.push_back({ match.top8.route_ids->id, 0, route_id_length });
+    dispatch.bindings.push_back({ match.top8.route_weights->id, 0, match.top8.route_weights->byte_count });
+
+    dispatch_match.completion_counter_requests.push_back({
+        completion_counter_value,
+        "qwen.router.decode_projection_top8_completion_counter",
+        1,
+    });
+    if (!append_covered_node(context, match.projection, dispatch_match) ||
+        !append_qwen_router_top8_coverage_from_softmax(context, match.softmax, dispatch_match)) {
+        return false;
+    }
+    dispatch_match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
 
 static bool match_qwen_router_top8_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
     const RouterTop8Match router_match =
@@ -466,6 +576,14 @@ static bool match_qwen_router_top8_dispatch(const DispatchMatchContext & context
 }
 
 void register_qwen_router_dispatches(DispatchRegistryBuilder & registry) {
+    registry.add({
+        "qwen.router.projection_top8_fused_decode",
+        GGML_OP_MUL_MAT,
+        DispatchMatchKind::Fused,
+        1200,
+        DispatchSource::Qwen,
+        match_qwen_router_projection_top8_fused_decode_dispatch,
+    });
     registry.add({
         "qwen.router.top8_f32",
         GGML_OP_SOFT_MAX,
