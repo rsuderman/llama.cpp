@@ -3406,6 +3406,110 @@ static void run_alias_value_import_checks() {
     REQUIRE(view_binding->offset == 128 + 2 * sizeof(float));
     REQUIRE(view_binding->length == view_value->byte_count);
 
+    ggml_tensor * internal_source = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 8, 2);
+    ggml_tensor * internal_bias   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 8, 1);
+    ggml_tensor * internal_view =
+        ggml_view_2d(ctx, internal_source, 8, 1, internal_source->nb[1], internal_source->nb[1]);
+    ggml_tensor * internal_out = ggml_add(ctx, internal_view, internal_bias);
+    REQUIRE(internal_source != nullptr);
+    REQUIRE(internal_bias != nullptr);
+    REQUIRE(internal_view != nullptr);
+    REQUIRE(internal_out != nullptr);
+
+    ggml_cgraph * internal_graph = ggml_new_graph(ctx);
+    REQUIRE(internal_graph != nullptr);
+    ggml_build_forward_expand(internal_graph, internal_out);
+
+    ggml::hrx::GraphImportResult internal_imported = ggml::hrx::import_ggml_graph(*internal_graph);
+    REQUIRE(internal_imported.valid());
+    REQUIRE(internal_imported.graph.nodes().size() == 2);
+    REQUIRE(internal_imported.graph.nodes()[0].op == GGML_OP_VIEW);
+    REQUIRE(internal_imported.graph.nodes()[1].op == GGML_OP_ADD);
+
+    const ggml::hrx::Value * internal_source_value = internal_imported.graph.values().find_tensor(internal_source);
+    const ggml::hrx::Value * internal_view_value   = internal_imported.graph.values().find_tensor(internal_view);
+    const ggml::hrx::Value * internal_bias_value   = internal_imported.graph.values().find_tensor(internal_bias);
+    const ggml::hrx::Value * internal_out_value    = internal_imported.graph.values().find_tensor(internal_out);
+    REQUIRE(internal_source_value != nullptr);
+    REQUIRE(internal_view_value != nullptr);
+    REQUIRE(internal_bias_value != nullptr);
+    REQUIRE(internal_out_value != nullptr);
+    REQUIRE(internal_source_value->kind == ggml::hrx::ValueKind::External);
+    REQUIRE(internal_view_value->kind == ggml::hrx::ValueKind::External);
+    REQUIRE(internal_view_value->storage_root == internal_source_value->id);
+    REQUIRE(internal_view_value->storage_offset == internal_source->nb[1]);
+
+    ggml::hrx::DispatchScheduler internal_scheduler;
+    REQUIRE(internal_scheduler.schedule_graph(internal_imported.graph, test_dispatch_target()));
+    REQUIRE(internal_scheduler.plan().valid());
+    REQUIRE(internal_scheduler.plan().dispatches.size() == 1);
+    const ggml::hrx::CommandProgram internal_commands = ggml::hrx::build_command_program(
+        internal_imported.graph, internal_scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(internal_commands.valid());
+    REQUIRE(internal_commands.commands.size() == 1);
+    REQUIRE(internal_commands.commands[0].bindings[0].value == internal_view_value->id);
+    REQUIRE(internal_commands.commands[0].bindings[0].origin == ggml::hrx::CommandBindingOrigin::GraphValue);
+    REQUIRE(ggml::hrx::find_transient_allocation(internal_commands.transients, internal_view_value->id) == nullptr);
+
+    REQUIRE(internal_imported.graph.values().bind_buffer(
+        internal_source_value->id, { dummy_hrx_buffer(0x5000), 256, internal_source_value->byte_count }));
+    REQUIRE(internal_imported.graph.values().bind_buffer(
+        internal_bias_value->id, { dummy_hrx_buffer(0x6000), 0, internal_bias_value->byte_count }));
+    REQUIRE(internal_imported.graph.values().bind_buffer(
+        internal_out_value->id, { dummy_hrx_buffer(0x7000), 0, internal_out_value->byte_count }));
+    const ggml::hrx::CommandProgramBindings internal_bindings =
+        ggml::hrx::CommandProgramBindings::from_value_map(internal_imported.graph.values());
+    REQUIRE(internal_bindings.valid());
+    const ggml::hrx::CommandProgramBinding * internal_view_binding = internal_bindings.find(internal_view_value->id);
+    REQUIRE(internal_view_binding != nullptr);
+    REQUIRE(internal_view_binding->buffer == dummy_hrx_buffer(0x5000));
+    REQUIRE(internal_view_binding->offset == 256 + internal_source->nb[1]);
+    REQUIRE(internal_view_binding->length == internal_view_value->byte_count);
+    const ggml::hrx::ResolvedCommandProgram internal_resolved =
+        ggml::hrx::resolve_command_program_bindings(internal_commands, internal_bindings);
+    REQUIRE(internal_resolved.valid());
+    REQUIRE(internal_resolved.commands[0].bindings[0].ref.buffer == dummy_hrx_buffer(0x5000));
+    REQUIRE(internal_resolved.commands[0].bindings[0].ref.offset == 256 + internal_source->nb[1]);
+
+    ggml_tensor * cache       = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 8, 4);
+    ggml_tensor * rows        = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 8, 2);
+    ggml_tensor * row_indices = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, 2);
+    ggml_tensor * updated     = ggml_set_rows(ctx, cache, rows, row_indices);
+    REQUIRE(cache != nullptr);
+    REQUIRE(rows != nullptr);
+    REQUIRE(row_indices != nullptr);
+    REQUIRE(updated != nullptr);
+    ggml_tensor * updated_view = ggml_view_2d(ctx, updated, 8, 2, updated->nb[1], 0);
+    ggml_tensor * updated_bias = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 8, 2);
+    ggml_tensor * updated_out  = ggml_add(ctx, updated_view, updated_bias);
+    REQUIRE(updated_view != nullptr);
+    REQUIRE(updated_bias != nullptr);
+    REQUIRE(updated_out != nullptr);
+
+    ggml_cgraph * set_rows_graph = ggml_new_graph(ctx);
+    REQUIRE(set_rows_graph != nullptr);
+    ggml_build_forward_expand(set_rows_graph, updated_out);
+
+    ggml::hrx::GraphImportResult set_rows_imported = ggml::hrx::import_ggml_graph(*set_rows_graph);
+    REQUIRE(set_rows_imported.valid());
+    REQUIRE(set_rows_imported.graph.nodes().size() == 3);
+    REQUIRE(set_rows_imported.graph.nodes()[0].op == GGML_OP_SET_ROWS);
+    REQUIRE(set_rows_imported.graph.nodes()[1].op == GGML_OP_VIEW);
+    REQUIRE(set_rows_imported.graph.nodes()[2].op == GGML_OP_ADD);
+
+    const ggml::hrx::Value * cache_value        = set_rows_imported.graph.values().find_tensor(cache);
+    const ggml::hrx::Value * updated_value      = set_rows_imported.graph.values().find_tensor(updated);
+    const ggml::hrx::Value * updated_view_value = set_rows_imported.graph.values().find_tensor(updated_view);
+    REQUIRE(cache_value != nullptr);
+    REQUIRE(updated_value != nullptr);
+    REQUIRE(updated_view_value != nullptr);
+    REQUIRE(cache_value->kind == ggml::hrx::ValueKind::External);
+    REQUIRE(updated_value->kind == ggml::hrx::ValueKind::External);
+    REQUIRE(updated_view_value->kind == ggml::hrx::ValueKind::External);
+    REQUIRE(updated_value->storage_root == cache_value->id);
+    REQUIRE(updated_view_value->storage_root == cache_value->id);
+    REQUIRE(updated_view_value->alias_source == cache_value->id);
+
     ggml_free(ctx);
 }
 

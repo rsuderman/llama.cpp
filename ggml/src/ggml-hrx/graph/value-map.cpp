@@ -36,6 +36,10 @@ ValueId ValueMap::get_or_add_tensor_value(const ggml_tensor * tensor, ValueKind 
         alias_source_id    = alias_source->id;
         storage_offset     = tensor->view_offs;
         storage_byte_count = alias_source->storage_byte_count;
+        const Value * root = find(storage_root);
+        if (root != nullptr && root->kind == ValueKind::External) {
+            kind = ValueKind::External;
+        }
     } else {
         storage      = ValueStorageId(static_cast<int32_t>(storages_.size()));
         storage_root = id;
