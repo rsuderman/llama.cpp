@@ -3,6 +3,7 @@
 #include "dispatch/command-plan.h"
 #include "ggml.h"
 #include "graph/graph.h"
+#include "status.h"
 
 #include <cstddef>
 #include <string>
@@ -39,6 +40,7 @@ struct DispatchMatch {
     std::vector<CommandPlanTransient>              transients;
     std::vector<CommandPlanConstantInitialization> constant_initializations;
     CommandPlanMetadata                            metadata;
+    Status                                         status;
 };
 
 using DispatchMatcher = bool (*)(const DispatchMatchContext & context, DispatchMatch & match);

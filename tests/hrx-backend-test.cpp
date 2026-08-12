@@ -103,14 +103,16 @@ static constexpr int64_t kQwenRouterRouteCount    = 8;
 static constexpr int64_t kQwenMoeHiddenSize       = 2048;
 static constexpr int64_t kQwenMoeIntermediateSize = 768;
 
-static size_t qwen_expert_table_size(int64_t token_count) {
-    return static_cast<size_t>(kQwenRouterExpertCount + kQwenRouterExpertCount * token_count) * sizeof(int32_t);
+static size_t qwen_expert_table_size(int64_t token_count, int64_t expert_count = kQwenRouterExpertCount) {
+    return static_cast<size_t>(expert_count + expert_count * token_count) * sizeof(int32_t);
 }
 
-static size_t qwen_partition_table_size(int64_t token_count) {
-    const int64_t assignment_count           = token_count * kQwenRouterRouteCount;
+static size_t qwen_partition_table_size(int64_t token_count,
+                                        int64_t route_count  = kQwenRouterRouteCount,
+                                        int64_t expert_count = kQwenRouterExpertCount) {
+    const int64_t assignment_count           = token_count * route_count;
     const int64_t assignment_partition_count = (assignment_count + 31) / 32;
-    return static_cast<size_t>(1 + assignment_partition_count + kQwenRouterExpertCount) * sizeof(int32_t);
+    return static_cast<size_t>(1 + assignment_partition_count + expert_count) * sizeof(int32_t);
 }
 
 static size_t qwen_routed_gate_up_f16_output_size(int64_t token_count) {
@@ -1018,6 +1020,65 @@ static bool graph_is_supported(ggml_context * ctx, ggml_tensor * output) {
     return ggml::hrx::DispatchScheduler::can_schedule_graph(imported.graph, test_dispatch_target());
 }
 
+struct ManualQwenRouterTop8Graph {
+    ggml::hrx::Graph   graph;
+    ggml::hrx::ValueId route_ids;
+};
+
+static ggml::hrx::ValueId add_manual_graph_tensor(ggml::hrx::Graph &   graph,
+                                                  ggml_tensor *        tensor,
+                                                  ggml::hrx::ValueKind kind) {
+    REQUIRE(tensor != nullptr);
+    return graph.values().get_or_add_tensor_value(tensor, kind);
+}
+
+static ManualQwenRouterTop8Graph build_manual_qwen_router_top8_graph(ggml_context * ctx,
+                                                                     int64_t        expert_count,
+                                                                     int64_t        route_count,
+                                                                     int64_t        token_count) {
+    ManualQwenRouterTop8Graph manual;
+    ggml::hrx::Graph &        graph = manual.graph;
+
+    const ggml::hrx::ValueId logits = add_manual_graph_tensor(
+        graph, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, expert_count, token_count), ggml::hrx::ValueKind::External);
+    const ggml::hrx::ValueId probs = add_manual_graph_tensor(
+        graph, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, expert_count, token_count), ggml::hrx::ValueKind::Transient);
+    const ggml::hrx::ValueId probs_reshaped = add_manual_graph_tensor(
+        graph, ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, expert_count, token_count), ggml::hrx::ValueKind::Transient);
+    const ggml::hrx::ValueId argsort = add_manual_graph_tensor(
+        graph, ggml_new_tensor_2d(ctx, GGML_TYPE_I32, expert_count, token_count), ggml::hrx::ValueKind::Transient);
+    manual.route_ids = add_manual_graph_tensor(graph, ggml_new_tensor_2d(ctx, GGML_TYPE_I32, route_count, token_count),
+                                               ggml::hrx::ValueKind::Transient);
+    const ggml::hrx::ValueId selected = add_manual_graph_tensor(
+        graph, ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, route_count, token_count), ggml::hrx::ValueKind::Transient);
+    const ggml::hrx::ValueId weights_flat = add_manual_graph_tensor(
+        graph, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, route_count, token_count), ggml::hrx::ValueKind::Transient);
+    const ggml::hrx::ValueId sum = add_manual_graph_tensor(
+        graph, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1, token_count), ggml::hrx::ValueKind::Transient);
+    const ggml::hrx::ValueId clamped = add_manual_graph_tensor(
+        graph, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1, token_count), ggml::hrx::ValueKind::Transient);
+    const ggml::hrx::ValueId normalized = add_manual_graph_tensor(
+        graph, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, route_count, token_count), ggml::hrx::ValueKind::Transient);
+    const ggml::hrx::ValueId route_weights = add_manual_graph_tensor(
+        graph, ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, route_count, token_count), ggml::hrx::ValueKind::External);
+
+    ggml::hrx::GraphNode & softmax = graph.add_node(GGML_OP_SOFT_MAX, probs, { logits });
+    softmax.params                 = ggml::hrx::SoftMaxParams{ 1.0f, 0.0f };
+    graph.add_node(GGML_OP_RESHAPE, probs_reshaped, { probs });
+    ggml::hrx::GraphNode & argsort_node = graph.add_node(GGML_OP_ARGSORT, argsort, { probs });
+    argsort_node.params                 = ggml::hrx::ArgsortParams{ GGML_SORT_ORDER_DESC };
+    graph.add_node(GGML_OP_VIEW, manual.route_ids, { argsort });
+    graph.add_node(GGML_OP_GET_ROWS, selected, { probs_reshaped, manual.route_ids });
+    graph.add_node(GGML_OP_RESHAPE, weights_flat, { selected });
+    graph.add_node(GGML_OP_SUM_ROWS, sum, { weights_flat });
+    ggml::hrx::GraphNode & clamp = graph.add_node(GGML_OP_CLAMP, clamped, { sum });
+    clamp.params                 = ggml::hrx::ClampParams{ 0.00006103515625f, std::numeric_limits<float>::infinity() };
+    graph.add_node(GGML_OP_DIV, normalized, { weights_flat, clamped });
+    graph.add_node(GGML_OP_RESHAPE, route_weights, { normalized });
+    REQUIRE(graph.build_index().success());
+    return manual;
+}
+
 static ggml::hrx::Graph build_manual_token_embedding_graph(ggml_tensor * weight,
                                                            ggml_tensor * token_ids,
                                                            ggml_tensor * output) {
@@ -1548,7 +1609,11 @@ static void run_qwen_matmul_dispatch_checks() {
     ggml_free(ctx);
 }
 
-static void schedule_qwen_router_top8_command(ggml_context * ctx, ggml_tensor * output, ggml_tensor * route_ids) {
+static void schedule_qwen_router_top8_command(ggml_context * ctx,
+                                              ggml_tensor *  output,
+                                              ggml_tensor *  route_ids,
+                                              int64_t        expected_expert_count = kQwenRouterExpertCount,
+                                              int64_t        expected_route_count  = kQwenRouterRouteCount) {
     ggml_cgraph * graph = ggml_new_graph(ctx);
     REQUIRE(graph != nullptr);
     ggml_build_forward_expand(graph, output);
@@ -1588,10 +1653,11 @@ static void schedule_qwen_router_top8_command(ggml_context * ctx, ggml_tensor * 
     REQUIRE(scheduler.plan().dispatches.size() == 3);
     REQUIRE(scheduler.plan().transients.size() == 2);
 
-    const int64_t                           token_count           = output->ne[2];
-    const size_t                            route_id_length       = static_cast<size_t>(token_count) * route_ids->nb[1];
-    const size_t                            expert_table_bytes    = qwen_expert_table_size(token_count);
-    const size_t                            partition_table_bytes = qwen_partition_table_size(token_count);
+    const int64_t token_count        = output->ne[2];
+    const size_t  route_id_length    = static_cast<size_t>(token_count) * route_ids->nb[1];
+    const size_t  expert_table_bytes = qwen_expert_table_size(token_count, expected_expert_count);
+    const size_t  partition_table_bytes =
+        qwen_partition_table_size(token_count, expected_route_count, expected_expert_count);
     const ggml::hrx::CommandPlanTransient & expert_table_transient    = scheduler.plan().transients[0];
     const ggml::hrx::CommandPlanTransient & partition_table_transient = scheduler.plan().transients[1];
     REQUIRE(expert_table_transient.value.value == static_cast<int32_t>(imported.graph.values().size()));
@@ -1610,38 +1676,42 @@ static void schedule_qwen_router_top8_command(ggml_context * ctx, ggml_tensor * 
     REQUIRE(dispatch.bindings[1].value == route_ids_value->id);
     REQUIRE(dispatch.bindings[1].length == route_id_length);
     REQUIRE(dispatch.bindings[2].value == output_value->id);
-    require_compile_parameter(dispatch, "qwen3_moe.router.expert_count", "128");
-    require_compile_parameter(dispatch, "qwen3_moe.router.route_count", "8");
+    require_compile_parameter(dispatch, "qwen3_moe.router.expert_count", std::to_string(expected_expert_count));
+    require_compile_parameter(dispatch, "qwen3_moe.router.route_count", std::to_string(expected_route_count));
     require_compile_parameter(dispatch, "qwen3_moe.workload.token_capacity", std::to_string(token_count));
 
     const ggml::hrx::Dispatch & expert_table_dispatch = scheduler.plan().dispatches[1];
     REQUIRE(kernel_name_for_id(expert_table_dispatch.kernel.kernel_id) == "qwen3_moe:qwen3_moe_build_expert_table");
     REQUIRE(expert_table_dispatch.kernel.integer_parameters.at("token_count") == token_count);
-    REQUIRE(expert_table_dispatch.kernel.integer_parameters.at("route_count") == kQwenRouterRouteCount);
+    REQUIRE(expert_table_dispatch.kernel.integer_parameters.at("route_count") == expected_route_count);
     REQUIRE(expert_table_dispatch.kernel.integer_parameters.at("route_stride") == route_ids->nb[1] / sizeof(int32_t));
-    REQUIRE(expert_table_dispatch.kernel.integer_parameters.at("expert_count") == kQwenRouterExpertCount);
+    REQUIRE(expert_table_dispatch.kernel.integer_parameters.at("expert_count") == expected_expert_count);
     REQUIRE(expert_table_dispatch.bindings.size() == 2);
     REQUIRE(expert_table_dispatch.bindings[0].value == route_ids_value->id);
     REQUIRE(expert_table_dispatch.bindings[0].length == route_id_length);
     REQUIRE(expert_table_dispatch.bindings[1].value == expert_table_transient.value);
     REQUIRE(expert_table_dispatch.bindings[1].length == expert_table_bytes);
-    require_compile_parameter(expert_table_dispatch, "qwen3_moe.routed_gate_up.expert_count", "128");
-    require_compile_parameter(expert_table_dispatch, "qwen3_moe.routed_gate_up.route_count", "8");
+    require_compile_parameter(expert_table_dispatch, "qwen3_moe.routed_gate_up.expert_count",
+                              std::to_string(expected_expert_count));
+    require_compile_parameter(expert_table_dispatch, "qwen3_moe.routed_gate_up.route_count",
+                              std::to_string(expected_route_count));
     require_compile_parameter(expert_table_dispatch, "qwen3_moe.workload.token_capacity", std::to_string(token_count));
 
     const ggml::hrx::Dispatch & partition_table_dispatch = scheduler.plan().dispatches[2];
     REQUIRE(kernel_name_for_id(partition_table_dispatch.kernel.kernel_id) ==
             "qwen3_moe:qwen3_moe_build_expert_partition_table");
     REQUIRE(partition_table_dispatch.kernel.integer_parameters.at("token_count") == token_count);
-    REQUIRE(partition_table_dispatch.kernel.integer_parameters.at("route_count") == kQwenRouterRouteCount);
-    REQUIRE(partition_table_dispatch.kernel.integer_parameters.at("expert_count") == kQwenRouterExpertCount);
+    REQUIRE(partition_table_dispatch.kernel.integer_parameters.at("route_count") == expected_route_count);
+    REQUIRE(partition_table_dispatch.kernel.integer_parameters.at("expert_count") == expected_expert_count);
     REQUIRE(partition_table_dispatch.bindings.size() == 2);
     REQUIRE(partition_table_dispatch.bindings[0].value == expert_table_transient.value);
     REQUIRE(partition_table_dispatch.bindings[0].length == expert_table_bytes);
     REQUIRE(partition_table_dispatch.bindings[1].value == partition_table_transient.value);
     REQUIRE(partition_table_dispatch.bindings[1].length == partition_table_bytes);
-    require_compile_parameter(partition_table_dispatch, "qwen3_moe.routed_gate_up.expert_count", "128");
-    require_compile_parameter(partition_table_dispatch, "qwen3_moe.routed_gate_up.route_count", "8");
+    require_compile_parameter(partition_table_dispatch, "qwen3_moe.routed_gate_up.expert_count",
+                              std::to_string(expected_expert_count));
+    require_compile_parameter(partition_table_dispatch, "qwen3_moe.routed_gate_up.route_count",
+                              std::to_string(expected_route_count));
     require_compile_parameter(partition_table_dispatch, "qwen3_moe.workload.token_capacity",
                               std::to_string(token_count));
 
@@ -1689,6 +1759,55 @@ static void schedule_qwen_router_top8_command(ggml_context * ctx, ggml_tensor * 
         ggml::hrx::find_transient_allocation(commands.transients, partition_table_transient.value);
     REQUIRE(partition_table_allocation != nullptr);
     REQUIRE(partition_table_allocation->size == partition_table_bytes);
+}
+
+static void schedule_manual_qwen_router_top8_command(ggml::hrx::Graph & graph,
+                                                     ggml::hrx::ValueId route_ids,
+                                                     int64_t            token_count,
+                                                     int64_t            expert_count,
+                                                     int64_t            route_count) {
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(graph, test_dispatch_target()));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 3);
+    REQUIRE(scheduler.plan().transients.size() == 2);
+
+    const size_t route_id_length       = static_cast<size_t>(token_count * route_count) * sizeof(int32_t);
+    const size_t expert_table_bytes    = qwen_expert_table_size(token_count, expert_count);
+    const size_t partition_table_bytes = qwen_partition_table_size(token_count, route_count, expert_count);
+
+    const ggml::hrx::Dispatch & dispatch = scheduler.plan().dispatches[0];
+    REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "qwen3_moe:qwen3_moe_router_top8_f32");
+    REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == token_count);
+    REQUIRE(dispatch.kernel.integer_parameters.at("route_id_stride") == route_count);
+    REQUIRE(dispatch.bindings.size() == 3);
+    REQUIRE(dispatch.bindings[1].value == route_ids);
+    REQUIRE(dispatch.bindings[1].length == route_id_length);
+    require_compile_parameter(dispatch, "qwen3_moe.router.expert_count", std::to_string(expert_count));
+    require_compile_parameter(dispatch, "qwen3_moe.router.route_count", std::to_string(route_count));
+
+    const ggml::hrx::CommandPlanTransient & expert_table_transient    = scheduler.plan().transients[0];
+    const ggml::hrx::CommandPlanTransient & partition_table_transient = scheduler.plan().transients[1];
+    REQUIRE(expert_table_transient.size == expert_table_bytes);
+    REQUIRE(partition_table_transient.size == partition_table_bytes);
+
+    const ggml::hrx::CommandPlanQwenRoutingBundle * bundle =
+        scheduler.plan().metadata.find_qwen_routing_bundle(route_ids);
+    REQUIRE(bundle != nullptr);
+    REQUIRE(bundle->token_count == token_count);
+    REQUIRE(bundle->route_count == route_count);
+    REQUIRE(bundle->route_stride == route_count);
+    REQUIRE(bundle->expert_count == expert_count);
+    REQUIRE(bundle->expert_table_byte_count == expert_table_bytes);
+    REQUIRE(bundle->partition_table_byte_count == partition_table_bytes);
+
+    const ggml::hrx::CommandProgram commands =
+        ggml::hrx::build_command_program(graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(commands.valid());
+    REQUIRE(commands.commands.size() == 3);
+    REQUIRE(command_program_verifies(commands));
+    REQUIRE(commands.commands[0].bindings[1].value == route_ids);
+    REQUIRE(commands.commands[0].bindings[1].length == route_id_length);
 }
 
 struct QwenRoutedGateUpTensors {
@@ -2314,6 +2433,32 @@ static void run_qwen_router_top8_dispatch_checks() {
         schedule_qwen_router_top8_command(ctx, output, route_ids);
     }
     {
+        ggml_tensor * logits    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenRouterExpertCount, 13);
+        ggml_tensor * route_ids = nullptr;
+        REQUIRE(logits != nullptr);
+        ggml_tensor * output = build_qwen_router_top8_graph(ctx, logits, &route_ids, GGML_SORT_ORDER_DESC,
+                                                            kQwenRouterRouteCount, 0.00006103515625f);
+        schedule_qwen_router_top8_command(ctx, output, route_ids);
+    }
+    {
+        ggml_tensor * logits    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 64, 4);
+        ggml_tensor * route_ids = nullptr;
+        REQUIRE(logits != nullptr);
+        ggml_tensor * output = build_qwen_router_top8_graph(ctx, logits, &route_ids);
+        schedule_qwen_router_top8_command(ctx, output, route_ids, 64, kQwenRouterRouteCount);
+    }
+    {
+        ggml_tensor * logits    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenRouterExpertCount, 4);
+        ggml_tensor * route_ids = nullptr;
+        REQUIRE(logits != nullptr);
+        ggml_tensor * output = build_qwen_router_top8_graph(ctx, logits, &route_ids, GGML_SORT_ORDER_DESC, 4);
+        schedule_qwen_router_top8_command(ctx, output, route_ids, kQwenRouterExpertCount, 4);
+    }
+    {
+        ManualQwenRouterTop8Graph manual = build_manual_qwen_router_top8_graph(ctx, 64, 4, 5);
+        schedule_manual_qwen_router_top8_command(manual.graph, manual.route_ids, 5, 64, 4);
+    }
+    {
         ggml_tensor * logits = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenRouterExpertCount, 4);
         REQUIRE(logits != nullptr);
         ggml_tensor * output = build_qwen_router_top8_graph(ctx, logits, nullptr, GGML_SORT_ORDER_ASC);
@@ -2322,11 +2467,11 @@ static void run_qwen_router_top8_dispatch_checks() {
     {
         ggml_tensor * logits = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kQwenRouterExpertCount, 4);
         REQUIRE(logits != nullptr);
-        ggml_tensor * output = build_qwen_router_top8_graph(ctx, logits, nullptr, GGML_SORT_ORDER_DESC, 4);
+        ggml_tensor * output = build_qwen_router_top8_graph(ctx, logits, nullptr, GGML_SORT_ORDER_DESC, 33);
         REQUIRE(!graph_is_supported(ctx, output));
     }
     {
-        ggml_tensor * logits = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 64, 4);
+        ggml_tensor * logits = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 16, 4);
         REQUIRE(logits != nullptr);
         ggml_tensor * output = build_qwen_router_top8_graph(ctx, logits);
         REQUIRE(!graph_is_supported(ctx, output));

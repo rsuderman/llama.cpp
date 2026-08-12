@@ -145,6 +145,7 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
                 covered_nodes[i] = true;
                 continue;
             }
+            plan_.status.append(match.status);
             const std::string message = unsupported_node_message(graph, i, *node);
             plan_.status.log("%s", message.c_str());
             clear_plan_results(plan_);

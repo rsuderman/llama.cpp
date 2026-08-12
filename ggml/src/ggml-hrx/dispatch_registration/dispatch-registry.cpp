@@ -56,6 +56,7 @@ bool DispatchRegistry::match(const DispatchMatchContext & context, DispatchMatch
             match = std::move(candidate);
             return true;
         }
+        match.status.append(candidate.status);
     }
     return false;
 }
