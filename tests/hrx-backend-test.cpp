@@ -1337,14 +1337,14 @@ static bool matmul_graph_is_supported(ggml_context * ctx, ggml_tensor * output) 
     return ggml::hrx::DispatchScheduler::can_schedule_graph(imported.graph, test_dispatch_target());
 }
 
-static void schedule_qwen_terminal_q6k_q8_command() {
+static void schedule_qwen_terminal_q6k_q8_command(int64_t token_count) {
     ggml_init_params params = {};
     params.mem_size         = 4 * 1024 * 1024;
     params.no_alloc         = true;
     ggml_context * ctx      = ggml_init(params);
     REQUIRE(ctx != nullptr);
 
-    ggml_tensor * input        = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
+    ggml_tensor * input        = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, token_count);
     ggml_tensor * norm_weight  = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 2048);
     ggml_tensor * vocab_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q6_K, 2048, 151936);
     REQUIRE(input != nullptr);
@@ -1370,32 +1370,27 @@ static void schedule_qwen_terminal_q6k_q8_command() {
     REQUIRE(scheduler.plan().valid());
     REQUIRE(scheduler.plan().dispatches.size() == 2);
     REQUIRE(scheduler.plan().transients.size() == 1);
-    REQUIRE(scheduler.plan().metadata.alternate_values().size() == 1);
+    REQUIRE(scheduler.plan().metadata.alternate_values().empty());
 
     const ggml::hrx::Dispatch & rms_dispatch = scheduler.plan().dispatches[0];
     REQUIRE(kernel_name_for_id(rms_dispatch.kernel.kernel_id) == "qwen3_moe:qwen3_moe_rmsnorm_f32_quantize_q8_1_x4");
-    REQUIRE(rms_dispatch.kernel.integer_parameters.at("token_count") == 1);
+    REQUIRE(rms_dispatch.kernel.integer_parameters.at("token_count") == token_count);
     require_compile_parameter(rms_dispatch, "qwen3_moe.model.hidden_size", "2048");
-    require_compile_parameter(rms_dispatch, "qwen3_moe.workload.token_capacity", "1");
+    require_compile_parameter(rms_dispatch, "qwen3_moe.workload.token_capacity", std::to_string(token_count));
     REQUIRE(rms_dispatch.bindings.size() == 4);
 
-    const ggml::hrx::CommandPlanTransient &    q8_transient     = scheduler.plan().transients.front();
-    const ggml::hrx::CommandPlanAlternateValue q8_alternate     = scheduler.plan().metadata.alternate_values().front();
-    const ggml::hrx::Value *                   normalized_value = imported.graph.values().find_tensor(normalized);
-    REQUIRE(normalized_value != nullptr);
-    REQUIRE(q8_transient.size == qwen_q8_1_x4_size(1, 2048));
-    REQUIRE(q8_alternate.graph_value == normalized_value->id);
-    REQUIRE(q8_alternate.alternate_value == q8_transient.value);
-    REQUIRE(q8_alternate.type == GGML_TYPE_Q8_1);
-    REQUIRE(q8_alternate.byte_count == q8_transient.size);
+    const ggml::hrx::CommandPlanTransient & q8_transient = scheduler.plan().transients.front();
+    REQUIRE(q8_transient.size == qwen_q8_1_x4_size(token_count, 2048));
     REQUIRE(rms_dispatch.bindings[3].value == q8_transient.value);
     REQUIRE(rms_dispatch.bindings[3].length == q8_transient.size);
 
     const ggml::hrx::Dispatch & vocab_dispatch = scheduler.plan().dispatches[1];
     REQUIRE(kernel_name_for_id(vocab_dispatch.kernel.kernel_id) == "qwen3_moe:ggml_linear_q6k_q8_1_x4");
-    REQUIRE(vocab_dispatch.kernel.integer_parameters.at("token_count") == 1);
+    REQUIRE(vocab_dispatch.kernel.integer_parameters.at("token_count") == token_count);
     REQUIRE(vocab_dispatch.kernel.integer_parameters.at("input_size") == 2048);
     REQUIRE(vocab_dispatch.kernel.integer_parameters.at("output_size") == 151936);
+    require_compile_parameter(vocab_dispatch, "ggml.linear_q6k_q8_1_x4.token_capacity", std::to_string(token_count));
+    require_compile_parameter(vocab_dispatch, "ggml.linear_q6k_q8_1_x4.output_capacity", "151936");
     REQUIRE(vocab_dispatch.bindings.size() == 3);
     REQUIRE(vocab_dispatch.bindings[0].value == q8_transient.value);
     REQUIRE(vocab_dispatch.bindings[0].length == q8_transient.size);
@@ -2276,6 +2271,16 @@ static void run_qwen_matmul_dispatch_checks() {
     }
 
     {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q6_K, 2048, 151936);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        schedule_single_matmul_command(ctx, output, "qwen3_moe:qwen3_moe_dense_linear_q6k_f16_wmma", 1, 2048, 151936);
+    }
+
+    {
         ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 128);
         ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 4);
         REQUIRE(weight != nullptr);
@@ -2293,7 +2298,8 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(input != nullptr);
         ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
         REQUIRE(output != nullptr);
-        REQUIRE(!matmul_graph_is_supported(ctx, output));
+        schedule_single_matmul_command(ctx, output, "qwen3_moe:qwen3_moe_router_projection_f32_four_row_wave32", 1,
+                                       2048, 128);
     }
 
     {
@@ -2987,8 +2993,19 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         ggml::hrx::CommandPlan        plan       = build_qwen_router_plan_for_graph(imported.graph, covered_nodes);
         const size_t                  gate_index = producer_index_for_tensor(imported.graph, tensors.gate);
         ggml::hrx::DispatchMatch      gate_up_match;
-        REQUIRE(!match_dispatch_at_index(imported.graph, plan, covered_nodes, gate_index, gate_up_match));
-        REQUIRE(!ggml::hrx::DispatchScheduler::can_schedule_graph(imported.graph, test_dispatch_target()));
+        REQUIRE(match_dispatch_at_index(imported.graph, plan, covered_nodes, gate_index, gate_up_match));
+        append_match_to_plan(plan, gate_up_match, covered_nodes);
+
+        REQUIRE(plan.dispatches.size() == 4);
+        REQUIRE(plan.transients.size() == 3);
+        REQUIRE(kernel_name_for_id(plan.dispatches.back().kernel.kernel_id) ==
+                "qwen3_moe:qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma");
+        REQUIRE(plan.dispatches.back().kernel.integer_parameters.at("token_count") == 1);
+
+        const ggml::hrx::CommandProgram commands =
+            ggml::hrx::build_command_program(imported.graph, plan, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(commands.valid());
+        REQUIRE(command_program_verifies(commands));
     }
 
     {
@@ -3113,6 +3130,27 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         REQUIRE(commands.commands.back().bindings[1].name == "routed_output");
         REQUIRE(commands.commands.back().bindings[1].origin == ggml::hrx::CommandBindingOrigin::Transient);
         REQUIRE(commands.commands.back().bindings[2].name == "output");
+    }
+
+    {
+        constexpr int64_t       token_count = 1;
+        QwenRoutedGateUpTensors tensors     = build_qwen_routed_gate_up_graph(ctx, token_count);
+        append_qwen_weighted_reduce_tail(ctx, tensors);
+        ggml::hrx::GraphImportResult imported = import_qwen_routed_gate_up_graph(ctx, tensors);
+        std::vector<bool>            covered_nodes(imported.graph.nodes().size(), false);
+        ggml::hrx::CommandPlan       plan = build_qwen_router_plan_for_graph(imported.graph, covered_nodes);
+        append_qwen_routed_gate_up_for_graph(imported.graph, tensors, covered_nodes, plan);
+        append_qwen_routed_down_for_graph(imported.graph, tensors, covered_nodes, plan,
+                                          "qwen3_moe:qwen3_moe_routed_down_q6k_f16_wmma_grouped");
+        append_qwen_weighted_reduce_for_graph(imported.graph, tensors, covered_nodes, plan,
+                                              "qwen3_moe:qwen3_moe_routed_down_weighted_reduce_f16_f32");
+
+        REQUIRE(plan.dispatches.size() == 6);
+        REQUIRE(plan.dispatches.back().kernel.integer_parameters.at("token_count") == 1);
+        const ggml::hrx::CommandProgram commands =
+            ggml::hrx::build_command_program(imported.graph, plan, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(commands.valid());
+        REQUIRE(command_program_verifies(commands));
     }
 
     {
@@ -4423,7 +4461,8 @@ int main() {
     run_qwen_flash_attention_dispatch_checks();
     run_qwen_attention_postprocess_dispatch_checks();
     run_qwen_matmul_dispatch_checks();
-    schedule_qwen_terminal_q6k_q8_command();
+    schedule_qwen_terminal_q6k_q8_command(1);
+    schedule_qwen_terminal_q6k_q8_command(18);
     run_qwen_router_top8_dispatch_checks();
     run_qwen_routed_gate_up_dispatch_checks();
     run_alias_value_import_checks();
