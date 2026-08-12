@@ -236,8 +236,8 @@
       ],
       "binding_access": [
         "read",
-        "write",
-        "write",
+        "read",
+        "read",
         "read_write"
       ],
       "target_selector": "",
