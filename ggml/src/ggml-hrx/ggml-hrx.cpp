@@ -14,6 +14,7 @@
 #include "runtime/transient-arena.h"
 
 #include <atomic>
+#include <cinttypes>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -375,6 +376,24 @@ static const char * status_first_error(const ggml::hrx::Status & status) {
     return status.errors().empty() ? "" : status.errors().front().c_str();
 }
 
+static const char * graph_claim_mode_name(enum ggml_backend_graph_claim_mode mode) {
+    switch (mode) {
+        case GGML_BACKEND_GRAPH_CLAIM_MODE_MEASURE:
+            return "measure";
+        case GGML_BACKEND_GRAPH_CLAIM_MODE_EXECUTE:
+            return "execute";
+        default:
+            return "unknown";
+    }
+}
+
+static const char * graph_claim_target(const ggml_backend_hrx_context * context) {
+    if (context == nullptr || context->device == nullptr || context->device->architecture.empty()) {
+        return "unknown";
+    }
+    return context->device->architecture.c_str();
+}
+
 static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * graph) {
     auto *                                context  = static_cast<ggml_backend_hrx_context *>(backend->context);
     const ggml::hrx::GraphExecutor        executor = ggml::hrx::GraphExecutor(*context);
@@ -388,10 +407,23 @@ static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * grap
 static enum ggml_backend_graph_claim_result graph_claim(ggml_backend_t                     backend,
                                                         const ggml_cgraph *                graph,
                                                         enum ggml_backend_graph_claim_mode mode) {
-    GGML_UNUSED(mode);
-    auto *                         context  = static_cast<ggml_backend_hrx_context *>(backend->context);
-    const ggml::hrx::GraphExecutor executor = ggml::hrx::GraphExecutor(*context);
-    if (!executor.can_execute(*graph).supported) {
+    auto *                              context  = static_cast<ggml_backend_hrx_context *>(backend->context);
+    const ggml::hrx::GraphExecutor      executor = ggml::hrx::GraphExecutor(*context);
+    const ggml::hrx::GraphSupportResult support  = executor.can_execute(*graph);
+    if (!support.supported) {
+        const char * reason = status_first_error(support.status);
+        if (reason[0] == '\0') {
+            reason = "unsupported graph";
+        }
+        if (mode == GGML_BACKEND_GRAPH_CLAIM_MODE_EXECUTE) {
+            GGML_LOG_ERROR("%s: declined HRX graph claim uid=%" PRIu64 " mode=%s target=%s nodes=%d: %s\n", __func__,
+                           graph->uid, graph_claim_mode_name(mode), graph_claim_target(context), graph->n_nodes,
+                           reason);
+        } else {
+            GGML_LOG_DEBUG("%s: declined HRX graph claim uid=%" PRIu64 " mode=%s target=%s nodes=%d: %s\n", __func__,
+                           graph->uid, graph_claim_mode_name(mode), graph_claim_target(context), graph->n_nodes,
+                           reason);
+        }
         return GGML_BACKEND_GRAPH_CLAIM_DECLINED;
     }
     return GGML_BACKEND_GRAPH_CLAIM_ACCEPTED;

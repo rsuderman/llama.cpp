@@ -60,6 +60,18 @@ static void append_value_summary(std::ostringstream & stream, const Graph & grap
     }
 }
 
+static void append_node_summary(std::ostringstream & stream, const Graph & graph, const GraphNode * node) {
+    if (node == nullptr) {
+        stream << "null";
+        return;
+    }
+    size_t node_index = 0;
+    if (graph.index().node_index(node, node_index)) {
+        stream << node_index << ":";
+    }
+    stream << ggml_op_name(node->op);
+}
+
 static std::string unsupported_node_message(const Graph & graph, size_t index, const GraphNode & node) {
     std::ostringstream stream;
     stream << "unsupported HRX node " << index << ": " << ggml_op_name(node.op) << " output=";
@@ -70,6 +82,15 @@ static std::string unsupported_node_message(const Graph & graph, size_t index, c
             stream << ", ";
         }
         append_value_summary(stream, graph, node.inputs[i]);
+    }
+    stream << "]";
+    stream << " consumers=[";
+    const std::vector<const GraphNode *> & consumers = graph.index().consumers(node.output);
+    for (size_t i = 0; i < consumers.size(); ++i) {
+        if (i > 0) {
+            stream << ", ";
+        }
+        append_node_summary(stream, graph, consumers[i]);
     }
     stream << "]";
     return stream.str();
