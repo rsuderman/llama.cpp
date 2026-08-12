@@ -18,8 +18,8 @@ struct DispatchScheduleDiagnostics {
 
 class DispatchScheduler {
   public:
-    bool schedule_graph(const Graph & graph, const DispatchTarget & target);
-    bool schedule_graph(const Graph & graph, const DispatchTarget & target, DispatchScheduleDiagnostics * diagnostics);
+    bool schedule_graph(Graph & graph, const DispatchTarget & target);
+    bool schedule_graph(Graph & graph, const DispatchTarget & target, DispatchScheduleDiagnostics * diagnostics);
 
     const CommandPlan & plan() const { return plan_; }
 

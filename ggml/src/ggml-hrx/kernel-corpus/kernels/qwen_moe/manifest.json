@@ -2513,9 +2513,9 @@
       "binding_access": [
         "read",
         "read",
+        "read_write",
         "read",
-        "read",
-        "read"
+        "write"
       ],
       "target_selector": "",
       "compile_recipe": {

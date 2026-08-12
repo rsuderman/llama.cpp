@@ -34,6 +34,11 @@ struct DispatchMatchContext {
     ValueId                   next_plan_value;
 };
 
+struct DispatchValueAliasRequest {
+    ValueId source_value;
+    ValueId target_value;
+};
+
 struct DispatchMatch {
     std::vector<Dispatch>                            initialization_dispatches;
     std::vector<size_t>                              covered_nodes;
@@ -41,6 +46,7 @@ struct DispatchMatch {
     std::vector<CommandPlanTransient>                transients;
     std::vector<CommandPlanConstantInitialization>   constant_initializations;
     std::vector<CommandPlanCompletionCounterRequest> completion_counter_requests;
+    std::vector<DispatchValueAliasRequest>           value_aliases;
     CommandPlanMetadata                              metadata;
     Status                                           status;
 };

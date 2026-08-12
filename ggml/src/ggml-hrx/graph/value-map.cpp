@@ -136,6 +136,55 @@ std::vector<ValueId> ValueMap::external_value_ids() const {
     return ids;
 }
 
+Status ValueMap::alias_storage(ValueId target, ValueId source) {
+    Status status;
+    if (target.value < 0 || static_cast<size_t>(target.value) >= values_.size()) {
+        status.log("value alias target %d does not exist", target.value);
+        return status;
+    }
+    if (source.value < 0 || static_cast<size_t>(source.value) >= values_.size()) {
+        status.log("value alias source %d does not exist", source.value);
+        return status;
+    }
+    if (target == source) {
+        status.log("value alias target %d aliases itself", target.value);
+        return status;
+    }
+
+    Value &       target_value = values_[static_cast<size_t>(target.value)];
+    const Value & source_value = values_[static_cast<size_t>(source.value)];
+    if (target_value.storage == source_value.storage) {
+        return status;
+    }
+    if (target_value.kind != ValueKind::Transient) {
+        status.log("value alias target %d is not transient", target.value);
+        return status;
+    }
+    if (target_value.type != source_value.type || target_value.byte_count != source_value.byte_count ||
+        target_value.element_count != source_value.element_count ||
+        target_value.contiguous != source_value.contiguous) {
+        status.log("value alias target %d is incompatible with source %d", target.value, source.value);
+        return status;
+    }
+    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+        if (target_value.ne[i] != source_value.ne[i] || target_value.nb[i] != source_value.nb[i]) {
+            status.log("value alias target %d has a different layout than source %d", target.value, source.value);
+            return status;
+        }
+    }
+    if (target_value.alias_source.value >= 0 && target_value.alias_source != source) {
+        status.log("value alias target %d already aliases source %d", target.value, target_value.alias_source.value);
+        return status;
+    }
+
+    target_value.storage            = source_value.storage;
+    target_value.storage_root       = source_value.storage_root;
+    target_value.alias_source       = source;
+    target_value.storage_offset     = source_value.storage_offset;
+    target_value.storage_byte_count = source_value.storage_byte_count;
+    return status;
+}
+
 ValueId ValueMap::storage_root(ValueId id) const {
     const Value * value = find(id);
     return value == nullptr ? ValueId() : value->storage_root;

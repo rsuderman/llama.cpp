@@ -99,6 +99,7 @@ class ValueMap {
     bool                              bind_buffer(ValueId id, ValueBufferBinding binding);
     std::optional<ValueBufferBinding> resolve_buffer_binding(ValueId id) const;
     std::vector<ValueId>              external_value_ids() const;
+    Status                            alias_storage(ValueId target, ValueId source);
     ValueId                           storage_root(ValueId id) const;
     bool                              same_storage(ValueId lhs, ValueId rhs) const;
 

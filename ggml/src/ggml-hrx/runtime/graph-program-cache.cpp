@@ -18,10 +18,7 @@ static bool tensor_metadata_matches(const Value & value, const ggml_tensor * ten
     }
     const bool tensor_alias = tensor->view_src != nullptr;
     const bool value_alias  = value.alias_source.value >= 0;
-    if (tensor_alias != value_alias) {
-        return false;
-    }
-    if (tensor_alias && value.storage_offset != tensor->view_offs) {
+    if (tensor_alias && (!value_alias || value.storage_offset != tensor->view_offs)) {
         return false;
     }
     for (int i = 0; i < GGML_MAX_DIMS; ++i) {

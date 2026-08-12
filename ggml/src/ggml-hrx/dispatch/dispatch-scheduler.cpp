@@ -115,13 +115,24 @@ static bool can_elide_layout_alias_node(const Graph &             graph,
     return is_layout_alias_node(graph, node) && value_is_available(graph, node.inputs[0], covered_nodes);
 }
 
+static bool apply_value_aliases(Graph & graph, const DispatchMatch & match, Status & status) {
+    for (const DispatchValueAliasRequest & alias : match.value_aliases) {
+        Status alias_status = graph.values().alias_storage(alias.target_value, alias.source_value);
+        if (!alias_status.success()) {
+            status.append(alias_status);
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
-bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget & target) {
+bool DispatchScheduler::schedule_graph(Graph & graph, const DispatchTarget & target) {
     return this->schedule_graph(graph, target, nullptr);
 }
 
-bool DispatchScheduler::schedule_graph(const Graph &                 graph,
+bool DispatchScheduler::schedule_graph(Graph &                       graph,
                                        const DispatchTarget &        target,
                                        DispatchScheduleDiagnostics * diagnostics) {
     plan_ = {};
@@ -182,6 +193,16 @@ bool DispatchScheduler::schedule_graph(const Graph &                 graph,
                 diagnostics->unsupported_node_index = i;
                 diagnostics->unsupported_node       = node;
                 diagnostics->unsupported_message    = "invalid HRX dispatch match";
+                diagnostics->match                  = std::move(match_diagnostics);
+            }
+            clear_plan_results(plan_);
+            return false;
+        }
+        if (!apply_value_aliases(graph, match, plan_.status)) {
+            if (diagnostics != nullptr) {
+                diagnostics->unsupported_node_index = i;
+                diagnostics->unsupported_node       = node;
+                diagnostics->unsupported_message    = "invalid HRX value alias";
                 diagnostics->match                  = std::move(match_diagnostics);
             }
             clear_plan_results(plan_);
@@ -259,8 +280,9 @@ bool DispatchScheduler::supports_node(const Graph & graph, const GraphNode * nod
 }
 
 bool DispatchScheduler::can_schedule_graph(const Graph & graph, const DispatchTarget & target) {
+    Graph             graph_copy = graph;
     DispatchScheduler scheduler;
-    return scheduler.schedule_graph(graph, target);
+    return scheduler.schedule_graph(graph_copy, target);
 }
 
 }  // namespace ggml::hrx

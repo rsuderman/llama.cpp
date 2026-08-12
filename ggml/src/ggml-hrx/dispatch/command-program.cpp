@@ -23,8 +23,12 @@ static size_t align_up(size_t value, size_t alignment) {
     return alignment == 0 ? value : (value + alignment - 1) / alignment * alignment;
 }
 
-static CommandBindingOrigin command_binding_origin(ValueKind kind) {
-    switch (kind) {
+static CommandBindingOrigin command_binding_origin(const Graph & graph, const Value & value) {
+    if (value.kind == ValueKind::External) {
+        return CommandBindingOrigin::GraphValue;
+    }
+    const Value * root = graph.values().find(value.storage_root);
+    switch (root != nullptr ? root->kind : value.kind) {
         case ValueKind::External:
             return CommandBindingOrigin::GraphValue;
         case ValueKind::Transient:
@@ -38,20 +42,20 @@ struct TransientAllocationRequest {
     size_t  required_size = 0;
 };
 
-struct TransientBindingTarget {
+struct StorageBindingTarget {
     ValueId value;
     size_t  offset = 0;
 };
 
-static TransientBindingTarget transient_binding_target(const Graph & graph, ValueId value) {
-    TransientBindingTarget target;
+static StorageBindingTarget storage_binding_target(const Graph & graph, ValueId value) {
+    StorageBindingTarget target;
     target.value              = value;
     const Value * graph_value = graph.values().find(value);
     if (graph_value == nullptr || graph_value->kind != ValueKind::Transient) {
         return target;
     }
     const Value * root = graph.values().find(graph_value->storage_root);
-    if (root == nullptr || root->kind != ValueKind::Transient) {
+    if (root == nullptr) {
         return target;
     }
     target.value  = root->id;
@@ -241,23 +245,23 @@ static void append_command(const Graph &          graph,
         command_binding.value                                      = binding.value;
         command_binding.offset                                     = binding.offset;
         command_binding.length                                     = binding.length;
-        const Value *                               value          = graph.values().find(binding.value);
-        const CommandPlanTransient *                plan_transient = find_plan_transient(plan, binding.value);
+        const Value *                               value          = graph.values().find(command_binding.value);
+        const CommandPlanTransient *                plan_transient = find_plan_transient(plan, command_binding.value);
         const CommandPlanCompletionCounterRequest * completion_counter =
-            find_plan_completion_counter_request(plan, binding.value);
+            find_plan_completion_counter_request(plan, command_binding.value);
         if (value == nullptr && plan_transient == nullptr && completion_counter == nullptr) {
             status.log("command %u binding %zu references missing value %d", command.ordinal, binding_index,
-                       binding.value.value);
+                       command_binding.value.value);
         } else if (value != nullptr) {
-            command_binding.origin = command_binding_origin(value->kind);
+            command_binding.origin = command_binding_origin(graph, *value);
         } else {
             command_binding.origin = CommandBindingOrigin::Transient;
         }
-        if (command_binding.origin == CommandBindingOrigin::Transient) {
-            const TransientBindingTarget binding_target = transient_binding_target(graph, binding.value);
-            command_binding.value                       = binding_target.value;
+        const StorageBindingTarget binding_target = storage_binding_target(graph, command_binding.value);
+        command_binding.value                     = binding_target.value;
+        if (binding_target.offset > 0) {
             if (binding_target.offset > std::numeric_limits<size_t>::max() - command_binding.offset) {
-                status.log("command %u binding %zu transient alias offset overflows", command.ordinal, binding_index);
+                status.log("command %u binding %zu storage alias offset overflows", command.ordinal, binding_index);
             } else {
                 command_binding.offset += binding_target.offset;
             }

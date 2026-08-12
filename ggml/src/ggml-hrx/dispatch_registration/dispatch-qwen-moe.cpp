@@ -192,6 +192,7 @@ struct WeightedReduceMatch {
     const Value *                     route_weights    = nullptr;
     const Value *                     routed_output    = nullptr;
     const CommandPlanAlternateValue * routed_alternate = nullptr;
+    const Value *                     residual_input   = nullptr;
     const Value *                     output           = nullptr;
     const GraphNode *                 weighted_node    = nullptr;
     std::vector<const GraphNode *>    views;
@@ -202,8 +203,8 @@ struct WeightedReduceMatch {
 
     bool matched() const {
         return route_weights != nullptr && routed_output != nullptr && routed_alternate != nullptr &&
-               output != nullptr && weighted_node != nullptr && !views.empty() && residual != nullptr &&
-               token_count > 0;
+               residual_input != nullptr && output != nullptr && weighted_node != nullptr && !views.empty() &&
+               residual != nullptr && token_count > 0;
     }
 };
 
@@ -416,6 +417,26 @@ static bool append_node_if_uncovered(const DispatchMatchContext &     context,
     return true;
 }
 
+static bool node_is_covered(const DispatchMatchContext & context, const GraphNode * node) {
+    size_t index = 0;
+    return node != nullptr && context.graph.index().node_index(node, index) && index < context.covered_nodes.size() &&
+           context.covered_nodes[index];
+}
+
+static bool residual_input_is_safe_for_in_place(const DispatchMatchContext & context,
+                                                const WeightedReduceMatch &  match) {
+    if (match.residual_input == nullptr || match.residual == nullptr) {
+        return false;
+    }
+    for (const GraphNode * consumer : context.graph.index().consumers(match.residual_input->id)) {
+        if (consumer == match.residual || node_is_covered(context, consumer)) {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
 static WeightedReduceMatch match_qwen_routed_down_weighted_reduce(const DispatchMatchContext & context) {
     WeightedReduceMatch match;
     const GraphNode *   weighted = context.root_node;
@@ -523,7 +544,8 @@ static WeightedReduceMatch match_qwen_routed_down_weighted_reduce(const Dispatch
         }
     }
 
-    const GraphNode * residual = nullptr;
+    const GraphNode * residual       = nullptr;
+    const Value *     residual_input = nullptr;
     for (int32_t value : routed_values) {
         for (const GraphNode * add : find_consumers_with_op(context.graph, ValueId(value), GGML_OP_ADD)) {
             if (add == nullptr || add->inputs.size() != 2) {
@@ -539,30 +561,37 @@ static WeightedReduceMatch match_qwen_routed_down_weighted_reduce(const Dispatch
             if (is_reduction) {
                 continue;
             }
-            int routed_input_count = 0;
+            int           routed_input_count = 0;
+            const Value * non_routed_input   = nullptr;
             for (ValueId input : add->inputs) {
                 if (routed_values.count(input.value) != 0) {
                     ++routed_input_count;
+                } else {
+                    non_routed_input = graph_value(context.graph, input);
                 }
             }
-            if (routed_input_count != 1 || residual != nullptr) {
+            if (routed_input_count != 1 || non_routed_input == nullptr || residual != nullptr) {
                 return {};
             }
-            residual = add;
+            residual       = add;
+            residual_input = non_routed_input;
         }
     }
     if (residual == nullptr || reductions.size() + 1 != views.size()) {
         return {};
     }
     const Value * output = graph_value(context.graph, residual->output);
-    if (output == nullptr || output->type != GGML_TYPE_F32 ||
-        !is_shape(*output, kQwenMoeInputSize, token_count, 1, 1)) {
+    if (output == nullptr || residual_input == nullptr || output->type != GGML_TYPE_F32 ||
+        residual_input->type != GGML_TYPE_F32 || !is_shape(*output, kQwenMoeInputSize, token_count, 1, 1) ||
+        !same_shape(*output, *residual_input) || output->byte_count != residual_input->byte_count ||
+        !output->contiguous || !residual_input->contiguous) {
         return {};
     }
 
     match.route_weights    = route_weights;
     match.routed_output    = routed_output;
     match.routed_alternate = routed_alternate;
+    match.residual_input   = residual_input;
     match.output           = output;
     match.weighted_node    = weighted;
     match.views            = std::move(owned_views);
@@ -662,14 +691,16 @@ static bool match_qwen_routed_down_weighted_reduce_dispatch(const DispatchMatchC
     if (!match.matched()) {
         return false;
     }
+    const bool use_next_rmsnorm = match.next_rmsnorm.matched() && match.output->kind == ValueKind::Transient &&
+                                  residual_input_is_safe_for_in_place(context, match);
 
     Dispatch dispatch;
-    dispatch.kernel =
-        make_kernel_specialization(match.next_rmsnorm.matched() ? kQwenRoutedDownWeightedReduceNextRmsNormF32Kernel :
-                                                                  kQwenRoutedDownWeightedReduceF16F32Kernel);
+    dispatch.kernel = make_kernel_specialization(use_next_rmsnorm ? kQwenRoutedDownWeightedReduceNextRmsNormF32Kernel :
+                                                                    kQwenRoutedDownWeightedReduceF16F32Kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
     add_routed_down_compile_parameters(dispatch, match.token_count);
-    if (match.next_rmsnorm.matched()) {
+    if (use_next_rmsnorm) {
+        dispatch_match.value_aliases.push_back({ match.residual_input->id, match.output->id });
         dispatch.kernel.compile_parameters.emplace("qwen3_moe.model.hidden_size", to_config_value(kQwenMoeInputSize));
         dispatch.kernel.compile_parameters.emplace("qwen3_moe.model.rms_epsilon", "0.000001");
         dispatch.bindings.push_back({ match.route_weights->id, 0, match.route_weights->byte_count });
@@ -700,8 +731,8 @@ static bool match_qwen_routed_down_weighted_reduce_dispatch(const DispatchMatchC
     if (!append_covered_node(context, match.residual, dispatch_match)) {
         return false;
     }
-    if (match.next_rmsnorm.matched() && (!append_covered_node(context, match.next_rmsnorm.rms_node, dispatch_match) ||
-                                         !append_covered_node(context, match.next_rmsnorm.mul_node, dispatch_match))) {
+    if (use_next_rmsnorm && (!append_covered_node(context, match.next_rmsnorm.rms_node, dispatch_match) ||
+                             !append_covered_node(context, match.next_rmsnorm.mul_node, dispatch_match))) {
         return false;
     }
 
