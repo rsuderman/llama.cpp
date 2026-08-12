@@ -55,9 +55,28 @@ struct DispatchRegistration {
     DispatchMatcher   matcher  = nullptr;
 };
 
+struct DispatchRegistrationAttempt {
+    std::string              name;
+    ggml_op                  root_op  = GGML_OP_NONE;
+    DispatchMatchKind        kind     = DispatchMatchKind::SingleOp;
+    int                      priority = 0;
+    DispatchSource           source   = DispatchSource::Common;
+    bool                     matched  = false;
+    std::vector<size_t>      covered_nodes;
+    std::vector<std::string> errors;
+};
+
+struct DispatchMatchDiagnostics {
+    ggml_op                                  root_op = GGML_OP_NONE;
+    std::vector<DispatchRegistrationAttempt> attempts;
+};
+
 class DispatchRegistry {
   public:
     bool match(const DispatchMatchContext & context, DispatchMatch & match) const;
+    bool match(const DispatchMatchContext & context,
+               DispatchMatch &              match,
+               DispatchMatchDiagnostics *   diagnostics) const;
 
     const std::vector<DispatchRegistration> & registrations_for_root(ggml_op root_op) const;
 

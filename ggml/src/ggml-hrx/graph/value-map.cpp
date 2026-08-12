@@ -143,6 +143,44 @@ bool ValueMap::same_storage(ValueId lhs, ValueId rhs) const {
     return lhs_value != nullptr && rhs_value != nullptr && lhs_value->storage == rhs_value->storage;
 }
 
+Status ValueMap::add_snapshot_storage(ValueStorage storage) {
+    Status status;
+    if (storage.id.value < 0 || static_cast<size_t>(storage.id.value) != storages_.size()) {
+        status.log("snapshot storage id %d is not the next storage id %zu", storage.id.value, storages_.size());
+        return status;
+    }
+    if (storage.root.value < 0) {
+        status.log("snapshot storage %d has invalid root value %d", storage.id.value, storage.root.value);
+        return status;
+    }
+    storages_.push_back(storage);
+    return status;
+}
+
+Status ValueMap::add_snapshot_value(Value value) {
+    Status status;
+    if (value.id.value < 0 || static_cast<size_t>(value.id.value) != values_.size()) {
+        status.log("snapshot value id %d is not the next value id %zu", value.id.value, values_.size());
+        return status;
+    }
+    if (value.storage.value < 0 || static_cast<size_t>(value.storage.value) >= storages_.size()) {
+        status.log("snapshot value %d references missing storage %d", value.id.value, value.storage.value);
+        return status;
+    }
+    if (value.storage_root.value < 0 || static_cast<size_t>(value.storage_root.value) > values_.size()) {
+        status.log("snapshot value %d references invalid storage root %d", value.id.value, value.storage_root.value);
+        return status;
+    }
+    if (value.alias_source.value >= 0 && static_cast<size_t>(value.alias_source.value) >= values_.size()) {
+        status.log("snapshot value %d references missing alias source %d", value.id.value, value.alias_source.value);
+        return status;
+    }
+    value.tensor = nullptr;
+    value.buffer.reset();
+    values_.push_back(std::move(value));
+    return status;
+}
+
 const Value * ValueMap::find_tensor(const ggml_tensor * tensor) const {
     const auto found = tensor_values_.find(tensor);
     if (found == tensor_values_.end()) {

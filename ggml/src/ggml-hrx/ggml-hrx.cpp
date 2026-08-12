@@ -426,7 +426,8 @@ static enum ggml_backend_graph_claim_result graph_claim(ggml_backend_t          
         }
         return GGML_BACKEND_GRAPH_CLAIM_DECLINED;
     }
-    return GGML_BACKEND_GRAPH_CLAIM_ACCEPTED;
+    // HRX executes through graph_compute. Accepting graph ownership requires graph_plan callbacks.
+    return GGML_BACKEND_GRAPH_CLAIM_DECLINED;
 }
 
 static const ggml_backend_i backend_i = {
@@ -535,23 +536,12 @@ static bool eager_capability_declared(enum ggml_op op) {
 }
 
 static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op) {
-    if (op == nullptr || !eager_capability_declared(op->op)) {
-        return false;
-    }
-    if (op->op == GGML_OP_NONE) {
-        return true;
-    }
-    // Layout aliases and cache writes can involve preallocated HRX buffers; keep them placeable while exact execution
-    // support for non-layout ops is checked through the dispatch registry.
-    if (op->op == GGML_OP_VIEW || op->op == GGML_OP_RESHAPE || op->op == GGML_OP_PERMUTE ||
-        op->op == GGML_OP_SET_ROWS) {
-        return true;
-    }
-    return ggml::hrx::can_execute_standalone_op_as_graph(op, device_context(device)->architecture);
+    GGML_UNUSED(device);
+    return op != nullptr && eager_capability_declared(op->op);
 }
 
 static bool device_supports_buffer_type(ggml_backend_dev_t device, ggml_backend_buffer_type_t buft) {
-    return buft == &device_context(device)->buft;
+    return buft == &device_context(device)->buft || ggml_backend_buft_is_host(buft);
 }
 
 static const ggml_backend_device_i device_i = {

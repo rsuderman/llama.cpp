@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ggml.h"
+#include "status.h"
 
 #include <array>
 #include <cstddef>
@@ -104,6 +105,9 @@ class ValueMap {
     const std::vector<ValueStorage> & storages() const { return storages_; }
 
     size_t size() const { return values_.size(); }
+
+    Status add_snapshot_storage(ValueStorage storage);
+    Status add_snapshot_value(Value value);
 
   private:
     const Value * find_alias_source(const ggml_tensor * tensor) const;

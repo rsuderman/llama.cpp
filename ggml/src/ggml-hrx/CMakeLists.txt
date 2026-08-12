@@ -150,6 +150,8 @@ ggml_add_backend_library(ggml-hrx
     dispatch_registration/dispatch-rmsnorm.h
     status.h
     graph/graph.cpp
+    graph/graph-diagnostics.cpp
+    graph/graph-diagnostics.h
     graph/graph.h
     graph/graph-matcher.cpp
     graph/graph-matcher.h
@@ -175,7 +177,7 @@ ggml_add_backend_library(ggml-hrx
     runtime/transient-arena.h
 )
 target_link_libraries(ggml-hrx PRIVATE ggml-hrx-kernel-corpus hrx::hrx loomc::loomc)
-target_include_directories(ggml-hrx PRIVATE . "${CMAKE_CURRENT_BINARY_DIR}")
+target_include_directories(ggml-hrx PRIVATE . "${CMAKE_CURRENT_BINARY_DIR}" ../../../vendor)
 target_compile_definitions(ggml-hrx PRIVATE GGML_USE_HRX)
 
 if (GGML_HRX_BUNDLE_RUNTIME_LIBS)
@@ -191,3 +193,10 @@ add_executable(ggml-hrx-compile-kernel
 target_link_libraries(ggml-hrx-compile-kernel PRIVATE hrx::hrx loomc::loomc)
 target_include_directories(ggml-hrx-compile-kernel PRIVATE .)
 target_compile_features(ggml-hrx-compile-kernel PRIVATE cxx_std_17)
+
+add_executable(ggml-hrx-analyze-graph
+    tools/analyze-graph.cpp
+)
+target_link_libraries(ggml-hrx-analyze-graph PRIVATE ggml-hrx ggml ggml-hrx-kernel-corpus)
+target_include_directories(ggml-hrx-analyze-graph PRIVATE . ../../../vendor)
+target_compile_features(ggml-hrx-analyze-graph PRIVATE cxx_std_17)

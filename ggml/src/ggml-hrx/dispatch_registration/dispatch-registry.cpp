@@ -47,16 +47,50 @@ static DispatchRegistry build_qwen_registry() {
 }  // namespace
 
 bool DispatchRegistry::match(const DispatchMatchContext & context, DispatchMatch & match) const {
+    return this->match(context, match, nullptr);
+}
+
+bool DispatchRegistry::match(const DispatchMatchContext & context,
+                             DispatchMatch &              match,
+                             DispatchMatchDiagnostics *   diagnostics) const {
     if (context.root_node == nullptr || !valid_root_op(context.root_node->op) || registrations_by_root_.empty()) {
         return false;
+    }
+    if (diagnostics != nullptr) {
+        diagnostics->root_op = context.root_node->op;
+        diagnostics->attempts.clear();
     }
     const std::vector<DispatchRegistration> & registrations =
         registrations_by_root_[static_cast<size_t>(context.root_node->op)].ordered;
     for (const DispatchRegistration & registration : registrations) {
         DispatchMatch candidate;
         if (registration.matcher != nullptr && registration.matcher(context, candidate)) {
+            if (diagnostics != nullptr) {
+                diagnostics->attempts.push_back({
+                    registration.name != nullptr ? registration.name : "",
+                    registration.root_op,
+                    registration.kind,
+                    registration.priority,
+                    registration.source,
+                    true,
+                    candidate.covered_nodes,
+                    candidate.status.errors(),
+                });
+            }
             match = std::move(candidate);
             return true;
+        }
+        if (diagnostics != nullptr) {
+            diagnostics->attempts.push_back({
+                registration.name != nullptr ? registration.name : "",
+                registration.root_op,
+                registration.kind,
+                registration.priority,
+                registration.source,
+                false,
+                candidate.covered_nodes,
+                candidate.status.errors(),
+            });
         }
         match.status.append(candidate.status);
     }

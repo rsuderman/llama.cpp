@@ -9,9 +9,17 @@
 
 namespace ggml::hrx {
 
+struct DispatchScheduleDiagnostics {
+    size_t                   unsupported_node_index = 0;
+    const GraphNode *        unsupported_node       = nullptr;
+    std::string              unsupported_message;
+    DispatchMatchDiagnostics match;
+};
+
 class DispatchScheduler {
   public:
     bool schedule_graph(const Graph & graph, const DispatchTarget & target);
+    bool schedule_graph(const Graph & graph, const DispatchTarget & target, DispatchScheduleDiagnostics * diagnostics);
 
     const CommandPlan & plan() const { return plan_; }
 

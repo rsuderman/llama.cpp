@@ -11,6 +11,7 @@
 #include "ggml-hrx.h"
 #include "ggml-impl.h"
 #include "ggml.h"
+#include "graph/graph-diagnostics.h"
 #include "graph/graph-matcher.h"
 #include "graph/graph-traversal.h"
 #include "graph/graph.h"
@@ -856,6 +857,98 @@ static void run_graph_import_checks() {
     prepared = ggml::hrx::prepare_command_program(prepare_context, commands, runtime_bindings);
     REQUIRE(!prepared.valid());
     REQUIRE(status_contains(prepared.status, "missing HRX device"));
+
+    ggml_free(ctx);
+}
+
+static void run_graph_snapshot_diagnostics_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 256 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * a   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * b   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * out = ggml_add(ctx, a, b);
+    REQUIRE(a != nullptr);
+    REQUIRE(b != nullptr);
+    REQUIRE(out != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, out);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+
+    const std::string snapshot_json = ggml::hrx::serialize_graph_snapshot_json(imported.graph, "gfx1151", 42);
+    REQUIRE(string_contains(snapshot_json, "ggml-hrx-graph-snapshot-v1"));
+    REQUIRE(string_contains(snapshot_json, "ADD"));
+
+    ggml::hrx::GraphSnapshotLoadResult loaded = ggml::hrx::load_graph_snapshot_json(snapshot_json);
+    REQUIRE(loaded.valid());
+    REQUIRE(loaded.uid == 42);
+    REQUIRE(loaded.target == "gfx1151");
+    REQUIRE(loaded.graph.nodes().size() == imported.graph.nodes().size());
+    REQUIRE(loaded.graph.values().size() == imported.graph.values().size());
+
+    ggml::hrx::DispatchScheduler           scheduler;
+    ggml::hrx::DispatchScheduleDiagnostics diagnostics;
+    REQUIRE(scheduler.schedule_graph(loaded.graph, { loaded.target }, &diagnostics));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 1);
+
+    ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        loaded.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), loaded.target);
+    REQUIRE(commands.valid());
+    REQUIRE(command_program_verifies(commands));
+
+    ggml_free(ctx);
+}
+
+static void run_unmatched_graph_diagnostics_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 512 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * cache   = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, 512, 512);
+    ggml_tensor * rows    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 512, 2);
+    ggml_tensor * indices = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, 2);
+    REQUIRE(cache != nullptr);
+    REQUIRE(rows != nullptr);
+    REQUIRE(indices != nullptr);
+    ggml_tensor * out = ggml_set_rows(ctx, cache, rows, indices);
+    REQUIRE(out != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, out);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    REQUIRE(imported.graph.nodes().size() == 1);
+    REQUIRE(imported.graph.nodes().front().op == GGML_OP_SET_ROWS);
+
+    ggml::hrx::DispatchScheduler           scheduler;
+    ggml::hrx::DispatchScheduleDiagnostics diagnostics;
+    REQUIRE(!scheduler.schedule_graph(imported.graph, test_dispatch_target(), &diagnostics));
+    REQUIRE(diagnostics.unsupported_node != nullptr);
+    REQUIRE(diagnostics.unsupported_node_index == 0);
+    REQUIRE(diagnostics.unsupported_node->op == GGML_OP_SET_ROWS);
+    REQUIRE(diagnostics.match.attempts.empty());
+    REQUIRE(status_contains(scheduler.plan().status, "unsupported HRX node 0: SET_ROWS"));
+
+    const std::string diagnostics_text =
+        ggml::hrx::format_schedule_diagnostics_text(imported.graph, scheduler.plan(), diagnostics);
+    REQUIRE(string_contains(diagnostics_text, "unsupported_node=0:SET_ROWS"));
+    REQUIRE(string_contains(diagnostics_text, "matcher_attempts=0"));
+    const std::string diagnostics_json =
+        ggml::hrx::serialize_schedule_diagnostics_json(imported.graph, scheduler.plan(), diagnostics);
+    REQUIRE(string_contains(diagnostics_json, "SET_ROWS"));
+    REQUIRE(string_contains(diagnostics_json, "matcher_attempts"));
 
     ggml_free(ctx);
 }
@@ -4121,6 +4214,8 @@ int main() {
     run_command_plan_metadata_checks();
     run_dispatch_registry_checks();
     run_graph_import_checks();
+    run_graph_snapshot_diagnostics_checks();
+    run_unmatched_graph_diagnostics_checks();
     run_completion_counter_plan_checks();
     run_graph_index_checks();
     run_graph_traversal_checks();

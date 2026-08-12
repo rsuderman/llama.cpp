@@ -25,18 +25,19 @@ static bool match_overlaps_covered_nodes(const DispatchMatch & match, const std:
     return false;
 }
 
-static bool try_match_registration(const Graph &             graph,
-                                   const GraphNode *         node,
-                                   size_t                    node_index,
-                                   const std::vector<bool> & covered_nodes,
-                                   const CommandPlan &       plan,
-                                   const DispatchRegistry &  registry,
-                                   ValueId                   next_plan_value,
-                                   DispatchMatch &           match) {
+static bool try_match_registration(const Graph &              graph,
+                                   const GraphNode *          node,
+                                   size_t                     node_index,
+                                   const std::vector<bool> &  covered_nodes,
+                                   const CommandPlan &        plan,
+                                   const DispatchRegistry &   registry,
+                                   ValueId                    next_plan_value,
+                                   DispatchMatch &            match,
+                                   DispatchMatchDiagnostics * diagnostics) {
     const DispatchMatchContext context = {
         graph, node, node_index, covered_nodes, plan, next_plan_value,
     };
-    return registry.match(context, match);
+    return registry.match(context, match, diagnostics);
 }
 
 static void clear_plan_results(CommandPlan & plan) {
@@ -116,7 +117,16 @@ static bool can_elide_layout_alias_node(const Graph &             graph,
 }  // namespace
 
 bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget & target) {
-    plan_                             = {};
+    return this->schedule_graph(graph, target, nullptr);
+}
+
+bool DispatchScheduler::schedule_graph(const Graph &                 graph,
+                                       const DispatchTarget &        target,
+                                       DispatchScheduleDiagnostics * diagnostics) {
+    plan_ = {};
+    if (diagnostics != nullptr) {
+        *diagnostics = {};
+    }
     const DispatchRegistry * registry = find_dispatch_registry(target);
     if (registry == nullptr) {
         plan_.status.log("no HRX dispatch registry for target %s", target.architecture.c_str());
@@ -140,10 +150,12 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
         if (covered_nodes[i]) {
             continue;
         }
-        DispatchMatch match;
-        const ValueId next_plan_value(static_cast<int32_t>(graph.values().size() + plan_.transients.size() +
-                                                           plan_.completion_counter_requests.size()));
-        if (!try_match_registration(graph, node, i, covered_nodes, plan_, *registry, next_plan_value, match)) {
+        DispatchMatch            match;
+        const ValueId            next_plan_value(static_cast<int32_t>(graph.values().size() + plan_.transients.size() +
+                                                                      plan_.completion_counter_requests.size()));
+        DispatchMatchDiagnostics match_diagnostics;
+        if (!try_match_registration(graph, node, i, covered_nodes, plan_, *registry, next_plan_value, match,
+                                    &match_diagnostics)) {
             if (can_elide_layout_alias_node(graph, *node, covered_nodes)) {
                 pending_diagnostics.append(match.status);
                 covered_nodes[i] = true;
@@ -153,12 +165,24 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
             plan_.status.append(match.status);
             const std::string message = unsupported_node_message(graph, i, *node);
             plan_.status.log("%s", message.c_str());
+            if (diagnostics != nullptr) {
+                diagnostics->unsupported_node_index = i;
+                diagnostics->unsupported_node       = node;
+                diagnostics->unsupported_message    = message;
+                diagnostics->match                  = std::move(match_diagnostics);
+            }
             clear_plan_results(plan_);
             return false;
         }
         if (match.covered_nodes.empty() || match.dispatches.empty() || !match_covers_root(match, i) ||
             match_overlaps_covered_nodes(match, covered_nodes)) {
             plan_.status.log("invalid HRX dispatch match for node %zu: %s", i, ggml_op_name(node->op));
+            if (diagnostics != nullptr) {
+                diagnostics->unsupported_node_index = i;
+                diagnostics->unsupported_node       = node;
+                diagnostics->unsupported_message    = "invalid HRX dispatch match";
+                diagnostics->match                  = std::move(match_diagnostics);
+            }
             clear_plan_results(plan_);
             return false;
         }
@@ -191,6 +215,18 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
             plan_.status.append(pending_diagnostics);
             const std::string message = unsupported_node_message(graph, i, nodes[i]);
             plan_.status.log("%s", message.c_str());
+            if (diagnostics != nullptr) {
+                DispatchMatch match;
+                const ValueId next_plan_value(static_cast<int32_t>(graph.values().size() + plan_.transients.size() +
+                                                                   plan_.completion_counter_requests.size()));
+                DispatchMatchDiagnostics match_diagnostics;
+                try_match_registration(graph, &nodes[i], i, covered_nodes, plan_, *registry, next_plan_value, match,
+                                       &match_diagnostics);
+                diagnostics->unsupported_node_index = i;
+                diagnostics->unsupported_node       = &nodes[i];
+                diagnostics->unsupported_message    = message;
+                diagnostics->match                  = std::move(match_diagnostics);
+            }
             clear_plan_results(plan_);
             return false;
         }
@@ -214,7 +250,8 @@ bool DispatchScheduler::supports_node(const Graph & graph, const GraphNode * nod
     DispatchMatch           match;
     const ValueId           next_plan_value(static_cast<int32_t>(graph.values().size()));
     const CommandPlan       plan;
-    return try_match_registration(graph, node, node_index, covered_nodes, plan, *registry, next_plan_value, match);
+    return try_match_registration(graph, node, node_index, covered_nodes, plan, *registry, next_plan_value, match,
+                                  nullptr);
 }
 
 bool DispatchScheduler::can_schedule_graph(const Graph & graph, const DispatchTarget & target) {
