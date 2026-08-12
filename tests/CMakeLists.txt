@@ -339,8 +339,8 @@ endif()
 
 if (TARGET ggml-hrx)
     add_executable(test-hrx-buffer test-hrx-buffer.cpp)
-    target_link_libraries(test-hrx-buffer PRIVATE ggml-hrx ggml)
-    target_include_directories(test-hrx-buffer PRIVATE ../ggml/include ../ggml/src/ggml-hrx)
+    target_link_libraries(test-hrx-buffer PRIVATE ggml-hrx ggml hrx::hrx)
+    target_include_directories(test-hrx-buffer PRIVATE ../ggml/include ../ggml/src ../ggml/src/ggml-hrx)
     add_test(NAME test-hrx-buffer COMMAND test-hrx-buffer)
 
     add_executable(hrx-backend-test hrx-backend-test.cpp)

@@ -8,6 +8,7 @@
 #include "runtime/transient-arena.h"
 
 #include <sstream>
+#include <unordered_map>
 #include <utility>
 
 namespace ggml::hrx {
@@ -42,6 +43,14 @@ static Status command_program_preparation_context_valid(const CommandProgramExec
     }
     if (context.kernel_executables == nullptr) {
         status.log("missing HRX kernel executable cache");
+        return status;
+    }
+    if (context.host_transfers == nullptr) {
+        status.log("missing HRX host transfer manager");
+        return status;
+    }
+    if (context.host_weights == nullptr) {
+        status.log("missing HRX host weight cache");
         return status;
     }
     return status;
@@ -179,6 +188,157 @@ static Dispatch build_dispatch(const ResolvedCommand & command) {
     return dispatch;
 }
 
+struct GraphValueAccess {
+    bool read  = false;
+    bool write = false;
+};
+
+static std::unordered_map<int32_t, GraphValueAccess> collect_graph_value_access(const CommandProgram & commands) {
+    std::unordered_map<int32_t, GraphValueAccess> access_by_value;
+    for (const Command & command : commands.commands) {
+        for (const CommandBinding & binding : command.bindings) {
+            if (binding.origin != CommandBindingOrigin::GraphValue) {
+                continue;
+            }
+            GraphValueAccess & access = access_by_value[binding.value.value];
+            switch (binding.access) {
+                case ResourceAccess::Read:
+                    access.read = true;
+                    break;
+                case ResourceAccess::Write:
+                    access.write = true;
+                    break;
+                case ResourceAccess::ReadWrite:
+                    access.read  = true;
+                    access.write = true;
+                    break;
+            }
+        }
+    }
+    return access_by_value;
+}
+
+static CommandProgramBindings materialize_host_bindings(const CommandProgramExecutionContext & context,
+                                                        const CommandProgram &                 commands,
+                                                        const CommandProgramBindings &         bindings,
+                                                        PreparedCommandProgram &               prepared) {
+    std::vector<CommandProgramBinding> materialized;
+    Status                             status;
+    materialized.reserve(bindings.bindings().size());
+    const std::unordered_map<int32_t, GraphValueAccess> access_by_value = collect_graph_value_access(commands);
+    for (const CommandProgramBinding & binding : bindings.bindings()) {
+        if (binding.host_data == nullptr) {
+            materialized.push_back(binding);
+            continue;
+        }
+        const auto             found_access = access_by_value.find(binding.value.value);
+        const GraphValueAccess access =
+            found_access != access_by_value.end() ? found_access->second : GraphValueAccess{};
+        if (binding.weight && access.read && !access.write) {
+            HostWeightSource source;
+            source.host_data  = binding.host_data;
+            source.identity   = binding.identity;
+            source.generation = binding.generation;
+            source.capacity   = binding.capacity;
+            source.offset     = binding.offset;
+            source.length     = binding.length;
+            HostWeightAcquireResult resident =
+                context.host_weights->acquire(context.device, context.stream, *context.host_transfers, source);
+            if (!resident.valid()) {
+                status.log("materialize host weight value %d failed", binding.value.value);
+                status.append(resident.status);
+                materialized.push_back(binding);
+                continue;
+            }
+            CommandProgramBinding device_binding = binding;
+            device_binding.buffer                = resident.lease.buffer();
+            device_binding.host_data             = nullptr;
+            device_binding.offset                = 0;
+            device_binding.capacity              = binding.length;
+            materialized.push_back(device_binding);
+            prepared.resident_host_weights.push_back(std::move(resident.lease));
+            continue;
+        }
+
+        HostStagingBuffer staging;
+        Status            allocation_status = allocate_host_staging_buffer(context.device, binding.length, staging);
+        if (!allocation_status.success()) {
+            status.log("allocate host staging for value %d failed", binding.value.value);
+            status.append(allocation_status);
+            materialized.push_back(binding);
+            continue;
+        }
+        staging.value                        = binding.value.value;
+        staging.host_data                    = static_cast<uint8_t *>(binding.host_data) + binding.offset;
+        staging.upload                       = access.read;
+        staging.download                     = access.write;
+        CommandProgramBinding device_binding = binding;
+        device_binding.buffer                = staging.buffer;
+        device_binding.host_data             = nullptr;
+        device_binding.offset                = 0;
+        device_binding.capacity              = binding.length;
+        materialized.push_back(device_binding);
+        prepared.host_staging.push_back(std::move(staging));
+    }
+    return CommandProgramBindings::from_bindings(std::move(materialized), status);
+}
+
+static Status rebind_prepared_host_staging(const CommandProgramBindings & bindings, PreparedCommandProgram & prepared) {
+    Status status;
+    for (HostStagingBuffer & staging : prepared.host_staging) {
+        const CommandProgramBinding * binding = bindings.find(ValueId(staging.value));
+        if (binding == nullptr || binding->host_data == nullptr || binding->length != staging.length ||
+            binding->offset > binding->capacity || binding->length > binding->capacity - binding->offset) {
+            status.log("live host binding does not match prepared value %d", staging.value);
+            continue;
+        }
+        staging.host_data = static_cast<uint8_t *>(binding->host_data) + binding->offset;
+    }
+    return status;
+}
+
+static Status upload_prepared_host_staging(const CommandProgramExecutionContext & context,
+                                           const PreparedCommandProgram &         prepared) {
+    Status status;
+    if (prepared.host_staging.empty()) {
+        return status;
+    }
+    if (context.host_transfers == nullptr) {
+        status.log("missing HRX host transfer manager");
+        return status;
+    }
+    for (const HostStagingBuffer & staging : prepared.host_staging) {
+        if (!staging.upload) {
+            continue;
+        }
+        Status upload_status =
+            context.host_transfers->upload(context.stream, staging.host_data, staging.buffer, 0, staging.length);
+        status.append(upload_status);
+    }
+    return status;
+}
+
+static Status download_prepared_host_staging(const CommandProgramExecutionContext & context,
+                                             const PreparedCommandProgram &         prepared) {
+    Status status;
+    if (prepared.host_staging.empty()) {
+        return status;
+    }
+    if (context.host_transfers == nullptr) {
+        status.log("missing HRX host transfer manager");
+        return status;
+    }
+    for (const HostStagingBuffer & staging : prepared.host_staging) {
+        if (!staging.download) {
+            continue;
+        }
+        Status download_status =
+            context.host_transfers->download(context.stream, staging.buffer, 0, staging.host_data, staging.length);
+        status.append(download_status);
+    }
+    return status;
+}
+
 static PreparedCommand make_prepared_command_shape(const ResolvedCommand & command) {
     PreparedCommand prepared;
     prepared.ordinal               = command.ordinal;
@@ -285,16 +445,24 @@ PreparedCommandProgram prepare_command_program(const CommandProgramExecutionCont
         return prepared;
     }
 
+    prepared.status = command_program_preparation_context_valid(context);
+    if (!prepared.status.success()) {
+        return prepared;
+    }
+
+    const CommandProgramBindings materialized_bindings =
+        materialize_host_bindings(context, commands, bindings, prepared);
+    if (!materialized_bindings.valid()) {
+        prepared.status.append(materialized_bindings.status);
+        return prepared;
+    }
+
     const TransientArenaAllocationRef * transient_allocation_ptr =
         commands.transients.arena_size == 0 ? nullptr : &transient_allocation;
     const ResolvedCommandProgram resolved =
-        resolve_command_program_bindings(commands, bindings, transient_allocation_ptr);
+        resolve_command_program_bindings(commands, materialized_bindings, transient_allocation_ptr);
     if (!resolved.valid()) {
         prepared.status.append(resolved.status);
-        return prepared;
-    }
-    prepared.status = command_program_preparation_context_valid(context);
-    if (!prepared.status.success()) {
         return prepared;
     }
 
@@ -362,9 +530,15 @@ bool bind_prepared_command_program_transients(const CommandProgram &            
 
 bool bind_and_execute_prepared_command_program(const CommandProgramExecutionContext & context,
                                                const CommandProgram &                 commands,
+                                               const CommandProgramBindings &         bindings,
                                                PreparedCommandProgram &               prepared) {
     if (!prepared.valid()) {
         return execute_prepared_command_program(context, prepared);
+    }
+    Status rebind_status = rebind_prepared_host_staging(bindings, prepared);
+    if (!rebind_status.success()) {
+        GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(rebind_status));
+        return false;
     }
     if (commands.transients.arena_size == 0) {
         Status status = initialize_command_program_constants(context, commands, {});
@@ -418,10 +592,20 @@ bool execute_prepared_command_program(const CommandProgramExecutionContext & con
     if (!prepared_execution_context_valid(context)) {
         return false;
     }
+    Status upload_status = upload_prepared_host_staging(context, commands);
+    if (!upload_status.success()) {
+        GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(upload_status));
+        return false;
+    }
     for (const PreparedCommand & command : commands.commands) {
         if (!execute_prepared_kernel_command(context, command)) {
             return false;
         }
+    }
+    Status download_status = download_prepared_host_staging(context, commands);
+    if (!download_status.success()) {
+        GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(download_status));
+        return false;
     }
     return true;
 }
@@ -430,7 +614,7 @@ bool execute_command_program(const CommandProgramExecutionContext & context,
                              const CommandProgram &                 commands,
                              const CommandProgramBindings &         bindings) {
     PreparedCommandProgram prepared = prepare_command_program(context, commands, bindings);
-    return bind_and_execute_prepared_command_program(context, commands, prepared);
+    return bind_and_execute_prepared_command_program(context, commands, bindings, prepared);
 }
 
 }  // namespace ggml::hrx

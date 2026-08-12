@@ -740,6 +740,30 @@ static void run_graph_import_checks() {
     REQUIRE(resolved.commands.front().bindings[0].ref.offset == 20);
     REQUIRE(resolved.commands.front().bindings[0].ref.length == 8);
 
+    std::vector<uint8_t>          host_storage(a_value->byte_count + 64);
+    ggml::hrx::ValueBufferBinding host_value_binding;
+    host_value_binding.host_data    = host_storage.data();
+    host_value_binding.offset       = 16;
+    host_value_binding.length       = a_value->byte_count;
+    host_value_binding.identity     = 42;
+    host_value_binding.generation   = 1;
+    host_value_binding.capacity     = host_storage.size();
+    host_value_binding.weight       = true;
+    ggml::hrx::ValueMap host_values = imported.graph.values();
+    REQUIRE(host_values.bind_buffer(a_value->id, host_value_binding));
+    REQUIRE(host_values.bind_buffer(out_value->id, { dummy_hrx_buffer(0x5000), 0, out_value->byte_count }));
+    const ggml::hrx::CommandProgramBindings host_bindings =
+        ggml::hrx::CommandProgramBindings::from_value_map(host_values);
+    REQUIRE(host_bindings.valid());
+    const ggml::hrx::CommandProgramBinding * host_binding = host_bindings.find(a_value->id);
+    REQUIRE(host_binding != nullptr);
+    REQUIRE(host_binding->buffer == nullptr);
+    REQUIRE(host_binding->host_data == host_storage.data());
+    REQUIRE(host_binding->offset == 16);
+    REQUIRE(host_binding->length == a_value->byte_count);
+    REQUIRE(host_binding->weight);
+    REQUIRE(ggml::hrx::command_program_bindings_fingerprint(host_bindings).value != runtime_fingerprint.value);
+
     resolved = ggml::hrx::resolve_command_program_bindings(commands, missing_bindings);
     REQUIRE(!resolved.valid());
     REQUIRE(status_contains(resolved.status, "is not bound"));
@@ -842,7 +866,7 @@ static void run_graph_import_checks() {
     ggml_hrx_loom_jit_amdgpu *                      jit             = nullptr;
     const ggml::hrx::KernelCorpus &                 corpus          = ggml::hrx::get_qwen_kernel_corpus();
     const ggml::hrx::CommandProgramExecutionContext prepare_context = {
-        nullptr, nullptr, "gfx1151", &corpus, &jit, nullptr, nullptr,
+        nullptr, nullptr, "gfx1151", &corpus, &jit, nullptr, nullptr, nullptr, nullptr,
     };
 
     ggml::hrx::PreparedCommandProgram prepared =
@@ -3804,8 +3828,15 @@ static void run_qwen_expert_table_partition_prefill_512_execution() {
         ggml::hrx::CommandProgramBindings::from_value_map(graph.values());
     REQUIRE(bindings.valid());
     const ggml::hrx::CommandProgramExecutionContext execution_context = {
-        backend_context->device->device,      backend_context->stream,           target, &corpus, &backend_context->jit,
-        &backend_context->kernel_executables, &backend_context->transient_arena,
+        backend_context->device->device,
+        backend_context->stream,
+        target,
+        &corpus,
+        &backend_context->jit,
+        &backend_context->kernel_executables,
+        &backend_context->transient_arena,
+        &backend_context->host_transfers,
+        &backend_context->host_weights,
     };
 
     REQUIRE(ggml::hrx::execute_command_program(execution_context, commands, bindings));

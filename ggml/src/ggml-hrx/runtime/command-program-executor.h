@@ -4,6 +4,7 @@
 #include "dispatch/command-program-resolver.h"
 #include "dispatch/command-program.h"
 #include "kernel-corpus/kernel-corpus.h"
+#include "runtime/host-memory.h"
 
 #include <cstdint>
 #include <memory>
@@ -27,6 +28,8 @@ struct CommandProgramExecutionContext {
     ggml_hrx_loom_jit_amdgpu ** jit                = nullptr;
     KernelExecutableCache *     kernel_executables = nullptr;
     TransientArena *            transient_arena    = nullptr;
+    HostTransferManager *       host_transfers     = nullptr;
+    HostWeightCache *           host_weights       = nullptr;
 };
 
 struct PreparedCommandBinding {
@@ -48,9 +51,11 @@ struct PreparedCommand {
 };
 
 struct PreparedCommandProgram {
-    std::vector<PreparedCommand> commands;
-    Status                       status;
-    uint64_t                     bound_transient_arena_allocation_id = kInvalidTransientArenaAllocationId;
+    std::vector<PreparedCommand>   commands;
+    std::vector<HostStagingBuffer> host_staging;
+    std::vector<HostWeightLease>   resident_host_weights;
+    Status                         status;
+    uint64_t                       bound_transient_arena_allocation_id = kInvalidTransientArenaAllocationId;
 
     bool valid() const { return status.success(); }
 };
@@ -68,6 +73,7 @@ bool bind_prepared_command_program_transients(const CommandProgram &            
 
 bool bind_and_execute_prepared_command_program(const CommandProgramExecutionContext & context,
                                                const CommandProgram &                 commands,
+                                               const CommandProgramBindings &         bindings,
                                                PreparedCommandProgram &               prepared);
 
 bool execute_command_program(const CommandProgramExecutionContext & context,

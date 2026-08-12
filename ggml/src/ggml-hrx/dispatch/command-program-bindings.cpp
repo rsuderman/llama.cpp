@@ -20,7 +20,7 @@ CommandProgramBindings CommandProgramBindings::from_value_map(const ValueMap & v
             continue;
         }
         bindings.push_back({ value->id, buffer->buffer, buffer->offset, buffer->length, buffer->identity,
-                             buffer->generation, buffer->capacity });
+                             buffer->generation, buffer->capacity, buffer->host_data, buffer->weight });
     }
     return from_bindings(std::move(bindings), result.status);
 }
@@ -31,7 +31,7 @@ CommandProgramBindings CommandProgramBindings::from_bindings(std::vector<Command
     result.status.append(errors);
     result.bindings_ = std::move(bindings);
     for (const CommandProgramBinding & binding : result.bindings_) {
-        if (binding.buffer == nullptr) {
+        if (binding.buffer == nullptr && binding.host_data == nullptr) {
             result.status.log("external value %d has a null binding", binding.value.value);
         }
         if (binding.length == 0) {
@@ -54,9 +54,10 @@ CommandProgramBindingsFingerprint command_program_bindings_fingerprint(const Com
     std::ostringstream out;
     out << "hrx-bindings-v1";
     for (const CommandProgramBinding & binding : bindings.bindings()) {
-        out << "|value=" << binding.value.value << "|identity=" << binding.identity
-            << "|generation=" << binding.generation << "|capacity=" << binding.capacity << "|offset=" << binding.offset
-            << "|length=" << binding.length;
+        out << "|value=" << binding.value.value << "|kind=" << (binding.host_data != nullptr ? "host" : "device")
+            << "|identity=" << binding.identity << "|generation=" << binding.generation
+            << "|capacity=" << binding.capacity << "|offset=" << binding.offset << "|length=" << binding.length
+            << "|weight=" << (binding.weight ? 1 : 0);
     }
     return { out.str() };
 }

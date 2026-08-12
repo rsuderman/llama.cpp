@@ -59,6 +59,8 @@ struct ValueBufferBinding {
     uint64_t     identity   = 0;
     uint64_t     generation = 0;
     size_t       capacity   = 0;
+    void *       host_data  = nullptr;
+    bool         weight     = false;
 };
 
 struct Value {

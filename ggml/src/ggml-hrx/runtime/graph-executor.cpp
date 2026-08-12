@@ -56,11 +56,13 @@ CommandProgramBindings GraphExecutor::bind_external_value_buffers(const GraphPro
         binding.value = external.value;
         if (ggml_backend_hrx_resolve_value_buffer(external.tensor, value_binding)) {
             binding.buffer     = value_binding.buffer;
+            binding.host_data  = value_binding.host_data;
             binding.offset     = value_binding.offset;
             binding.length     = value_binding.length;
             binding.identity   = value_binding.identity;
             binding.generation = value_binding.generation;
             binding.capacity   = value_binding.capacity;
+            binding.weight     = value_binding.weight;
         } else {
             status.log("external value %d is not bound", external.value.value);
         }
@@ -108,6 +110,8 @@ GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
         &context_.jit,
         &context_.kernel_executables,
         &context_.transient_arena,
+        &context_.host_transfers,
+        &context_.host_weights,
     };
     const PreparedCommandProgramCacheExecutionResult execution = context_.prepared_programs.execute_with_result(
         execution_context, lookup.program->uid(), lookup.program->command_shape(), lookup.program->commands(),
