@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -95,12 +96,98 @@ static std::string to_config_value(int64_t value) {
     return std::to_string(value);
 }
 
+static std::string value_summary(const Graph & graph, const Value * value) {
+    if (value == nullptr) {
+        return "missing";
+    }
+    std::ostringstream stream;
+    stream << value->id.value << ":" << ggml_type_name(value->type) << "[" << value->ne[0] << "," << value->ne[1] << ","
+           << value->ne[2] << "," << value->ne[3] << "] nb=[" << value->nb[0] << "," << value->nb[1] << ","
+           << value->nb[2] << "," << value->nb[3] << "]";
+    const GraphNode * producer = graph.index().producer(value->id);
+    if (producer != nullptr) {
+        stream << "<-" << ggml_op_name(producer->op);
+    }
+    if (value->alias_source.value >= 0) {
+        stream << " alias=" << value->alias_source.value << " storage_root=" << value->storage_root.value
+               << " storage_offset=" << value->storage_offset;
+    }
+    return stream.str();
+}
+
+static std::string node_summary(const Graph & graph, const GraphNode * node) {
+    if (node == nullptr) {
+        return "missing";
+    }
+    std::ostringstream stream;
+    size_t             index = 0;
+    if (graph.index().node_index(node, index)) {
+        stream << index << ":";
+    }
+    stream << ggml_op_name(node->op) << " output=" << value_summary(graph, graph_value(graph, node->output));
+    return stream.str();
+}
+
+static std::string rope_params_summary(const GraphNode & node) {
+    const RopeParams * params = op_params_as<RopeParams>(node.params);
+    if (params == nullptr) {
+        return "missing";
+    }
+    std::ostringstream stream;
+    stream << "n_dims=" << params->n_dims << " mode=" << params->mode << " n_ctx_orig=" << params->n_ctx_orig
+           << " freq_base=" << params->freq_base << " freq_scale=" << params->freq_scale
+           << " ext_factor=" << params->ext_factor << " attn_factor=" << params->attn_factor
+           << " beta_fast=" << params->beta_fast << " beta_slow=" << params->beta_slow;
+    return stream.str();
+}
+
+static bool is_attention_postprocess_candidate_root(const Graph & graph, const GraphNode * root) {
+    if (root == nullptr || root->op != GGML_OP_RESHAPE || root->inputs.size() != 1 || !graph.has_index()) {
+        return false;
+    }
+    const GraphNode * projection = producer_with_op(graph, root->inputs[0], GGML_OP_MUL_MAT);
+    const Value *     raw_input  = graph_value(graph, root->inputs[0]);
+    const Value *     reshaped   = graph_value(graph, root->output);
+    return projection != nullptr && raw_input != nullptr && reshaped != nullptr && raw_input->type == GGML_TYPE_F32 &&
+           reshaped->type == GGML_TYPE_F32 && raw_input->ne[1] > 0 && reshaped->ne[0] == kQwenAttentionHeadSize &&
+           reshaped->ne[2] == raw_input->ne[1];
+}
+
+static void log_attention_reject(Status *            status,
+                                 const Graph &       graph,
+                                 const GraphNode *   root,
+                                 const std::string & reason) {
+    if (status == nullptr || !is_attention_postprocess_candidate_root(graph, root)) {
+        return;
+    }
+    const Value * input  = root->inputs.empty() ? nullptr : graph_value(graph, root->inputs[0]);
+    const Value * output = graph_value(graph, root->output);
+    status->log("qwen attention postprocess matcher rejected node: %s root=%s input=%s output=%s", reason.c_str(),
+                node_summary(graph, root).c_str(), value_summary(graph, input).c_str(),
+                value_summary(graph, output).c_str());
+}
+
+static bool append_postprocess_node(const DispatchMatchContext & context,
+                                    const GraphNode *            root,
+                                    const char *                 role,
+                                    const GraphNode *            node,
+                                    DispatchMatch &              dispatch_match,
+                                    Status *                     status) {
+    if (append_covered_node(context, node, dispatch_match)) {
+        return true;
+    }
+    std::string reason = std::string("cannot cover ") + role + " node " + node_summary(context.graph, node);
+    log_attention_reject(status, context.graph, root, reason);
+    return false;
+}
+
 struct NormRopeChain {
     const GraphNode *    projection_node          = nullptr;
     const GraphNode *    reshape_node             = nullptr;
     const GraphNode *    rms_node                 = nullptr;
     const GraphNode *    mul_node                 = nullptr;
     const GraphNode *    rope_node                = nullptr;
+    const Value *        projection_input         = nullptr;
     const Value *        raw_input                = nullptr;
     const Value *        reshaped                 = nullptr;
     const Value *        norm_weight              = nullptr;
@@ -114,9 +201,10 @@ struct NormRopeChain {
 
     bool matched() const {
         return projection_node != nullptr && reshape_node != nullptr && rms_node != nullptr && mul_node != nullptr &&
-               rope_node != nullptr && raw_input != nullptr && reshaped != nullptr && norm_weight != nullptr &&
-               positions != nullptr && (inverse_freqs != nullptr || !inverse_freqs_data.empty()) &&
-               inverse_freqs_byte_count > 0 && output != nullptr && token_count > 0 && head_count > 0;
+               rope_node != nullptr && projection_input != nullptr && raw_input != nullptr && reshaped != nullptr &&
+               norm_weight != nullptr && positions != nullptr &&
+               (inverse_freqs != nullptr || !inverse_freqs_data.empty()) && inverse_freqs_byte_count > 0 &&
+               output != nullptr && token_count > 0 && head_count > 0;
     }
 };
 
@@ -136,21 +224,22 @@ struct CachePublishChain {
 };
 
 struct ValuePublishChain {
-    const GraphNode * projection_node = nullptr;
-    const GraphNode * reshape_node    = nullptr;
-    const GraphNode * layout_node     = nullptr;
-    const GraphNode * set_rows_node   = nullptr;
-    const Value *     raw_input       = nullptr;
-    const Value *     cache_indices   = nullptr;
-    const Value *     cache           = nullptr;
-    int64_t           token_count     = 0;
-    int64_t           head_count      = 0;
-    int64_t           cache_row_count = 0;
+    const GraphNode * projection_node  = nullptr;
+    const GraphNode * reshape_node     = nullptr;
+    const GraphNode * layout_node      = nullptr;
+    const GraphNode * set_rows_node    = nullptr;
+    const Value *     projection_input = nullptr;
+    const Value *     raw_input        = nullptr;
+    const Value *     cache_indices    = nullptr;
+    const Value *     cache            = nullptr;
+    int64_t           token_count      = 0;
+    int64_t           head_count       = 0;
+    int64_t           cache_row_count  = 0;
 
     bool matched() const {
         return projection_node != nullptr && reshape_node != nullptr && layout_node != nullptr &&
-               set_rows_node != nullptr && raw_input != nullptr && cache_indices != nullptr && cache != nullptr &&
-               token_count > 0 && head_count > 0 && cache_row_count > 0;
+               set_rows_node != nullptr && projection_input != nullptr && raw_input != nullptr &&
+               cache_indices != nullptr && cache != nullptr && token_count > 0 && head_count > 0 && cache_row_count > 0;
     }
 };
 
@@ -204,19 +293,29 @@ static bool is_inverse_frequency_table(const Value & value) {
     return value.type == GGML_TYPE_F32 && is_shape(value, kQwenAttentionHeadSize / 2, 1, 1, 1);
 }
 
-static bool match_projection_reshape(const Graph & graph, const GraphNode * reshape, NormRopeChain & chain) {
+static bool match_projection_reshape(const Graph &       graph,
+                                     const GraphNode *   reshape,
+                                     NormRopeChain &     chain,
+                                     Status *            status,
+                                     const std::string & label) {
     if (reshape == nullptr || reshape->op != GGML_OP_RESHAPE || reshape->inputs.size() != 1) {
+        log_attention_reject(status, graph, reshape, label + " projection reshape is not a single-input RESHAPE");
         return false;
     }
 
     const GraphNode * projection = producer_with_op(graph, reshape->inputs[0], GGML_OP_MUL_MAT);
     const Value *     raw_input  = graph_value(graph, reshape->inputs[0]);
     const Value *     reshaped   = graph_value(graph, reshape->output);
-    if (projection == nullptr || raw_input == nullptr || reshaped == nullptr) {
+    const Value *     projection_input =
+        projection == nullptr || projection->inputs.size() != 2 ? nullptr : graph_value(graph, projection->inputs[1]);
+    if (projection == nullptr || projection_input == nullptr || raw_input == nullptr || reshaped == nullptr) {
+        log_attention_reject(status, graph, reshape, label + " projection producer or values are missing");
         return false;
     }
     if (raw_input->type != GGML_TYPE_F32 || reshaped->type != GGML_TYPE_F32 || !is_2d(*raw_input) ||
         reshaped->ne[0] != kQwenAttentionHeadSize || reshaped->ne[3] != 1) {
+        log_attention_reject(status, graph, reshape,
+                             label + " projection reshape has incompatible type, rank, or head size");
         return false;
     }
 
@@ -224,30 +323,38 @@ static bool match_projection_reshape(const Graph & graph, const GraphNode * resh
     const int64_t token_count = reshaped->ne[2];
     if (!is_supported_head_count(head_count) || !is_supported_token_count(token_count) ||
         raw_input->ne[0] != head_count * kQwenAttentionHeadSize || raw_input->ne[1] != token_count) {
+        log_attention_reject(status, graph, reshape, label + " projection reshape has unsupported head/token shape");
         return false;
     }
 
-    chain.projection_node = projection;
-    chain.reshape_node    = reshape;
-    chain.raw_input       = raw_input;
-    chain.reshaped        = reshaped;
-    chain.token_count     = token_count;
-    chain.head_count      = head_count;
+    chain.projection_node  = projection;
+    chain.reshape_node     = reshape;
+    chain.projection_input = projection_input;
+    chain.raw_input        = raw_input;
+    chain.reshaped         = reshaped;
+    chain.token_count      = token_count;
+    chain.head_count       = head_count;
     return true;
 }
 
-static bool match_norm_rope_chain_from_reshape(const Graph & graph, const GraphNode * reshape, NormRopeChain & chain) {
-    if (!match_projection_reshape(graph, reshape, chain)) {
+static bool match_norm_rope_chain_from_reshape(const Graph &       graph,
+                                               const GraphNode *   reshape,
+                                               NormRopeChain &     chain,
+                                               Status *            status = nullptr,
+                                               const std::string & label  = "attention") {
+    if (!match_projection_reshape(graph, reshape, chain, status, label)) {
         return false;
     }
 
     const GraphNode * rms = find_single_consumer_with_op(graph, chain.reshaped->id, GGML_OP_RMS_NORM);
     if (rms == nullptr || rms->inputs.size() != 1 || !has_qwen_rms_params(*rms)) {
+        log_attention_reject(status, graph, reshape, label + " chain is missing supported RMS_NORM");
         return false;
     }
 
     const GraphNode * mul = find_single_consumer_with_op(graph, rms->output, GGML_OP_MUL);
     if (mul == nullptr || mul->inputs.size() != 2) {
+        log_attention_reject(status, graph, reshape, label + " chain is missing norm-weight MUL");
         return false;
     }
     ValueId weight_id;
@@ -256,16 +363,23 @@ static bool match_norm_rope_chain_from_reshape(const Graph & graph, const GraphN
     } else if (mul->inputs[1] == rms->output) {
         weight_id = mul->inputs[0];
     } else {
+        log_attention_reject(status, graph, reshape, label + " norm-weight MUL does not consume RMS output");
         return false;
     }
     const Value * norm_weight = graph_value(graph, weight_id);
     if (norm_weight == nullptr || !is_norm_weight(*norm_weight)) {
+        log_attention_reject(status, graph, reshape, label + " norm weight shape is incompatible");
         return false;
     }
 
     const GraphNode * rope = find_single_consumer_with_op(graph, mul->output, GGML_OP_ROPE);
     if (rope == nullptr || rope->inputs.size() < 2 || rope->inputs.size() > 3 || rope->inputs[0] != mul->output ||
         !has_qwen_rope_params(*rope)) {
+        std::string reason = label + " chain is missing supported ROPE";
+        if (rope != nullptr) {
+            reason += " params=" + rope_params_summary(*rope);
+        }
+        log_attention_reject(status, graph, reshape, reason);
         return false;
     }
     const Value *        positions                = graph_value(graph, rope->inputs[1]);
@@ -276,17 +390,22 @@ static bool match_norm_rope_chain_from_reshape(const Graph & graph, const GraphN
     if (rope->inputs.size() == 3) {
         inverse_freqs = graph_value(graph, rope->inputs[2]);
         if (inverse_freqs == nullptr || !is_inverse_frequency_table(*inverse_freqs)) {
+            log_attention_reject(status, graph, reshape, label + " explicit inverse-frequency table is incompatible");
             return false;
         }
         inverse_freqs_byte_count = inverse_freqs->byte_count;
     } else if (build_inverse_frequency_table(*rope, inverse_freqs_data)) {
         inverse_freqs_byte_count = inverse_freqs_data.size();
     } else {
+        log_attention_reject(status, graph, reshape,
+                             label + " implicit inverse-frequency table cannot be derived from ROPE params=" +
+                                 rope_params_summary(*rope));
         return false;
     }
     if (positions == nullptr || output == nullptr || positions->type != GGML_TYPE_I32 ||
         !is_shape(*positions, chain.token_count, 1, 1, 1) || output->type != GGML_TYPE_F32 ||
         !is_shape(*output, kQwenAttentionHeadSize, chain.head_count, chain.token_count, 1)) {
+        log_attention_reject(status, graph, reshape, label + " positions or ROPE output shape is incompatible");
         return false;
     }
 
@@ -403,7 +522,7 @@ static bool match_value_publish_chain(const Graph & graph, const GraphNode * set
     }
 
     NormRopeChain projection_shape;
-    if (!match_projection_reshape(graph, reshape, projection_shape)) {
+    if (!match_projection_reshape(graph, reshape, projection_shape, nullptr, "value")) {
         return false;
     }
 
@@ -418,17 +537,28 @@ static bool match_value_publish_chain(const Graph & graph, const GraphNode * set
         return false;
     }
 
-    chain.projection_node = projection_shape.projection_node;
-    chain.reshape_node    = projection_shape.reshape_node;
-    chain.layout_node     = layout;
-    chain.set_rows_node   = set_rows;
-    chain.raw_input       = projection_shape.raw_input;
-    chain.cache_indices   = cache_indices;
-    chain.cache           = cache;
-    chain.token_count     = projection_shape.token_count;
-    chain.head_count      = projection_shape.head_count;
-    chain.cache_row_count = cache_row_count;
+    chain.projection_node  = projection_shape.projection_node;
+    chain.reshape_node     = projection_shape.reshape_node;
+    chain.layout_node      = layout;
+    chain.set_rows_node    = set_rows;
+    chain.projection_input = projection_shape.projection_input;
+    chain.raw_input        = projection_shape.raw_input;
+    chain.cache_indices    = cache_indices;
+    chain.cache            = cache;
+    chain.token_count      = projection_shape.token_count;
+    chain.head_count       = projection_shape.head_count;
+    chain.cache_row_count  = cache_row_count;
     return true;
+}
+
+static bool same_projection_input(const NormRopeChain & lhs, const NormRopeChain & rhs) {
+    return lhs.projection_input != nullptr && rhs.projection_input != nullptr &&
+           lhs.projection_input->id == rhs.projection_input->id;
+}
+
+static bool same_projection_input(const NormRopeChain & lhs, const ValuePublishChain & rhs) {
+    return lhs.projection_input != nullptr && rhs.projection_input != nullptr &&
+           lhs.projection_input->id == rhs.projection_input->id;
 }
 
 static FlashInputLayoutChain match_flash_input_layouts(const Graph & graph, const AttentionPostprocessMatch & match) {
@@ -476,12 +606,14 @@ static FlashInputLayoutChain match_flash_input_layouts(const Graph & graph, cons
     return layouts;
 }
 
-static AttentionPostprocessMatch match_qwen_attention_postprocess(const Graph & graph, const GraphNode * root) {
+static AttentionPostprocessMatch match_qwen_attention_postprocess(const Graph &     graph,
+                                                                  const GraphNode * root,
+                                                                  Status *          status) {
     AttentionPostprocessMatch match;
     if (root == nullptr || root->op != GGML_OP_RESHAPE || !graph.has_index()) {
         return match;
     }
-    if (!match_norm_rope_chain_from_reshape(graph, root, match.query)) {
+    if (!match_norm_rope_chain_from_reshape(graph, root, match.query, status, "query")) {
         return {};
     }
 
@@ -490,17 +622,25 @@ static AttentionPostprocessMatch match_qwen_attention_postprocess(const Graph & 
             continue;
         }
         CachePublishChain key;
-        if (!match.key.matched_key() && match_key_publish_chain(graph, &node, key)) {
+        if (!match.key.matched_key() && match_key_publish_chain(graph, &node, key) &&
+            same_projection_input(match.query, key.key)) {
             match.key = key;
             continue;
         }
         ValuePublishChain value;
-        if (!match.value.matched() && match_value_publish_chain(graph, &node, value)) {
+        if (!match.value.matched() && match_value_publish_chain(graph, &node, value) &&
+            same_projection_input(match.query, value)) {
             match.value = value;
         }
     }
 
     if (!match.matched()) {
+        if (!match.key.matched_key()) {
+            log_attention_reject(status, graph, root, "no matching key ROPE cache publish chain found");
+        }
+        if (!match.value.matched()) {
+            log_attention_reject(status, graph, root, "no matching value cache publish chain found");
+        }
         return {};
     }
     if (match.query.token_count != match.key.key.token_count || match.query.token_count != match.value.token_count ||
@@ -508,6 +648,7 @@ static AttentionPostprocessMatch match_qwen_attention_postprocess(const Graph & 
         match.query.positions->id != match.key.key.positions->id ||
         !matching_inverse_frequencies(match.query, match.key.key) ||
         match.key.cache_row_count != match.value.cache_row_count) {
+        log_attention_reject(status, graph, root, "query/key/value postprocess invariants are incompatible");
         return {};
     }
     match.flash_layouts = match_flash_input_layouts(graph, match);
@@ -516,32 +657,46 @@ static AttentionPostprocessMatch match_qwen_attention_postprocess(const Graph & 
 
 static bool append_postprocess_covered_nodes(const DispatchMatchContext &      context,
                                              const AttentionPostprocessMatch & postprocess,
-                                             DispatchMatch &                   dispatch_match) {
+                                             DispatchMatch &                   dispatch_match,
+                                             Status *                          status) {
     // TODO: move fused matcher coverage into a shared builder that records GraphNode pointers during matching and
     // materializes scheduler indices once. This is constant-size today, but the explicit list will not scale well as
     // Qwen fused patterns grow.
-    if (!append_covered_node(context, postprocess.query.reshape_node, dispatch_match) ||
-        !append_covered_node(context, postprocess.query.rms_node, dispatch_match) ||
-        !append_covered_node(context, postprocess.query.mul_node, dispatch_match) ||
-        !append_covered_node(context, postprocess.query.rope_node, dispatch_match) ||
-        !append_covered_node(context, postprocess.key.key.reshape_node, dispatch_match) ||
-        !append_covered_node(context, postprocess.key.key.rms_node, dispatch_match) ||
-        !append_covered_node(context, postprocess.key.key.mul_node, dispatch_match) ||
-        !append_covered_node(context, postprocess.key.key.rope_node, dispatch_match) ||
-        !append_covered_node(context, postprocess.key.layout_node, dispatch_match) ||
-        !append_covered_node(context, postprocess.key.set_rows_node, dispatch_match) ||
-        !append_covered_node(context, postprocess.value.reshape_node, dispatch_match) ||
-        !append_covered_node(context, postprocess.value.layout_node, dispatch_match) ||
-        !append_covered_node(context, postprocess.value.set_rows_node, dispatch_match)) {
+    const GraphNode * root = postprocess.query.reshape_node;
+    if (!append_postprocess_node(context, root, "query reshape", postprocess.query.reshape_node, dispatch_match,
+                                 status) ||
+        !append_postprocess_node(context, root, "query rms", postprocess.query.rms_node, dispatch_match, status) ||
+        !append_postprocess_node(context, root, "query mul", postprocess.query.mul_node, dispatch_match, status) ||
+        !append_postprocess_node(context, root, "query rope", postprocess.query.rope_node, dispatch_match, status) ||
+        !append_postprocess_node(context, root, "key reshape", postprocess.key.key.reshape_node, dispatch_match,
+                                 status) ||
+        !append_postprocess_node(context, root, "key rms", postprocess.key.key.rms_node, dispatch_match, status) ||
+        !append_postprocess_node(context, root, "key mul", postprocess.key.key.mul_node, dispatch_match, status) ||
+        !append_postprocess_node(context, root, "key rope", postprocess.key.key.rope_node, dispatch_match, status) ||
+        !append_postprocess_node(context, root, "key layout", postprocess.key.layout_node, dispatch_match, status) ||
+        !append_postprocess_node(context, root, "key set rows", postprocess.key.set_rows_node, dispatch_match,
+                                 status) ||
+        !append_postprocess_node(context, root, "value reshape", postprocess.value.reshape_node, dispatch_match,
+                                 status) ||
+        !append_postprocess_node(context, root, "value layout", postprocess.value.layout_node, dispatch_match,
+                                 status) ||
+        !append_postprocess_node(context, root, "value set rows", postprocess.value.set_rows_node, dispatch_match,
+                                 status)) {
         return false;
     }
     if (postprocess.flash_layouts.matched() &&
-        (!append_covered_node(context, postprocess.flash_layouts.query_layout, dispatch_match) ||
-         !append_covered_node(context, postprocess.flash_layouts.query_permute, dispatch_match) ||
-         !append_covered_node(context, postprocess.flash_layouts.key_layout, dispatch_match) ||
-         !append_covered_node(context, postprocess.flash_layouts.key_permute, dispatch_match) ||
-         !append_covered_node(context, postprocess.flash_layouts.value_layout, dispatch_match) ||
-         !append_covered_node(context, postprocess.flash_layouts.value_permute, dispatch_match))) {
+        (!append_postprocess_node(context, root, "flash query layout", postprocess.flash_layouts.query_layout,
+                                  dispatch_match, status) ||
+         !append_postprocess_node(context, root, "flash query permute", postprocess.flash_layouts.query_permute,
+                                  dispatch_match, status) ||
+         !append_postprocess_node(context, root, "flash key layout", postprocess.flash_layouts.key_layout,
+                                  dispatch_match, status) ||
+         !append_postprocess_node(context, root, "flash key permute", postprocess.flash_layouts.key_permute,
+                                  dispatch_match, status) ||
+         !append_postprocess_node(context, root, "flash value layout", postprocess.flash_layouts.value_layout,
+                                  dispatch_match, status) ||
+         !append_postprocess_node(context, root, "flash value permute", postprocess.flash_layouts.value_permute,
+                                  dispatch_match, status))) {
         return false;
     }
     return true;
@@ -551,11 +706,12 @@ static bool append_postprocess_covered_nodes(const DispatchMatchContext &      c
 
 static bool match_qwen_attention_postprocess_dispatch(const DispatchMatchContext & context,
                                                       DispatchMatch &              dispatch_match) {
-    const AttentionPostprocessMatch match = match_qwen_attention_postprocess(context.graph, context.root_node);
+    const AttentionPostprocessMatch match =
+        match_qwen_attention_postprocess(context.graph, context.root_node, &dispatch_match.status);
     if (!match.matched()) {
         return false;
     }
-    if (!append_postprocess_covered_nodes(context, match, dispatch_match)) {
+    if (!append_postprocess_covered_nodes(context, match, dispatch_match, &dispatch_match.status)) {
         return false;
     }
 

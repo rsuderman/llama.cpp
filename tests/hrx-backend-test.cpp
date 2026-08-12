@@ -1525,6 +1525,52 @@ static void run_qwen_attention_postprocess_dispatch_checks() {
         schedule_qwen_attention_postprocess_command(ctx, tensors, 4, 4, 2, 16, true);
     }
 
+    {
+        constexpr int64_t                     token_count          = 13;
+        constexpr int64_t                     query_head_count     = 32;
+        constexpr int64_t                     key_value_head_count = 4;
+        constexpr int64_t                     cache_row_count      = 512;
+        const QwenAttentionPostprocessTensors tensors              = build_qwen_attention_postprocess_graph(
+            ctx, token_count, query_head_count, key_value_head_count, cache_row_count, 0.000001f, false);
+        schedule_qwen_attention_postprocess_command(ctx, tensors, token_count, query_head_count, key_value_head_count,
+                                                    cache_row_count, true);
+    }
+
+    {
+        constexpr int64_t token_count          = 13;
+        constexpr int64_t query_head_count     = 32;
+        constexpr int64_t key_value_head_count = 4;
+        constexpr int64_t cache_row_count      = 512;
+
+        const QwenAttentionPostprocessTensors first = build_qwen_attention_postprocess_graph(
+            ctx, token_count, query_head_count, key_value_head_count, cache_row_count, 0.000001f, false);
+        const QwenAttentionPostprocessTensors second = build_qwen_attention_postprocess_graph(
+            ctx, token_count, query_head_count, key_value_head_count, cache_row_count, 0.000001f, false);
+
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        REQUIRE(graph != nullptr);
+        ggml_build_forward_expand(graph, first.query_output);
+        ggml_build_forward_expand(graph, first.key_output);
+        ggml_build_forward_expand(graph, first.value_output);
+        ggml_build_forward_expand(graph, second.query_output);
+        ggml_build_forward_expand(graph, second.key_output);
+        ggml_build_forward_expand(graph, second.value_output);
+
+        ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+
+        ggml::hrx::DispatchScheduler scheduler;
+        REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+        REQUIRE(scheduler.plan().valid());
+        REQUIRE(scheduler.plan().dispatches.size() == 8);
+
+        const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+            imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(commands.valid());
+        REQUIRE(commands.commands.size() == 8);
+        REQUIRE(command_program_verifies(commands));
+    }
+
     ggml_free(ctx);
 }
 

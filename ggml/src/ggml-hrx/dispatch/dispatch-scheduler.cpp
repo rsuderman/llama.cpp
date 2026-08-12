@@ -127,6 +127,7 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
         return false;
     }
     std::vector<bool>         covered_nodes(nodes.size(), false);
+    Status                    pending_diagnostics;
     const GraphTraversalOrder traversal = GraphTraversalOrder::build(graph);
     for (const GraphNode * node : traversal.nodes()) {
         size_t i = 0;
@@ -142,9 +143,11 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
         const ValueId next_plan_value(static_cast<int32_t>(graph.values().size() + plan_.transients.size()));
         if (!try_match_registration(graph, node, i, covered_nodes, plan_, *registry, next_plan_value, match)) {
             if (can_elide_layout_alias_node(graph, *node, covered_nodes)) {
+                pending_diagnostics.append(match.status);
                 covered_nodes[i] = true;
                 continue;
             }
+            plan_.status.append(pending_diagnostics);
             plan_.status.append(match.status);
             const std::string message = unsupported_node_message(graph, i, *node);
             plan_.status.log("%s", message.c_str());
@@ -180,6 +183,7 @@ bool DispatchScheduler::schedule_graph(const Graph & graph, const DispatchTarget
                 covered_nodes[i] = true;
                 continue;
             }
+            plan_.status.append(pending_diagnostics);
             const std::string message = unsupported_node_message(graph, i, nodes[i]);
             plan_.status.log("%s", message.c_str());
             clear_plan_results(plan_);
