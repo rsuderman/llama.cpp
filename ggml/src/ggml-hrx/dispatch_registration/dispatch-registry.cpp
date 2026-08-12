@@ -5,6 +5,7 @@
 #include "dispatch-qwen-flash-attention.h"
 #include "dispatch-qwen-matmul.h"
 #include "dispatch-qwen-moe.h"
+#include "dispatch-qwen-preamble.h"
 #include "dispatch-qwen-router.h"
 #include "dispatch-rmsnorm.h"
 
@@ -35,6 +36,7 @@ static DispatchRegistry build_qwen_registry() {
     register_qwen_flash_attention_dispatches(builder);
     register_qwen_matmul_dispatches(builder);
     register_qwen_moe_dispatches(builder);
+    register_qwen_preamble_dispatches(builder);
     register_qwen_rmsnorm_dispatches(builder);
     register_qwen_router_dispatches(builder);
     return builder.build();

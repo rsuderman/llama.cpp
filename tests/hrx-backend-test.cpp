@@ -379,6 +379,8 @@ static void run_dispatch_registry_checks() {
                                       "qwen.flash_attention_f32_f16_wmma"));
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_RESHAPE),
                                       "qwen.attention_postprocess_f32_f16"));
+    REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_GET_ROWS),
+                                      "qwen.preamble.token_embedding_q4k"));
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_SOFT_MAX), "qwen.router.top8_f32"));
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_MUL_MAT_ID),
                                       "qwen.moe.routed_gate_up_swiglu_q4k_f16_wmma"));
@@ -1014,6 +1016,132 @@ static bool graph_is_supported(ggml_context * ctx, ggml_tensor * output) {
     ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
     REQUIRE(imported.valid());
     return ggml::hrx::DispatchScheduler::can_schedule_graph(imported.graph, test_dispatch_target());
+}
+
+static ggml::hrx::Graph build_manual_token_embedding_graph(ggml_tensor * weight,
+                                                           ggml_tensor * token_ids,
+                                                           ggml_tensor * output) {
+    ggml::hrx::Graph   graph;
+    ggml::hrx::ValueId weight_value = graph.values().get_or_add_tensor_value(weight, ggml::hrx::ValueKind::External);
+    ggml::hrx::ValueId token_ids_value =
+        graph.values().get_or_add_tensor_value(token_ids, ggml::hrx::ValueKind::External);
+    ggml::hrx::ValueId output_value = graph.values().get_or_add_tensor_value(output, ggml::hrx::ValueKind::External);
+    graph.add_node(GGML_OP_GET_ROWS, output_value, { weight_value, token_ids_value });
+    REQUIRE(graph.build_index().success());
+    return graph;
+}
+
+static bool manual_token_embedding_graph_is_supported(ggml_context * ctx,
+                                                      ggml_type      weight_type,
+                                                      ggml_type      token_ids_type,
+                                                      ggml_type      output_type,
+                                                      int64_t        hidden_size,
+                                                      int64_t        vocabulary_count,
+                                                      int64_t        token_count,
+                                                      int64_t        output_hidden_size = -1,
+                                                      int64_t        output_token_count = -1) {
+    if (output_hidden_size < 0) {
+        output_hidden_size = hidden_size;
+    }
+    if (output_token_count < 0) {
+        output_token_count = token_count;
+    }
+    ggml_tensor * weight    = ggml_new_tensor_2d(ctx, weight_type, hidden_size, vocabulary_count);
+    ggml_tensor * token_ids = ggml_new_tensor_1d(ctx, token_ids_type, token_count);
+    ggml_tensor * output    = ggml_new_tensor_2d(ctx, output_type, output_hidden_size, output_token_count);
+    REQUIRE(weight != nullptr);
+    REQUIRE(token_ids != nullptr);
+    REQUIRE(output != nullptr);
+
+    ggml::hrx::Graph graph = build_manual_token_embedding_graph(weight, token_ids, output);
+    return ggml::hrx::DispatchScheduler::can_schedule_graph(graph, test_dispatch_target());
+}
+
+static void schedule_qwen_token_embedding_command(ggml_context * ctx,
+                                                  ggml_tensor *  output,
+                                                  int64_t        expected_token_count,
+                                                  int64_t        expected_vocabulary_count,
+                                                  int64_t        expected_hidden_size) {
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    REQUIRE(imported.graph.nodes().size() == 1);
+    REQUIRE(imported.graph.nodes()[0].op == GGML_OP_GET_ROWS);
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 1);
+
+    const ggml::hrx::Dispatch & dispatch    = scheduler.plan().dispatches.front();
+    const std::string           kernel_name = kernel_name_for_id(dispatch.kernel.kernel_id);
+    REQUIRE(kernel_name == "qwen3_moe:qwen_token_embedding_q4k_bringup_workaround");
+    REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == expected_token_count);
+    REQUIRE(dispatch.kernel.integer_parameters.at("vocabulary_count") == expected_vocabulary_count);
+    REQUIRE(dispatch.kernel.integer_parameters.at("hidden_size") == expected_hidden_size);
+    REQUIRE(dispatch.bindings.size() == 3);
+
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(commands.valid());
+    REQUIRE(commands.commands.size() == 1);
+    REQUIRE(command_program_verifies(commands));
+    REQUIRE(commands.commands.front().bindings.size() == 3);
+    REQUIRE(commands.commands.front().bindings[0].name == "token_ids");
+    REQUIRE(commands.commands.front().bindings[1].name == "weight");
+    REQUIRE(commands.commands.front().bindings[2].name == "output");
+}
+
+static void run_qwen_token_embedding_dispatch_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 2 * 1024 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    {
+        ggml_tensor * weight    = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 2048, 151936);
+        ggml_tensor * token_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+        REQUIRE(weight != nullptr);
+        REQUIRE(token_ids != nullptr);
+        ggml_tensor * output = ggml_get_rows(ctx, weight, token_ids);
+        REQUIRE(output != nullptr);
+        schedule_qwen_token_embedding_command(ctx, output, 1, 151936, 2048);
+    }
+    {
+        ggml_tensor * weight    = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 2048, 151936);
+        ggml_tensor * token_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 13);
+        REQUIRE(weight != nullptr);
+        REQUIRE(token_ids != nullptr);
+        ggml_tensor * output = ggml_get_rows(ctx, weight, token_ids);
+        REQUIRE(output != nullptr);
+        schedule_qwen_token_embedding_command(ctx, output, 13, 151936, 2048);
+    }
+    {
+        ggml_tensor * weight    = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 3072, 248320);
+        ggml_tensor * token_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+        REQUIRE(weight != nullptr);
+        REQUIRE(token_ids != nullptr);
+        ggml_tensor * output = ggml_get_rows(ctx, weight, token_ids);
+        REQUIRE(output != nullptr);
+        schedule_qwen_token_embedding_command(ctx, output, 1, 248320, 3072);
+    }
+
+    REQUIRE(
+        !manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_F32, GGML_TYPE_I32, GGML_TYPE_F32, 2048, 151936, 1));
+    REQUIRE(
+        !manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_Q4_K, GGML_TYPE_I64, GGML_TYPE_F32, 2048, 151936, 1));
+    REQUIRE(
+        !manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_Q4_K, GGML_TYPE_I32, GGML_TYPE_F16, 2048, 151936, 1));
+    REQUIRE(
+        !manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_Q4_K, GGML_TYPE_I32, GGML_TYPE_F32, 1024, 151936, 1));
+    REQUIRE(!manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_Q4_K, GGML_TYPE_I32, GGML_TYPE_F32, 2048, 151936,
+                                                       1, 2048, 2));
+
+    ggml_free(ctx);
 }
 
 static void schedule_qwen_flash_attention_command(ggml_context * ctx, ggml_tensor * output) {
@@ -3171,6 +3299,7 @@ int main() {
     run_graph_import_checks();
     run_graph_index_checks();
     run_graph_traversal_checks();
+    run_qwen_token_embedding_dispatch_checks();
     run_qwen_flash_attention_dispatch_checks();
     run_qwen_attention_postprocess_dispatch_checks();
     run_qwen_matmul_dispatch_checks();
