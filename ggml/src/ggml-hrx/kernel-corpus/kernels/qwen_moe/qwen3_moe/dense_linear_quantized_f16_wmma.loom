@@ -72,11 +72,11 @@ func.def inline @qwen3_moe_dense_q4k_wmma_vector4(%weight: buffer, %row_byte_bas
   %block_byte_base = index.add %row_byte_base, %block_byte_add : offset
   %scale_byte_base = index.add %block_byte_base, %scale_offset : offset
   %code_byte_base = index.add %block_byte_base, %code_offset : offset
-  %dm_view = buffer.view %weight[%block_byte_base] : buffer -> view<2xf16, #dense>
-  %scale_view = buffer.view %weight[%scale_byte_base] : buffer -> view<3xi32, #dense>
-  %code_view = buffer.view %weight[%code_byte_base] : buffer -> view<32xi32, #dense>
-  %dm = vector.load %dm_view[%c0] : view<2xf16, #dense> -> vector<2xf16>
-  %scales = vector.load %scale_view[%c0] : view<3xi32, #dense> -> vector<3xi32>
+  %dm_view = buffer.view %weight[%block_byte_base] : buffer -> view<2xf16>
+  %scale_view = buffer.view %weight[%scale_byte_base] : buffer -> view<3xi32>
+  %code_view = buffer.view %weight[%code_byte_base] : buffer -> view<32xi32>
+  %dm = vector.load %dm_view[%c0] : view<2xf16> -> vector<2xf16>
+  %scales = vector.load %scale_view[%c0] : view<3xi32> -> vector<3xi32>
   %d_f16 = vector.extract %dm[0] : vector<2xf16> -> f16
   %dmin_f16 = vector.extract %dm[1] : vector<2xf16> -> f16
   %d = scalar.extf %d_f16 : f16 to f32
@@ -122,7 +122,7 @@ func.def inline @qwen3_moe_dense_q4k_wmma_vector4(%weight: buffer, %row_byte_bas
   %minimum_scale_vector1 = vector.mulf %dmin_vector1, %minimum_f32 : vector<1xf32>
   %d_scale = vector.extract %d_scale_vector1[0] : vector<1xf32> -> f32
   %minimum_scale = vector.extract %minimum_scale_vector1[0] : vector<1xf32> -> f32
-  %q_word = vector.load %code_view[%q_word_index] : view<32xi32, #dense> -> vector<1xi32>
+  %q_word = vector.load %code_view[%q_word_index] : view<32xi32> -> vector<1xi32>
   %q_half = index.rem %bounded_group, %c2 : index
   %q_shift_index = index.mul %q_half, %c4 : index
   %q_shift_i32 = index.cast %q_shift_index : index to i32
@@ -201,15 +201,15 @@ func.template<qwen3_moe.dense.q4k_q8_1_x4.body> device @qwen3_moe_dense_linear_q
   scf.if %publish_output {
     scf.if %valid_channel {
       scf.if %is_lane_zero {
-        %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%bounded_output_size]xf32, #dense>
+        %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%bounded_output_size]xf32>
         %result = scf.if %accumulates_output -> (f32) {
-          %residual = view.load %output_view[%token, %channel] : view<[%launch_token_count]x[%bounded_output_size]xf32, #dense> -> f32
+          %residual = view.load %output_view[%token, %channel] : view<[%launch_token_count]x[%bounded_output_size]xf32> -> f32
           %sum = scalar.addf %residual, %dot : f32
           scf.yield %sum : f32
         } else {
           scf.yield %dot : f32
         }
-        view.store %result, %output_view[%token, %channel] : f32, view<[%launch_token_count]x[%bounded_output_size]xf32, #dense>
+        view.store %result, %output_view[%token, %channel] : f32, view<[%launch_token_count]x[%bounded_output_size]xf32>
       }
     }
   }
@@ -270,30 +270,30 @@ kernel.def target(@qwen3_moe_attention_prepare_gfx11_wave32) @qwen3_moe_dense_li
   %output_noalias, %norm_weight_noalias, %normalized_output_noalias, %completion_counter_noalias, %next_q8_output_noalias = buffer.assume.noalias %output, %norm_weight, %normalized_output, %completion_counter, %next_q8_output : buffer, buffer, buffer, buffer, buffer
   %completion_counter_global = buffer.assume.memory_space<global> %completion_counter_noalias : buffer
   %completion_counter_aligned = buffer.assume.alignment %completion_counter_global {minimum_alignment = 16} : buffer
-  %completion_counter_view = buffer.view %completion_counter_aligned[%c0_offset] : buffer -> view<1xi32, #dense>
-  %counter_scratch = buffer.alloca %counter_scratch_bytes {base_alignment = 4, memory_space = workgroup} : buffer
-  %counter_scratch_view = buffer.view %counter_scratch[%c0_offset] : buffer -> view<1xi32, #dense>
+  %completion_counter_view = buffer.view %completion_counter_aligned[%c0_offset] : buffer -> view<1xi32>
+  %counter_scratch = buffer.alloca<workgroup> align(4) %counter_scratch_bytes : buffer
+  %counter_scratch_view = buffer.view %counter_scratch[%c0_offset] : buffer -> view<1xi32>
   // Publish every producer's residual stores before the leader advances one
   // workgroup arrival. The last arrival then acquires the complete row.
-  kernel.barrier<global> {ordering = release, scope = workgroup}
+  kernel.barrier<global> scope(workgroup) ordering(release)
   scf.if %is_arrival_workitem {
-    %old_counter = view.atomic.rmw<addi> %c1_i32, %completion_counter_view[%c0] {ordering = acq_rel, scope = device} : i32, view<1xi32, #dense> -> i32
-    view.store %old_counter, %counter_scratch_view[%c0] : i32, view<1xi32, #dense>
+    %old_counter = view.atomic.rmw<addi> %c1_i32, %completion_counter_view[%c0] {ordering = acq_rel, scope = device} : i32, view<1xi32> -> i32
+    view.store %old_counter, %counter_scratch_view[%c0] : i32, view<1xi32>
   }
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
-  %old_counter = view.load %counter_scratch_view[%c0] : view<1xi32, #dense> -> i32
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
+  %old_counter = view.load %counter_scratch_view[%c0] : view<1xi32> -> i32
   %output_tile_count_i32 = index.cast %output_tile_count : index to i32
   %last_output_tile_i32 = scalar.subi %output_tile_count_i32, %c1_i32 : i32
   %negative_output_tile_count_i32 = scalar.subi %c0_i32, %output_tile_count_i32 : i32
   %is_last_output_tile = scalar.cmpi eq, %old_counter, %last_output_tile_i32 : i32
   scf.if %is_last_output_tile {
-    kernel.barrier<global> {ordering = acquire, scope = workgroup}
+    kernel.barrier<global> scope(workgroup) ordering(acquire)
     %publish_normalized = scalar.constant true : i1
     func.apply<qwen3_moe.rmsnorm_quantize_q8_1_x4.body>(%publish_normalized, %c8, %bounded_token_count, %token, %output_noalias, %norm_weight_noalias, %normalized_output_noalias, %next_q8_output_noalias) : (i1, index, index, index, buffer, buffer, buffer, buffer)
     // Reset only after every normalized F32 and Q8 store completes.
-    kernel.barrier<global> {ordering = release, scope = workgroup}
+    kernel.barrier<global> scope(workgroup) ordering(release)
     scf.if %is_arrival_workitem {
-      view.atomic.reduce<addi> %negative_output_tile_count_i32, %completion_counter_view[%c0] {ordering = release, scope = device} : i32, view<1xi32, #dense>
+      view.atomic.reduce<addi> %negative_output_tile_count_i32, %completion_counter_view[%c0] {ordering = release, scope = device} : i32, view<1xi32>
     }
   }
   kernel.return
@@ -339,19 +339,19 @@ func.template<qwen3_moe.dense_quantized.body> device @qwen3_moe_dense_linear_qua
   %quant_block_count = index.div %bounded_input_size, %c256 : index
   %weight_row_bytes = index.mul %quant_block_count, %weight_block_byte_count : index
   %input_noalias, %weight_noalias, %output_noalias = buffer.assume.noalias %input, %weight, %output : buffer, buffer, buffer
-  %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x[%bounded_input_size]xf32, #dense>
-  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x[%bounded_output_size]xf32, #dense>
-  %weight_stage = buffer.alloca %weight_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %activation_stage = buffer.alloca %activation_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %result_stage = buffer.alloca %result_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %weight_stage_view = buffer.view %weight_stage[%c0_offset] : buffer -> view<64x40xf16, #dense>
-  %activation_stage_physical_view = buffer.view %activation_stage[%c0_offset] : buffer -> view<32x40xf16, #dense>
+  %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x[%bounded_input_size]xf32>
+  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x[%bounded_output_size]xf32>
+  %weight_stage = buffer.alloca<workgroup> align(16) %weight_stage_bytes : buffer
+  %activation_stage = buffer.alloca<workgroup> align(16) %activation_stage_bytes : buffer
+  %result_stage = buffer.alloca<workgroup> align(16) %result_stage_bytes : buffer
+  %weight_stage_view = buffer.view %weight_stage[%c0_offset] : buffer -> view<64x40xf16>
+  %activation_stage_physical_view = buffer.view %activation_stage[%c0_offset] : buffer -> view<32x40xf16>
   %activation_fragment_layout = encoding.layout.strided [1, %c40] : encoding<layout>
   %activation_fragment_view = buffer.view %activation_stage[%c0_offset] : buffer -> view<32x32xf16, %activation_fragment_layout>
   %wave_result_stage_offset = index.scale %subgroup, %wave_result_stage_bytes : index, offset -> offset
   %result_fragment_layout = encoding.layout.strided [1, %c16] : encoding<layout>
   %result_fragment_view = buffer.view %result_stage[%wave_result_stage_offset] : buffer -> view<16x16xf16, %result_fragment_layout>
-  %result_physical_view = buffer.view %result_stage[%wave_result_stage_offset] : buffer -> view<16x16xf16, #dense>
+  %result_physical_view = buffer.view %result_stage[%wave_result_stage_offset] : buffer -> view<16x16xf16>
   %channel_tile_base = index.mul %channel_tile, %c64 : index
   %token_tile_base = index.mul %token_tile, %c32 : index
   %load_packet = index.rem %workitem, %c8 : index
@@ -388,7 +388,7 @@ func.template<qwen3_moe.dense_quantized.body> device @qwen3_moe_dense_linear_qua
         } else {
           scf.yield %c0_f16x4 : vector<4xf16>
         }
-        vector.store %weight_values, %weight_stage_view[%local_row, %load_k] : vector<4xf16>, view<64x40xf16, #dense>
+        vector.store %weight_values, %weight_stage_view[%local_row, %load_k] : vector<4xf16>, view<64x40xf16>
         %is_activation_row = index.cmp ult, %local_row, %c32 : index
         scf.if %is_activation_row {
           %activation_row = index.assume %local_row [range(%local_row, 0, 31)] : index
@@ -397,19 +397,19 @@ func.template<qwen3_moe.dense_quantized.body> device @qwen3_moe_dense_linear_qua
           %activation_values = scf.if %valid_token -> (vector<4xf16>) {
             %bounded_token, %input_token_count = index.assume %token, %bounded_token_count [lt(%token, %bounded_token_count)] : index, index
             %input_k = index.add %k_origin, %load_k : index
-            %loaded = vector.load %input_view[%bounded_token, %input_k] : view<[%bounded_token_count]x[%bounded_input_size]xf32, #dense> -> vector<4xf32>
+            %loaded = vector.load %input_view[%bounded_token, %input_k] : view<[%bounded_token_count]x[%bounded_input_size]xf32> -> vector<4xf32>
             %converted = vector.fptrunc %loaded : vector<4xf32> to vector<4xf16>
             scf.yield %converted : vector<4xf16>
           } else {
             scf.yield %c0_f16x4 : vector<4xf16>
           }
-          vector.store %activation_values, %activation_stage_physical_view[%activation_row, %load_k] : vector<4xf16>, view<32x40xf16, #dense>
+          vector.store %activation_values, %activation_stage_physical_view[%activation_row, %load_k] : vector<4xf16>, view<32x40xf16>
         }
       }
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       %next00, %next01, %next10, %next11 = scf.for %k_half = [%c0 to %c32 step %c16](%half_acc00 = %acc00 : vector<8xf16>, %half_acc01 = %acc01 : vector<8xf16>, %half_acc10 = %acc10 : vector<8xf16>, %half_acc11 = %acc11 : vector<8xf16>) -> (vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>) unroll {
-        %lhs0 = vector.fragment.load<lhs> %weight_stage_view[%subgroup_channel_add, %k_half] shape [%m, %k] : view<64x40xf16, #dense> -> vector<16xf16>
-        %lhs1 = vector.fragment.load<lhs> %weight_stage_view[%subgroup_channel1, %k_half] shape [%m, %k] : view<64x40xf16, #dense> -> vector<16xf16>
+        %lhs0 = vector.fragment.load<lhs> %weight_stage_view[%subgroup_channel_add, %k_half] shape [%m, %k] : view<64x40xf16> -> vector<16xf16>
+        %lhs1 = vector.fragment.load<lhs> %weight_stage_view[%subgroup_channel1, %k_half] shape [%m, %k] : view<64x40xf16> -> vector<16xf16>
         %rhs0 = vector.fragment.load<rhs> %activation_fragment_view[%k_half, %c0] shape [%k, %n] : view<32x32xf16, %activation_fragment_layout> -> vector<16xf16>
         %rhs1 = vector.fragment.load<rhs> %activation_fragment_view[%k_half, %c16] shape [%k, %n] : view<32x32xf16, %activation_fragment_layout> -> vector<16xf16>
         %half_next00 = vector.mma %lhs0, %rhs0, %half_acc00 : vector<16xf16>, vector<16xf16>, vector<8xf16>
@@ -418,7 +418,7 @@ func.template<qwen3_moe.dense_quantized.body> device @qwen3_moe_dense_linear_qua
         %half_next11 = vector.mma %lhs1, %rhs1, %half_acc11 : vector<16xf16>, vector<16xf16>, vector<8xf16>
         scf.yield %half_next00, %half_next01, %half_next10, %half_next11 : vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>
       }
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       scf.yield %next00, %next01, %next10, %next11 : vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>
     }
     scf.yield %block_result00, %block_result01, %block_result10, %block_result11 : vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>
@@ -448,71 +448,71 @@ func.template<qwen3_moe.dense_quantized.body> device @qwen3_moe_dense_linear_qua
   %writes11 = scalar.andi %valid_token1, %valid_channel1 : i1
   %accumulates_output = index.cmp eq, %output_accumulation, %c1 : index
   vector.fragment.store<result> %result00, %result_fragment_view[%c0, %c0] shape [%m, %n] : vector<8xf16>, view<16x16xf16, %result_fragment_layout>
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = subgroup}
+  kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
   scf.if %writes00 {
     %bounded_token, %output_token_count = index.assume %token0, %bounded_token_count [lt(%token0, %bounded_token_count)] : index, index
-    %values = vector.load %result_physical_view[%publish_token, %publish_channel_add] : view<16x16xf16, #dense> -> vector<4xf16>
+    %values = vector.load %result_physical_view[%publish_token, %publish_channel_add] : view<16x16xf16> -> vector<4xf16>
     %wide = vector.extf %values : vector<4xf16> to vector<4xf32>
     %mask = vector.mask.range [%channel0 to %bounded_output_size step %c1] : index -> vector<4xi1>
     %published = scf.if %accumulates_output -> (vector<4xf32>) {
-      %residual = vector.load.mask %output_view[%bounded_token, %channel0], %mask, %c0_f32x4 : view<[%bounded_token_count]x[%bounded_output_size]xf32, #dense>, vector<4xi1>, vector<4xf32>
+      %residual = vector.load.mask %output_view[%bounded_token, %channel0], %mask, %c0_f32x4 : view<[%bounded_token_count]x[%bounded_output_size]xf32>, vector<4xi1>, vector<4xf32>
       %sum = vector.addf %residual, %wide : vector<4xf32>
       scf.yield %sum : vector<4xf32>
     } else {
       scf.yield %wide : vector<4xf32>
     }
-    vector.store.mask %published, %output_view[%bounded_token, %channel0], %mask : vector<4xf32>, view<[%bounded_token_count]x[%bounded_output_size]xf32, #dense>, vector<4xi1>
+    vector.store.mask %published, %output_view[%bounded_token, %channel0], %mask : vector<4xf32>, view<[%bounded_token_count]x[%bounded_output_size]xf32>, vector<4xi1>
   }
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = subgroup}
+  kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
   vector.fragment.store<result> %result01, %result_fragment_view[%c0, %c0] shape [%m, %n] : vector<8xf16>, view<16x16xf16, %result_fragment_layout>
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = subgroup}
+  kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
   scf.if %writes01 {
     %bounded_token, %output_token_count = index.assume %token1, %bounded_token_count [lt(%token1, %bounded_token_count)] : index, index
-    %values = vector.load %result_physical_view[%publish_token, %publish_channel_add] : view<16x16xf16, #dense> -> vector<4xf16>
+    %values = vector.load %result_physical_view[%publish_token, %publish_channel_add] : view<16x16xf16> -> vector<4xf16>
     %wide = vector.extf %values : vector<4xf16> to vector<4xf32>
     %mask = vector.mask.range [%channel0 to %bounded_output_size step %c1] : index -> vector<4xi1>
     %published = scf.if %accumulates_output -> (vector<4xf32>) {
-      %residual = vector.load.mask %output_view[%bounded_token, %channel0], %mask, %c0_f32x4 : view<[%bounded_token_count]x[%bounded_output_size]xf32, #dense>, vector<4xi1>, vector<4xf32>
+      %residual = vector.load.mask %output_view[%bounded_token, %channel0], %mask, %c0_f32x4 : view<[%bounded_token_count]x[%bounded_output_size]xf32>, vector<4xi1>, vector<4xf32>
       %sum = vector.addf %residual, %wide : vector<4xf32>
       scf.yield %sum : vector<4xf32>
     } else {
       scf.yield %wide : vector<4xf32>
     }
-    vector.store.mask %published, %output_view[%bounded_token, %channel0], %mask : vector<4xf32>, view<[%bounded_token_count]x[%bounded_output_size]xf32, #dense>, vector<4xi1>
+    vector.store.mask %published, %output_view[%bounded_token, %channel0], %mask : vector<4xf32>, view<[%bounded_token_count]x[%bounded_output_size]xf32>, vector<4xi1>
   }
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = subgroup}
+  kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
   vector.fragment.store<result> %result10, %result_fragment_view[%c0, %c0] shape [%m, %n] : vector<8xf16>, view<16x16xf16, %result_fragment_layout>
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = subgroup}
+  kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
   scf.if %writes10 {
     %bounded_token, %output_token_count = index.assume %token0, %bounded_token_count [lt(%token0, %bounded_token_count)] : index, index
-    %values = vector.load %result_physical_view[%publish_token, %publish_channel_add] : view<16x16xf16, #dense> -> vector<4xf16>
+    %values = vector.load %result_physical_view[%publish_token, %publish_channel_add] : view<16x16xf16> -> vector<4xf16>
     %wide = vector.extf %values : vector<4xf16> to vector<4xf32>
     %mask = vector.mask.range [%channel1 to %bounded_output_size step %c1] : index -> vector<4xi1>
     %published = scf.if %accumulates_output -> (vector<4xf32>) {
-      %residual = vector.load.mask %output_view[%bounded_token, %channel1], %mask, %c0_f32x4 : view<[%bounded_token_count]x[%bounded_output_size]xf32, #dense>, vector<4xi1>, vector<4xf32>
+      %residual = vector.load.mask %output_view[%bounded_token, %channel1], %mask, %c0_f32x4 : view<[%bounded_token_count]x[%bounded_output_size]xf32>, vector<4xi1>, vector<4xf32>
       %sum = vector.addf %residual, %wide : vector<4xf32>
       scf.yield %sum : vector<4xf32>
     } else {
       scf.yield %wide : vector<4xf32>
     }
-    vector.store.mask %published, %output_view[%bounded_token, %channel1], %mask : vector<4xf32>, view<[%bounded_token_count]x[%bounded_output_size]xf32, #dense>, vector<4xi1>
+    vector.store.mask %published, %output_view[%bounded_token, %channel1], %mask : vector<4xf32>, view<[%bounded_token_count]x[%bounded_output_size]xf32>, vector<4xi1>
   }
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = subgroup}
+  kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
   vector.fragment.store<result> %result11, %result_fragment_view[%c0, %c0] shape [%m, %n] : vector<8xf16>, view<16x16xf16, %result_fragment_layout>
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = subgroup}
+  kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
   scf.if %writes11 {
     %bounded_token, %output_token_count = index.assume %token1, %bounded_token_count [lt(%token1, %bounded_token_count)] : index, index
-    %values = vector.load %result_physical_view[%publish_token, %publish_channel_add] : view<16x16xf16, #dense> -> vector<4xf16>
+    %values = vector.load %result_physical_view[%publish_token, %publish_channel_add] : view<16x16xf16> -> vector<4xf16>
     %wide = vector.extf %values : vector<4xf16> to vector<4xf32>
     %mask = vector.mask.range [%channel1 to %bounded_output_size step %c1] : index -> vector<4xi1>
     %published = scf.if %accumulates_output -> (vector<4xf32>) {
-      %residual = vector.load.mask %output_view[%bounded_token, %channel1], %mask, %c0_f32x4 : view<[%bounded_token_count]x[%bounded_output_size]xf32, #dense>, vector<4xi1>, vector<4xf32>
+      %residual = vector.load.mask %output_view[%bounded_token, %channel1], %mask, %c0_f32x4 : view<[%bounded_token_count]x[%bounded_output_size]xf32>, vector<4xi1>, vector<4xf32>
       %sum = vector.addf %residual, %wide : vector<4xf32>
       scf.yield %sum : vector<4xf32>
     } else {
       scf.yield %wide : vector<4xf32>
     }
-    vector.store.mask %published, %output_view[%bounded_token, %channel1], %mask : vector<4xf32>, view<[%bounded_token_count]x[%bounded_output_size]xf32, #dense>, vector<4xi1>
+    vector.store.mask %published, %output_view[%bounded_token, %channel1], %mask : vector<4xf32>, view<[%bounded_token_count]x[%bounded_output_size]xf32>, vector<4xi1>
   }
   func.return
 }

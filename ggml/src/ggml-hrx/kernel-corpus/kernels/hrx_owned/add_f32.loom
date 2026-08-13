@@ -21,14 +21,14 @@ kernel.def target(@ggml_add_gfx11_wave64) export("ggml_add_f32") @ggml_add_f32(%
   %in_bounds = index.cmp ult, %linear, %count : index
   %zero_offset = index.constant 0 : offset
   %a_noalias, %b_noalias, %output_noalias = buffer.assume.noalias %a, %b, %output : buffer, buffer, buffer
-  %a_view = buffer.view %a_noalias[%zero_offset] : buffer -> view<[%count]xf32, #dense>
-  %b_view = buffer.view %b_noalias[%zero_offset] : buffer -> view<[%count]xf32, #dense>
-  %output_view = buffer.view %output_noalias[%zero_offset] : buffer -> view<[%count]xf32, #dense>
+  %a_view = buffer.view %a_noalias[%zero_offset] : buffer -> view<[%count]xf32>
+  %b_view = buffer.view %b_noalias[%zero_offset] : buffer -> view<[%count]xf32>
+  %output_view = buffer.view %output_noalias[%zero_offset] : buffer -> view<[%count]xf32>
   scf.if %in_bounds {
-    %a_value = view.load %a_view[%linear] : view<[%count]xf32, #dense> -> f32
-    %b_value = view.load %b_view[%linear] : view<[%count]xf32, #dense> -> f32
+    %a_value = view.load %a_view[%linear] : view<[%count]xf32> -> f32
+    %b_value = view.load %b_view[%linear] : view<[%count]xf32> -> f32
     %sum = scalar.addf %a_value, %b_value : f32
-    view.store %sum, %output_view[%linear] : f32, view<[%count]xf32, #dense>
+    view.store %sum, %output_view[%linear] : f32, view<[%count]xf32>
   }
   kernel.return
 }

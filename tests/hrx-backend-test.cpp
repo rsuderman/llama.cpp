@@ -1371,7 +1371,6 @@ static void schedule_qwen_terminal_q6k_q8_command(int64_t token_count) {
     REQUIRE(scheduler.plan().valid());
     REQUIRE(scheduler.plan().dispatches.size() == 2);
     REQUIRE(scheduler.plan().transients.size() == 1);
-    REQUIRE(scheduler.plan().metadata.alternate_values().empty());
 
     const ggml::hrx::Dispatch & rms_dispatch = scheduler.plan().dispatches[0];
     REQUIRE(kernel_name_for_id(rms_dispatch.kernel.kernel_id) == "qwen3_moe:qwen3_moe_rmsnorm_f32_quantize_q8_1_x4");

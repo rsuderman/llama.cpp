@@ -46,7 +46,7 @@ CORPUS_FILES = (
 # These integration kernels are deliberately owned by the llama.cpp HRX
 # backend. They are not attributed to the pinned qwen_moe corpus or its BUILD
 # recipes.
-OWNED_KERNEL_DIR = pathlib.Path(__file__).resolve().parent.parent / "kernels"
+OWNED_KERNEL_DIR = pathlib.Path(__file__).resolve().parent.parent / "kernel-corpus" / "kernels"
 OWNED_FILES = (
     "qwen_owned/token_embedding_bringup_workaround.loom",
     "qwen_owned/attention_state_initialize.loom",
