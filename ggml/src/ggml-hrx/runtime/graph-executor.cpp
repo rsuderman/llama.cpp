@@ -107,7 +107,6 @@ GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
         context_.stream,
         context_.device->architecture.c_str(),
         &corpus,
-        &context_.jit,
         &context_.kernel_executables,
         &context_.transient_arena,
         &context_.host_transfers,

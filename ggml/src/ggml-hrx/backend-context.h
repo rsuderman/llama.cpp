@@ -2,7 +2,6 @@
 
 #include "ggml-backend-impl.h"
 #include "graph/value-map.h"
-#include "loom-jit.h"
 #include "runtime/graph-program-cache.h"
 #include "runtime/host-memory.h"
 #include "runtime/kernel-executable-cache.h"
@@ -48,7 +47,6 @@ struct ggml_backend_hrx_device_context {
 struct ggml_backend_hrx_context {
     ggml_backend_hrx_device_context *      device;
     hrx_stream_t                           stream;
-    ggml_hrx_loom_jit_amdgpu *             jit = nullptr;
     ggml::hrx::KernelExecutableCache       kernel_executables;
     ggml::hrx::GraphProgramCache           graph_programs;
     ggml::hrx::PreparedCommandProgramCache prepared_programs;

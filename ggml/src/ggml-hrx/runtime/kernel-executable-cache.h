@@ -3,7 +3,7 @@
 #include "dispatch/dispatch.h"
 #include "hrx_runtime.h"
 #include "kernel-corpus/kernel-corpus.h"
-#include "loom-jit.h"
+#include "runtime/loom-kernel-jit.h"
 
 #include <cstdint>
 #include <memory>
@@ -13,6 +13,8 @@
 #include <vector>
 
 namespace ggml::hrx {
+
+class KernelExecutableCacheEntry;
 
 struct KernelExecutable {
     ~KernelExecutable();
@@ -24,13 +26,31 @@ struct KernelExecutable {
 };
 
 struct KernelExecutablePrepareContext {
-    hrx_device_t                device = nullptr;
-    const char *                target = nullptr;
-    ggml_hrx_loom_jit_amdgpu ** jit    = nullptr;
+    hrx_device_t device = nullptr;
+    const char * target = nullptr;
+};
+
+struct KernelExecutableRef {
+    std::shared_ptr<KernelExecutableCacheEntry> entry;
+
+    bool valid() const { return entry != nullptr; }
 };
 
 class KernelExecutableCache {
   public:
+    KernelExecutableCache() = default;
+    explicit KernelExecutableCache(LoomJitMode mode);
+    ~KernelExecutableCache();
+
+    KernelExecutableRef get_or_compile(const KernelExecutablePrepareContext & context,
+                                       const KernelDefinition &               definition,
+                                       const Dispatch &                       dispatch,
+                                       std::vector<uint8_t> &                 constants);
+
+    std::shared_ptr<KernelExecutable> materialize(const KernelExecutablePrepareContext & context,
+                                                  const KernelExecutableRef &            ref,
+                                                  const std::vector<uint8_t> &           constants);
+
     std::shared_ptr<KernelExecutable> prepare(const KernelExecutablePrepareContext & context,
                                               const KernelDefinition &               definition,
                                               const Dispatch &                       dispatch,
@@ -39,8 +59,14 @@ class KernelExecutableCache {
     void clear();
 
   private:
-    std::mutex                                                         mutex_;
-    std::unordered_map<std::string, std::shared_ptr<KernelExecutable>> cache_;
+    bool ensure_jit_locked(const char * target, std::string & error_message);
+
+    std::mutex                                                                   mutex_;
+    std::unordered_map<std::string, std::shared_ptr<KernelExecutableCacheEntry>> cache_;
+    std::unique_ptr<LoomJit>                                                     jit_;
+    std::string                                                                  target_;
+    LoomJitMode                                                                  mode_           = LoomJitMode::Async;
+    bool                                                                         mode_is_forced_ = false;
 };
 
 }  // namespace ggml::hrx

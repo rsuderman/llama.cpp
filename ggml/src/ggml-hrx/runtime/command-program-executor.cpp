@@ -110,10 +110,6 @@ static Status command_program_preparation_context_valid(const CommandProgramExec
         status.log("missing HRX device");
         return status;
     }
-    if (context.jit == nullptr) {
-        status.log("missing HRX JIT storage");
-        return status;
-    }
     if (context.kernel_executables == nullptr) {
         status.log("missing HRX kernel executable cache");
         return status;
@@ -621,7 +617,8 @@ static PreparedCommand make_prepared_command_shape(const ResolvedCommand & comma
 
 static Status prepare_kernel_command(const CommandProgramExecutionContext & context,
                                      const ResolvedCommand &                command,
-                                     PreparedCommand &                      prepared) {
+                                     PreparedCommand &                      prepared,
+                                     KernelExecutableRef &                  executable_ref) {
     Status            status;
     const std::string command_context = format_resolved_command_context(command);
     if (command.kind != CommandKind::Kernel) {
@@ -638,10 +635,10 @@ static Status prepare_kernel_command(const CommandProgramExecutionContext & cont
         return status;
     }
 
-    prepared                   = make_prepared_command_shape(command);
-    prepared.kernel.executable = context.kernel_executables->prepare(
-        { context.device, context.target, context.jit }, *resolved.definition, dispatch, prepared.kernel.constants);
-    if (prepared.kernel.executable == nullptr) {
+    prepared       = make_prepared_command_shape(command);
+    executable_ref = context.kernel_executables->get_or_compile(
+        { context.device, context.target }, *resolved.definition, dispatch, prepared.kernel.constants);
+    if (!executable_ref.valid()) {
         status.log("failed to prepare %s", command_context.c_str());
         return status;
     }
@@ -686,15 +683,33 @@ static bool execute_prepared_kernel_command(const CommandProgramExecutionContext
 static void prepare_command_list(const CommandProgramExecutionContext & context,
                                  const std::vector<ResolvedCommand> &   commands,
                                  std::vector<PreparedCommand> &         prepared_commands,
+                                 std::vector<KernelExecutableRef> &     executable_refs,
                                  Status &                               status) {
     prepared_commands.reserve(commands.size());
+    executable_refs.reserve(commands.size());
     for (const ResolvedCommand & command : commands) {
-        PreparedCommand prepared_command;
-        Status          command_status = prepare_kernel_command(context, command, prepared_command);
+        PreparedCommand     prepared_command;
+        KernelExecutableRef executable_ref;
+        Status              command_status = prepare_kernel_command(context, command, prepared_command, executable_ref);
         if (command_status.success()) {
             prepared_commands.push_back(std::move(prepared_command));
+            executable_refs.push_back(std::move(executable_ref));
         } else {
             status.append(command_status);
+        }
+    }
+}
+
+static void materialize_command_list_executables(const CommandProgramExecutionContext &   context,
+                                                 std::vector<PreparedCommand> &           prepared_commands,
+                                                 const std::vector<KernelExecutableRef> & executable_refs,
+                                                 Status &                                 status) {
+    for (size_t i = 0; i < prepared_commands.size(); ++i) {
+        PreparedCommand & command = prepared_commands[i];
+        command.kernel.executable = context.kernel_executables->materialize(
+            { context.device, context.target }, executable_refs[i], command.kernel.constants);
+        if (command.kernel.executable == nullptr) {
+            status.log("failed to prepare %s", format_prepared_command_context(command).c_str());
         }
     }
 }
@@ -946,8 +961,14 @@ PreparedCommandProgram prepare_command_program(const CommandProgramExecutionCont
         return prepared;
     }
 
-    prepare_command_list(context, resolved.initialization_commands, prepared.initialization_commands, prepared.status);
-    prepare_command_list(context, resolved.commands, prepared.commands, prepared.status);
+    std::vector<KernelExecutableRef> initialization_executable_refs;
+    std::vector<KernelExecutableRef> command_executable_refs;
+    prepare_command_list(context, resolved.initialization_commands, prepared.initialization_commands,
+                         initialization_executable_refs, prepared.status);
+    prepare_command_list(context, resolved.commands, prepared.commands, command_executable_refs, prepared.status);
+    materialize_command_list_executables(context, prepared.initialization_commands, initialization_executable_refs,
+                                         prepared.status);
+    materialize_command_list_executables(context, prepared.commands, command_executable_refs, prepared.status);
     prepared.bound_transient_arena_allocation_id = transient_allocation.allocation_id;
     if (prepared.status.success()) {
         prepared.status.append(prepare_program_constant_buffers(context, commands, prepared));

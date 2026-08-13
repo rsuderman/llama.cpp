@@ -8,7 +8,6 @@
 #include <limits>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 
 namespace ggml::hrx {
@@ -205,95 +204,115 @@ static void verify_command_list(const std::vector<Command> & commands,
     }
 }
 
-struct CommandProgramTransientLifetime {
-    uint32_t first_use = 0;
-    uint32_t last_use  = 0;
+struct VerifyTransientLifetime {
+    bool     reserved      = false;
+    bool     has_lifetime  = false;
+    uint32_t first_command = 0;
+    uint32_t last_command  = 0;
 };
 
-static bool transient_allocation_overlaps_region(const TransientAllocation & allocation,
-                                                 size_t                      region_offset,
-                                                 size_t                      region_size) {
-    if (region_size == 0) {
+static size_t saturated_range_end(size_t offset, size_t size) {
+    if (offset > std::numeric_limits<size_t>::max() - size) {
+        return std::numeric_limits<size_t>::max();
+    }
+    return offset + size;
+}
+
+static bool allocation_overlaps_region(const TransientAllocation & allocation, size_t offset, size_t size) {
+    if (size == 0) {
         return false;
     }
-    return allocation.arena_offset < region_offset + region_size &&
-           region_offset < allocation.arena_offset + allocation.size;
+    return allocation.arena_offset < saturated_range_end(offset, size) &&
+           offset < saturated_range_end(allocation.arena_offset, allocation.size);
 }
 
-static void record_transient_lifetime(std::unordered_map<int32_t, CommandProgramTransientLifetime> & lifetimes,
-                                      const CommandBinding &                                         binding,
-                                      uint32_t                                                       ordinal) {
-    const int32_t key   = binding.value.value;
-    const auto    found = lifetimes.find(key);
-    if (found == lifetimes.end()) {
-        lifetimes.emplace(key, CommandProgramTransientLifetime{ ordinal, ordinal });
-        return;
-    }
-    found->second.first_use = std::min(found->second.first_use, ordinal);
-    found->second.last_use  = std::max(found->second.last_use, ordinal);
-}
-
-static std::unordered_map<int32_t, CommandProgramTransientLifetime> collect_command_program_transient_lifetimes(
+static std::unordered_map<int32_t, VerifyTransientLifetime> collect_verify_transient_lifetimes(
     const CommandProgram & program) {
-    std::unordered_map<int32_t, CommandProgramTransientLifetime> lifetimes;
+    std::unordered_map<int32_t, VerifyTransientLifetime> lifetimes;
     lifetimes.reserve(program.transients.allocations.size());
-    for (const Command & command : program.commands) {
+    for (const TransientAllocation & allocation : program.transients.allocations) {
+        VerifyTransientLifetime & lifetime = lifetimes[allocation.value.value];
+        if (allocation_overlaps_region(allocation, program.completion_counters.arena_offset,
+                                       program.completion_counters.byte_count)) {
+            lifetime.reserved = true;
+        }
+    }
+    for (const Command & command : program.initialization_commands) {
         for (const CommandBinding & binding : command.bindings) {
             if (binding.origin == CommandBindingOrigin::Transient) {
-                record_transient_lifetime(lifetimes, binding, command.ordinal);
+                lifetimes[binding.value.value].reserved = true;
+            }
+        }
+    }
+    for (const ConstantInitialization & initialization : program.constant_initializations) {
+        lifetimes[initialization.value.value].reserved = true;
+    }
+    for (const Command & command : program.commands) {
+        for (const CommandBinding & binding : command.bindings) {
+            if (binding.origin != CommandBindingOrigin::Transient) {
+                continue;
+            }
+            VerifyTransientLifetime & lifetime = lifetimes[binding.value.value];
+            if (lifetime.has_lifetime) {
+                lifetime.first_command = std::min(lifetime.first_command, command.ordinal);
+                lifetime.last_command  = std::max(lifetime.last_command, command.ordinal);
+            } else {
+                lifetime.has_lifetime  = true;
+                lifetime.first_command = command.ordinal;
+                lifetime.last_command  = command.ordinal;
             }
         }
     }
     return lifetimes;
 }
 
-static std::unordered_set<int32_t> collect_reserved_lifetime_transients(const CommandProgram & program) {
-    std::unordered_set<int32_t> reserved;
-    for (const Command & command : program.initialization_commands) {
-        for (const CommandBinding & binding : command.bindings) {
-            if (binding.origin == CommandBindingOrigin::Transient) {
-                reserved.insert(binding.value.value);
+static bool verify_transient_allocations_can_overlap(
+    const std::unordered_map<int32_t, VerifyTransientLifetime> & lifetimes,
+    const TransientAllocation &                                  lhs,
+    const TransientAllocation &                                  rhs) {
+    const auto lhs_lifetime = lifetimes.find(lhs.value.value);
+    const auto rhs_lifetime = lifetimes.find(rhs.value.value);
+    if (lhs_lifetime == lifetimes.end() || rhs_lifetime == lifetimes.end() || lhs_lifetime->second.reserved ||
+        rhs_lifetime->second.reserved || !lhs_lifetime->second.has_lifetime || !rhs_lifetime->second.has_lifetime) {
+        return false;
+    }
+    return lhs_lifetime->second.last_command < rhs_lifetime->second.first_command ||
+           rhs_lifetime->second.last_command < lhs_lifetime->second.first_command;
+}
+
+static void verify_transient_allocations(const CommandProgram & program, Status & status) {
+    const std::unordered_map<int32_t, VerifyTransientLifetime> lifetimes = collect_verify_transient_lifetimes(program);
+    std::vector<const TransientAllocation *>                   allocations_by_offset;
+    allocations_by_offset.reserve(program.transients.allocations.size());
+    for (const TransientAllocation & allocation : program.transients.allocations) {
+        if (allocation.value.value < 0 || allocation.size == 0 || allocation.alignment == 0 ||
+            allocation.arena_offset % allocation.alignment != 0 ||
+            allocation.arena_offset > std::numeric_limits<size_t>::max() - allocation.size ||
+            allocation.arena_offset + allocation.size > program.transients.arena_size) {
+            status.log("invalid transient allocation for value %d", allocation.value.value);
+        }
+        allocations_by_offset.push_back(&allocation);
+    }
+    std::sort(allocations_by_offset.begin(), allocations_by_offset.end(),
+              [](const TransientAllocation * lhs, const TransientAllocation * rhs) {
+                  if (lhs->arena_offset != rhs->arena_offset) {
+                      return lhs->arena_offset < rhs->arena_offset;
+                  }
+                  return lhs->value.value < rhs->value.value;
+              });
+    for (size_t i = 0; i < allocations_by_offset.size(); ++i) {
+        const TransientAllocation & allocation = *allocations_by_offset[i];
+        const size_t                end        = saturated_range_end(allocation.arena_offset, allocation.size);
+        for (size_t j = i + 1; j < allocations_by_offset.size(); ++j) {
+            const TransientAllocation & other = *allocations_by_offset[j];
+            if (other.arena_offset >= end) {
+                break;
+            }
+            if (!verify_transient_allocations_can_overlap(lifetimes, allocation, other)) {
+                status.log("transient allocations overlap");
             }
         }
     }
-    for (const ConstantInitialization & initialization : program.constant_initializations) {
-        reserved.insert(initialization.value.value);
-    }
-    return reserved;
-}
-
-static bool allocation_has_reserved_lifetime(const CommandProgram &              program,
-                                             const std::unordered_set<int32_t> & reserved,
-                                             const TransientAllocation &         allocation) {
-    return transient_allocation_overlaps_region(allocation, program.completion_counters.arena_offset,
-                                                program.completion_counters.byte_count) ||
-           reserved.find(allocation.value.value) != reserved.end();
-}
-
-static bool allocation_lifetimes_disjoint(
-    const std::unordered_map<int32_t, CommandProgramTransientLifetime> & lifetimes,
-    const TransientAllocation &                                          lhs,
-    const TransientAllocation &                                          rhs) {
-    const auto lhs_lifetime = lifetimes.find(lhs.value.value);
-    const auto rhs_lifetime = lifetimes.find(rhs.value.value);
-    if (lhs_lifetime == lifetimes.end() || rhs_lifetime == lifetimes.end()) {
-        return false;
-    }
-    return lhs_lifetime->second.last_use < rhs_lifetime->second.first_use ||
-           rhs_lifetime->second.last_use < lhs_lifetime->second.first_use;
-}
-
-static bool transient_allocations_can_overlap(
-    const CommandProgram &                                               program,
-    const std::unordered_set<int32_t> &                                  reserved,
-    const std::unordered_map<int32_t, CommandProgramTransientLifetime> & lifetimes,
-    const TransientAllocation &                                          lhs,
-    const TransientAllocation &                                          rhs) {
-    if (allocation_has_reserved_lifetime(program, reserved, lhs) ||
-        allocation_has_reserved_lifetime(program, reserved, rhs)) {
-        return false;
-    }
-    return allocation_lifetimes_disjoint(lifetimes, lhs, rhs);
 }
 
 }  // namespace
@@ -367,29 +386,7 @@ VerificationResult verify_command_program(const CommandProgram & program,
             result.status.log("completion counter region is outside transient arena");
         }
     }
-    const std::unordered_set<int32_t> reserved_transients = collect_reserved_lifetime_transients(program);
-    const std::unordered_map<int32_t, CommandProgramTransientLifetime> transient_lifetimes =
-        collect_command_program_transient_lifetimes(program);
-    for (const TransientAllocation & allocation : program.transients.allocations) {
-        if (allocation.value.value < 0 || allocation.size == 0 || allocation.alignment == 0 ||
-            allocation.arena_offset % allocation.alignment != 0 ||
-            allocation.arena_offset + allocation.size > program.transients.arena_size) {
-            result.status.log("invalid transient allocation for value %d", allocation.value.value);
-        }
-        for (const TransientAllocation & other : program.transients.allocations) {
-            if (allocation.value.value >= other.value.value) {
-                continue;
-            }
-            const bool overlap = allocation.arena_offset < other.arena_offset + other.size &&
-                                 other.arena_offset < allocation.arena_offset + allocation.size;
-            if (overlap) {
-                if (!transient_allocations_can_overlap(program, reserved_transients, transient_lifetimes, allocation,
-                                                       other)) {
-                    result.status.log("transient allocations overlap");
-                }
-            }
-        }
-    }
+    verify_transient_allocations(program, result.status);
     for (const ConstantInitialization & initialization : program.constant_initializations) {
         const TransientAllocation * allocation = find_transient_allocation(program.transients, initialization.value);
         if (allocation == nullptr) {

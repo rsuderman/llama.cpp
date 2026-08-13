@@ -21,12 +21,16 @@
 #include "runtime/graph-executor.h"
 #include "runtime/graph-program-cache.h"
 #include "runtime/graph-replay.h"
+#include "runtime/loom-kernel-jit.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <utility>
@@ -63,6 +67,13 @@ static bool contains_value_id(const std::vector<ggml::hrx::ValueId> & ids, ggml:
 
 static bool command_program_verifies(const ggml::hrx::CommandProgram & program) {
     return ggml::hrx::verify_command_program(program, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151").valid();
+}
+
+static bool async_jit_expected_from_environment() {
+    const char * value = std::getenv("GGML_HRX_ASYNC_JIT");
+    return value == nullptr ||
+           (std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0 && std::strcmp(value, "FALSE") != 0 &&
+            std::strcmp(value, "off") != 0 && std::strcmp(value, "OFF") != 0);
 }
 
 static ggml::hrx::CommandProgram copy_command_program_shape(const ggml::hrx::CommandProgram & program) {
@@ -889,10 +900,9 @@ static void run_graph_import_checks() {
     REQUIRE(!verification.valid());
     REQUIRE(status_contains(verification.status, "access=Write"));
 
-    ggml_hrx_loom_jit_amdgpu *                      jit             = nullptr;
     const ggml::hrx::KernelCorpus &                 corpus          = ggml::hrx::get_qwen_kernel_corpus();
     const ggml::hrx::CommandProgramExecutionContext prepare_context = {
-        nullptr, nullptr, "gfx1151", &corpus, &jit, nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, "gfx1151", &corpus, nullptr, nullptr, nullptr, nullptr,
     };
 
     ggml::hrx::PreparedCommandProgram prepared =
@@ -907,6 +917,13 @@ static void run_graph_import_checks() {
     prepared = ggml::hrx::prepare_command_program(prepare_context, commands, runtime_bindings);
     REQUIRE(!prepared.valid());
     REQUIRE(status_contains(prepared.status, "missing HRX device"));
+
+    const ggml::hrx::CommandProgramExecutionContext missing_kernel_cache_context = {
+        reinterpret_cast<hrx_device_t>(uintptr_t(1)), nullptr, "gfx1151", &corpus, nullptr, nullptr, nullptr, nullptr,
+    };
+    prepared = ggml::hrx::prepare_command_program(missing_kernel_cache_context, commands, runtime_bindings);
+    REQUIRE(!prepared.valid());
+    REQUIRE(status_contains(prepared.status, "missing HRX kernel executable cache"));
 
     ggml_free(ctx);
 }
@@ -3913,7 +3930,7 @@ static void run_chained_dispatch_requires_transients() {
     REQUIRE(prepared_shape.commands[1].kernel.bindings[0].ref.buffer == dummy_hrx_buffer(0x9000));
 
     prepared_shape.commands[1].kernel.bindings[0].binding.origin = ggml::hrx::CommandBindingOrigin::ProgramConstant;
-    prepared_shape.commands[1].kernel.bindings[0].ref            = { dummy_hrx_buffer(0xb000), 32, sum_value->byte_count };
+    prepared_shape.commands[1].kernel.bindings[0].ref = { dummy_hrx_buffer(0xb000), 32, sum_value->byte_count };
     const ggml::hrx::TransientArenaAllocationRef rebinding_transient_arena = {
         dummy_hrx_buffer(0xc000),
         commands.transients.arena_size + 512,
@@ -4389,7 +4406,6 @@ static void run_qwen_expert_table_partition_prefill_512_execution() {
         backend_context->stream,
         target,
         &corpus,
-        &backend_context->jit,
         &backend_context->kernel_executables,
         &backend_context->transient_arena,
         &backend_context->host_transfers,
@@ -4826,6 +4842,7 @@ int main() {
     run_disjoint_transient_plan_packing_checks();
     run_graph_program_cache_uid_mismatch_checks();
     run_graph_executor_contract_checks();
+    REQUIRE(ggml::hrx::loom_async_jit_enabled_from_environment() == async_jit_expected_from_environment());
 
     if (ggml_backend_hrx_get_device_count() == 0) {
         std::fprintf(stderr, "test skipped: no HRX devices available\n");

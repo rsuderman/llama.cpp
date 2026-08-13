@@ -175,6 +175,8 @@ ggml_add_backend_library(ggml-hrx
     runtime/host-memory.h
     runtime/kernel-executable-cache.cpp
     runtime/kernel-executable-cache.h
+    runtime/loom-kernel-jit.cpp
+    runtime/loom-kernel-jit.h
     runtime/prepared-command-program-cache.cpp
     runtime/prepared-command-program-cache.h
     runtime/transient-arena.cpp

@@ -300,9 +300,6 @@ static void backend_free(ggml_backend_t backend) {
     context->transient_arena.clear();
     context->host_weights.clear();
     context->host_transfers.clear();
-    if (context->jit != nullptr) {
-        ggml_hrx_loom_jit_amdgpu_release(context->jit);
-    }
     hrx_stream_release(context->stream);
     delete context;
     delete backend;

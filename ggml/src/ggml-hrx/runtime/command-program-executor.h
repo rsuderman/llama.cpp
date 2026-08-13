@@ -12,10 +12,10 @@
 #include <string>
 #include <vector>
 
-typedef struct hrx_device_s * hrx_device_t;
-typedef struct hrx_stream_s * hrx_stream_t;
-typedef struct hrx_buffer_s * hrx_buffer_t;
-typedef struct hrx_graph_s * hrx_graph_t;
+typedef struct hrx_device_s *     hrx_device_t;
+typedef struct hrx_stream_s *     hrx_stream_t;
+typedef struct hrx_buffer_s *     hrx_buffer_t;
+typedef struct hrx_graph_s *      hrx_graph_t;
 typedef struct hrx_graph_exec_s * hrx_graph_exec_t;
 struct ggml_hrx_loom_jit_amdgpu;
 
@@ -26,15 +26,14 @@ struct KernelExecutable;
 class TransientArena;
 
 struct CommandProgramExecutionContext {
-    hrx_device_t                device             = nullptr;
-    hrx_stream_t                stream             = nullptr;
-    const char *                target             = nullptr;
-    const KernelCorpus *        corpus             = nullptr;
-    ggml_hrx_loom_jit_amdgpu ** jit                = nullptr;
-    KernelExecutableCache *     kernel_executables = nullptr;
-    TransientArena *            transient_arena    = nullptr;
-    HostTransferManager *       host_transfers     = nullptr;
-    HostWeightCache *           host_weights       = nullptr;
+    hrx_device_t            device             = nullptr;
+    hrx_stream_t            stream             = nullptr;
+    const char *            target             = nullptr;
+    const KernelCorpus *    corpus             = nullptr;
+    KernelExecutableCache * kernel_executables = nullptr;
+    TransientArena *        transient_arena    = nullptr;
+    HostTransferManager *   host_transfers     = nullptr;
+    HostWeightCache *       host_weights       = nullptr;
 };
 
 struct PreparedCommandBinding {
@@ -72,22 +71,22 @@ struct PreparedProgramConstantBuffer {
 };
 
 struct PreparedCommandProgram {
-    std::vector<PreparedCommand>   initialization_commands;
-    std::vector<PreparedCommand>   commands;
-    std::vector<HostStagingBuffer> host_staging;
-    std::vector<HostWeightLease>   resident_host_weights;
+    std::vector<PreparedCommand>               initialization_commands;
+    std::vector<PreparedCommand>               commands;
+    std::vector<HostStagingBuffer>             host_staging;
+    std::vector<HostWeightLease>               resident_host_weights;
     std::vector<PreparedProgramConstantBuffer> program_constants;
-    Status                         status;
-    uint64_t                       bound_transient_arena_allocation_id = kInvalidTransientArenaAllocationId;
+    Status                                     status;
+    uint64_t                                   bound_transient_arena_allocation_id = kInvalidTransientArenaAllocationId;
 
     bool valid() const { return status.success(); }
 };
 
 struct RecordedCommandGraph {
-    hrx_graph_t      graph = nullptr;
-    hrx_graph_exec_t exec  = nullptr;
+    hrx_graph_t      graph                               = nullptr;
+    hrx_graph_exec_t exec                                = nullptr;
     uint64_t         bound_transient_arena_allocation_id = kInvalidTransientArenaAllocationId;
-    size_t           dispatch_count = 0;
+    size_t           dispatch_count                      = 0;
     Status           status;
 
     RecordedCommandGraph() = default;
@@ -107,10 +106,10 @@ struct RecordedCommandGraphExecutionResult {
     Status              status;
     HrxGraphReplayEvent event = HrxGraphReplayEvent::Disabled;
     std::string         ineligible_reason;
-    size_t              dispatch_count = 0;
+    size_t              dispatch_count               = 0;
     bool                transient_allocation_changed = false;
-    uint64_t            build_ns = 0;
-    uint64_t            launch_ns = 0;
+    uint64_t            build_ns                     = 0;
+    uint64_t            launch_ns                    = 0;
 
     uint64_t total_ns() const { return build_ns + launch_ns; }
 };
