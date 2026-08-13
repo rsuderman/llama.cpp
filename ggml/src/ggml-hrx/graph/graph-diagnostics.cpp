@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <stdexcept>
@@ -179,7 +180,10 @@ OpParams parse_op_params(const json & item) {
             item.value("order", static_cast<int>(GGML_SORT_ORDER_ASC))) };
     }
     if (kind == "clamp") {
-        return ClampParams{ item.value("min", 0.0f), item.value("max", 0.0f) };
+        const float min = item.contains("min") && !item["min"].is_null() ? item["min"].get<float>() : 0.0f;
+        const float max = item.contains("max") && !item["max"].is_null() ? item["max"].get<float>() :
+                                                                           std::numeric_limits<float>::infinity();
+        return ClampParams{ min, max };
     }
     if (kind == "glu") {
         return GluParams{ static_cast<ggml_glu_op>(item.value("op", static_cast<int>(GGML_GLU_OP_REGLU))) };

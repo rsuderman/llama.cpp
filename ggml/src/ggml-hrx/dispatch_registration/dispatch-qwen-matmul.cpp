@@ -111,6 +111,23 @@ struct QwenAttentionOutputNextQ8Match {
     }
 };
 
+struct QwenAttentionOutputAccumulateMatch {
+    const Value *     input             = nullptr;
+    const Value *     weight            = nullptr;
+    const Value *     projection_output = nullptr;
+    const Value *     residual_input    = nullptr;
+    const Value *     residual_output   = nullptr;
+    const GraphNode * add_node          = nullptr;
+    int64_t           input_size        = 0;
+    int64_t           output_size       = 0;
+    int64_t           token_count       = 0;
+
+    bool matched() const {
+        return input != nullptr && weight != nullptr && projection_output != nullptr && residual_input != nullptr &&
+               residual_output != nullptr && add_node != nullptr;
+    }
+};
+
 static size_t q8_1_x4_byte_count(int64_t token_count, int64_t input_size) {
     if (token_count <= 0 || input_size <= 0) {
         return 0;
@@ -414,6 +431,65 @@ static QwenAttentionOutputNextQ8Match match_qwen_attention_output_next_q8(const 
     return match;
 }
 
+static QwenAttentionOutputAccumulateMatch match_qwen_attention_output_accumulate(const DispatchMatchContext & context) {
+    QwenAttentionOutputAccumulateMatch match;
+    const Graph &                      graph = context.graph;
+    const GraphNode *                  node  = context.root_node;
+    if (node == nullptr || node->op != GGML_OP_MUL_MAT || node->inputs.size() != 2 || !graph.has_index()) {
+        return match;
+    }
+
+    const Value * weight            = graph_value(graph, node->inputs[0]);
+    const Value * input             = graph_value(graph, node->inputs[1]);
+    const Value * projection_output = graph_value(graph, node->output);
+    if (weight == nullptr || input == nullptr || projection_output == nullptr || !is_2d(*weight) || !is_2d(*input) ||
+        !is_2d(*projection_output)) {
+        return {};
+    }
+    if (weight->type != GGML_TYPE_Q4_K || input->type != GGML_TYPE_F32 || projection_output->type != GGML_TYPE_F32 ||
+        !weight->contiguous || !input->contiguous || !projection_output->contiguous) {
+        return {};
+    }
+
+    const int64_t input_size  = weight->ne[0];
+    const int64_t output_size = weight->ne[1];
+    const int64_t token_count = input->ne[1];
+    if (!is_qwen_prefill_query_length(token_count) || input->ne[0] != input_size ||
+        projection_output->ne[0] != output_size || projection_output->ne[1] != token_count || input_size != 4096 ||
+        output_size != kQwenHiddenSize) {
+        return {};
+    }
+
+    const GraphNode * add_node = find_single_consumer_with_op(graph, projection_output->id, GGML_OP_ADD);
+    if (add_node == nullptr || add_node->inputs.size() != 2) {
+        return {};
+    }
+    const Value * residual_input = nullptr;
+    if (add_node->inputs[0] == projection_output->id) {
+        residual_input = graph_value(graph, add_node->inputs[1]);
+    } else if (add_node->inputs[1] == projection_output->id) {
+        residual_input = graph_value(graph, add_node->inputs[0]);
+    }
+    const Value * residual_output = graph_value(graph, add_node->output);
+    if (residual_input == nullptr || residual_output == nullptr || residual_input->type != GGML_TYPE_F32 ||
+        residual_output->type != GGML_TYPE_F32 || !same_value_layout(*projection_output, *residual_input) ||
+        !same_value_layout(*projection_output, *residual_output) ||
+        !value_has_no_uncovered_consumers_except(context, residual_input->id, add_node)) {
+        return {};
+    }
+
+    match.input             = input;
+    match.weight            = weight;
+    match.projection_output = projection_output;
+    match.residual_input    = residual_input;
+    match.residual_output   = residual_output;
+    match.add_node          = add_node;
+    match.input_size        = input_size;
+    match.output_size       = output_size;
+    match.token_count       = token_count;
+    return match;
+}
+
 }  // namespace
 
 static void build_qwen_matmul_dispatch(const QwenMatmulMatch & match,
@@ -554,6 +630,37 @@ static bool match_qwen_attention_output_next_q8_dispatch(const DispatchMatchCont
     return true;
 }
 
+static bool match_qwen_attention_output_accumulate_dispatch(const DispatchMatchContext & context,
+                                                            DispatchMatch &              dispatch_match) {
+    const QwenAttentionOutputAccumulateMatch match = match_qwen_attention_output_accumulate(context);
+    if (!match.matched()) {
+        return false;
+    }
+
+    Dispatch dispatch;
+    dispatch.kernel = make_kernel_specialization(kQwenDenseLinearQ4KF16WmmaKernel);
+    dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.dense_quantized.input_size",
+                                               to_config_value(match.input_size));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.dense_quantized.output_size",
+                                               to_config_value(match.output_size));
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.dense_quantized.output_accumulation", "1");
+    dispatch.kernel.compile_parameters.emplace("qwen3_moe.workload.token_capacity", to_config_value(match.token_count));
+    dispatch.bindings.push_back({ match.input->id, 0, match.input->byte_count });
+    dispatch.bindings.push_back({ match.weight->id, 0, match.weight->byte_count });
+    dispatch.bindings.push_back({ match.residual_output->id, 0, match.residual_output->byte_count });
+
+    dispatch_match.value_aliases.push_back({ match.residual_input->id, match.residual_output->id });
+    if (!append_covered_node_index_once(context.graph, context.covered_nodes, context.root_node,
+                                        dispatch_match.covered_nodes) ||
+        !append_covered_node_index_once(context.graph, context.covered_nodes, match.add_node,
+                                        dispatch_match.covered_nodes)) {
+        return false;
+    }
+    dispatch_match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
+
 void register_qwen_matmul_dispatches(DispatchRegistryBuilder & registry) {
     registry.add({
         "qwen.matmul.attention_output_q4k_q8_1_x4_next_q8",
@@ -562,6 +669,14 @@ void register_qwen_matmul_dispatches(DispatchRegistryBuilder & registry) {
         300,
         DispatchSource::Qwen,
         match_qwen_attention_output_next_q8_dispatch,
+    });
+    registry.add({
+        "qwen.matmul.attention_output_q4k_f16_accumulate",
+        GGML_OP_MUL_MAT,
+        DispatchMatchKind::Fused,
+        250,
+        DispatchSource::Qwen,
+        match_qwen_attention_output_accumulate_dispatch,
     });
     registry.add({
         "qwen.matmul.q6k_q8_1_x4",
