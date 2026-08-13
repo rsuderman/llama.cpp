@@ -128,6 +128,8 @@ ggml_add_backend_library(ggml-hrx
     dispatch/dispatch-scheduler.cpp
     dispatch/dispatch-scheduler.h
     dispatch/dispatch.h
+    dispatch/transient-allocator.cpp
+    dispatch/transient-allocator.h
     dispatch_registration/dispatch-add.cpp
     dispatch_registration/dispatch-add.h
     dispatch_registration/dispatch-gather-add.cpp

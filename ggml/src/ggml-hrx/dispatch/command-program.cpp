@@ -1,6 +1,7 @@
 #include "command-program.h"
 
 #include "command-program-diagnostics.h"
+#include "transient-allocator.h"
 
 #include <algorithm>
 #include <cstring>
@@ -19,10 +20,6 @@ static std::string string_value(const char * value) {
     return value != nullptr ? value : "";
 }
 
-static size_t align_up(size_t value, size_t alignment) {
-    return alignment == 0 ? value : (value + alignment - 1) / alignment * alignment;
-}
-
 static CommandBindingOrigin command_binding_origin(const Graph & graph, const Value & value) {
     if (value.kind == ValueKind::External) {
         return CommandBindingOrigin::GraphValue;
@@ -36,11 +33,6 @@ static CommandBindingOrigin command_binding_origin(const Graph & graph, const Va
     }
     return CommandBindingOrigin::GraphValue;
 }
-
-struct TransientAllocationRequest {
-    ValueId value;
-    size_t  required_size = 0;
-};
 
 struct StorageBindingTarget {
     ValueId value;
@@ -75,142 +67,6 @@ static const CommandPlanCompletionCounterRequest * find_plan_completion_counter_
         std::find_if(plan.completion_counter_requests.begin(), plan.completion_counter_requests.end(),
                      [&](const CommandPlanCompletionCounterRequest & request) { return request.value == value; });
     return found == plan.completion_counter_requests.end() ? nullptr : &*found;
-}
-
-static void add_transient_allocation_request(std::vector<TransientAllocationRequest> & requests,
-                                             ValueId                                   value,
-                                             size_t                                    required_size) {
-    for (TransientAllocationRequest & request : requests) {
-        if (request.value == value) {
-            request.required_size = std::max(request.required_size, required_size);
-            return;
-        }
-    }
-    requests.push_back({ value, required_size });
-}
-
-static const TransientAllocationRequest * find_transient_allocation_request(
-    const std::vector<TransientAllocationRequest> & requests,
-    ValueId                                         value) {
-    const auto found = std::find_if(requests.begin(), requests.end(),
-                                    [&](const TransientAllocationRequest & request) { return request.value == value; });
-    return found == requests.end() ? nullptr : &*found;
-}
-
-static void add_transient_allocation(const Graph &                      graph,
-                                     const CommandPlan &                command_plan,
-                                     const TransientAllocationRequest & request,
-                                     TransientPlan &                    plan,
-                                     Status &                           errors) {
-    const Value *                graph_value    = graph.values().find(request.value);
-    const CommandPlanTransient * plan_transient = find_plan_transient(command_plan, request.value);
-    if (graph_value == nullptr && plan_transient == nullptr) {
-        errors.log("transient value %d is missing from graph values and command plan transients", request.value.value);
-        return;
-    }
-    if (graph_value != nullptr && graph_value->kind != ValueKind::Transient) {
-        errors.log("transient value %d aliases a non-transient graph value", request.value.value);
-        return;
-    }
-
-    TransientAllocation allocation;
-    allocation.value = request.value;
-    allocation.size =
-        std::max(graph_value != nullptr ? graph_value->byte_count : plan_transient->size, request.required_size);
-    allocation.alignment    = plan_transient != nullptr ? plan_transient->alignment : 256;
-    allocation.arena_offset = align_up(plan.arena_size, allocation.alignment);
-    plan.arena_size         = allocation.arena_offset + allocation.size;
-    plan.allocations.push_back(allocation);
-}
-
-static void add_completion_counter_allocations(const CommandPlan &                             command_plan,
-                                               const std::vector<TransientAllocationRequest> & binding_requests,
-                                               TransientPlan &                                 plan,
-                                               CompletionCounterPlan &                         completion_counters,
-                                               Status &                                        errors) {
-    for (size_t i = 0; i < command_plan.completion_counter_requests.size(); ++i) {
-        const CommandPlanCompletionCounterRequest & request = command_plan.completion_counter_requests[i];
-        if (request.value.value < 0) {
-            errors.log("completion counter request %s has invalid value %d", request.name.c_str(), request.value.value);
-            continue;
-        }
-        if (request.count == 0) {
-            errors.log("completion counter request %s has zero counters", request.name.c_str());
-            continue;
-        }
-        for (size_t j = i + 1; j < command_plan.completion_counter_requests.size(); ++j) {
-            if (request.value == command_plan.completion_counter_requests[j].value) {
-                errors.log("duplicate completion counter request value %d", request.value.value);
-            }
-        }
-        const size_t                       byte_count = static_cast<size_t>(request.count) * sizeof(int32_t);
-        const TransientAllocationRequest * binding_request =
-            find_transient_allocation_request(binding_requests, request.value);
-        if (binding_request != nullptr && binding_request->required_size > byte_count) {
-            errors.log("completion counter request %s requires %zu bytes but binding uses %zu bytes",
-                       request.name.c_str(), byte_count, binding_request->required_size);
-            continue;
-        }
-        if (completion_counters.count > std::numeric_limits<uint32_t>::max() - request.count) {
-            errors.log("completion counter count overflows");
-            continue;
-        }
-
-        TransientAllocation allocation;
-        allocation.value        = request.value;
-        allocation.size         = byte_count;
-        allocation.alignment    = 16;
-        allocation.arena_offset = align_up(plan.arena_size, allocation.alignment);
-        if (completion_counters.byte_count == 0) {
-            completion_counters.arena_offset = allocation.arena_offset;
-        }
-        plan.arena_size = allocation.arena_offset + allocation.size;
-        completion_counters.byte_count =
-            plan.arena_size > completion_counters.arena_offset ? plan.arena_size - completion_counters.arena_offset : 0;
-        completion_counters.count += request.count;
-        plan.allocations.push_back(allocation);
-    }
-}
-
-static TransientPlan build_transient_plan(const Graph &                graph,
-                                          const CommandPlan &          command_plan,
-                                          const std::vector<Command> & initialization_commands,
-                                          const std::vector<Command> & commands,
-                                          CompletionCounterPlan &      completion_counters,
-                                          Status &                     errors) {
-    TransientPlan plan;
-    plan.arena_alignment = 256;
-    std::vector<TransientAllocationRequest> transient_requests;
-    std::vector<TransientAllocationRequest> completion_counter_binding_requests;
-    auto                                    append_command_bindings = [&](const std::vector<Command> & command_list) {
-        for (const Command & command : command_list) {
-            for (const CommandBinding & binding : command.bindings) {
-                if (binding.origin != CommandBindingOrigin::Transient) {
-                    continue;
-                }
-                if (binding.offset > std::numeric_limits<size_t>::max() - binding.length) {
-                    errors.log("transient value %d binding range overflows", binding.value.value);
-                    continue;
-                }
-                if (find_plan_completion_counter_request(command_plan, binding.value) != nullptr) {
-                    add_transient_allocation_request(completion_counter_binding_requests, binding.value,
-                                                                                        binding.offset + binding.length);
-                } else {
-                    add_transient_allocation_request(transient_requests, binding.value,
-                                                                                        binding.offset + binding.length);
-                }
-            }
-        }
-    };
-    append_command_bindings(initialization_commands);
-    append_command_bindings(commands);
-    add_completion_counter_allocations(command_plan, completion_counter_binding_requests, plan, completion_counters,
-                                       errors);
-    for (const TransientAllocationRequest & request : transient_requests) {
-        add_transient_allocation(graph, command_plan, request, plan, errors);
-    }
-    plan.arena_size = align_up(plan.arena_size, plan.arena_alignment);
-    return plan;
 }
 
 static void append_command(const Graph &          graph,
@@ -372,8 +228,8 @@ CommandProgram build_command_program(const Graph &        graph,
     for (const Dispatch & dispatch : plan.dispatches) {
         append_command(graph, plan, corpus, target, dispatch, true, result.commands, result.status);
     }
-    result.transients = build_transient_plan(graph, plan, result.initialization_commands, result.commands,
-                                             result.completion_counters, result.status);
+    result.transients = TransientAllocator::allocate(graph, plan, result.initialization_commands, result.commands,
+                                                     result.completion_counters, result.status);
     result.constant_initializations.reserve(plan.constant_initializations.size());
     for (const CommandPlanConstantInitialization & initialization : plan.constant_initializations) {
         result.constant_initializations.push_back({
@@ -431,7 +287,9 @@ VerificationResult verify_command_program(const CommandProgram & program,
             const bool overlap = allocation.arena_offset < other.arena_offset + other.size &&
                                  other.arena_offset < allocation.arena_offset + allocation.size;
             if (overlap) {
-                result.status.log("transient allocations overlap");
+                if (!TransientAllocator::allocations_can_overlap(program, allocation, other)) {
+                    result.status.log("transient allocations overlap");
+                }
             }
         }
     }

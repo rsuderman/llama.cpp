@@ -3981,6 +3981,91 @@ static void run_multiple_transient_plan_checks() {
     REQUIRE(sum0_allocation->arena_offset % 256 == 0);
     REQUIRE(sum1_allocation->arena_offset % 256 == 0);
 
+    ggml::hrx::CommandProgram        overlapping_live_transients = copy_command_program_shape(commands);
+    ggml::hrx::TransientAllocation * overlapping_sum0            = nullptr;
+    ggml::hrx::TransientAllocation * overlapping_sum1            = nullptr;
+    for (ggml::hrx::TransientAllocation & allocation : overlapping_live_transients.transients.allocations) {
+        if (allocation.value == sum0_value->id) {
+            overlapping_sum0 = &allocation;
+        } else if (allocation.value == sum1_value->id) {
+            overlapping_sum1 = &allocation;
+        }
+    }
+    REQUIRE(overlapping_sum0 != nullptr);
+    REQUIRE(overlapping_sum1 != nullptr);
+    overlapping_sum1->arena_offset = overlapping_sum0->arena_offset;
+    ggml::hrx::VerificationResult verification =
+        ggml::hrx::verify_command_program(overlapping_live_transients, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(!verification.valid());
+    REQUIRE(status_contains(verification.status, "transient allocations overlap"));
+
+    ggml_free(ctx);
+}
+
+static void run_disjoint_transient_plan_packing_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 256 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * a    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * b    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * c    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * d    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * e    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * f    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    ggml_tensor * sum0 = ggml_add(ctx, a, b);
+    ggml_tensor * out0 = ggml_add(ctx, sum0, c);
+    ggml_tensor * sum1 = ggml_add(ctx, d, e);
+    ggml_tensor * out1 = ggml_add(ctx, sum1, f);
+    REQUIRE(a != nullptr);
+    REQUIRE(b != nullptr);
+    REQUIRE(c != nullptr);
+    REQUIRE(d != nullptr);
+    REQUIRE(e != nullptr);
+    REQUIRE(f != nullptr);
+    REQUIRE(sum0 != nullptr);
+    REQUIRE(out0 != nullptr);
+    REQUIRE(sum1 != nullptr);
+    REQUIRE(out1 != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, out0);
+    ggml_build_forward_expand(graph, out1);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    REQUIRE(imported.graph.nodes().size() == 4);
+
+    const ggml::hrx::Value * sum0_value = imported.graph.values().find_tensor(sum0);
+    const ggml::hrx::Value * sum1_value = imported.graph.values().find_tensor(sum1);
+    REQUIRE(sum0_value != nullptr);
+    REQUIRE(sum1_value != nullptr);
+    REQUIRE(sum0_value->kind == ggml::hrx::ValueKind::Transient);
+    REQUIRE(sum1_value->kind == ggml::hrx::ValueKind::Transient);
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 4);
+
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(commands.valid());
+    REQUIRE(commands.transients.allocations.size() == 2);
+    REQUIRE(commands.transients.arena_size == 256);
+    const ggml::hrx::TransientAllocation * sum0_allocation =
+        ggml::hrx::find_transient_allocation(commands.transients, sum0_value->id);
+    const ggml::hrx::TransientAllocation * sum1_allocation =
+        ggml::hrx::find_transient_allocation(commands.transients, sum1_value->id);
+    REQUIRE(sum0_allocation != nullptr);
+    REQUIRE(sum1_allocation != nullptr);
+    REQUIRE(sum0_allocation->arena_offset == sum1_allocation->arena_offset);
+    REQUIRE(sum0_allocation->arena_offset % 256 == 0);
+    REQUIRE(command_program_verifies(commands));
+
     ggml_free(ctx);
 }
 
@@ -4666,6 +4751,7 @@ int main() {
     run_transient_import_checks();
     run_chained_dispatch_requires_transients();
     run_multiple_transient_plan_checks();
+    run_disjoint_transient_plan_packing_checks();
     run_graph_program_cache_uid_mismatch_checks();
     run_graph_executor_contract_checks();
 
