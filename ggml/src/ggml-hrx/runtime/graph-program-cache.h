@@ -97,10 +97,16 @@ class GraphProgramCache {
     void clear();
 
   private:
-    std::unique_ptr<GraphProgram> build_program(const ggml_cgraph &  graph,
-                                                const KernelCorpus & corpus,
-                                                const std::string &  target,
-                                                Status &             errors) const;
+    GraphProgramLookup build_from_imported(const ggml_cgraph &  graph,
+                                           Graph &&             imported_graph,
+                                           const KernelCorpus & corpus,
+                                           const std::string &  target);
+
+    std::unique_ptr<GraphProgram> build_program_from_imported(uint64_t             uid,
+                                                              Graph &&             imported_graph,
+                                                              const KernelCorpus & corpus,
+                                                              const std::string &  target,
+                                                              Status &             errors) const;
 
     mutable std::mutex                                          mutex_;
     std::unordered_map<uint64_t, std::unique_ptr<GraphProgram>> programs_;

@@ -3,6 +3,7 @@
 #include "dispatch/dispatch-scheduler.h"
 #include "ggml-impl.h"
 #include "ggml.h"
+#include "graph/graph-diagnostics.h"
 
 #include <cstddef>
 #include <sstream>
@@ -214,30 +215,24 @@ GraphProgramSupportResult GraphProgramCache::check_support(const ggml_cgraph &  
         result.supported = true;
         return result;
     }
-    std::unique_ptr<GraphProgram> program = build_program(graph, corpus, target, result.status);
-    result.supported                      = program != nullptr && result.status.success();
+    GraphImportResult imported = import_ggml_graph(graph);
+    if (!imported.valid()) {
+        result.status.append(imported.status);
+        return result;
+    }
+    std::unique_ptr<GraphProgram> program =
+        build_program_from_imported(graph.uid, std::move(imported.graph), corpus, target, result.status);
+    result.supported = program != nullptr && result.status.success();
     return result;
 }
 
-GraphProgramLookup GraphProgramCache::get_or_build(const ggml_cgraph &  graph,
-                                                   const KernelCorpus & corpus,
-                                                   const std::string &  target) {
-    GraphProgramLookup result;
-    if (graph.uid != 0) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto                  found = programs_.find(graph.uid);
-        if (found != programs_.end() && found->second->target() == target) {
-            GraphProgramMatch match = found->second->match_current_graph(graph);
-            if (match.valid()) {
-                result.program = found->second.get();
-                result.match   = std::move(match);
-                ++stats_.hits;
-                return result;
-            }
-        }
-    }
-
-    std::unique_ptr<GraphProgram> program = build_program(graph, corpus, target, result.status);
+GraphProgramLookup GraphProgramCache::build_from_imported(const ggml_cgraph &  graph,
+                                                          Graph &&             imported_graph,
+                                                          const KernelCorpus & corpus,
+                                                          const std::string &  target) {
+    GraphProgramLookup            result;
+    std::unique_ptr<GraphProgram> program =
+        build_program_from_imported(graph.uid, std::move(imported_graph), corpus, target, result.status);
     if (program == nullptr) {
         return result;
     }
@@ -267,6 +262,33 @@ GraphProgramLookup GraphProgramCache::get_or_build(const ggml_cgraph &  graph,
     return result;
 }
 
+GraphProgramLookup GraphProgramCache::get_or_build(const ggml_cgraph &  graph,
+                                                   const KernelCorpus & corpus,
+                                                   const std::string &  target) {
+    GraphProgramLookup result;
+    if (graph.uid != 0) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto                  found = programs_.find(graph.uid);
+        if (found != programs_.end() && found->second->target() == target) {
+            GraphProgramMatch match = found->second->match_current_graph(graph);
+            if (match.valid()) {
+                result.program = found->second.get();
+                result.match   = std::move(match);
+                ++stats_.hits;
+                return result;
+            }
+        }
+    }
+
+    GraphImportResult imported = import_ggml_graph(graph);
+    if (!imported.valid()) {
+        result.status.append(imported.status);
+        return result;
+    }
+    dump_graph_snapshot_from_environment(imported.graph, target, graph.uid);
+    return build_from_imported(graph, std::move(imported.graph), corpus, target);
+}
+
 GraphProgramCacheStats GraphProgramCache::stats() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return stats_;
@@ -277,29 +299,25 @@ void GraphProgramCache::clear() {
     programs_.clear();
 }
 
-std::unique_ptr<GraphProgram> GraphProgramCache::build_program(const ggml_cgraph &  graph,
-                                                               const KernelCorpus & corpus,
-                                                               const std::string &  target,
-                                                               Status &             errors) const {
-    GraphImportResult imported = import_ggml_graph(graph);
-    if (!imported.valid()) {
-        errors.append(imported.status);
-        return nullptr;
-    }
+std::unique_ptr<GraphProgram> GraphProgramCache::build_program_from_imported(uint64_t             uid,
+                                                                             Graph &&             imported_graph,
+                                                                             const KernelCorpus & corpus,
+                                                                             const std::string &  target,
+                                                                             Status &             errors) const {
     DispatchScheduler scheduler;
-    if (!scheduler.schedule_graph(imported.graph, { target })) {
+    if (!scheduler.schedule_graph(imported_graph, { target })) {
         errors.append(scheduler.plan().status);
         return nullptr;
     }
 
-    CommandProgram commands = build_command_program(imported.graph, scheduler.plan(), corpus, target);
+    CommandProgram commands = build_command_program(imported_graph, scheduler.plan(), corpus, target);
     if (!commands.valid()) {
         errors.append(commands.status);
         return nullptr;
     }
 
     std::string command_shape = command_program_shape_key(commands);
-    return std::make_unique<GraphProgram>(graph.uid, target, std::make_unique<Graph>(std::move(imported.graph)),
+    return std::make_unique<GraphProgram>(uid, target, std::make_unique<Graph>(std::move(imported_graph)),
                                           std::make_unique<CommandProgram>(std::move(commands)),
                                           std::move(command_shape));
 }

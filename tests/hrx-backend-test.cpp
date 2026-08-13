@@ -4191,6 +4191,12 @@ static void run_graph_program_cache_uid_mismatch_checks() {
     REQUIRE(stats.builds == 1);
     REQUIRE(stats.hits == 0);
 
+    lookup = cache.get_or_build(*graph0, corpus, "gfx1151");
+    REQUIRE(lookup.valid());
+    stats = cache.stats();
+    REQUIRE(stats.builds == 1);
+    REQUIRE(stats.hits == 1);
+
     ggml_cgraph * graph1 = ggml_new_graph(ctx);
     REQUIRE(graph1 != nullptr);
     ggml_build_forward_expand(graph1, out0);
@@ -4201,7 +4207,7 @@ static void run_graph_program_cache_uid_mismatch_checks() {
     REQUIRE(lookup.valid());
     stats = cache.stats();
     REQUIRE(stats.builds == 2);
-    REQUIRE(stats.hits == 0);
+    REQUIRE(stats.hits == 1);
 
     ggml_tensor * unsupported = ggml_sqr(ctx, a);
     REQUIRE(unsupported != nullptr);
@@ -4214,7 +4220,7 @@ static void run_graph_program_cache_uid_mismatch_checks() {
     REQUIRE(!lookup.valid());
     stats = cache.stats();
     REQUIRE(stats.builds == 2);
-    REQUIRE(stats.hits == 0);
+    REQUIRE(stats.hits == 1);
 
     ggml::hrx::GraphProgramCache alias_cache;
     ggml_tensor *                alias_sum = ggml_add(ctx, a, b);
