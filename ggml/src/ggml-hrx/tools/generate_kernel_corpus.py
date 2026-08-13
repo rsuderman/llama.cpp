@@ -5,7 +5,9 @@ import hashlib
 import json
 import pathlib
 import re
+import subprocess
 import sys
+import tempfile
 from typing import Dict, Iterable, List, Tuple
 
 
@@ -23,7 +25,7 @@ DEPENDENCY_TABLE_TEMPLATE = """static const KernelSourceSpan {dependency_table}[
 """
 
 SOURCE_RECORD_TEMPLATE = """static const KernelSource {record} = {{
-    {{ reinterpret_cast<const char *>({source_symbol}), {source_symbol}Size, KERNEL_SOURCE_FORMAT_TEXT }},
+    {{ reinterpret_cast<const char *>({source_symbol}), {source_symbol}Size, {source_format} }},
     {dependency_table},
     {dependency_count},
 }};
@@ -121,6 +123,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--catalog-output", type=pathlib.Path, required=True)
     parser.add_argument("--manifest", type=pathlib.Path, required=True)
     parser.add_argument("--corpus-dir", type=pathlib.Path, required=True)
+    parser.add_argument("--source-format", choices=("text", "binary"), default="text")
+    parser.add_argument("--loom-link", type=pathlib.Path)
+    parser.add_argument("--loom-format", type=pathlib.Path)
     parser.add_argument("--depfile", type=pathlib.Path)
     return parser.parse_args()
 
@@ -137,6 +142,50 @@ def read_bytes(path: pathlib.Path) -> bytes:
         return path.read_bytes()
     except OSError as exc:
         raise RuntimeError(f"failed to read {path}: {exc}") from exc
+
+
+def run_tool(command: List[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+
+def require_tool(command: List[str]) -> None:
+    result = run_tool(command)
+    if result.returncode:
+        raise RuntimeError(f"command failed ({result.returncode}): {' '.join(command)}\n{result.stderr}")
+
+
+def convert_source_to_bytecode(source_path: pathlib.Path, loom_link: pathlib.Path, loom_format: pathlib.Path) -> bytes:
+    with tempfile.TemporaryDirectory(prefix="ggml-hrx-loom-") as temp_dir_name:
+        temp_dir = pathlib.Path(temp_dir_name)
+        stripped = temp_dir / "stripped.loom"
+        bytecode = temp_dir / "stripped.loombc"
+        require_tool([
+            str(loom_link),
+            "--verify=false",
+            "--mode=archive",
+            "--strip-check",
+            "--to=text",
+            f"--output={stripped}",
+            str(source_path),
+        ])
+        format_result = run_tool([
+            str(loom_format),
+            "--from=text",
+            "--to=bc",
+            f"--output={bytecode}",
+            str(stripped),
+        ])
+        if format_result.returncode:
+            require_tool([
+                str(loom_link),
+                "--verify=false",
+                "--mode=archive",
+                "--strip-check",
+                "--to=bc",
+                f"--output={bytecode}",
+                str(source_path),
+            ])
+        return read_bytes(bytecode)
 
 
 def sanitize_symbol(path: str, index: int) -> str:
@@ -340,10 +389,14 @@ def generate_catalog_verifier(manifest: dict) -> str:
 
 
 def generate_includes(args: argparse.Namespace, manifest: dict) -> Tuple[str, str, str, List[pathlib.Path], int]:
+    if args.source_format == "binary" and (args.loom_link is None or args.loom_format is None):
+        raise RuntimeError("binary source format requires --loom-link and --loom-format")
+
     corpus_dir = args.corpus_dir
     sources, source_dependencies = collect_sources(manifest)
     digests = manifest_file_digests(manifest)
     source_bytes: Dict[str, bytes] = {}
+    source_format = "KERNEL_SOURCE_FORMAT_BINARY" if args.source_format == "binary" else "KERNEL_SOURCE_FORMAT_TEXT"
     input_files: List[pathlib.Path] = []
 
     for export in manifest.get("exports", []):
@@ -361,6 +414,8 @@ def generate_includes(args: argparse.Namespace, manifest: dict) -> Tuple[str, st
         digest = sha256(data)
         if digest != digests[source]:
             raise RuntimeError(f"manifest digest mismatch for {source}: got {digest}, expected {digests[source]}")
+        if args.source_format == "binary":
+            data = convert_source_to_bytecode(path, args.loom_link, args.loom_format)
         source_bytes[source] = data
 
     source_symbols: Dict[str, str] = {}
@@ -391,7 +446,7 @@ def generate_includes(args: argparse.Namespace, manifest: dict) -> Tuple[str, st
             for dependency in dependencies:
                 symbol = source_symbols[dependency]
                 entries.append(
-                    f"    {{ reinterpret_cast<const char *>({symbol}), {symbol}Size, KERNEL_SOURCE_FORMAT_TEXT }},"
+                    f"    {{ reinterpret_cast<const char *>({symbol}), {symbol}Size, {source_format} }},"
                 )
             dependency_tables.append(
                 DEPENDENCY_TABLE_TEMPLATE.format(
@@ -406,6 +461,7 @@ def generate_includes(args: argparse.Namespace, manifest: dict) -> Tuple[str, st
             SOURCE_RECORD_TEMPLATE.format(
                 record=record,
                 source_symbol=source_symbols[source],
+                source_format=source_format,
                 dependency_table=dependency_table,
                 dependency_count=len(dependencies),
             )
@@ -460,7 +516,11 @@ def main() -> int:
         print(f"generate_kernel_corpus.py: {exc}", file=sys.stderr)
         return 1
 
-    print(f"embedded kernel corpus: source_files={len(input_files)} source_bytes={byte_count}", file=sys.stderr)
+    print(
+        f"embedded kernel corpus: source_files={len(input_files)} source_bytes={byte_count} "
+        f"source_format={args.source_format}",
+        file=sys.stderr,
+    )
     return 0
 
 

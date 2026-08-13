@@ -13,6 +13,9 @@ if(HRX_SOURCE_DIR)
     set(GGML_HRX_BUILD_DIR "${GGML_HRX_PREFIX}/src/ggml-hrx-deps-build")
     set(GGML_HRX_LIB "${GGML_HRX_BUILD_DIR}/libhrx/src/libhrx/${CMAKE_SHARED_LIBRARY_PREFIX}hrx${CMAKE_SHARED_LIBRARY_SUFFIX}")
     set(GGML_LOOMC_LIB "${GGML_HRX_BUILD_DIR}/loom/binding/c/${CMAKE_SHARED_LIBRARY_PREFIX}loomc${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    set(GGML_HRX_LOOM_LINK "${GGML_HRX_BUILD_DIR}/loom/src/loom/tools/loom-link/loom-link${CMAKE_EXECUTABLE_SUFFIX}")
+    set(GGML_HRX_LOOM_FORMAT "${GGML_HRX_BUILD_DIR}/loom/src/loom/tools/loom-format/loom-format${CMAKE_EXECUTABLE_SUFFIX}")
+    set(GGML_HRX_DEPS_TARGET ggml-hrx-deps)
 
     set(GGML_HRX_CMAKE_ARGS
         -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
@@ -38,9 +41,9 @@ if(HRX_SOURCE_DIR)
         SOURCE_DIR "${HRX_SOURCE_DIR}"
         PREFIX "${GGML_HRX_PREFIX}"
         CMAKE_ARGS ${GGML_HRX_CMAKE_ARGS}
-        BUILD_COMMAND ${CMAKE_COMMAND} --build . --target hrx loomc_shared --config ${CMAKE_BUILD_TYPE}
+        BUILD_COMMAND ${CMAKE_COMMAND} --build . --target hrx loomc_shared loom_tools_loom-link_loom-link loom_tools_loom-format_loom-format --config ${CMAKE_BUILD_TYPE}
         INSTALL_COMMAND ""
-        BUILD_BYPRODUCTS "${GGML_HRX_LIB}" "${GGML_LOOMC_LIB}"
+        BUILD_BYPRODUCTS "${GGML_HRX_LIB}" "${GGML_LOOMC_LIB}" "${GGML_HRX_LOOM_LINK}" "${GGML_HRX_LOOM_FORMAT}"
         UPDATE_COMMAND ""
     )
 
@@ -59,9 +62,29 @@ if(HRX_SOURCE_DIR)
 else()
     find_package(hrx CONFIG REQUIRED)
     find_package(loomc CONFIG REQUIRED)
+    find_program(GGML_HRX_LOOM_LINK NAMES loom-link)
+    find_program(GGML_HRX_LOOM_FORMAT NAMES loom-format)
 endif()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+set(GGML_HRX_KERNEL_CORPUS_SOURCE_FORMAT "binary" CACHE STRING "Embedded Loom corpus source format: text or binary")
+set_property(CACHE GGML_HRX_KERNEL_CORPUS_SOURCE_FORMAT PROPERTY STRINGS text binary)
+if(GGML_HRX_KERNEL_CORPUS_SOURCE_FORMAT STREQUAL "binary")
+    if(NOT GGML_HRX_LOOM_LINK OR NOT GGML_HRX_LOOM_FORMAT)
+        message(FATAL_ERROR "GGML_HRX_KERNEL_CORPUS_SOURCE_FORMAT=binary requires loom-link and loom-format")
+    endif()
+    set(GGML_HRX_KERNEL_CORPUS_TOOL_ARGS
+        --loom-link "${GGML_HRX_LOOM_LINK}"
+        --loom-format "${GGML_HRX_LOOM_FORMAT}"
+    )
+    set(GGML_HRX_KERNEL_CORPUS_TOOL_DEPENDS
+        "${GGML_HRX_LOOM_LINK}"
+        "${GGML_HRX_LOOM_FORMAT}"
+    )
+elseif(NOT GGML_HRX_KERNEL_CORPUS_SOURCE_FORMAT STREQUAL "text")
+    message(FATAL_ERROR "Unsupported GGML_HRX_KERNEL_CORPUS_SOURCE_FORMAT: ${GGML_HRX_KERNEL_CORPUS_SOURCE_FORMAT}")
+endif()
 
 set(GGML_HRX_QWEN_KERNEL_CORPUS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernel-corpus/kernels/qwen_moe")
 set(GGML_HRX_QWEN_KERNEL_CORPUS_MANIFEST "${GGML_HRX_QWEN_KERNEL_CORPUS_DIR}/manifest.json")
@@ -82,10 +105,13 @@ add_custom_command(
         --catalog-output "${GGML_HRX_KERNEL_CORPUS_CATALOG_INC}"
         --manifest "${GGML_HRX_QWEN_KERNEL_CORPUS_MANIFEST}"
         --corpus-dir "${GGML_HRX_QWEN_KERNEL_CORPUS_DIR}"
+        --source-format "${GGML_HRX_KERNEL_CORPUS_SOURCE_FORMAT}"
+        ${GGML_HRX_KERNEL_CORPUS_TOOL_ARGS}
         --depfile "${GGML_HRX_KERNEL_CORPUS_DEPFILE}"
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_kernel_corpus.py"
         "${GGML_HRX_QWEN_KERNEL_CORPUS_MANIFEST}"
+        ${GGML_HRX_KERNEL_CORPUS_TOOL_DEPENDS}
     DEPFILE "${GGML_HRX_KERNEL_CORPUS_DEPFILE}"
     VERBATIM
 )
@@ -106,6 +132,9 @@ add_library(ggml-hrx-kernel-corpus STATIC
     "${GGML_HRX_KERNEL_CORPUS_QWEN_INC}"
     "${GGML_HRX_KERNEL_CORPUS_CATALOG_INC}"
 )
+if(GGML_HRX_DEPS_TARGET)
+    add_dependencies(ggml-hrx-kernel-corpus ${GGML_HRX_DEPS_TARGET})
+endif()
 target_include_directories(ggml-hrx-kernel-corpus PUBLIC . PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" ../../../vendor)
 target_compile_features(ggml-hrx-kernel-corpus PRIVATE cxx_std_17)
 set_target_properties(ggml-hrx-kernel-corpus PROPERTIES POSITION_INDEPENDENT_CODE ON)

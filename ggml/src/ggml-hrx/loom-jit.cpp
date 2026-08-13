@@ -749,10 +749,14 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu *        
         dependency_sources.push_back(dependency_source);
         loomc_link_index_source_options_t dependency_link_options = {};
         dependency_link_options.provider_name = loomc_make_cstring_view(dependency.source_identifier);
-        const std::string dependency_text(static_cast<const char *>(dependency.source_data), dependency.source_size);
-        dependency_link_options.role = dependency_text.find("config.decl") != std::string::npos ?
-                                           LOOMC_LINK_PROVIDER_ROLE_INPUT :
-                                           LOOMC_LINK_PROVIDER_ROLE_LIBRARY;
+        if (dependency.source_format == GGML_HRX_LOOM_JIT_SOURCE_FORMAT_BYTECODE) {
+            dependency_link_options.role = LOOMC_LINK_PROVIDER_ROLE_INPUT;
+        } else {
+            const std::string dependency_text(static_cast<const char *>(dependency.source_data), dependency.source_size);
+            dependency_link_options.role = dependency_text.find("config.decl") != std::string::npos ?
+                                               LOOMC_LINK_PROVIDER_ROLE_INPUT :
+                                               LOOMC_LINK_PROVIDER_ROLE_LIBRARY;
+        }
         status                       = loomc_link_index_builder_add_source(link_index_builder.get(), dependency_source,
                                                                            &dependency_link_options, nullptr);
         if (!loomc_status_is_ok(status)) {
@@ -785,11 +789,16 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu *        
     // libraries, then compile roots from that linked module. Preserve that
     // composition exactly. In particular, config.decl operations are not
     // callable dependency edges and disappear if raw source libraries are
-    // fed directly to a selective link.
+    // fed directly to a selective link. Bytecode sources with workload
+    // arguments also use this path so the linked module can be serialized
+    // back to text for the current workload specialization pass.
     LoomSource  archived_source;
     LoomSource  specialized_archive_source;
     std::string specialized_archive_text;
-    if (options->dependency_count > 0) {
+    const bool needs_archive_source = options->dependency_count > 0 ||
+                                      (options->source_format == GGML_HRX_LOOM_JIT_SOURCE_FORMAT_BYTECODE &&
+                                       options->workload_argument_count > 0);
+    if (needs_archive_source) {
         LoomModule           archive_module;
         loomc_link_options_t archive_options = {};
         archive_options.type                 = LOOMC_STRUCTURE_TYPE_LINK_OPTIONS;
