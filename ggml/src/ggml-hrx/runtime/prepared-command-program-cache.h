@@ -3,7 +3,9 @@
 #include "command-program-executor.h"
 #include "dispatch/command-program-bindings.h"
 #include "dispatch/command-program.h"
+#include "runtime/graph-replay.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -18,8 +20,15 @@ struct PreparedCommandProgramCacheStats {
 };
 
 struct PreparedCommandProgramCacheExecutionResult {
-    bool     success = false;
-    Status status;
+    bool                             success = false;
+    Status                           status;
+    HrxGraphReplayEvent              graph_replay_event = HrxGraphReplayEvent::Disabled;
+    std::string                      graph_replay_ineligible_reason;
+    uint64_t                         graph_replay_build_ns = 0;
+    uint64_t                         graph_replay_launch_ns = 0;
+    uint64_t                         graph_replay_total_ns = 0;
+    size_t                           graph_replay_dispatches = 0;
+    bool                             graph_replay_transient_allocation_changed = false;
 };
 
 class PreparedCommandProgramCache {
@@ -49,6 +58,7 @@ class PreparedCommandProgramCache {
     struct Entry {
         std::mutex             mutex;
         PreparedCommandProgram program;
+        RecordedCommandGraph   recorded;
         bool                   has_program = false;
     };
 

@@ -7,15 +7,88 @@
 #include "runtime/kernel-executable-cache.h"
 #include "runtime/transient-arena.h"
 
+#include <algorithm>
 #include <sstream>
 #include <unordered_map>
 #include <utility>
 
 namespace ggml::hrx {
+
+PreparedProgramConstantBuffer::~PreparedProgramConstantBuffer() {
+    if (buffer != nullptr) {
+        hrx_buffer_release(buffer);
+    }
+}
+
+PreparedProgramConstantBuffer::PreparedProgramConstantBuffer(PreparedProgramConstantBuffer && other) noexcept :
+    value(other.value),
+    name(std::move(other.name)),
+    buffer(std::exchange(other.buffer, nullptr)),
+    size(other.size) {
+    other.size = 0;
+}
+
+PreparedProgramConstantBuffer &
+PreparedProgramConstantBuffer::operator=(PreparedProgramConstantBuffer && other) noexcept {
+    if (this != &other) {
+        if (buffer != nullptr) {
+            hrx_buffer_release(buffer);
+        }
+        value        = other.value;
+        name         = std::move(other.name);
+        buffer       = std::exchange(other.buffer, nullptr);
+        size         = other.size;
+        other.size   = 0;
+    }
+    return *this;
+}
+
+RecordedCommandGraph::~RecordedCommandGraph() {
+    if (exec != nullptr) {
+        hrx_graph_exec_release(exec);
+    }
+    if (graph != nullptr) {
+        hrx_graph_release(graph);
+    }
+}
+
+RecordedCommandGraph::RecordedCommandGraph(RecordedCommandGraph && other) noexcept :
+    graph(std::exchange(other.graph, nullptr)),
+    exec(std::exchange(other.exec, nullptr)),
+    bound_transient_arena_allocation_id(other.bound_transient_arena_allocation_id),
+    dispatch_count(other.dispatch_count),
+    status(std::move(other.status)) {
+    other.bound_transient_arena_allocation_id = kInvalidTransientArenaAllocationId;
+    other.dispatch_count                      = 0;
+}
+
+RecordedCommandGraph & RecordedCommandGraph::operator=(RecordedCommandGraph && other) noexcept {
+    if (this != &other) {
+        if (exec != nullptr) {
+            hrx_graph_exec_release(exec);
+        }
+        if (graph != nullptr) {
+            hrx_graph_release(graph);
+        }
+        graph                                = std::exchange(other.graph, nullptr);
+        exec                                 = std::exchange(other.exec, nullptr);
+        bound_transient_arena_allocation_id  = other.bound_transient_arena_allocation_id;
+        dispatch_count                       = other.dispatch_count;
+        status                               = std::move(other.status);
+        other.bound_transient_arena_allocation_id = kInvalidTransientArenaAllocationId;
+        other.dispatch_count                      = 0;
+    }
+    return *this;
+}
+
 namespace {
 
 static const char * status_first_error(const Status & status) {
     return status.errors().empty() ? "" : status.errors().front().c_str();
+}
+
+static bool resource_access_writes(ResourceAccess access) {
+    return access == ResourceAccess::Write || access == ResourceAccess::ReadWrite;
 }
 
 static Status command_program_metadata_context_valid(const CommandProgramExecutionContext & context) {
@@ -73,6 +146,15 @@ static Status command_program_transient_context_valid(const CommandProgramExecut
     return status;
 }
 
+static bool prepared_program_has_constant(const PreparedCommandProgram & prepared, ValueId value) {
+    for (const PreparedProgramConstantBuffer & constant : prepared.program_constants) {
+        if (constant.value == value) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool prepared_execution_context_valid(const CommandProgramExecutionContext & context) {
     if (context.stream == nullptr) {
         GGML_LOG_ERROR("%s: missing HRX stream\n", __func__);
@@ -102,16 +184,21 @@ static Status ensure_transient_arena(const CommandProgramExecutionContext & cont
 
 static Status initialize_command_program_constants(const CommandProgramExecutionContext & context,
                                                    const CommandProgram &                 commands,
-                                                   const TransientArenaAllocationRef &    allocation) {
+                                                   const TransientArenaAllocationRef &    allocation,
+                                                   const PreparedCommandProgram &         prepared) {
     Status status;
     if (commands.constant_initializations.empty()) {
         return status;
     }
-    if (allocation.buffer == nullptr) {
-        status.log("command program has constant initializations without a transient arena allocation");
-        return status;
-    }
     for (const ConstantInitialization & initialization : commands.constant_initializations) {
+        if (prepared_program_has_constant(prepared, initialization.value)) {
+            continue;
+        }
+        if (allocation.buffer == nullptr) {
+            status.log("command program has constant initialization %s without a transient arena allocation",
+                       initialization.name.c_str());
+            continue;
+        }
         const TransientAllocation * transient = find_transient_allocation(commands.transients, initialization.value);
         if (transient == nullptr) {
             status.log("constant initialization %s references missing transient value %d", initialization.name.c_str(),
@@ -285,6 +372,180 @@ static CommandProgramBindings materialize_host_bindings(const CommandProgramExec
         prepared.host_staging.push_back(std::move(staging));
     }
     return CommandProgramBindings::from_bindings(std::move(materialized), status);
+}
+
+struct ProgramConstantImage {
+    ValueId              value;
+    std::string          name;
+    std::vector<uint8_t> data;
+    bool                 read = false;
+};
+
+static Status collect_program_constant_images(const CommandProgram & commands,
+                                              std::vector<ProgramConstantImage> & images) {
+    Status                                  status;
+    std::unordered_map<int32_t, size_t>     image_by_value;
+    for (const ConstantInitialization & initialization : commands.constant_initializations) {
+        const TransientAllocation * allocation = find_transient_allocation(commands.transients, initialization.value);
+        if (allocation == nullptr) {
+            status.log("constant initialization %s references missing transient value %d", initialization.name.c_str(),
+                       initialization.value.value);
+            continue;
+        }
+        if (initialization.offset > allocation->size ||
+            initialization.data.size() > allocation->size - initialization.offset) {
+            status.log("constant initialization %s is outside transient allocation length %zu",
+                       initialization.name.c_str(), allocation->size);
+            continue;
+        }
+
+        ProgramConstantImage * image = nullptr;
+        const auto             found = image_by_value.find(initialization.value.value);
+        if (found == image_by_value.end()) {
+            ProgramConstantImage next;
+            next.value = initialization.value;
+            next.name  = initialization.name;
+            next.data.resize(allocation->size);
+            image_by_value.emplace(initialization.value.value, images.size());
+            images.push_back(std::move(next));
+            image = &images.back();
+        } else {
+            image = &images[found->second];
+        }
+
+        std::copy(initialization.data.begin(), initialization.data.end(),
+                  image->data.begin() + initialization.offset);
+    }
+    return status;
+}
+
+static Status validate_program_constant_access(const CommandProgram &           commands,
+                                               std::vector<ProgramConstantImage> & images) {
+    Status                              status;
+    std::unordered_map<int32_t, size_t> image_by_value;
+    for (size_t i = 0; i < images.size(); ++i) {
+        image_by_value.emplace(images[i].value.value, i);
+    }
+
+    auto validate_command_list = [&](const std::vector<Command> & command_list) {
+        for (const Command & command : command_list) {
+            for (const CommandBinding & binding : command.bindings) {
+                const auto found = image_by_value.find(binding.value.value);
+                if (found == image_by_value.end()) {
+                    continue;
+                }
+                ProgramConstantImage & image = images[found->second];
+                if (resource_access_writes(binding.access)) {
+                    status.log("constant initialization %s is written by command %u; prepared constant buffer copy "
+                               "support is required",
+                               image.name.c_str(), command.ordinal);
+                    continue;
+                }
+                image.read = true;
+            }
+        }
+    };
+    validate_command_list(commands.initialization_commands);
+    validate_command_list(commands.commands);
+    return status;
+}
+
+static PreparedProgramConstantBuffer make_program_constant_buffer(ValueId      value,
+                                                                  std::string  name,
+                                                                  hrx_buffer_t buffer,
+                                                                  size_t       size) {
+    PreparedProgramConstantBuffer result;
+    result.value  = value;
+    result.name   = std::move(name);
+    result.buffer = buffer;
+    result.size   = size;
+    return result;
+}
+
+static Status bind_prepared_command_list_program_constants(
+    const PreparedCommandProgram &              prepared,
+    std::vector<PreparedCommand> &              prepared_commands) {
+    Status status;
+    for (PreparedCommand & command : prepared_commands) {
+        for (PreparedCommandBinding & binding : command.kernel.bindings) {
+            for (const PreparedProgramConstantBuffer & constant : prepared.program_constants) {
+                if (binding.binding.origin != CommandBindingOrigin::Transient ||
+                    binding.binding.value != constant.value) {
+                    continue;
+                }
+                if (binding.binding.offset > constant.size ||
+                    binding.binding.length > constant.size - binding.binding.offset) {
+                    status.log("%s is outside prepared constant %s length %zu",
+                               format_command_binding(binding.binding).c_str(), constant.name.c_str(), constant.size);
+                    continue;
+                }
+                binding.ref = { constant.buffer, binding.binding.offset, binding.binding.length };
+                binding.binding.origin = CommandBindingOrigin::ProgramConstant;
+            }
+        }
+    }
+    return status;
+}
+
+static Status prepare_program_constant_buffers(const CommandProgramExecutionContext & context,
+                                               const CommandProgram &                 commands,
+                                               PreparedCommandProgram &               prepared) {
+    Status status;
+    if (commands.constant_initializations.empty()) {
+        return status;
+    }
+
+    std::vector<ProgramConstantImage> images;
+    status.append(collect_program_constant_images(commands, images));
+    status.append(validate_program_constant_access(commands, images));
+    if (!status.success()) {
+        return status;
+    }
+    if (images.empty()) {
+        return status;
+    }
+    if (context.device == nullptr) {
+        status.log("missing HRX device for prepared constants");
+        return status;
+    }
+    if (context.stream == nullptr) {
+        status.log("missing HRX stream for prepared constants");
+        return status;
+    }
+
+    hrx_buffer_params_t params = {
+        HRX_MEMORY_TYPE_DEVICE_LOCAL,
+        HRX_MEMORY_ACCESS_ALL,
+        HRX_BUFFER_USAGE_DEFAULT,
+        0,
+    };
+    for (const ProgramConstantImage & image : images) {
+        if (!image.read) {
+            continue;
+        }
+        hrx_buffer_t buffer = nullptr;
+        if (ErrorResult error = take_status(
+                hrx_allocator_allocate_buffer(hrx_device_allocator(context.device), params, image.data.size(),
+                                              &buffer))) {
+            status.log("allocate prepared constant %s: %s", image.name.c_str(), error->c_str());
+            continue;
+        }
+        if (ErrorResult error =
+                take_status(hrx_stream_copy_h2d(context.stream, image.data.data(), buffer, 0, image.data.size()))) {
+            hrx_buffer_release(buffer);
+            status.log("upload prepared constant %s: %s", image.name.c_str(), error->c_str());
+            continue;
+        }
+        prepared.program_constants.push_back(
+            make_program_constant_buffer(image.value, image.name, buffer, image.data.size()));
+    }
+    if (!status.success()) {
+        return status;
+    }
+
+    status.append(bind_prepared_command_list_program_constants(prepared, prepared.initialization_commands));
+    status.append(bind_prepared_command_list_program_constants(prepared, prepared.commands));
+    return status;
 }
 
 static Status rebind_prepared_host_staging(const CommandProgramBindings & bindings, PreparedCommandProgram & prepared) {
@@ -480,6 +741,163 @@ static bool execute_prepared_command_list(const CommandProgramExecutionContext &
     return true;
 }
 
+struct GraphDependencyChain {
+    hrx_graph_node_t last = nullptr;
+
+    const hrx_graph_node_t * deps() const { return last == nullptr ? nullptr : &last; }
+    size_t dep_count() const { return last == nullptr ? 0 : 1; }
+    void update(hrx_graph_node_t node) { last = node; }
+};
+
+static Status record_completion_counter_fill(hrx_graph_t                         graph,
+                                             GraphDependencyChain &              chain,
+                                             const CommandProgram &              commands,
+                                             const TransientArenaAllocationRef & allocation) {
+    Status status;
+    if (commands.completion_counters.byte_count == 0) {
+        return status;
+    }
+    if (allocation.buffer == nullptr) {
+        status.log("command program has completion counters without a transient arena allocation");
+        return status;
+    }
+    if (commands.completion_counters.arena_offset > commands.transients.arena_size ||
+        commands.completion_counters.byte_count >
+            commands.transients.arena_size - commands.completion_counters.arena_offset) {
+        status.log("completion counter graph fill is outside transient arena length %zu",
+                   commands.transients.arena_size);
+        return status;
+    }
+
+    hrx_graph_fill_buffer_node_attrs_t attrs = {
+        { allocation.buffer, commands.completion_counters.arena_offset, commands.completion_counters.byte_count },
+        0,
+        sizeof(uint32_t),
+    };
+    hrx_graph_node_t node = nullptr;
+    if (ErrorResult error =
+            take_status(hrx_graph_add_fill_buffer_node(graph, chain.deps(), chain.dep_count(), &attrs, &node))) {
+        status.log("record completion counter fill: %s", error->c_str());
+        return status;
+    }
+    chain.update(node);
+    return status;
+}
+
+static Status record_prepared_kernel_command(hrx_graph_t                  graph,
+                                             GraphDependencyChain &       chain,
+                                             const PreparedCommand &      command) {
+    Status status;
+    const std::string command_context = format_prepared_command_context(command);
+    if (command.kind != CommandKind::Kernel) {
+        status.log("unsupported command kind in %s", command_context.c_str());
+        return status;
+    }
+    if (command.kernel.executable == nullptr) {
+        status.log("missing kernel executable for %s", command_context.c_str());
+        return status;
+    }
+
+    std::vector<hrx_buffer_ref_t> refs;
+    refs.reserve(command.kernel.bindings.size());
+    for (const PreparedCommandBinding & binding : command.kernel.bindings) {
+        if (binding.ref.buffer == nullptr) {
+            status.log("%s has unbound buffer in %s", format_command_binding(binding.binding).c_str(),
+                       command_context.c_str());
+            continue;
+        }
+        refs.push_back({ binding.ref.buffer, binding.ref.offset, binding.ref.length });
+    }
+    if (!status.success()) {
+        return status;
+    }
+
+    const KernelExecutable & executable = *command.kernel.executable;
+    hrx_graph_kernel_node_attrs_t attrs = {
+        executable.executable,
+        executable.export_ordinal,
+        {
+            { executable.launch.workgroup_count[0], executable.launch.workgroup_count[1],
+              executable.launch.workgroup_count[2] },
+            { executable.launch.workgroup_size[0], executable.launch.workgroup_size[1],
+              executable.launch.workgroup_size[2] },
+            executable.launch.subgroup_size,
+        },
+        command.kernel.constants.data(),
+        command.kernel.constants.size(),
+        refs.data(),
+        refs.size(),
+        0,
+    };
+    hrx_graph_node_t node = nullptr;
+    if (ErrorResult error =
+            take_status(hrx_graph_add_kernel_node(graph, chain.deps(), chain.dep_count(), &attrs, &node))) {
+        status.log("record %s: %s", command_context.c_str(), error->c_str());
+        return status;
+    }
+    chain.update(node);
+    return status;
+}
+
+static Status record_prepared_command_list(hrx_graph_t                        graph,
+                                           GraphDependencyChain &             chain,
+                                           const std::vector<PreparedCommand> & commands,
+                                           size_t &                           dispatch_count) {
+    Status status;
+    for (const PreparedCommand & command : commands) {
+        Status command_status = record_prepared_kernel_command(graph, chain, command);
+        if (!command_status.success()) {
+            status.append(command_status);
+            return status;
+        }
+        ++dispatch_count;
+    }
+    return status;
+}
+
+static RecordedCommandGraph record_prepared_command_graph(const CommandProgramExecutionContext & context,
+                                                          const CommandProgram &                 commands,
+                                                          const PreparedCommandProgram &         prepared,
+                                                          const TransientArenaAllocationRef &    allocation) {
+    RecordedCommandGraph recorded;
+    if (context.device == nullptr) {
+        recorded.status.log("missing HRX device for graph replay");
+        return recorded;
+    }
+
+    hrx_graph_t graph = nullptr;
+    if (ErrorResult error = take_status(hrx_graph_create(context.device, 0, &graph))) {
+        recorded.status.log("create HRX graph replay: %s", error->c_str());
+        return recorded;
+    }
+    recorded.graph = graph;
+
+    GraphDependencyChain chain;
+    recorded.status.append(record_completion_counter_fill(recorded.graph, chain, commands, allocation));
+    if (!recorded.status.success()) {
+        return recorded;
+    }
+    recorded.status.append(record_prepared_command_list(recorded.graph, chain, prepared.initialization_commands,
+                                                        recorded.dispatch_count));
+    if (!recorded.status.success()) {
+        return recorded;
+    }
+    recorded.status.append(record_prepared_command_list(recorded.graph, chain, prepared.commands,
+                                                        recorded.dispatch_count));
+    if (!recorded.status.success()) {
+        return recorded;
+    }
+
+    hrx_graph_exec_t exec = nullptr;
+    if (ErrorResult error = take_status(hrx_graph_instantiate(recorded.graph, 0, &exec))) {
+        recorded.status.log("instantiate HRX graph replay: %s", error->c_str());
+        return recorded;
+    }
+    recorded.exec = exec;
+    recorded.bound_transient_arena_allocation_id = prepared.bound_transient_arena_allocation_id;
+    return recorded;
+}
+
 }  // namespace
 
 PreparedCommandProgram prepare_command_program(const CommandProgramExecutionContext & context,
@@ -531,6 +949,9 @@ PreparedCommandProgram prepare_command_program(const CommandProgramExecutionCont
     prepare_command_list(context, resolved.initialization_commands, prepared.initialization_commands, prepared.status);
     prepare_command_list(context, resolved.commands, prepared.commands, prepared.status);
     prepared.bound_transient_arena_allocation_id = transient_allocation.allocation_id;
+    if (prepared.status.success()) {
+        prepared.status.append(prepare_program_constant_buffers(context, commands, prepared));
+    }
     return prepared;
 }
 
@@ -573,7 +994,7 @@ bool bind_and_execute_prepared_command_program(const CommandProgramExecutionCont
         return false;
     }
     if (commands.transients.arena_size == 0) {
-        Status status = initialize_command_program_constants(context, commands, {});
+        Status status = initialize_command_program_constants(context, commands, {}, prepared);
         if (!status.success()) {
             GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
             return false;
@@ -602,7 +1023,7 @@ bool bind_and_execute_prepared_command_program(const CommandProgramExecutionCont
     if (!bind_prepared_command_program_transients(commands, lease.current_allocation(), prepared)) {
         return false;
     }
-    status = initialize_command_program_constants(context, commands, lease.current_allocation());
+    status = initialize_command_program_constants(context, commands, lease.current_allocation(), prepared);
     if (!status.success()) {
         GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
         return false;
@@ -613,6 +1034,111 @@ bool bind_and_execute_prepared_command_program(const CommandProgramExecutionCont
         return false;
     }
     return execute_prepared_command_program(context, prepared);
+}
+
+RecordedCommandGraphExecutionResult bind_and_launch_recorded_command_graph(
+    const CommandProgramExecutionContext & context,
+    const CommandProgram &                 commands,
+    const CommandProgramBindings &         bindings,
+    PreparedCommandProgram &               prepared,
+    RecordedCommandGraph &                 recorded) {
+    RecordedCommandGraphExecutionResult result;
+    result.event = HrxGraphReplayEvent::Ineligible;
+
+    if (!prepared.valid()) {
+        result.status.append(prepared.status);
+        if (result.status.success()) {
+            result.status.log("invalid prepared command program");
+        }
+        return result;
+    }
+    if (!prepared_execution_context_valid(context)) {
+        result.status.log("missing HRX stream");
+        result.event = HrxGraphReplayEvent::BuildFailed;
+        return result;
+    }
+
+    Status rebind_status = rebind_prepared_host_staging(bindings, prepared);
+    if (!rebind_status.success()) {
+        result.status.append(rebind_status);
+        result.event = HrxGraphReplayEvent::BuildFailed;
+        return result;
+    }
+
+    TransientArenaAllocationRef transient_allocation;
+    TransientArena::AllocationLease lease;
+    if (commands.transients.arena_size == 0) {
+        if (!bind_prepared_command_program_transients(commands, {}, prepared)) {
+            result.status.log("bind transient-free prepared command program failed");
+            result.event = HrxGraphReplayEvent::BuildFailed;
+            return result;
+        }
+    } else {
+        Status status = command_program_transient_context_valid(context, commands);
+        if (!status.success()) {
+            result.status.append(status);
+            result.event = HrxGraphReplayEvent::BuildFailed;
+            return result;
+        }
+        lease  = context.transient_arena->acquire_allocation_lease();
+        status = lease.ensure_capacity(context.device, context.stream, commands.transients.arena_size);
+        if (!status.success()) {
+            result.status.append(status);
+            result.event = HrxGraphReplayEvent::BuildFailed;
+            return result;
+        }
+        transient_allocation = lease.current_allocation();
+        if (!bind_prepared_command_program_transients(commands, transient_allocation, prepared)) {
+            result.status.log("bind prepared command program transients for graph replay failed");
+            result.event = HrxGraphReplayEvent::BuildFailed;
+            return result;
+        }
+    }
+
+    const bool had_recorded = recorded.valid();
+    result.transient_allocation_changed =
+        had_recorded && recorded.bound_transient_arena_allocation_id != prepared.bound_transient_arena_allocation_id;
+    if (!had_recorded || result.transient_allocation_changed) {
+        result.event =
+            result.transient_allocation_changed ? HrxGraphReplayEvent::RebuildTransient : HrxGraphReplayEvent::MissBuild;
+        const uint64_t build_start_ns = hrx_graph_replay_now_ns();
+        RecordedCommandGraph rebuilt = record_prepared_command_graph(context, commands, prepared, transient_allocation);
+        result.build_ns              = hrx_graph_replay_now_ns() - build_start_ns;
+        if (!rebuilt.valid()) {
+            result.status.append(rebuilt.status);
+            result.event = HrxGraphReplayEvent::BuildFailed;
+            return result;
+        }
+        recorded = std::move(rebuilt);
+    } else {
+        result.event = HrxGraphReplayEvent::Hit;
+    }
+
+    const uint64_t launch_start_ns = hrx_graph_replay_now_ns();
+    Status upload_status = upload_prepared_host_staging(context, prepared);
+    if (!upload_status.success()) {
+        result.launch_ns = hrx_graph_replay_now_ns() - launch_start_ns;
+        result.status.append(upload_status);
+        result.event = HrxGraphReplayEvent::LaunchFailed;
+        return result;
+    }
+    if (ErrorResult error = take_status(hrx_graph_exec_launch(recorded.exec, context.stream))) {
+        result.launch_ns = hrx_graph_replay_now_ns() - launch_start_ns;
+        result.status.log("launch HRX graph replay: %s", error->c_str());
+        result.event = HrxGraphReplayEvent::LaunchFailed;
+        return result;
+    }
+    Status download_status = download_prepared_host_staging(context, prepared);
+    if (!download_status.success()) {
+        result.launch_ns = hrx_graph_replay_now_ns() - launch_start_ns;
+        result.status.append(download_status);
+        result.event = HrxGraphReplayEvent::LaunchFailed;
+        return result;
+    }
+    result.launch_ns      = hrx_graph_replay_now_ns() - launch_start_ns;
+    result.dispatch_count = recorded.dispatch_count;
+    result.success        = true;
+    return result;
 }
 
 bool execute_prepared_command_program(const CommandProgramExecutionContext & context,

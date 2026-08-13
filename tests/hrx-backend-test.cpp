@@ -20,6 +20,7 @@
 #include "runtime/command-program-executor.h"
 #include "runtime/graph-executor.h"
 #include "runtime/graph-program-cache.h"
+#include "runtime/graph-replay.h"
 
 #include <algorithm>
 #include <cmath>
@@ -41,6 +42,14 @@
 
 static hrx_buffer_t dummy_hrx_buffer(uintptr_t value) {
     return reinterpret_cast<hrx_buffer_t>(value);
+}
+
+static hrx_stream_t dummy_hrx_stream(uintptr_t value) {
+    return reinterpret_cast<hrx_stream_t>(value);
+}
+
+static hrx_graph_exec_t dummy_hrx_graph_exec(uintptr_t value) {
+    return reinterpret_cast<hrx_graph_exec_t>(value);
 }
 
 static bool contains_value_id(const std::vector<ggml::hrx::ValueId> & ids, ggml::hrx::ValueId id) {
@@ -687,6 +696,8 @@ static void run_graph_import_checks() {
     REQUIRE(ggml::hrx::command_kind_name(static_cast<ggml::hrx::CommandKind>(255)) == "Unknown(255)");
     REQUIRE(ggml::hrx::command_binding_origin_name(ggml::hrx::CommandBindingOrigin::GraphValue) == "GraphValue");
     REQUIRE(ggml::hrx::command_binding_origin_name(ggml::hrx::CommandBindingOrigin::Transient) == "Transient");
+    REQUIRE(ggml::hrx::command_binding_origin_name(ggml::hrx::CommandBindingOrigin::ProgramConstant) ==
+            "ProgramConstant");
     REQUIRE(ggml::hrx::command_binding_origin_name(static_cast<ggml::hrx::CommandBindingOrigin>(255)) ==
             "Unknown(255)");
     REQUIRE(ggml::hrx::resource_access_name(ggml::hrx::ResourceAccess::Read) == "Read");
@@ -699,6 +710,9 @@ static void run_graph_import_checks() {
     REQUIRE(string_contains(binding_text, "value="));
     REQUIRE(string_contains(binding_text, "origin=GraphValue"));
     REQUIRE(string_contains(binding_text, "access=Read"));
+    REQUIRE(std::string(ggml::hrx::hrx_graph_replay_event_name(ggml::hrx::HrxGraphReplayEvent::Disabled)) ==
+            "disabled");
+    REQUIRE(std::string(ggml::hrx::hrx_graph_replay_event_name(ggml::hrx::HrxGraphReplayEvent::Hit)) == "hit");
     REQUIRE(string_contains(binding_text, "range=[0, "));
     REQUIRE(string_contains(binding_text, std::to_string(a_value->byte_count).c_str()));
 
@@ -3898,6 +3912,18 @@ static void run_chained_dispatch_requires_transients() {
     REQUIRE(prepared_shape.commands[0].kernel.bindings[2].ref.buffer == dummy_hrx_buffer(0x9000));
     REQUIRE(prepared_shape.commands[1].kernel.bindings[0].ref.buffer == dummy_hrx_buffer(0x9000));
 
+    prepared_shape.commands[1].kernel.bindings[0].binding.origin = ggml::hrx::CommandBindingOrigin::ProgramConstant;
+    prepared_shape.commands[1].kernel.bindings[0].ref            = { dummy_hrx_buffer(0xb000), 32, sum_value->byte_count };
+    const ggml::hrx::TransientArenaAllocationRef rebinding_transient_arena = {
+        dummy_hrx_buffer(0xc000),
+        commands.transients.arena_size + 512,
+        9,
+    };
+    REQUIRE(ggml::hrx::bind_prepared_command_program_transients(commands, rebinding_transient_arena, prepared_shape));
+    REQUIRE(prepared_shape.commands[0].kernel.bindings[2].ref.buffer == dummy_hrx_buffer(0xc000));
+    REQUIRE(prepared_shape.commands[1].kernel.bindings[0].ref.buffer == dummy_hrx_buffer(0xb000));
+    REQUIRE(prepared_shape.commands[1].kernel.bindings[0].ref.offset == 32);
+
     const ggml::hrx::TransientArenaAllocationRef invalid_transient_arena = {
         dummy_hrx_buffer(0xa000),
         commands.transients.arena_size,
@@ -3922,6 +3948,51 @@ static void run_chained_dispatch_requires_transients() {
     REQUIRE(status_contains(verification.status, "outside transient allocation length"));
 
     ggml_free(ctx);
+}
+
+static void run_graph_replay_host_staging_is_not_ineligible() {
+    ggml::hrx::CommandProgram commands;
+
+    std::vector<uint8_t> source0(64, 1);
+    std::vector<uint8_t> source1(64, 2);
+
+    ggml::hrx::PreparedCommandProgram prepared;
+    ggml::hrx::HostStagingBuffer      staging;
+    staging.buffer    = dummy_hrx_buffer(0x1000);
+    staging.host_data = source0.data();
+    staging.value     = 7;
+    staging.length    = source0.size();
+    staging.upload    = true;
+    prepared.host_staging.push_back(std::move(staging));
+
+    ggml::hrx::CommandProgramBinding live_binding;
+    live_binding.value     = ggml::hrx::ValueId(7);
+    live_binding.length    = source1.size();
+    live_binding.capacity  = source1.size();
+    live_binding.host_data = source1.data();
+    const ggml::hrx::CommandProgramBindings bindings =
+        ggml::hrx::CommandProgramBindings::from_bindings({ live_binding });
+    REQUIRE(bindings.valid());
+
+    ggml::hrx::RecordedCommandGraph recorded;
+    recorded.exec                                = dummy_hrx_graph_exec(0x2000);
+    recorded.bound_transient_arena_allocation_id = ggml::hrx::kInvalidTransientArenaAllocationId;
+
+    ggml::hrx::CommandProgramExecutionContext context;
+    context.stream = dummy_hrx_stream(0x3000);
+
+    const ggml::hrx::RecordedCommandGraphExecutionResult result =
+        ggml::hrx::bind_and_launch_recorded_command_graph(context, commands, bindings, prepared, recorded);
+    recorded.exec = nullptr;
+
+    REQUIRE(!result.success);
+    REQUIRE(result.event == ggml::hrx::HrxGraphReplayEvent::LaunchFailed);
+    REQUIRE(result.ineligible_reason.empty());
+    REQUIRE(status_contains(result.status, "missing HRX host transfer manager"));
+    REQUIRE(prepared.host_staging.size() == 1);
+    REQUIRE(prepared.host_staging[0].buffer == dummy_hrx_buffer(0x1000));
+    REQUIRE(prepared.host_staging[0].host_data == source1.data());
+    prepared.host_staging[0].buffer = nullptr;
 }
 
 static void run_multiple_transient_plan_checks() {
@@ -4750,6 +4821,7 @@ int main() {
     run_layout_alias_scheduler_elision_checks();
     run_transient_import_checks();
     run_chained_dispatch_requires_transients();
+    run_graph_replay_host_staging_is_not_ineligible();
     run_multiple_transient_plan_checks();
     run_disjoint_transient_plan_packing_checks();
     run_graph_program_cache_uid_mismatch_checks();

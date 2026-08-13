@@ -21,6 +21,7 @@ enum class CommandKind : uint8_t {
 enum class CommandBindingOrigin : uint8_t {
     GraphValue,
     Transient,
+    ProgramConstant,
 };
 
 struct CommandBinding {

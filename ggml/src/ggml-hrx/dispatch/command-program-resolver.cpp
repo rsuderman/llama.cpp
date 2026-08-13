@@ -70,6 +70,8 @@ static Status resolve_command_binding(const Command &                     comman
                 ref = { transient_arena->buffer, allocation->arena_offset + binding.offset, binding.length };
                 return status;
             }
+        case CommandBindingOrigin::ProgramConstant:
+            break;
     }
     status.log("%s %s has an unsupported binding origin", command_context.c_str(), binding_context.c_str());
     return status;

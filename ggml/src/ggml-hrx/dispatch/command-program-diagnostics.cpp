@@ -33,6 +33,8 @@ std::string command_binding_origin_name(CommandBindingOrigin origin) {
             return "GraphValue";
         case CommandBindingOrigin::Transient:
             return "Transient";
+        case CommandBindingOrigin::ProgramConstant:
+            return "ProgramConstant";
     }
     return unknown_enum_name(origin);
 }
