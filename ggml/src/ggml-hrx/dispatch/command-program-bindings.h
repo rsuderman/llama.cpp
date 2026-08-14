@@ -26,6 +26,10 @@ struct CommandProgramBindingsFingerprint {
     std::string value;
 };
 
+struct CommandProgramBindingsHash {
+    uint64_t value = 0;
+};
+
 class CommandProgramBindings {
   public:
     static CommandProgramBindings from_value_map(const ValueMap & values);
@@ -44,6 +48,7 @@ class CommandProgramBindings {
     std::vector<CommandProgramBinding> bindings_;
 };
 
+CommandProgramBindingsHash        command_program_bindings_hash(const CommandProgramBindings & bindings);
 CommandProgramBindingsFingerprint command_program_bindings_fingerprint(const CommandProgramBindings & bindings);
 
 }  // namespace ggml::hrx

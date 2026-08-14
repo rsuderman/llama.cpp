@@ -672,8 +672,8 @@ bool ggml_backend_hrx_get_cache_stats(ggml_backend_t backend, ggml_backend_hrx_c
     const ggml::hrx::PreparedCommandProgramCacheStats prepared_stats = context->prepared_programs.stats();
     stats->graph_program_builds                                      = graph_stats.builds;
     stats->graph_program_hits                                        = graph_stats.hits;
-    stats->prepared_program_builds                                   = prepared_stats.builds;
-    stats->prepared_program_hits                                     = prepared_stats.hits;
+    stats->prepared_program_builds = graph_stats.prepared_program_builds + prepared_stats.builds;
+    stats->prepared_program_hits   = graph_stats.prepared_program_hits + prepared_stats.hits;
     return true;
 }
 

@@ -1,11 +1,37 @@
 #include "prepared-command-program-cache.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
-#include <sstream>
 #include <utility>
 
 namespace ggml::hrx {
 namespace {
+
+static void mix_hash(uint64_t & hash, uint64_t value) {
+    hash ^= value;
+    hash *= UINT64_C(1099511628211);
+}
+
+static uint64_t hash_text(const char * text) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    if (text == nullptr) {
+        return hash;
+    }
+    while (*text != 0) {
+        mix_hash(hash, static_cast<unsigned char>(*text));
+        ++text;
+    }
+    return hash;
+}
+
+static uint64_t hash_string(const std::string & text) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    for (const char c : text) {
+        mix_hash(hash, static_cast<unsigned char>(c));
+    }
+    return hash;
+}
 
 static void apply_graph_replay_result(PreparedCommandProgramCacheExecutionResult & result,
                                       const RecordedCommandGraphExecutionResult &  replay) {
@@ -24,15 +50,25 @@ static bool graph_replay_should_fallback(HrxGraphReplayEvent event) {
 
 }  // namespace
 
-std::string PreparedCommandProgramCache::cache_key(uint64_t                               graph_uid,
-                                                   const CommandProgramExecutionContext & context,
-                                                   const std::string &                    command_shape,
-                                                   const CommandProgramBindings &         bindings) const {
-    const CommandProgramBindingsFingerprint binding_fingerprint = command_program_bindings_fingerprint(bindings);
-    std::ostringstream                      out;
-    out << "uid=" << graph_uid << "|target=" << (context.target != nullptr ? context.target : "") << '|'
-        << command_shape << "|bindings=" << binding_fingerprint.value;
-    return out.str();
+size_t PreparedCommandProgramCache::KeyHash::operator()(const Key & key) const {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    mix_hash(hash, key.graph_uid);
+    mix_hash(hash, key.target_hash);
+    mix_hash(hash, key.command_shape_hash);
+    mix_hash(hash, key.bindings_hash);
+    return static_cast<size_t>(hash);
+}
+
+PreparedCommandProgramCache::Key PreparedCommandProgramCache::cache_key(uint64_t graph_uid,
+                                                                        const CommandProgramExecutionContext & context,
+                                                                        const std::string &            command_shape,
+                                                                        const CommandProgramBindings & bindings) const {
+    return {
+        graph_uid,
+        hash_text(context.target),
+        hash_string(command_shape),
+        command_program_bindings_hash(bindings).value,
+    };
 }
 
 bool PreparedCommandProgramCache::execute(const CommandProgramExecutionContext & context,
@@ -65,7 +101,7 @@ PreparedCommandProgramCacheExecutionResult PreparedCommandProgramCache::execute_
         return result;
     }
 
-    const std::string      key = cache_key(graph_uid, context, command_shape, bindings);
+    const Key              key = cache_key(graph_uid, context, command_shape, bindings);
     std::shared_ptr<Entry> entry;
     bool                   created_entry = false;
     {

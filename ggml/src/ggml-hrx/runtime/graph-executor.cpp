@@ -92,7 +92,18 @@ GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
         return result;
     }
 
-    CommandProgramBindings bindings = bind_external_value_buffers(lookup.match);
+    const bool use_graph_prepared =
+        !lookup.program->has_prepared_program() || lookup.program->can_use_prepared_fast_path(graph);
+    GraphProgramMatch binding_match = std::move(lookup.match);
+    if (use_graph_prepared && lookup.program->has_prepared_program()) {
+        binding_match = lookup.program->match_host_staging_graph(graph);
+        if (!binding_match.valid()) {
+            result.status.append(binding_match.status);
+            return result;
+        }
+    }
+
+    CommandProgramBindings bindings = bind_external_value_buffers(binding_match);
     if (!bindings.valid()) {
         result.status.append(bindings.status);
         return result;
@@ -107,9 +118,11 @@ GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
         &context_.host_transfers,
         &context_.host_weights,
     };
-    const PreparedCommandProgramCacheExecutionResult execution = context_.prepared_programs.execute_with_result(
-        execution_context, lookup.program->uid(), lookup.program->command_shape(), lookup.program->commands(),
-        bindings);
+    const PreparedCommandProgramCacheExecutionResult execution =
+        use_graph_prepared ? lookup.program->execute_with_result(execution_context, bindings) :
+                             context_.prepared_programs.execute_with_result(execution_context, lookup.program->uid(),
+                                                                            lookup.program->command_shape(),
+                                                                            lookup.program->commands(), bindings);
     if (!execution.success) {
         result.status.append(execution.status);
         if (result.status.success()) {
