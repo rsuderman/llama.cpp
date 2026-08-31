@@ -665,7 +665,7 @@ static void run_dispatch_registry_checks() {
     REQUIRE(has_dispatch_registration_kind(registry.registrations_for_root(GGML_OP_MUL_MAT_ID),
                                            "common.mul_mat_id.f32_f32_wmma", ggml::hrx::DispatchMatchKind::SingleOp));
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_MUL_MAT_ID),
-                                      "llm.routed_ffn.gate_up_swiglu_q4k_f16_wmma"));
+                                      "llm.routed_ffn.gate_up_swiglu_f16_wmma"));
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_MUL_MAT_ID),
                                       "llm.routed_ffn.down_q4k_f16_wmma_grouped"));
     REQUIRE(has_dispatch_registration(registry.registrations_for_root(GGML_OP_MUL_MAT_ID),
@@ -730,7 +730,7 @@ static void run_dispatch_registry_checks() {
     REQUIRE(has_dispatch_registration_kind(generic_registry.registrations_for_root(GGML_OP_MUL_MAT_ID),
                                            "common.mul_mat_id.f32_f32_wmma", ggml::hrx::DispatchMatchKind::SingleOp));
     REQUIRE(!has_dispatch_registration(generic_registry.registrations_for_root(GGML_OP_MUL_MAT_ID),
-                                       "llm.routed_ffn.gate_up_swiglu_q4k_f16_wmma"));
+                                       "llm.routed_ffn.gate_up_swiglu_f16_wmma"));
     REQUIRE(!has_dispatch_registration(generic_registry.registrations_for_root(GGML_OP_MUL_MAT_ID),
                                        "llm.routed_ffn.down_q4k_f16_wmma_grouped"));
     REQUIRE(!has_dispatch_registration(generic_registry.registrations_for_root(GGML_OP_MUL_MAT_ID),
@@ -5249,8 +5249,7 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         REQUIRE(plan.metadata.alternate_values().front().byte_count == f16_output_transient.size);
 
         const ggml::hrx::Dispatch & dispatch = plan.dispatches.back();
-        REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) ==
-                "qwen3_moe:qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma");
+        REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_mul_mat_id_swiglu_f16_f16_wmma");
         REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == token_count);
         REQUIRE(dispatch.bindings.size() == 6);
         REQUIRE(dispatch.bindings[1].value == routing_bundle->expert_table);
@@ -5259,11 +5258,12 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         REQUIRE(dispatch.bindings[2].length == qwen_partition_table_size(token_count));
         REQUIRE(dispatch.bindings[5].value == f16_output_transient.value);
         REQUIRE(dispatch.bindings[5].length == f16_output_transient.size);
-        require_compile_parameter(dispatch, "qwen3_moe.routed_gate_up.input_size", "2048");
-        require_compile_parameter(dispatch, "qwen3_moe.routed_gate_up.expert_count", "128");
-        require_compile_parameter(dispatch, "qwen3_moe.routed_gate_up.route_count", "8");
-        require_compile_parameter(dispatch, "qwen3_moe.routed_gate_up.output_size", "768");
-        require_compile_parameter(dispatch, "qwen3_moe.workload.token_capacity", std::to_string(token_count));
+        require_compile_parameter(dispatch, "ggml.mul_mat_id_swiglu_f16_f16.input_size", "2048");
+        require_compile_parameter(dispatch, "ggml.mul_mat_id_swiglu_f16_f16.expert_count", "128");
+        require_compile_parameter(dispatch, "ggml.mul_mat_id_swiglu_f16_f16.route_count", "8");
+        require_compile_parameter(dispatch, "ggml.mul_mat_id_swiglu_f16_f16.output_size", "768");
+        require_compile_parameter(dispatch, "ggml.mul_mat_id_swiglu_f16_f16.gate_weight_format", "4");
+        require_compile_parameter(dispatch, "ggml.mul_mat_id_swiglu_f16_f16.up_weight_format", "4");
 
         const ggml::hrx::CommandProgram commands =
             ggml::hrx::build_command_program(imported.graph, plan, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
@@ -5300,7 +5300,7 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         REQUIRE(plan.dispatches.size() == 4);
         REQUIRE(plan.transients.size() == 3);
         REQUIRE(kernel_name_for_id(plan.dispatches.back().kernel.kernel_id) ==
-                "qwen3_moe:qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma");
+                "loom_libs:ggml_mul_mat_id_swiglu_f16_f16_wmma");
         REQUIRE(plan.dispatches.back().kernel.integer_parameters.at("token_count") == 1);
 
         const ggml::hrx::CommandProgram commands =

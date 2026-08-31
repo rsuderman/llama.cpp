@@ -2859,7 +2859,7 @@ static void run_routed_moe_cpu_reference_case(ggml_type down_weight_type, bool i
         "qwen3_moe:qwen3_moe_router_top8_f32",
         "loom_libs:ggml_moe_build_expert_table",
         "loom_libs:ggml_moe_build_expert_partition_table",
-        "qwen3_moe:qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma",
+        "loom_libs:ggml_mul_mat_id_swiglu_f16_f16_wmma",
         "loom_libs:ggml_mul_mat_id_f16_f16_wmma",
         include_next_rmsnorm ? "qwen3_moe:qwen3_moe_routed_down_weighted_reduce_next_rmsnorm_f32" :
                                "qwen3_moe:qwen3_moe_routed_down_weighted_reduce_f16_f32",

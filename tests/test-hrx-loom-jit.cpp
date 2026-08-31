@@ -185,6 +185,38 @@ static std::map<std::string, std::string> binary_bc_f32_config(const char * op) 
     };
 }
 
+static std::map<std::string, int64_t> token_count_workload(int64_t token_count) {
+    return {
+        { "token_count", token_count },
+    };
+}
+
+static std::map<std::string, std::string> mul_mat_id_f16_f16_config(const char * weight_format) {
+    return {
+        { "ggml.mul_mat_id_f16_f16.input_size",    "768"         },
+        { "ggml.mul_mat_id_f16_f16.route_count",   "8"           },
+        { "ggml.mul_mat_id_f16_f16.expert_count",  "128"         },
+        { "ggml.mul_mat_id_f16_f16.output_size",   "2048"        },
+        { "ggml.mul_mat_id_f16_f16.weight_format", weight_format },
+        { "ggml.workload.token_capacity",          "4"           },
+    };
+}
+
+static std::map<std::string, std::string> mul_mat_id_swiglu_f16_f16_config(const char * gate_format,
+                                                                           const char * up_format) {
+    return {
+        { "ggml.mul_mat_id_swiglu_f16_f16.input_size",                 "2048"      },
+        { "ggml.mul_mat_id_swiglu_f16_f16.output_size",                "768"       },
+        { "ggml.mul_mat_id_swiglu_f16_f16.expert_count",               "128"       },
+        { "ggml.mul_mat_id_swiglu_f16_f16.route_count",                "8"         },
+        { "ggml.mul_mat_id_swiglu_f16_f16.gate_weight_format",         gate_format },
+        { "ggml.mul_mat_id_swiglu_f16_f16.up_weight_format",           up_format   },
+        { "ggml.mul_mat_id_swiglu_f16_f16.descriptor_expert_mask",     "127"       },
+        { "ggml.mul_mat_id_swiglu_f16_f16.descriptor_partition_shift", "7"         },
+        { "ggml.mul_mat_id_swiglu_f16_f16.descriptor_row_count_shift", "13"        },
+    };
+}
+
 static ggml::hrx::LoomKernelCompileRequest make_compile_request(
     const ggml::hrx::KernelDefinition &        definition,
     const std::map<std::string, int64_t> &     workload,
@@ -355,6 +387,8 @@ int main() {
     const ggml::hrx::KernelDefinition & router_top8     = find_kernel("qwen3_moe_router_top8_f32");
     const ggml::hrx::KernelDefinition & expert_table    = find_kernel("qwen3_moe_build_expert_table");
     const ggml::hrx::KernelDefinition & partition_table = find_kernel("qwen3_moe_build_expert_partition_table");
+    const ggml::hrx::KernelDefinition & mul_mat_id_f16  = find_kernel("ggml_mul_mat_id_f16_f16_wmma");
+    const ggml::hrx::KernelDefinition & swiglu_f16      = find_kernel("ggml_mul_mat_id_swiglu_f16_f16_wmma");
 
     std::string                         sync_error;
     std::unique_ptr<ggml::hrx::LoomJit> sync_jit =
@@ -377,7 +411,7 @@ int main() {
     REQUIRE(async_jit->async_enabled());
 
     std::vector<ggml::hrx::LoomCompiledKernelRef> refs;
-    refs.reserve(10);
+    refs.reserve(17);
     const auto enqueue_begin = std::chrono::steady_clock::now();
     refs.push_back(compile_kernel(*async_jit, "async-binary-add-64", binary, binary_f32_exact_workload(64),
                                   binary_f32_exact_config("0")));
@@ -439,6 +473,20 @@ int main() {
                                       { "output_token_count", 1    },
                                       { "hidden_size",        2048 },
     }));
+    refs.push_back(compile_kernel(*async_jit, "async-mul-mat-id-f16-q4", mul_mat_id_f16, token_count_workload(4),
+                                  mul_mat_id_f16_f16_config("4")));
+    refs.push_back(compile_kernel(*async_jit, "async-mul-mat-id-f16-q6", mul_mat_id_f16, token_count_workload(4),
+                                  mul_mat_id_f16_f16_config("6")));
+    refs.push_back(compile_kernel(*async_jit, "async-mul-mat-id-swiglu-f16-q4k", swiglu_f16, token_count_workload(4),
+                                  mul_mat_id_swiglu_f16_f16_config("4", "4")));
+    refs.push_back(compile_kernel(*async_jit, "async-mul-mat-id-swiglu-f16-q6k", swiglu_f16, token_count_workload(4),
+                                  mul_mat_id_swiglu_f16_f16_config("6", "6")));
+    refs.push_back(compile_kernel(*async_jit, "async-mul-mat-id-swiglu-f16-q8-0", swiglu_f16, token_count_workload(4),
+                                  mul_mat_id_swiglu_f16_f16_config("80", "80")));
+    refs.push_back(compile_kernel(*async_jit, "async-mul-mat-id-swiglu-f16-q8-1", swiglu_f16, token_count_workload(4),
+                                  mul_mat_id_swiglu_f16_f16_config("81", "81")));
+    refs.push_back(compile_kernel(*async_jit, "async-mul-mat-id-swiglu-f16-f16", swiglu_f16, token_count_workload(4),
+                                  mul_mat_id_swiglu_f16_f16_config("16", "16")));
     const auto    enqueue_end = std::chrono::steady_clock::now();
     const int64_t enqueue_us  = elapsed_us(enqueue_begin, enqueue_end);
     std::printf("async Loom enqueue completed in %ld us\n", static_cast<long>(enqueue_us));

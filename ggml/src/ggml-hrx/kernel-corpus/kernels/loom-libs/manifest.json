@@ -42,6 +42,15 @@
       "path": "ops/mul_mat_id_swiglu_f32_f32_wmma.loom"
     },
     {
+      "path": "ops/mul_mat_id_swiglu_f16_f16_wmma.loom"
+    },
+    {
+      "path": "motifs/mul_mat_id_swiglu_f16_f16_wmma_body.loom"
+    },
+    {
+      "path": "motifs/mul_mat_id_swiglu_f16_f16_accumulate.loom"
+    },
+    {
       "path": "ops/mul_mat_id_postops_f32_f32_wmma.loom"
     },
     {
@@ -118,6 +127,12 @@
     },
     {
       "path": "motifs/mul_mat_id_f16_f16_wmma_core.loom"
+    },
+    {
+      "path": "motifs/mul_mat_id_q4k_f16_wmma_projection.loom"
+    },
+    {
+      "path": "motifs/mul_mat_id_q6k_f16_wmma_projection.loom"
     },
     {
       "path": "motifs/mul_mat_id_f32_f32_postops.loom"
@@ -871,6 +886,73 @@
         "motifs/q8_1_f16.loom",
         "motifs/f16_f16.loom",
         "motifs/bf16_f16.loom",
+        "motifs/f32_f16.loom"
+      ]
+    },
+    {
+      "name": "ggml_mul_mat_id_swiglu_f16_f16_wmma",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_id_swiglu_f16_f16_wmma",
+      "source": "ops/mul_mat_id_swiglu_f16_f16_wmma.loom",
+      "workload_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "input",
+        "expert_table",
+        "partition_table",
+        "gate_weight",
+        "up_weight",
+        "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/mul_mat_id_swiglu_f16_f16_wmma.loom"
+        ],
+        "library_sources": [
+          "motifs/mul_mat_id_swiglu_f16_f16_wmma_body.loom",
+          "motifs/mul_mat_id_swiglu_f16_f16_accumulate.loom",
+          "motifs/mul_mat_id_q4k_f16_wmma_projection.loom",
+          "motifs/mul_mat_id_q6k_f16_wmma_projection.loom",
+          "motifs/dequant.loom",
+          "motifs/q4_k_f16.loom",
+          "motifs/q6_k_f16.loom",
+          "motifs/q8_0_f16.loom",
+          "motifs/q8_1_f16.loom",
+          "motifs/f16_f16.loom",
+          "motifs/f32_f16.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "motifs/mul_mat_id_swiglu_f16_f16_wmma_body.loom",
+        "motifs/mul_mat_id_swiglu_f16_f16_accumulate.loom",
+        "motifs/mul_mat_id_q4k_f16_wmma_projection.loom",
+        "motifs/mul_mat_id_q6k_f16_wmma_projection.loom",
+        "motifs/dequant.loom",
+        "motifs/q4_k_f16.loom",
+        "motifs/q6_k_f16.loom",
+        "motifs/q8_0_f16.loom",
+        "motifs/q8_1_f16.loom",
+        "motifs/f16_f16.loom",
         "motifs/f32_f16.loom"
       ]
     },
