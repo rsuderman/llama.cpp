@@ -34,7 +34,7 @@ template.def<@ggml.get_rows_f32.load_vector4> device @ggml_get_rows_f32_load_vec
   %c32 = index.constant 32 : index
   %c256 = index.constant 256 : index
   %c0_f32x4 = vector.constant 0.0 : vector<4xf32>
-  %token_id = index.assume %token [range(%token, 0, 262143)] : index
+  %token_id = index.assume %token [range(%token, 0, 262207)] : index
   %bounded_token_id, %bounded_row_count = index.assume %token_id, %row_count [lt(%token_id, %row_count)] : index, index
   %safe_values = scf.if %publish -> (vector<4xf32>) {
     %weight_tile_bytes = func.call @ggml_dequant_weight_tile_bytes(%weight_format) : (index) -> (offset)
@@ -60,7 +60,7 @@ template.def<@ggml.get_rows_f32.body> device @ggml_get_rows_f32_body(%token_coun
   %hidden_capacity = config.get @ggml.get_rows_f32.hidden_capacity : index
   %weight_format = config.get @ggml.get_rows_f32.weight_format : index
   %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048), le(%token_count, %token_capacity)] : index
-  %bounded_row_count = index.assume %row_count [range(%row_count, 1, 262144)] : index
+  %bounded_row_count = index.assume %row_count [range(%row_count, 1, 262208)] : index
   %bounded_hidden_size = index.assume %hidden_size [range(%hidden_size, 256, 32768), mul(%hidden_size, 256), le(%hidden_size, %hidden_capacity)] : index
   %channel_tile = kernel.workgroup.id<x> : index
   %token0 = kernel.workgroup.id<y> : index
@@ -97,7 +97,7 @@ template.def<@ggml.get_rows_f32.next_body> device @ggml_get_rows_f32_next_body(%
   %weight_format = config.get @ggml.get_rows_f32.weight_format : index
   %next_format = config.get @ggml.get_rows_f32.next_format : index
   %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048), le(%token_count, %token_capacity)] : index
-  %bounded_row_count = index.assume %row_count [range(%row_count, 1, 262144)] : index
+  %bounded_row_count = index.assume %row_count [range(%row_count, 1, 262208)] : index
   %bounded_hidden_size = index.assume %hidden_size [range(%hidden_size, 256, 32768), mul(%hidden_size, 256), le(%hidden_size, %hidden_capacity)] : index
   %channel_tile = kernel.workgroup.id<x> : index
   %token0 = kernel.workgroup.id<y> : index

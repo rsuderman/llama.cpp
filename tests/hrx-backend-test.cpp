@@ -2610,11 +2610,12 @@ static bool manual_token_embedding_graph_is_supported(ggml_context * ctx,
     return ggml::hrx::DispatchScheduler::can_schedule_graph(graph, test_dispatch_target());
 }
 
-static void schedule_qwen_token_embedding_command(ggml_context * ctx,
-                                                  ggml_tensor *  output,
-                                                  int64_t        expected_token_count,
-                                                  int64_t        expected_vocabulary_count,
-                                                  ggml_type      expected_weight_type) {
+static void schedule_token_embedding_command(ggml_context * ctx,
+                                             ggml_tensor *  output,
+                                             int64_t        expected_token_count,
+                                             int64_t        expected_vocabulary_count,
+                                             int64_t        expected_hidden_size,
+                                             const char *   expected_weight_format) {
     ggml_cgraph * graph = ggml_new_graph(ctx);
     REQUIRE(graph != nullptr);
     ggml_build_forward_expand(graph, output);
@@ -2634,9 +2635,8 @@ static void schedule_qwen_token_embedding_command(ggml_context * ctx,
     REQUIRE(kernel_name == "loom_libs:ggml_get_rows_f32");
     REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == expected_token_count);
     REQUIRE(dispatch.kernel.integer_parameters.at("row_count") == expected_vocabulary_count);
-    REQUIRE(dispatch.kernel.integer_parameters.at("hidden_size") == 2048);
-    require_compile_parameter(dispatch, "ggml.get_rows_f32.weight_format",
-                              std::to_string(matmul_weight_format_config(expected_weight_type)));
+    REQUIRE(dispatch.kernel.integer_parameters.at("hidden_size") == expected_hidden_size);
+    require_compile_parameter(dispatch, "ggml.get_rows_f32.weight_format", expected_weight_format);
     REQUIRE(dispatch.bindings.size() == 3);
 
     const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
@@ -2664,7 +2664,7 @@ static void run_qwen_token_embedding_dispatch_checks() {
         REQUIRE(token_ids != nullptr);
         ggml_tensor * output = ggml_get_rows(ctx, weight, token_ids);
         REQUIRE(output != nullptr);
-        schedule_qwen_token_embedding_command(ctx, output, 1, 151936, GGML_TYPE_Q4_K);
+        schedule_token_embedding_command(ctx, output, 1, 151936, 2048, "4");
     }
     {
         ggml_tensor * weight    = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 2048, 151936);
@@ -2673,7 +2673,7 @@ static void run_qwen_token_embedding_dispatch_checks() {
         REQUIRE(token_ids != nullptr);
         ggml_tensor * output = ggml_get_rows(ctx, weight, token_ids);
         REQUIRE(output != nullptr);
-        schedule_qwen_token_embedding_command(ctx, output, 13, 151936, GGML_TYPE_Q4_K);
+        schedule_token_embedding_command(ctx, output, 13, 151936, 2048, "4");
     }
     {
         ggml_tensor * weight    = ggml_new_tensor_2d(ctx, GGML_TYPE_BF16, 2048, 151936);
@@ -2682,7 +2682,25 @@ static void run_qwen_token_embedding_dispatch_checks() {
         REQUIRE(token_ids != nullptr);
         ggml_tensor * output = ggml_get_rows(ctx, weight, token_ids);
         REQUIRE(output != nullptr);
-        schedule_qwen_token_embedding_command(ctx, output, 5, 151936, GGML_TYPE_BF16);
+        schedule_token_embedding_command(ctx, output, 5, 151936, 2048, "17");
+    }
+    {
+        ggml_tensor * weight    = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_0, 3840, 262208);
+        ggml_tensor * token_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 64);
+        REQUIRE(weight != nullptr);
+        REQUIRE(token_ids != nullptr);
+        ggml_tensor * output = ggml_get_rows(ctx, weight, token_ids);
+        REQUIRE(output != nullptr);
+        schedule_token_embedding_command(ctx, output, 64, 262208, 3840, "80");
+    }
+    {
+        ggml_tensor * weight    = ggml_new_tensor_2d(ctx, GGML_TYPE_Q6_K, 3840, 262208);
+        ggml_tensor * token_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 64);
+        REQUIRE(weight != nullptr);
+        REQUIRE(token_ids != nullptr);
+        ggml_tensor * output = ggml_get_rows(ctx, weight, token_ids);
+        REQUIRE(output != nullptr);
+        schedule_token_embedding_command(ctx, output, 64, 262208, 3840, "6");
     }
 
     REQUIRE(
