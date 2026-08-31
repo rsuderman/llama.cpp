@@ -1,6 +1,7 @@
 #include "dispatch-get-rows.h"
 
 #include "../qwen/dispatch-llm-profiles.h"
+#include "dispatch-mul-mat-weight-format.h"
 #include "ggml.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
@@ -18,11 +19,6 @@ static constexpr KernelCatalogRef kGetRowsF32NextKernel = GGML_HRX_KERNEL_REF("l
 static constexpr int64_t          kQwenHiddenSize       = kQwen30BMoeDispatchProfile.hidden_size;
 static constexpr int64_t          kQwenVocabularyCount  = 151936;
 static constexpr int64_t          kMaxGetRowsRowCount   = 262208;
-
-struct FormatConfig {
-    ggml_type type  = GGML_TYPE_COUNT;
-    int64_t   value = 0;
-};
 
 static const Value * graph_value(const Graph & graph, ValueId id) {
     return graph.values().find(id);
@@ -50,50 +46,6 @@ static bool is_supported_row_count(int64_t row_count) {
 
 static std::string to_config_value(int64_t value) {
     return std::to_string(value);
-}
-
-static bool format_config_for_type(ggml_type type, FormatConfig & config) {
-    switch (type) {
-        case GGML_TYPE_Q4_K:
-            config = { type, 4 };
-            return true;
-        case GGML_TYPE_Q6_K:
-            config = { type, 6 };
-            return true;
-        case GGML_TYPE_Q8_0:
-            config = { type, 80 };
-            return true;
-        case GGML_TYPE_Q8_1:
-            config = { type, 81 };
-            return true;
-        case GGML_TYPE_F16:
-            config = { type, 16 };
-            return true;
-        case GGML_TYPE_BF16:
-            config = { type, 30 };
-            return true;
-        case GGML_TYPE_F32:
-            config = { type, 32 };
-            return true;
-        default:
-            return false;
-    }
-}
-
-static bool next_format_config_for_type(ggml_type type, FormatConfig & config) {
-    switch (type) {
-        case GGML_TYPE_Q8_1:
-            config = { type, 81 };
-            return true;
-        case GGML_TYPE_F16:
-            config = { type, 16 };
-            return true;
-        case GGML_TYPE_F32:
-            config = { type, 32 };
-            return true;
-        default:
-            return false;
-    }
 }
 
 static size_t row_byte_count(ggml_type type, int64_t token_count, int64_t hidden_size) {
@@ -195,12 +147,12 @@ static GetRowsMatch match_get_rows_f32(const Graph & graph, const GraphNode * no
         return match;
     }
 
-    const Value * weight = graph_value(graph, node->inputs[0]);
-    const Value * ids    = graph_value(graph, node->inputs[1]);
-    const Value * output = graph_value(graph, node->output);
-    FormatConfig  weight_format;
+    const Value *            weight = graph_value(graph, node->inputs[0]);
+    const Value *            ids    = graph_value(graph, node->inputs[1]);
+    const Value *            output = graph_value(graph, node->output);
+    CommonMulMatWeightFormat weight_format;
     if (weight == nullptr || ids == nullptr || output == nullptr ||
-        !format_config_for_type(weight->type, weight_format) || ids->type != GGML_TYPE_I32 ||
+        !common_mul_mat_format_for_type(weight->type, weight_format) || ids->type != GGML_TYPE_I32 ||
         output->type != GGML_TYPE_F32 || !weight->contiguous || !ids->contiguous || !output->contiguous ||
         !is_2d(*weight) || !is_1d_or_2d_column(*ids) || !is_2d(*output)) {
         return {};
@@ -217,7 +169,7 @@ static GetRowsMatch match_get_rows_f32(const Graph & graph, const GraphNode * no
     match.ids                 = ids;
     match.weight              = weight;
     match.output              = output;
-    match.weight_format_value = weight_format.value;
+    match.weight_format_value = common_mul_mat_format_config_value(weight_format);
     match.token_count         = token_count;
     match.row_count           = row_count;
     match.hidden_size         = hidden_size;
@@ -233,15 +185,16 @@ static Dispatch make_get_rows_dispatch(const GetRowsMatch & match) {
     return dispatch;
 }
 
-static Dispatch make_get_rows_next_dispatch(const GetRowsMatch & match,
-                                            const FormatConfig & next_format,
-                                            ValueId              next_value,
-                                            size_t               next_byte_count) {
+static Dispatch make_get_rows_next_dispatch(const GetRowsMatch &     match,
+                                            CommonMulMatWeightFormat next_format,
+                                            ValueId                  next_value,
+                                            size_t                   next_byte_count) {
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kGetRowsF32NextKernel);
     add_common_integer_parameters(dispatch, match);
     add_common_compile_parameters(dispatch, match);
-    dispatch.kernel.compile_parameters.emplace("ggml.get_rows_f32.next_format", to_config_value(next_format.value));
+    dispatch.kernel.compile_parameters.emplace("ggml.get_rows_f32.next_format",
+                                               to_config_value(common_mul_mat_format_config_value(next_format)));
     add_primary_bindings(dispatch, match);
     dispatch.bindings.push_back({ next_value, 0, next_byte_count });
     return dispatch;
@@ -284,8 +237,8 @@ static bool match_get_rows_f32_next_dispatch(const DispatchMatchContext & contex
     }
 
     for (ggml_type type : demands) {
-        FormatConfig next_format;
-        if (!next_format_config_for_type(type, next_format)) {
+        CommonMulMatWeightFormat next_format;
+        if (!common_mul_mat_alternate_format_for_type(type, next_format)) {
             return false;
         }
 

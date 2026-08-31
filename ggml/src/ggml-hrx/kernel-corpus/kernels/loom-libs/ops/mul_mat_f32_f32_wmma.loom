@@ -9,6 +9,7 @@
 //
 // Weight contracts use the unmodified GGUF layout:
 //   Q4_K: [output channel][input size / 256][144 bytes]
+//   Q5_K: [output channel][input size / 256][176 bytes]
 //   Q6_K: [output channel][input size / 256][210 bytes]
 //   Q8_0: [output channel][input size / 32][34 bytes]
 //   Q8_1: [output channel][input size / 32][36 bytes]

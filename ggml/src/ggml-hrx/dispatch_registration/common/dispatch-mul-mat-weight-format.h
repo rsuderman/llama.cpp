@@ -8,6 +8,7 @@ namespace ggml::hrx {
 
 enum class CommonMulMatWeightFormat {
     Q4K,
+    Q5K,
     Q6K,
     Q8_0,
     Q8_1,
@@ -20,6 +21,9 @@ inline bool common_mul_mat_format_for_type(ggml_type type, CommonMulMatWeightFor
     switch (type) {
         case GGML_TYPE_Q4_K:
             format = CommonMulMatWeightFormat::Q4K;
+            return true;
+        case GGML_TYPE_Q5_K:
+            format = CommonMulMatWeightFormat::Q5K;
             return true;
         case GGML_TYPE_Q6_K:
             format = CommonMulMatWeightFormat::Q6K;
@@ -48,6 +52,8 @@ inline int64_t common_mul_mat_format_config_value(CommonMulMatWeightFormat forma
     switch (format) {
         case CommonMulMatWeightFormat::Q4K:
             return 4;
+        case CommonMulMatWeightFormat::Q5K:
+            return 5;
         case CommonMulMatWeightFormat::Q6K:
             return 6;
         case CommonMulMatWeightFormat::Q8_0:
@@ -57,11 +63,27 @@ inline int64_t common_mul_mat_format_config_value(CommonMulMatWeightFormat forma
         case CommonMulMatWeightFormat::F16:
             return 16;
         case CommonMulMatWeightFormat::BF16:
-            return 17;
+            return 30;
         case CommonMulMatWeightFormat::F32:
             return 32;
     }
     return 0;
+}
+
+inline bool common_mul_mat_dense_float_format(CommonMulMatWeightFormat format) {
+    return format == CommonMulMatWeightFormat::F16 || format == CommonMulMatWeightFormat::BF16 ||
+           format == CommonMulMatWeightFormat::F32;
+}
+
+inline bool common_mul_mat_alternate_format_for_type(ggml_type type, CommonMulMatWeightFormat & format) {
+    switch (type) {
+        case GGML_TYPE_Q8_1:
+        case GGML_TYPE_F16:
+        case GGML_TYPE_F32:
+            return common_mul_mat_format_for_type(type, format);
+        default:
+            return false;
+    }
 }
 
 }  // namespace ggml::hrx

@@ -1,5 +1,6 @@
 #include "dispatch-attention-qkv.h"
 
+#include "../common/dispatch-mul-mat-weight-format.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
@@ -65,69 +66,6 @@ static bool same_shape(const Value & lhs, const Value & rhs) {
         }
     }
     return true;
-}
-
-enum class AttentionWeightFormat {
-    Q4K,
-    Q6K,
-    Q8_0,
-    Q8_1,
-    F16,
-    BF16,
-    F32,
-};
-
-static bool format_for_type(ggml_type type, AttentionWeightFormat & format) {
-    switch (type) {
-        case GGML_TYPE_Q4_K:
-            format = AttentionWeightFormat::Q4K;
-            return true;
-        case GGML_TYPE_Q6_K:
-            format = AttentionWeightFormat::Q6K;
-            return true;
-        case GGML_TYPE_Q8_0:
-            format = AttentionWeightFormat::Q8_0;
-            return true;
-        case GGML_TYPE_Q8_1:
-            format = AttentionWeightFormat::Q8_1;
-            return true;
-        case GGML_TYPE_F16:
-            format = AttentionWeightFormat::F16;
-            return true;
-        case GGML_TYPE_BF16:
-            format = AttentionWeightFormat::BF16;
-            return true;
-        case GGML_TYPE_F32:
-            format = AttentionWeightFormat::F32;
-            return true;
-        default:
-            return false;
-    }
-}
-
-static int64_t format_config_value(AttentionWeightFormat format) {
-    switch (format) {
-        case AttentionWeightFormat::Q4K:
-            return 4;
-        case AttentionWeightFormat::Q6K:
-            return 6;
-        case AttentionWeightFormat::Q8_0:
-            return 80;
-        case AttentionWeightFormat::Q8_1:
-            return 81;
-        case AttentionWeightFormat::F16:
-            return 16;
-        case AttentionWeightFormat::BF16:
-            return 17;
-        case AttentionWeightFormat::F32:
-            return 32;
-    }
-    return 0;
-}
-
-static bool is_dense_float_weight_format(AttentionWeightFormat format) {
-    return format == AttentionWeightFormat::F16 || format == AttentionWeightFormat::BF16 ||
-           format == AttentionWeightFormat::F32;
 }
 
 static std::string to_config_value(int64_t value) {
@@ -229,13 +167,13 @@ static const GraphNode * find_only_consumer_after_layout_aliases(const DispatchM
 }
 
 struct AttentionMatMulMatch {
-    const Value *         input         = nullptr;
-    const Value *         weight        = nullptr;
-    const Value *         output        = nullptr;
-    int64_t               input_size    = 0;
-    int64_t               output_size   = 0;
-    int64_t               token_count   = 0;
-    AttentionWeightFormat weight_format = AttentionWeightFormat::Q4K;
+    const Value *            input         = nullptr;
+    const Value *            weight        = nullptr;
+    const Value *            output        = nullptr;
+    int64_t                  input_size    = 0;
+    int64_t                  output_size   = 0;
+    int64_t                  token_count   = 0;
+    CommonMulMatWeightFormat weight_format = CommonMulMatWeightFormat::Q4K;
 
     bool matched() const { return input != nullptr && weight != nullptr && output != nullptr; }
 };
@@ -302,8 +240,8 @@ static AttentionMatMulMatch match_attention_matmul_any_format(const Graph & grap
         return {};
     }
 
-    AttentionWeightFormat format = AttentionWeightFormat::Q4K;
-    if (!format_for_type(weight->type, format)) {
+    CommonMulMatWeightFormat format = CommonMulMatWeightFormat::Q4K;
+    if (!common_mul_mat_format_for_type(weight->type, format)) {
         return {};
     }
 
@@ -477,7 +415,7 @@ static AttentionQkvMatch match_attention_qkv_projection(const DispatchMatchConte
     }
 
     if (consumer->op == GGML_OP_SET_ROWS) {
-        if (!is_dense_float_weight_format(root.weight_format)) {
+        if (!common_mul_mat_dense_float_format(root.weight_format)) {
             return {};
         }
         match.set_rows = match_attention_set_rows(context.graph, consumer, after_projection);
@@ -529,8 +467,9 @@ static void add_attention_qkv_compile_parameters(Dispatch & dispatch, const Atte
     dispatch.kernel.compile_parameters.emplace("llm.attention_qkv.input_size", to_config_value(match.root.input_size));
     dispatch.kernel.compile_parameters.emplace("llm.attention_qkv.output_size",
                                                to_config_value(match.root.output_size));
-    dispatch.kernel.compile_parameters.emplace("llm.attention_qkv.weight_format",
-                                               to_config_value(format_config_value(match.root.weight_format)));
+    dispatch.kernel.compile_parameters.emplace(
+        "llm.attention_qkv.weight_format",
+        to_config_value(common_mul_mat_format_config_value(match.root.weight_format)));
     if (match.kind == AttentionQkvProjectionKind::Query || match.kind == AttentionQkvProjectionKind::Key) {
         dispatch.kernel.compile_parameters.emplace("llm.attention_qkv.head_size",
                                                    to_config_value(match.rope.head_size));
