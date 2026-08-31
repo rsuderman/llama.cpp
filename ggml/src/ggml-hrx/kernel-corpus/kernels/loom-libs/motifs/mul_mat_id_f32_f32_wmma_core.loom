@@ -11,7 +11,9 @@ template.decl @ggml.mul_mat_id_f32_f32_wmma.publish_vector4(%arg0: i1, %arg1: in
 
 func.decl @ggml_dequant_weight_tile_bytes(%weight_format: index) -> (offset)
 
-func.decl @ggml_dequant_f16_vector4(%weight_format: index, %weight: buffer, %row_byte_base: offset, %input_size: index, %quant_block: index, %quant_group: index, %packet: index, %k: index) -> (vector<4xf16>)
+func.decl @ggml_iq4nl_table_i8() -> (vector<16xi8>)
+
+func.decl @ggml_dequant_f16_vector4(%iq4nl_table: vector<16xi8>, %weight_format: index, %weight: buffer, %row_byte_base: offset, %input_size: index, %quant_block: index, %quant_group: index, %packet: index, %k: index) -> (vector<4xf16>)
 
 // Common descriptor packing uses a 9-bit expert ordinal, a 6-bit 32-row
 // partition ordinal, and a 5-bit row count minus one.
@@ -156,6 +158,7 @@ template.def<@ggml.mul_mat_id_f32_f32_wmma.core> device @ggml_mul_mat_id_f32_f32
     %init01 = vector.fragment<init> %zero_accumulator shape [%m, %n] : vector<8xf16>
     %init10 = vector.fragment<init> %zero_accumulator shape [%m, %n] : vector<8xf16>
     %init11 = vector.fragment<init> %zero_accumulator shape [%m, %n] : vector<8xf16>
+    %iq4nl_table = func.call @ggml_iq4nl_table_i8() : () -> (vector<16xi8>)
     %result00, %result01, %result10, %result11 = scf.for %quant_block = [%c0 to %quant_block_count step %c1](%block_acc00 = %init00 : vector<8xf16>, %block_acc01 = %init01 : vector<8xf16>, %block_acc10 = %init10 : vector<8xf16>, %block_acc11 = %init11 : vector<8xf16>) -> (vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>) {
       %block_result00, %block_result01, %block_result10, %block_result11 = scf.for %quant_group = [%c0 to %c8 step %c1](%acc00 = %block_acc00 : vector<8xf16>, %acc01 = %block_acc01 : vector<8xf16>, %acc10 = %block_acc10 : vector<8xf16>, %acc11 = %block_acc11 : vector<8xf16>) -> (vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>) {
         %block_k_base = index.mul %quant_block, %c256 : index
@@ -170,7 +173,7 @@ template.def<@ggml.mul_mat_id_f32_f32_wmma.core> device @ggml_mul_mat_id_f32_f32
             %channel_byte_add = index.scale %channel, %weight_row_bytes : index, offset -> offset
             %row_byte_base = index.add %expert_byte_base, %channel_byte_add : offset
             %weight_k = index.add %k_origin, %load_k : index
-            %decoded = func.call @ggml_dequant_f16_vector4(%weight_format, %weight_noalias, %row_byte_base, %input_size, %quant_block, %quant_group, %load_packet, %weight_k) : (index, buffer, offset, index, index, index, index, index) -> (vector<4xf16>)
+            %decoded = func.call @ggml_dequant_f16_vector4(%iq4nl_table, %weight_format, %weight_noalias, %row_byte_base, %input_size, %quant_block, %quant_group, %load_packet, %weight_k) : (vector<16xi8>, index, buffer, offset, index, index, index, index, index) -> (vector<4xf16>)
             scf.yield %decoded : vector<4xf16>
           } else {
             scf.yield %c0_f16x4 : vector<4xf16>

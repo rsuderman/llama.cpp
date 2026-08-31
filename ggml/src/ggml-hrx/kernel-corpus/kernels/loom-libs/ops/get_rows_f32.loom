@@ -2,12 +2,12 @@
 //
 // One workitem publishes four adjacent output channels for one requested row.
 // Storage-format-specific row decoding is delegated to the common dequant
-// motif so Q4_K, Q5_K, Q6_K, Q8_0, Q8_1, F16, BF16, and F32 share the same gather shape.
+// motif so Q4_K, Q5_K, Q6_K, IQ4_XS, Q8_0, Q8_1, F16, BF16, and F32 share the same gather shape.
 template.decl @ggml.get_rows_f32.body(%token_count: index, %row_count: index, %hidden_size: index, %token_ids: buffer, %weight: buffer, %output: buffer)
 
 template.decl @ggml.get_rows_f32.launch(%hidden_capacity: index, %token_capacity: index) -> (index, index, index, index)
 
-template.decl @ggml.get_rows_f32.load_vector4(%weight_format: index, %publish: i1, %valid_token_id: i1, %token: index, %row_count: index, %hidden_size: index, %channel: index, %weight: buffer) -> (vector<4xf32>)
+template.decl @ggml.get_rows_f32.load_vector4(%iq4nl_table: vector<16xi8>, %weight_format: index, %publish: i1, %valid_token_id: i1, %token: index, %row_count: index, %hidden_size: index, %channel: index, %weight: buffer) -> (vector<4xf32>)
 
 template.decl @ggml.get_rows_f32.next_body(%token_count: index, %row_count: index, %hidden_size: index, %token_ids: buffer, %weight: buffer, %output: buffer, %next_output: buffer)
 
@@ -27,9 +27,11 @@ config.decl @ggml.get_rows_f32.next_format : %value: index where [range(%value, 
 
 func.decl @ggml_dequant_weight_tile_bytes(%weight_format: index) -> (offset)
 
-func.decl @ggml_dequant_f32_vector4(%weight_format: index, %weight: buffer, %row_byte_base: offset, %input_size: index, %quant_block: index, %quant_group: index, %packet: index, %k: index) -> (vector<4xf32>)
+func.decl @ggml_iq4nl_table_i8() -> (vector<16xi8>)
 
-template.def<@ggml.get_rows_f32.load_vector4> device @ggml_get_rows_f32_load_vector4(%weight_format: index, %publish: i1, %valid_token_id: i1, %token: index, %row_count: index, %hidden_size: index, %channel: index, %weight: buffer) -> (vector<4xf32>) {
+func.decl @ggml_dequant_f32_vector4(%iq4nl_table: vector<16xi8>, %weight_format: index, %weight: buffer, %row_byte_base: offset, %input_size: index, %quant_block: index, %quant_group: index, %packet: index, %k: index) -> (vector<4xf32>)
+
+template.def<@ggml.get_rows_f32.load_vector4> device @ggml_get_rows_f32_load_vector4(%iq4nl_table: vector<16xi8>, %weight_format: index, %publish: i1, %valid_token_id: i1, %token: index, %row_count: index, %hidden_size: index, %channel: index, %weight: buffer) -> (vector<4xf32>) {
   %c4 = index.constant 4 : index
   %c32 = index.constant 32 : index
   %c256 = index.constant 256 : index
@@ -46,7 +48,7 @@ template.def<@ggml.get_rows_f32.load_vector4> device @ggml_get_rows_f32_load_vec
     %quant_group = index.div %block_channel, %c32 : index
     %group_channel = index.rem %block_channel, %c32 : index
     %quant_packet = index.div %group_channel, %c4 : index
-    %values = func.call @ggml_dequant_f32_vector4(%weight_format, %weight, %row_byte_base, %hidden_size, %quant_block, %quant_group, %quant_packet, %channel) : (index, buffer, offset, index, index, index, index, index) -> (vector<4xf32>)
+    %values = func.call @ggml_dequant_f32_vector4(%iq4nl_table, %weight_format, %weight, %row_byte_base, %hidden_size, %quant_block, %quant_group, %quant_packet, %channel) : (vector<16xi8>, index, buffer, offset, index, index, index, index, index) -> (vector<4xf32>)
     %row_values = scf.select %valid_token_id, %values, %c0_f32x4 : vector<4xf32>
     scf.yield %row_values : vector<4xf32>
   } else {
@@ -86,7 +88,8 @@ template.def<@ggml.get_rows_f32.body> device @ggml_get_rows_f32_body(%token_coun
   %safe_token_id_i32 = scf.select %token_id_nonnegative, %token_id_raw, %c0_i32 : i32
   %token_id = index.cast %safe_token_id_i32 : i32 to index
   %channel = index.mul %packet, %c4 : index
-  %values = template.apply<@ggml.get_rows_f32.load_vector4>(%weight_format, %publish, %token_id_nonnegative, %token_id, %bounded_row_count, %bounded_hidden_size, %channel, %weight_noalias) : (index, i1, i1, index, index, index, index, buffer) -> (vector<4xf32>)
+  %iq4nl_table = func.call @ggml_iq4nl_table_i8() : () -> (vector<16xi8>)
+  %values = template.apply<@ggml.get_rows_f32.load_vector4>(%iq4nl_table, %weight_format, %publish, %token_id_nonnegative, %token_id, %bounded_row_count, %bounded_hidden_size, %channel, %weight_noalias) : (vector<16xi8>, index, i1, i1, index, index, index, index, buffer) -> (vector<4xf32>)
   template.apply<@ggml.publish_f32.f32_vector4>(%publish, %token, %channel, %bounded_token_count, %bounded_hidden_size, %values, %output_noalias) : (i1, index, index, index, index, vector<4xf32>, buffer)
   template.return
 }
@@ -125,7 +128,8 @@ template.def<@ggml.get_rows_f32.next_body> device @ggml_get_rows_f32_next_body(%
   %safe_token_id_i32 = scf.select %token_id_nonnegative, %token_id_raw, %c0_i32 : i32
   %token_id = index.cast %safe_token_id_i32 : i32 to index
   %channel = index.mul %packet, %c4 : index
-  %values = template.apply<@ggml.get_rows_f32.load_vector4>(%weight_format, %publish, %token_id_nonnegative, %token_id, %bounded_row_count, %bounded_hidden_size, %channel, %weight_noalias) : (index, i1, i1, index, index, index, index, buffer) -> (vector<4xf32>)
+  %iq4nl_table = func.call @ggml_iq4nl_table_i8() : () -> (vector<16xi8>)
+  %values = template.apply<@ggml.get_rows_f32.load_vector4>(%iq4nl_table, %weight_format, %publish, %token_id_nonnegative, %token_id, %bounded_row_count, %bounded_hidden_size, %channel, %weight_noalias) : (vector<16xi8>, index, i1, i1, index, index, index, index, buffer) -> (vector<4xf32>)
   template.apply<@ggml.publish_f32.f32_vector4>(%publish, %token, %channel, %bounded_token_count, %bounded_hidden_size, %values, %output_noalias) : (i1, index, index, index, index, vector<4xf32>, buffer)
   %scratch = buffer.alloca<workgroup> align(16) %scratch_bytes : buffer
   %scratch_values = buffer.view %scratch[%c0_offset] : buffer -> view<256xf32>

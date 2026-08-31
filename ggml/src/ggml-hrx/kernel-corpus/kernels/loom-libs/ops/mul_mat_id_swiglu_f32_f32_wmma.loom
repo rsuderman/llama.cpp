@@ -23,7 +23,9 @@ config.decl @ggml.workload.token_capacity : %value: index where [range(%value, 1
 
 func.decl @ggml_dequant_weight_tile_bytes(%weight_format: index) -> (offset)
 
-func.decl @ggml_dequant_f16_vector4(%weight_format: index, %weight: buffer, %row_byte_base: offset, %input_size: index, %quant_block: index, %quant_group: index, %packet: index, %k: index) -> (vector<4xf16>)
+func.decl @ggml_iq4nl_table_i8() -> (vector<16xi8>)
+
+func.decl @ggml_dequant_f16_vector4(%iq4nl_table: vector<16xi8>, %weight_format: index, %weight: buffer, %row_byte_base: offset, %input_size: index, %quant_block: index, %quant_group: index, %packet: index, %k: index) -> (vector<4xf16>)
 
 func.def inline @ggml_moe_unpack_expert_partition_descriptor(%descriptor: i32) -> (index, index, index) {
   %c1_i32 = scalar.constant 1 : i32
@@ -189,6 +191,7 @@ template.def<@ggml.mul_mat_id_swiglu.body> device @ggml_mul_mat_id_swiglu_f32_f3
     %init01 = vector.fragment<init> %zero_accumulator shape [%m, %n] : vector<8xf16>
     %init10 = vector.fragment<init> %zero_accumulator shape [%m, %n] : vector<8xf16>
     %init11 = vector.fragment<init> %zero_accumulator shape [%m, %n] : vector<8xf16>
+    %iq4nl_table = func.call @ggml_iq4nl_table_i8() : () -> (vector<16xi8>)
     %gate_result00, %gate_result01, %gate_result10, %gate_result11, %up_result00, %up_result01, %up_result10, %up_result11 = scf.for %quant_block = [%c0 to %quant_block_count step %c1](%gate_block_acc00 = %init00 : vector<8xf16>, %gate_block_acc01 = %init01 : vector<8xf16>, %gate_block_acc10 = %init10 : vector<8xf16>, %gate_block_acc11 = %init11 : vector<8xf16>, %up_block_acc00 = %init00 : vector<8xf16>, %up_block_acc01 = %init01 : vector<8xf16>, %up_block_acc10 = %init10 : vector<8xf16>, %up_block_acc11 = %init11 : vector<8xf16>) -> (vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>) {
       %gate_block_result00, %gate_block_result01, %gate_block_result10, %gate_block_result11, %up_block_result00, %up_block_result01, %up_block_result10, %up_block_result11 = scf.for %quant_group = [%c0 to %c8 step %c1](%gate_acc00 = %gate_block_acc00 : vector<8xf16>, %gate_acc01 = %gate_block_acc01 : vector<8xf16>, %gate_acc10 = %gate_block_acc10 : vector<8xf16>, %gate_acc11 = %gate_block_acc11 : vector<8xf16>, %up_acc00 = %up_block_acc00 : vector<8xf16>, %up_acc01 = %up_block_acc01 : vector<8xf16>, %up_acc10 = %up_block_acc10 : vector<8xf16>, %up_acc11 = %up_block_acc11 : vector<8xf16>) -> (vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>) {
         %block_k_base = index.mul %quant_block, %c256 : index
@@ -203,7 +206,7 @@ template.def<@ggml.mul_mat_id_swiglu.body> device @ggml_mul_mat_id_swiglu_f32_f3
             %channel_byte_add = index.scale %channel, %gate_weight_row_bytes : index, offset -> offset
             %row_byte_base = index.add %gate_expert_byte_base, %channel_byte_add : offset
             %weight_k = index.add %k_origin, %load_k : index
-            %decoded = func.call @ggml_dequant_f16_vector4(%gate_weight_format, %gate_weight_noalias, %row_byte_base, %input_size, %quant_block, %quant_group, %load_packet, %weight_k) : (index, buffer, offset, index, index, index, index, index) -> (vector<4xf16>)
+            %decoded = func.call @ggml_dequant_f16_vector4(%iq4nl_table, %gate_weight_format, %gate_weight_noalias, %row_byte_base, %input_size, %quant_block, %quant_group, %load_packet, %weight_k) : (vector<16xi8>, index, buffer, offset, index, index, index, index, index) -> (vector<4xf16>)
             scf.yield %decoded : vector<4xf16>
           } else {
             scf.yield %c0_f16x4 : vector<4xf16>
@@ -212,7 +215,7 @@ template.def<@ggml.mul_mat_id_swiglu.body> device @ggml_mul_mat_id_swiglu_f32_f3
             %channel_byte_add = index.scale %channel, %up_weight_row_bytes : index, offset -> offset
             %row_byte_base = index.add %up_expert_byte_base, %channel_byte_add : offset
             %weight_k = index.add %k_origin, %load_k : index
-            %decoded = func.call @ggml_dequant_f16_vector4(%up_weight_format, %up_weight_noalias, %row_byte_base, %input_size, %quant_block, %quant_group, %load_packet, %weight_k) : (index, buffer, offset, index, index, index, index, index) -> (vector<4xf16>)
+            %decoded = func.call @ggml_dequant_f16_vector4(%iq4nl_table, %up_weight_format, %up_weight_noalias, %row_byte_base, %input_size, %quant_block, %quant_group, %load_packet, %weight_k) : (vector<16xi8>, index, buffer, offset, index, index, index, index, index) -> (vector<4xf16>)
             scf.yield %decoded : vector<4xf16>
           } else {
             scf.yield %c0_f16x4 : vector<4xf16>
