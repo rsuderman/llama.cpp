@@ -70,7 +70,7 @@ static bool format_config_for_type(ggml_type type, FormatConfig & config) {
             config = { type, 16 };
             return true;
         case GGML_TYPE_BF16:
-            config = { type, 17 };
+            config = { type, 30 };
             return true;
         case GGML_TYPE_F32:
             config = { type, 32 };

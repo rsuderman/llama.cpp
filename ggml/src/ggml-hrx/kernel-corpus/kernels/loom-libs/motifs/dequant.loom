@@ -241,7 +241,7 @@ func.def inline @ggml_dequant_weight_tile_bytes(%weight_format: index) -> (offse
   %c4 = index.constant 4 : index
   %c6 = index.constant 6 : index
   %c16 = index.constant 16 : index
-  %c17 = index.constant 17 : index
+  %bf16_format = index.constant 30 : index
   %c32 = index.constant 32 : index
   %q8_0_format = index.constant 80 : index
   %q8_1_format = index.constant 81 : index
@@ -258,7 +258,7 @@ func.def inline @ggml_dequant_weight_tile_bytes(%weight_format: index) -> (offse
   %is_q8_0 = index.cmp eq, %weight_format, %q8_0_format : index
   %is_q8_1 = index.cmp eq, %weight_format, %q8_1_format : index
   %is_f16 = index.cmp eq, %weight_format, %c16 : index
-  %is_bf16 = index.cmp eq, %weight_format, %c17 : index
+  %is_bf16 = index.cmp eq, %weight_format, %bf16_format : index
   %is_f32 = index.cmp eq, %weight_format, %c32 : index
   %selected_q4 = scf.select %is_q4, %q4_tile_bytes, %zero_bytes : offset
   %selected_q6 = scf.select %is_q6, %q6_tile_bytes, %selected_q4 : offset
@@ -349,7 +349,7 @@ func.def inline @ggml_dequant_f32_vector4(%weight_format: index, %weight: buffer
   %c6 = index.constant 6 : index
   %c8 = index.constant 8 : index
   %c16 = index.constant 16 : index
-  %c17 = index.constant 17 : index
+  %bf16_format = index.constant 30 : index
   %c32 = index.constant 32 : index
   %q8_0_format = index.constant 80 : index
   %q8_1_format = index.constant 81 : index
@@ -359,7 +359,7 @@ func.def inline @ggml_dequant_f32_vector4(%weight_format: index, %weight: buffer
   %is_q8_0 = index.cmp eq, %weight_format, %q8_0_format : index
   %is_q8_1 = index.cmp eq, %weight_format, %q8_1_format : index
   %is_f16 = index.cmp eq, %weight_format, %c16 : index
-  %is_bf16 = index.cmp eq, %weight_format, %c17 : index
+  %is_bf16 = index.cmp eq, %weight_format, %bf16_format : index
   %is_f32 = index.cmp eq, %weight_format, %c32 : index
   %q8_block_base = index.mul %quant_block, %c8 : index
   %q8_block = index.add %q8_block_base, %quant_group : index

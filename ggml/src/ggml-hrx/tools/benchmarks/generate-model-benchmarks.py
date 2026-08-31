@@ -99,6 +99,8 @@ def ceil_div(value: int, divisor: int) -> int:
 def tensor_type_for_format(format_value: int) -> str | None:
     if format_value == 16:
         return "f16"
+    if format_value == 30:
+        return "bf16"
     if format_value == 32:
         return "f32"
     return None

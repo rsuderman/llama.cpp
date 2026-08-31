@@ -579,7 +579,7 @@ static std::vector<uint8_t> make_matmul_weight_bytes(ggml_type type, int64_t row
     if (type == GGML_TYPE_BF16) {
         (void) seed;
         const std::vector<ggml_bf16_t> weights(static_cast<size_t>(row_length * row_count),
-                                               ggml_fp32_to_bf16(0.25f));
+                                               ggml_fp32_to_bf16(0.00390625f));
         std::vector<uint8_t>           bytes(weights.size() * sizeof(ggml_bf16_t));
         std::memcpy(bytes.data(), weights.data(), bytes.size());
         return bytes;
