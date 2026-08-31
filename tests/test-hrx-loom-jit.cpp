@@ -523,6 +523,8 @@ int main() {
                                   mul_mat_id_swiglu_f16_f16_config("6", "6")));
     refs.push_back(compile_kernel(*async_jit, "async-mul-mat-id-swiglu-f16-iq4-xs", swiglu_f16, token_count_workload(4),
                                   mul_mat_id_swiglu_f16_f16_config("23", "23")));
+    refs.push_back(compile_kernel(*async_jit, "async-mul-mat-id-swiglu-f16-q3k", swiglu_f16, token_count_workload(4),
+                                  mul_mat_id_swiglu_f16_f16_config("11", "11")));
     refs.push_back(compile_kernel(*async_jit, "async-mul-mat-id-swiglu-f16-q8-0", swiglu_f16, token_count_workload(4),
                                   mul_mat_id_swiglu_f16_f16_config("80", "80")));
     refs.push_back(compile_kernel(*async_jit, "async-mul-mat-id-swiglu-f16-q8-1", swiglu_f16, token_count_workload(4),

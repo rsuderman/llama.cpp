@@ -8,6 +8,7 @@
 // coalesced F32 publication.
 //
 // Weight contracts use the unmodified GGUF layout:
+//   Q3_K: [output channel][input size / 256][110 bytes]
 //   Q4_K: [output channel][input size / 256][144 bytes]
 //   Q5_K: [output channel][input size / 256][176 bytes]
 //   Q6_K: [output channel][input size / 256][210 bytes]
