@@ -12,6 +12,7 @@
 //   Q4_K: [output channel][input size / 256][144 bytes]
 //   Q5_K: [output channel][input size / 256][176 bytes]
 //   Q6_K: [output channel][input size / 256][210 bytes]
+//   IQ4_NL: [output channel][input size / 32][18 bytes]
 //   IQ4_XS: [output channel][input size / 256][136 bytes]
 //   Q8_0: [output channel][input size / 32][34 bytes]
 //   Q8_1: [output channel][input size / 32][36 bytes]
