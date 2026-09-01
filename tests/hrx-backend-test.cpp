@@ -4106,6 +4106,24 @@ static void run_qwen_matmul_dispatch_checks() {
         schedule_single_matmul_command(ctx, q8_0_decode_output, "loom_libs:ggml_mul_mat_f32_f32_decode_wave64", 1, 2048,
                                        128);
 
+        ggml_tensor * q8_0_gemma_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_0, 3840, 262208);
+        ggml_tensor * q8_0_gemma_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3840, 1);
+        REQUIRE(q8_0_gemma_decode_weight != nullptr);
+        REQUIRE(q8_0_gemma_decode_input != nullptr);
+        ggml_tensor * q8_0_gemma_decode_output = ggml_mul_mat(ctx, q8_0_gemma_decode_weight, q8_0_gemma_decode_input);
+        REQUIRE(q8_0_gemma_decode_output != nullptr);
+        schedule_single_matmul_command(ctx, q8_0_gemma_decode_output, "loom_libs:ggml_mul_mat_f32_f32_decode_wave64", 1,
+                                       3840, 262208);
+
+        ggml_tensor * q8_0_unsafe_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_0, 32768, 262144);
+        ggml_tensor * q8_0_unsafe_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 32768, 1);
+        REQUIRE(q8_0_unsafe_decode_weight != nullptr);
+        REQUIRE(q8_0_unsafe_decode_input != nullptr);
+        ggml_tensor * q8_0_unsafe_decode_output =
+            ggml_mul_mat(ctx, q8_0_unsafe_decode_weight, q8_0_unsafe_decode_input);
+        REQUIRE(q8_0_unsafe_decode_output != nullptr);
+        REQUIRE(!matmul_graph_is_supported(ctx, q8_0_unsafe_decode_output));
+
         ggml_tensor * q8_1_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_1, 2048, 128);
         ggml_tensor * q8_1_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 4);
         REQUIRE(q8_1_weight != nullptr);

@@ -6,6 +6,7 @@
 #include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <sstream>
@@ -51,6 +52,61 @@ inline bool common_is_supported_dense_input_size(int64_t input_size) {
 
 inline bool common_is_supported_dense_output_size(int64_t output_size) {
     return output_size >= 1 && output_size <= 262144;
+}
+
+inline ggml_type common_mul_mat_format_type(CommonMulMatWeightFormat format) {
+    switch (format) {
+        case CommonMulMatWeightFormat::Q3K:
+            return GGML_TYPE_Q3_K;
+        case CommonMulMatWeightFormat::Q4K:
+            return GGML_TYPE_Q4_K;
+        case CommonMulMatWeightFormat::Q5K:
+            return GGML_TYPE_Q5_K;
+        case CommonMulMatWeightFormat::Q6K:
+            return GGML_TYPE_Q6_K;
+        case CommonMulMatWeightFormat::IQ3_S:
+            return GGML_TYPE_IQ3_S;
+        case CommonMulMatWeightFormat::IQ4_NL:
+            return GGML_TYPE_IQ4_NL;
+        case CommonMulMatWeightFormat::IQ4_XS:
+            return GGML_TYPE_IQ4_XS;
+        case CommonMulMatWeightFormat::Q8_0:
+            return GGML_TYPE_Q8_0;
+        case CommonMulMatWeightFormat::Q8_1:
+            return GGML_TYPE_Q8_1;
+        case CommonMulMatWeightFormat::F16:
+            return GGML_TYPE_F16;
+        case CommonMulMatWeightFormat::BF16:
+            return GGML_TYPE_BF16;
+        case CommonMulMatWeightFormat::F32:
+            return GGML_TYPE_F32;
+    }
+    return GGML_TYPE_COUNT;
+}
+
+inline bool common_is_supported_dense_decode_output_size(CommonMulMatWeightFormat format,
+                                                         int64_t                  input_size,
+                                                         int64_t                  output_size) {
+    static constexpr uint64_t kMaxDenseDecodeOutputSize       = 1048576;
+    static constexpr uint64_t kAmdgpuAddressableByteRangeSize = uint64_t{ 1 } << 32;
+
+    if (output_size < 1) {
+        return false;
+    }
+
+    const ggml_type type = common_mul_mat_format_type(format);
+    if (type == GGML_TYPE_COUNT) {
+        return false;
+    }
+
+    const size_t weight_row_size = ggml_row_size(type, input_size);
+    if (weight_row_size == 0) {
+        return false;
+    }
+
+    const uint64_t addressable_output_size = kAmdgpuAddressableByteRangeSize / static_cast<uint64_t>(weight_row_size);
+    const uint64_t max_output_size         = std::min(kMaxDenseDecodeOutputSize, addressable_output_size);
+    return static_cast<uint64_t>(output_size) <= max_output_size;
 }
 
 inline bool common_is_supported_rmsnorm_hidden_size(int64_t hidden_size) {
@@ -213,7 +269,8 @@ inline CommonMulMatMatch common_match_mul_mat_any_format(const Graph &     graph
                                                    common_is_supported_prefill_token_count(token_count);
     if (input->ne[0] != input_size || output->ne[0] != output_size || output->ne[1] != token_count ||
         !token_count_supported || !common_is_supported_dense_input_size(input_size) ||
-        !common_is_supported_dense_output_size(output_size)) {
+        !(decode ? common_is_supported_dense_decode_output_size(format, input_size, output_size) :
+                   common_is_supported_dense_output_size(output_size))) {
         return {};
     }
 

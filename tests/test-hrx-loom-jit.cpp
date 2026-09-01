@@ -427,6 +427,7 @@ int main() {
     const ggml::hrx::KernelDefinition & mul_mat_id_f16  = find_kernel("ggml_mul_mat_id_f16_f16_wmma");
     const ggml::hrx::KernelDefinition & swiglu_f16      = find_kernel("ggml_mul_mat_id_swiglu_f16_f16_wmma");
     const ggml::hrx::KernelDefinition & flash_prefill   = find_kernel("ggml_flash_attention_f32_f16_wmma");
+    const ggml::hrx::KernelDefinition & decode_mul_mat  = find_kernel("ggml_mul_mat_f32_f32_decode_wave64");
     const ggml::hrx::KernelDefinition & flash_decode =
         find_kernel("ggml_flash_attention_decode_split_f32_f16_wmma_next_q8");
 
@@ -451,7 +452,7 @@ int main() {
     REQUIRE(async_jit->async_enabled());
 
     std::vector<ggml::hrx::LoomCompiledKernelRef> refs;
-    refs.reserve(21);
+    refs.reserve(32);
     const auto enqueue_begin = std::chrono::steady_clock::now();
     refs.push_back(compile_kernel(*async_jit, "async-binary-add-64", binary, binary_f32_exact_workload(64),
                                   binary_f32_exact_config("0")));
@@ -541,6 +542,17 @@ int main() {
                                   mul_mat_id_swiglu_f16_f16_config("81", "81")));
     refs.push_back(compile_kernel(*async_jit, "async-mul-mat-id-swiglu-f16-f16", swiglu_f16, token_count_workload(4),
                                   mul_mat_id_swiglu_f16_f16_config("16", "16")));
+    refs.push_back(compile_kernel(*async_jit, "async-mul-mat-decode-q8-0-gemma-vocab", decode_mul_mat,
+                                  {
+                                      { "token_count", 1      },
+                                      { "input_size",  3840   },
+                                      { "output_size", 262208 },
+    },
+                                  {
+                                      { "ggml.mul_mat_f32_f32_decode.token_capacity", "1" },
+                                      { "ggml.mul_mat_f32_f32_decode.output_capacity", "262208" },
+                                      { "ggml.mul_mat_f32_f32_decode.weight_format", "80" },
+                                  }));
     refs.push_back(compile_kernel(*async_jit, "async-flash-prefill-128", flash_prefill,
                                   flash_attention_workload(128, 128),
                                   flash_attention_config("32", "4", "128", "0.0883883461")));

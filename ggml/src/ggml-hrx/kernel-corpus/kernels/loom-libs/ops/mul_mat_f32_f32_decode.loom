@@ -16,7 +16,7 @@ amdgpu.target<gfx11-generic> @ggml_mul_mat_f32_f32_decode_gfx11_wave64 {subgroup
 
 config.decl @ggml.mul_mat_f32_f32_decode.token_capacity : %value: index where [range(%value, 1, 2048)]
 
-config.decl @ggml.mul_mat_f32_f32_decode.output_capacity : %value: index where [range(%value, 1, 262144)]
+config.decl @ggml.mul_mat_f32_f32_decode.output_capacity : %value: index where [range(%value, 1, 1048576)]
 
 config.decl @ggml.mul_mat_f32_f32_decode.weight_format : %value: index where [range(%value, 4, 81)]
 
@@ -137,7 +137,7 @@ func.def inline @ggml_mul_mat_decode_f32_block_row(%iq4nl_table: vector<16xi8>, 
 template.def<@ggml.mul_mat_f32_f32_decode.body> device @ggml_mul_mat_f32_f32_decode_body(%weight_format: index, %publish_output: i1, %token_count: index, %token0: index, %pair: index, %input_size: index, %output_size: index, %input: buffer, %weight: buffer, %output: buffer) {
   %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048)] : index
   %bounded_input_size = index.assume %input_size [range(%input_size, 256, 32768), mul(%input_size, 256)] : index
-  %bounded_output_size = index.assume %output_size [range(%output_size, 1, 262144)] : index
+  %bounded_output_size = index.assume %output_size [range(%output_size, 1, 1048576)] : index
   %lane0 = kernel.workitem.id<x> : index
   %c0 = index.constant 0 : index
   %c1 = index.constant 1 : index
@@ -202,7 +202,7 @@ template.def<@ggml.mul_mat_f32_f32_decode.dispatch> device @ggml_mul_mat_f32_f32
   %token_capacity = config.get @ggml.mul_mat_f32_f32_decode.token_capacity : index
   %output_capacity = config.get @ggml.mul_mat_f32_f32_decode.output_capacity : index
   %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048), le(%token_count, %token_capacity)] : index
-  %bounded_output_size = index.assume %output_size [range(%output_size, 1, 262144), le(%output_size, %output_capacity)] : index
+  %bounded_output_size = index.assume %output_size [range(%output_size, 1, 1048576), le(%output_size, %output_capacity)] : index
   %c0 = index.constant 0 : index
   %c2 = index.constant 2 : index
   %pair = kernel.workgroup.id<x> : index
