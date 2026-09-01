@@ -227,8 +227,12 @@ static int64_t matmul_weight_format_config(ggml_type type) {
             return 11;
         case GGML_TYPE_Q4_K:
             return 4;
+        case GGML_TYPE_Q5_K:
+            return 5;
         case GGML_TYPE_Q6_K:
             return 6;
+        case GGML_TYPE_IQ3_S:
+            return 21;
         case GGML_TYPE_IQ4_NL:
             return 20;
         case GGML_TYPE_IQ4_XS:
@@ -2732,6 +2736,10 @@ static void run_qwen_token_embedding_dispatch_checks() {
         manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_Q6_K, GGML_TYPE_I32, GGML_TYPE_F32, 2048, 151936, 1));
     REQUIRE(manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_IQ4_XS, GGML_TYPE_I32, GGML_TYPE_F32, 2048, 151936,
                                                       1));
+    REQUIRE(!manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_IQ3_S, GGML_TYPE_I32, GGML_TYPE_F32, 2048, 151936,
+                                                       1));
+    REQUIRE(!manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_IQ4_NL, GGML_TYPE_I32, GGML_TYPE_F32, 2048,
+                                                       151936, 1));
     REQUIRE(
         manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_Q8_0, GGML_TYPE_I32, GGML_TYPE_F32, 2048, 151936, 1));
     REQUIRE(
@@ -3783,7 +3791,8 @@ static void run_qwen_matmul_dispatch_checks() {
             { GGML_TYPE_Q3_K,   128 },
             { GGML_TYPE_Q4_K,   128 },
             { GGML_TYPE_Q6_K,   128 },
-            { GGML_TYPE_IQ4_NL,  128 },
+            { GGML_TYPE_IQ3_S,  128 },
+            { GGML_TYPE_IQ4_NL, 128 },
             { GGML_TYPE_IQ4_XS, 128 },
             { GGML_TYPE_Q8_0,   128 },
             { GGML_TYPE_Q8_1,   128 },
@@ -3966,6 +3975,23 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(q3_decode_output != nullptr);
         schedule_single_matmul_command(ctx, q3_decode_output, "loom_libs:ggml_mul_mat_f32_f32_decode_wave64", 1, 2048,
                                        128);
+
+        ggml_tensor * iq3_s_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_IQ3_S, 2048, 128);
+        ggml_tensor * iq3_s_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 4);
+        REQUIRE(iq3_s_weight != nullptr);
+        REQUIRE(iq3_s_input != nullptr);
+        ggml_tensor * iq3_s_output = ggml_mul_mat(ctx, iq3_s_weight, iq3_s_input);
+        REQUIRE(iq3_s_output != nullptr);
+        schedule_single_matmul_command(ctx, iq3_s_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+
+        ggml_tensor * iq3_s_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_IQ3_S, 2048, 128);
+        ggml_tensor * iq3_s_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
+        REQUIRE(iq3_s_decode_weight != nullptr);
+        REQUIRE(iq3_s_decode_input != nullptr);
+        ggml_tensor * iq3_s_decode_output = ggml_mul_mat(ctx, iq3_s_decode_weight, iq3_s_decode_input);
+        REQUIRE(iq3_s_decode_output != nullptr);
+        schedule_single_matmul_command(ctx, iq3_s_decode_output, "loom_libs:ggml_mul_mat_f32_f32_decode_wave64", 1,
+                                       2048, 128);
 
         ggml_tensor * iq4_nl_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_IQ4_NL, 2048, 128);
         ggml_tensor * iq4_nl_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 4);
@@ -4777,8 +4803,12 @@ static std::string common_mul_mat_weight_format(ggml_type type) {
             return "11";
         case GGML_TYPE_Q4_K:
             return "4";
+        case GGML_TYPE_Q5_K:
+            return "5";
         case GGML_TYPE_Q6_K:
             return "6";
+        case GGML_TYPE_IQ3_S:
+            return "21";
         case GGML_TYPE_IQ4_NL:
             return "20";
         case GGML_TYPE_IQ4_XS:
@@ -4993,6 +5023,11 @@ static void run_common_mul_mat_id_swiglu_dispatch_checks() {
     {
         const CommonMulMatIdSwiGLUTensors tensors =
             build_common_mul_mat_id_swiglu_graph(ctx, GGML_TYPE_Q3_K, GGML_TYPE_Q3_K);
+        require_common_mul_mat_id_swiglu_match(ctx, tensors, tensors.gate);
+    }
+    {
+        const CommonMulMatIdSwiGLUTensors tensors =
+            build_common_mul_mat_id_swiglu_graph(ctx, GGML_TYPE_IQ3_S, GGML_TYPE_IQ3_S);
         require_common_mul_mat_id_swiglu_match(ctx, tensors, tensors.gate);
     }
     {
