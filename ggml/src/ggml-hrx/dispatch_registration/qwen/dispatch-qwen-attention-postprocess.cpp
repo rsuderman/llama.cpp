@@ -744,6 +744,20 @@ static bool append_attention_metadata_initialization(const DispatchMatchContext 
     if (mask == nullptr || mask->type != GGML_TYPE_F16 || mask->ne[0] <= 0 || mask->ne[1] != match.query.token_count) {
         return false;
     }
+    int64_t context_capacity = mask->ne[0];
+    size_t  mask_byte_count  = mask->byte_count;
+    if (context_capacity > 32768 && match.query.token_count <= 32768) {
+        context_capacity = match.query.token_count;
+        mask_byte_count  = static_cast<size_t>(match.query.token_count) * static_cast<size_t>(match.query.token_count) *
+                          sizeof(ggml_fp16_t);
+        Status metadata_status;
+        if (!dispatch_match.metadata.append_alternate_value(
+                { mask->id, mask->id, GGML_TYPE_F16, mask_byte_count, "qwen.attention.compact_mask" },
+                metadata_status)) {
+            dispatch_match.status.append(metadata_status);
+            return false;
+        }
+    }
 
     const ValueId control = next_match_transient_value(context, dispatch_match);
     dispatch_match.transients.push_back({ control, "qwen.attention.control", sizeof(int32_t), 16 });
@@ -757,12 +771,12 @@ static bool append_attention_metadata_initialization(const DispatchMatchContext 
     Dispatch metadata;
     metadata.kernel = make_kernel_specialization(kQwenAttentionMetadataKernel);
     metadata.kernel.integer_parameters.emplace("token_count", match.query.token_count);
-    metadata.kernel.integer_parameters.emplace("context_capacity", mask->ne[0]);
+    metadata.kernel.integer_parameters.emplace("context_capacity", context_capacity);
     metadata.bindings.push_back({ control, 0, sizeof(int32_t) });
     metadata.bindings.push_back({ match.query.positions->id, 0, match.query.positions->byte_count });
     metadata.bindings.push_back({ match.key.cache_indices->id, 0, match.key.cache_indices->byte_count });
     metadata.bindings.push_back({ match.value.cache_indices->id, 0, match.value.cache_indices->byte_count });
-    metadata.bindings.push_back({ mask->id, 0, mask->byte_count });
+    metadata.bindings.push_back({ mask->id, 0, mask_byte_count });
     dispatch_match.initialization_dispatches.push_back(std::move(metadata));
     return true;
 }

@@ -22,7 +22,9 @@ config.decl @ggml.flash_attention.query_head_count : %value: index where [range(
 
 config.decl @ggml.flash_attention.key_value_head_count : %value: index where [range(%value, 1, 64)]
 
-config.decl @ggml.flash_attention.head_size : %value: index where [range(%value, 64, 128), mul(%value, 64)]
+config.decl @ggml.flash_attention.head_size : %value: index where [range(%value, 64, 256), mul(%value, 64)]
+
+config.decl @ggml.flash_attention.attention_scale : f32
 
 // Bounds the context copied by the test-only row-extraction kernel below.
 config.decl @ggml.flash_attention.test.context_capacity : %value: index where [range(%value, 1, 32768)]
@@ -41,7 +43,7 @@ kernel.def target(@ggml_flash_attention_gfx11_wave64) @ggml_flash_attention_f32_
   %query_head_count = config.get @ggml.flash_attention.query_head_count : index
   %key_value_head_count = config.get @ggml.flash_attention.key_value_head_count : index
   %head_size0 = config.get @ggml.flash_attention.head_size : index
-  %head_size = index.assume %head_size0 [range(%head_size0, 64, 128), mul(%head_size0, 64)] : index
+  %head_size = index.assume %head_size0 [range(%head_size0, 64, 256), mul(%head_size0, 64)] : index
   %query_tile = kernel.workgroup.id<x> : index
   %query_head0 = kernel.workgroup.id<y> : index
   %query_head, %launch_query_head_count = index.assume %query_head0, %query_head_count [lt(%query_head0, %query_head_count)] : index, index
@@ -67,9 +69,7 @@ kernel.def target(@ggml_flash_attention_gfx11_wave64) @ggml_flash_attention_f32_
   %product_stage_bytes = index.constant 2048 : offset
   %c0_f32 = scalar.constant 0.0 : f32
   %negative_large = scalar.constant -1e+30 : f32
-  %head_size_i32 = index.cast %head_size : index to i32
-  %head_size_f32 = scalar.sitofp %head_size_i32 : i32 to f32
-  %attention_scale = scalar.rsqrtf<nnan|ninf|nsz|afn> %head_size_f32 : f32
+  %attention_scale = config.get @ggml.flash_attention.attention_scale : f32
   %c0_f16 = scalar.constant 0.0 : f16
   %c1_f32 = scalar.constant 1.0 : f32
   %output_zero0 = vector.constant 0.0 : vector<4xf16>

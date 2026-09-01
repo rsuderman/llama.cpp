@@ -191,6 +191,43 @@ static std::map<std::string, int64_t> token_count_workload(int64_t token_count) 
     };
 }
 
+static std::map<std::string, int64_t> flash_attention_workload(int64_t query_token_count,
+                                                               int64_t key_value_token_count) {
+    return {
+        { "query_token_count",     query_token_count     },
+        { "key_value_token_count", key_value_token_count },
+    };
+}
+
+static std::map<std::string, int64_t> flash_attention_decode_workload(int64_t key_value_token_count) {
+    return {
+        { "key_value_token_count", key_value_token_count },
+    };
+}
+
+static std::map<std::string, std::string> flash_attention_config(const char * query_head_count,
+                                                                 const char * key_value_head_count,
+                                                                 const char * head_size,
+                                                                 const char * attention_scale) {
+    return {
+        { "ggml.flash_attention.query_head_count",     query_head_count     },
+        { "ggml.flash_attention.key_value_head_count", key_value_head_count },
+        { "ggml.flash_attention.head_size",            head_size            },
+        { "ggml.flash_attention.attention_scale",      attention_scale      },
+    };
+}
+
+static std::map<std::string, std::string> flash_attention_decode_config(const char * query_head_count,
+                                                                        const char * key_value_head_count,
+                                                                        const char * head_size,
+                                                                        const char * attention_scale,
+                                                                        const char * key_value_token_capacity) {
+    std::map<std::string, std::string> config =
+        flash_attention_config(query_head_count, key_value_head_count, head_size, attention_scale);
+    config["ggml.flash_attention.decode.key_value_token_capacity"] = key_value_token_capacity;
+    return config;
+}
+
 static std::map<std::string, std::string> mul_mat_id_f16_f16_config(const char * weight_format) {
     return {
         { "ggml.mul_mat_id_f16_f16.input_size",    "768"         },
@@ -389,6 +426,9 @@ int main() {
     const ggml::hrx::KernelDefinition & partition_table = find_kernel("qwen3_moe_build_expert_partition_table");
     const ggml::hrx::KernelDefinition & mul_mat_id_f16  = find_kernel("ggml_mul_mat_id_f16_f16_wmma");
     const ggml::hrx::KernelDefinition & swiglu_f16      = find_kernel("ggml_mul_mat_id_swiglu_f16_f16_wmma");
+    const ggml::hrx::KernelDefinition & flash_prefill   = find_kernel("ggml_flash_attention_f32_f16_wmma");
+    const ggml::hrx::KernelDefinition & flash_decode =
+        find_kernel("ggml_flash_attention_decode_split_f32_f16_wmma_next_q8");
 
     std::string                         sync_error;
     std::unique_ptr<ggml::hrx::LoomJit> sync_jit =
@@ -411,7 +451,7 @@ int main() {
     REQUIRE(async_jit->async_enabled());
 
     std::vector<ggml::hrx::LoomCompiledKernelRef> refs;
-    refs.reserve(17);
+    refs.reserve(21);
     const auto enqueue_begin = std::chrono::steady_clock::now();
     refs.push_back(compile_kernel(*async_jit, "async-binary-add-64", binary, binary_f32_exact_workload(64),
                                   binary_f32_exact_config("0")));
@@ -487,6 +527,17 @@ int main() {
                                   mul_mat_id_swiglu_f16_f16_config("81", "81")));
     refs.push_back(compile_kernel(*async_jit, "async-mul-mat-id-swiglu-f16-f16", swiglu_f16, token_count_workload(4),
                                   mul_mat_id_swiglu_f16_f16_config("16", "16")));
+    refs.push_back(compile_kernel(*async_jit, "async-flash-prefill-128", flash_prefill,
+                                  flash_attention_workload(128, 128),
+                                  flash_attention_config("32", "4", "128", "0.0883883461")));
+    refs.push_back(compile_kernel(*async_jit, "async-flash-prefill-256-scale1", flash_prefill,
+                                  flash_attention_workload(128, 128), flash_attention_config("32", "4", "256", "1")));
+    refs.push_back(compile_kernel(*async_jit, "async-flash-decode-128", flash_decode,
+                                  flash_attention_decode_workload(64),
+                                  flash_attention_decode_config("32", "4", "128", "0.0883883461", "64")));
+    refs.push_back(compile_kernel(*async_jit, "async-flash-decode-256-scale1", flash_decode,
+                                  flash_attention_decode_workload(64),
+                                  flash_attention_decode_config("32", "4", "256", "1", "64")));
     const auto    enqueue_end = std::chrono::steady_clock::now();
     const int64_t enqueue_us  = elapsed_us(enqueue_begin, enqueue_end);
     std::printf("async Loom enqueue completed in %ld us\n", static_cast<long>(enqueue_us));

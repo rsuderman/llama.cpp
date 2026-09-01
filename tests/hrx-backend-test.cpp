@@ -33,6 +33,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -189,6 +190,13 @@ static void require_compile_parameter(const ggml::hrx::Dispatch & dispatch,
                      found->second.c_str());
         std::abort();
     }
+}
+
+static std::string expected_config_value(float value) {
+    std::ostringstream out;
+    out.precision(9);
+    out << value;
+    return out.str();
 }
 
 static constexpr int64_t kQwenFlashHeadSize       = 128;
@@ -2891,7 +2899,8 @@ static void schedule_flash_attention_command(ggml_context * ctx,
                                              int64_t        key_value_token_count,
                                              int64_t        query_head_count,
                                              int64_t        key_value_head_count,
-                                             int64_t        head_size = kQwenFlashHeadSize) {
+                                             int64_t        head_size = kQwenFlashHeadSize,
+                                             float          scale     = 1.0f / std::sqrt(128.0f)) {
     ggml_cgraph * graph = ggml_new_graph(ctx);
     REQUIRE(graph != nullptr);
     ggml_build_forward_expand(graph, output);
@@ -2918,6 +2927,7 @@ static void schedule_flash_attention_command(ggml_context * ctx,
                               std::to_string(key_value_head_count));
     if (std::strcmp(config_prefix, "ggml.flash_attention.") == 0) {
         require_compile_parameter(dispatch, "ggml.flash_attention.head_size", std::to_string(head_size));
+        require_compile_parameter(dispatch, "ggml.flash_attention.attention_scale", expected_config_value(scale));
     } else {
         require_compile_parameter(dispatch, "qwen3_moe.workload.token_capacity", std::to_string(query_token_count));
     }
@@ -2937,7 +2947,7 @@ static void schedule_flash_attention_command(ggml_context * ctx,
 
 static void schedule_qwen_flash_attention_command(ggml_context * ctx, ggml_tensor * output) {
     schedule_flash_attention_command(ctx, output, "loom_libs:ggml_flash_attention_f32_f16_wmma",
-                                     "ggml.flash_attention.", 4, 8, 4, 2);
+                                     "ggml.flash_attention.", 16, 16, 4, 2);
 }
 
 static void schedule_common_flash_attention_command(ggml_context * ctx,
@@ -2946,10 +2956,11 @@ static void schedule_common_flash_attention_command(ggml_context * ctx,
                                                     int64_t        key_value_token_count,
                                                     int64_t        query_head_count,
                                                     int64_t        key_value_head_count,
-                                                    int64_t        head_size = kQwenFlashHeadSize) {
+                                                    int64_t        head_size = kQwenFlashHeadSize,
+                                                    float          scale     = 1.0f / std::sqrt(128.0f)) {
     schedule_flash_attention_command(ctx, output, "loom_libs:ggml_flash_attention_f32_f16_wmma",
                                      "ggml.flash_attention.", query_token_count, key_value_token_count,
-                                     query_head_count, key_value_head_count, head_size);
+                                     query_head_count, key_value_head_count, head_size, scale);
 }
 
 static void schedule_common_flash_attention_decode_split_command(ggml_context * ctx,
@@ -2957,7 +2968,9 @@ static void schedule_common_flash_attention_decode_split_command(ggml_context * 
                                                                  int64_t        query_token_count,
                                                                  int64_t        key_value_token_count,
                                                                  int64_t        query_head_count,
-                                                                 int64_t        key_value_head_count) {
+                                                                 int64_t        key_value_head_count,
+                                                                 int64_t        head_size = kQwenFlashHeadSize,
+                                                                 float          scale     = 1.0f / std::sqrt(128.0f)) {
     const int64_t key_value_capacity = ((key_value_token_count + 63) / 64) * 64;
     ggml_cgraph * graph              = ggml_new_graph(ctx);
     REQUIRE(graph != nullptr);
@@ -2981,6 +2994,8 @@ static void schedule_common_flash_attention_decode_split_command(ggml_context * 
         require_compile_parameter(dispatch, "ggml.flash_attention.query_head_count", std::to_string(query_head_count));
         require_compile_parameter(dispatch, "ggml.flash_attention.key_value_head_count",
                                   std::to_string(key_value_head_count));
+        require_compile_parameter(dispatch, "ggml.flash_attention.head_size", std::to_string(head_size));
+        require_compile_parameter(dispatch, "ggml.flash_attention.attention_scale", expected_config_value(scale));
         require_compile_parameter(dispatch, "ggml.flash_attention.decode.key_value_token_capacity",
                                   std::to_string(key_value_capacity));
     }
@@ -3017,7 +3032,7 @@ static void run_qwen_flash_attention_dispatch_checks() {
     REQUIRE(ctx != nullptr);
 
     {
-        ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2);
+        ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 16, 16, 4, 2);
         schedule_qwen_flash_attention_command(ctx, output);
     }
     {
@@ -3027,8 +3042,20 @@ static void run_qwen_flash_attention_dispatch_checks() {
         REQUIRE(unsetenv(kDisableQwenDispatchEnv) == 0);
     }
     {
+        REQUIRE(setenv(kDisableQwenDispatchEnv, "1", 1) == 0);
+        ggml_tensor * output =
+            build_qwen_flash_attention_graph(ctx, 128, 128, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true, false, 256, 1.0f);
+        schedule_common_flash_attention_command(ctx, output, 128, 128, 4, 2, 256, 1.0f);
+        REQUIRE(unsetenv(kDisableQwenDispatchEnv) == 0);
+    }
+    {
         ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 1, 8, 4, 2);
         schedule_common_flash_attention_decode_split_command(ctx, output, 1, 8, 4, 2);
+    }
+    {
+        ggml_tensor * output =
+            build_qwen_flash_attention_graph(ctx, 1, 64, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true, false, 256, 1.0f);
+        schedule_common_flash_attention_decode_split_command(ctx, output, 1, 64, 4, 2, 256, 1.0f);
     }
     {
         ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2, GGML_TYPE_F32, GGML_TYPE_F32);
@@ -3044,9 +3071,9 @@ static void run_qwen_flash_attention_dispatch_checks() {
         REQUIRE(!graph_is_supported(ctx, output));
     }
     {
-        ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true,
+        ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 16, 16, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true,
                                                                 false, kQwenFlashHeadSize, 1.0f);
-        REQUIRE(!graph_is_supported(ctx, output));
+        schedule_common_flash_attention_command(ctx, output, 16, 16, 4, 2, kQwenFlashHeadSize, 1.0f);
     }
     {
         ggml_tensor * output =
@@ -3413,8 +3440,7 @@ static void run_qwen_attention_postprocess_dispatch_checks() {
 
         const ggml::hrx::Dispatch & context_capture = plan.initialization_dispatches[0];
         const ggml::hrx::Dispatch & metadata        = plan.initialization_dispatches[1];
-        REQUIRE(kernel_name_for_id(context_capture.kernel.kernel_id) ==
-                "qwen_owned:qwen_attention_context_base_capture");
+        REQUIRE(kernel_name_for_id(context_capture.kernel.kernel_id) == "qwen:qwen_attention_context_base_capture");
         REQUIRE(kernel_name_for_id(metadata.kernel.kernel_id) == "qwen3_moe:qwen_attention_metadata");
         REQUIRE(context_capture.bindings.size() == 2);
         REQUIRE(metadata.bindings.size() == 5);
