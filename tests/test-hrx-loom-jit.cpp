@@ -461,6 +461,14 @@ int main() {
                                   binary_f32_exact_config("0")));
     refs.push_back(compile_kernel(*async_jit, "async-binary-add-512", binary, binary_f32_exact_workload(512),
                                   binary_f32_exact_config("0")));
+    refs.push_back(compile_kernel(*async_jit, "async-binary-geglu-256", binary, binary_f32_exact_workload(256),
+                                  binary_f32_exact_config("5")));
+    refs.push_back(compile_kernel(*async_jit, "async-binary-reglu-256", binary, binary_f32_exact_workload(256),
+                                  binary_f32_exact_config("6")));
+    refs.push_back(compile_kernel(*async_jit, "async-binary-geglu-erf-256", binary, binary_f32_exact_workload(256),
+                                  binary_f32_exact_config("7")));
+    refs.push_back(compile_kernel(*async_jit, "async-binary-geglu-quick-256", binary, binary_f32_exact_workload(256),
+                                  binary_f32_exact_config("8")));
     refs.push_back(compile_kernel(*async_jit, "async-binary-bc-mul-48", binary_bc, binary_bc_f32_workload(),
                                   binary_bc_f32_config("2")));
     refs.push_back(compile_kernel(*async_jit, "async-rmsnorm-1", rmsnorm,

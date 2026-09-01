@@ -2146,13 +2146,16 @@ static void schedule_fused_matmul_unary_command(ggml_context *       ctx,
     REQUIRE(commands.commands.front().bindings[2].name == "output");
 }
 
-static void schedule_fused_matmul_swiglu_command(ggml_context * ctx,
-                                                 ggml_tensor *  output,
-                                                 ggml_type      expected_gate_type,
-                                                 ggml_type      expected_up_type,
-                                                 int64_t        expected_token_count,
-                                                 int64_t        expected_input_size,
-                                                 int64_t        expected_output_size) {
+static void schedule_fused_matmul_swiglu_command(
+    ggml_context *        ctx,
+    ggml_tensor *         output,
+    ggml_type             expected_gate_type,
+    ggml_type             expected_up_type,
+    int64_t               expected_token_count,
+    int64_t               expected_input_size,
+    int64_t               expected_output_size,
+    ggml::hrx::BinaryKind expected_binary_op = ggml::hrx::BinaryKind::SwiGLU,
+    ggml_op               expected_output_op = GGML_OP_GLU) {
     ggml_cgraph * graph = ggml_new_graph(ctx);
     REQUIRE(graph != nullptr);
     ggml_build_forward_expand(graph, output);
@@ -2162,7 +2165,7 @@ static void schedule_fused_matmul_swiglu_command(ggml_context * ctx,
     REQUIRE(imported.graph.nodes().size() == 3);
     REQUIRE(imported.graph.nodes()[0].op == GGML_OP_MUL_MAT);
     REQUIRE(imported.graph.nodes()[1].op == GGML_OP_MUL_MAT);
-    REQUIRE(imported.graph.nodes()[2].op == GGML_OP_GLU);
+    REQUIRE(imported.graph.nodes()[2].op == expected_output_op);
 
     ggml::hrx::DispatchScheduler scheduler;
     REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
@@ -2181,6 +2184,8 @@ static void schedule_fused_matmul_swiglu_command(ggml_context * ctx,
                               std::to_string(matmul_weight_format_config(expected_gate_type)));
     require_compile_parameter(dispatch, "ggml.mul_mat_swiglu.up_weight_format",
                               std::to_string(matmul_weight_format_config(expected_up_type)));
+    require_compile_parameter(dispatch, "ggml.mul_mat_swiglu.op",
+                              std::to_string(ggml::hrx::binary_kind_config_value(expected_binary_op)));
     REQUIRE(dispatch.bindings[3].value == imported.graph.nodes()[2].output);
 
     const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
@@ -3866,6 +3871,46 @@ static void run_qwen_matmul_dispatch_checks() {
         ggml_tensor * output = ggml_glu_split(ctx, gate, up, GGML_GLU_OP_SWIGLU);
         REQUIRE(output != nullptr);
         require_matmul_swiglu_falls_back(ctx, output);
+    }
+
+    for (const auto & variant : {
+             std::pair<ggml_glu_op, ggml::hrx::BinaryKind>{ GGML_GLU_OP_GEGLU,       ggml::hrx::BinaryKind::GeGLU    },
+             std::pair<ggml_glu_op, ggml::hrx::BinaryKind>{ GGML_GLU_OP_REGLU,       ggml::hrx::BinaryKind::RegLU    },
+             std::pair<ggml_glu_op, ggml::hrx::BinaryKind>{ GGML_GLU_OP_GEGLU_ERF,   ggml::hrx::BinaryKind::GeGLUErf },
+             std::pair<ggml_glu_op, ggml::hrx::BinaryKind>{ GGML_GLU_OP_GEGLU_QUICK,
+                                                           ggml::hrx::BinaryKind::GeGLUQuick                         },
+    }) {
+        ggml_tensor * gate_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 2048, 128);
+        ggml_tensor * up_weight   = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 2048, 128);
+        ggml_tensor * input       = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 4);
+        REQUIRE(gate_weight != nullptr);
+        REQUIRE(up_weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * gate = ggml_mul_mat(ctx, gate_weight, input);
+        ggml_tensor * up   = ggml_mul_mat(ctx, up_weight, input);
+        REQUIRE(gate != nullptr);
+        REQUIRE(up != nullptr);
+        ggml_tensor * output = ggml_glu_split(ctx, gate, up, variant.first);
+        REQUIRE(output != nullptr);
+        schedule_fused_matmul_swiglu_command(ctx, output, GGML_TYPE_Q4_K, GGML_TYPE_Q4_K, 4, 2048, 128, variant.second,
+                                             GGML_OP_GLU);
+    }
+
+    {
+        ggml_tensor * lhs_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 2048, 128);
+        ggml_tensor * rhs_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 2048, 128);
+        ggml_tensor * input      = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 4);
+        REQUIRE(lhs_weight != nullptr);
+        REQUIRE(rhs_weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * lhs = ggml_mul_mat(ctx, lhs_weight, input);
+        ggml_tensor * rhs = ggml_mul_mat(ctx, rhs_weight, input);
+        REQUIRE(lhs != nullptr);
+        REQUIRE(rhs != nullptr);
+        ggml_tensor * output = ggml_sub(ctx, lhs, rhs);
+        REQUIRE(output != nullptr);
+        schedule_fused_matmul_swiglu_command(ctx, output, GGML_TYPE_Q4_K, GGML_TYPE_Q4_K, 4, 2048, 128,
+                                             ggml::hrx::BinaryKind::Sub, GGML_OP_SUB);
     }
 
     {
@@ -5828,7 +5873,10 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         append_qwen_routed_gate_up_for_graph(imported.graph, tensors, covered_nodes, plan);
         const size_t             down_index = producer_index_for_tensor(imported.graph, tensors.output);
         ggml::hrx::DispatchMatch down_match;
-        REQUIRE(!match_dispatch_at_index(imported.graph, plan, covered_nodes, down_index, down_match));
+        REQUIRE(match_dispatch_at_index(imported.graph, plan, covered_nodes, down_index, down_match));
+        REQUIRE(down_match.dispatches.size() == 1);
+        REQUIRE(kernel_name_for_id(down_match.dispatches[0].kernel.kernel_id) ==
+                "loom_libs:ggml_mul_mat_id_f32_f32_wmma");
     }
 
     ggml_free(ctx);

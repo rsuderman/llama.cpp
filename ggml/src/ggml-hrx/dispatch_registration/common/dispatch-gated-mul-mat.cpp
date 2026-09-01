@@ -29,6 +29,7 @@ struct MulMatSwiGLUMatch {
     const GraphNode *        glu_node    = nullptr;
     CommonMulMatWeightFormat gate_format = CommonMulMatWeightFormat::Q4K;
     CommonMulMatWeightFormat up_format   = CommonMulMatWeightFormat::Q4K;
+    BinaryKind               op          = BinaryKind::SwiGLU;
     int64_t                  input_size  = 0;
     int64_t                  output_size = 0;
     int64_t                  token_count = 0;
@@ -49,12 +50,13 @@ static MulMatSwiGLUMatch match_mul_mat_swiglu(const DispatchMatchContext & conte
     }
 
     const std::vector<const GraphNode *> & root_consumers = context.graph.index().consumers(context.root_node->output);
-    if (root_consumers.size() != 1 || root_consumers.front() == nullptr || root_consumers.front()->op != GGML_OP_GLU) {
+    if (root_consumers.size() != 1 || root_consumers.front() == nullptr) {
         return {};
     }
 
     const GraphNode * glu_node = root_consumers.front();
-    if (glu_node->inputs.size() != 2 || !common_is_swiglu_params(glu_node->params)) {
+    BinaryKind        binary_op;
+    if (glu_node->inputs.size() != 2 || !common_fused_binary_kind_from_params(glu_node->params, binary_op)) {
         return {};
     }
 
@@ -112,6 +114,7 @@ static MulMatSwiGLUMatch match_mul_mat_swiglu(const DispatchMatchContext & conte
     match.glu_node    = glu_node;
     match.gate_format = root_is_gate ? root.weight_format : peer.weight_format;
     match.up_format   = root_is_gate ? peer.weight_format : root.weight_format;
+    match.op          = binary_op;
     match.input_size  = root.input_size;
     match.output_size = root.output_size;
     match.token_count = root.token_count;
@@ -139,6 +142,8 @@ static bool match_mul_mat_swiglu_dispatch(const DispatchMatchContext & context, 
     dispatch.kernel.compile_parameters.emplace(
         "ggml.mul_mat_swiglu.up_weight_format",
         common_to_config_value(common_mul_mat_format_config_value(match.up_format)));
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_swiglu.op",
+                                               common_to_config_value(static_cast<int64_t>(binary_kind_config_value(match.op))));
     dispatch.bindings.push_back({ match.input->id, 0, match.input->byte_count });
     dispatch.bindings.push_back({ match.gate_weight->id, 0, match.gate_weight->byte_count });
     dispatch.bindings.push_back({ match.up_weight->id, 0, match.up_weight->byte_count });

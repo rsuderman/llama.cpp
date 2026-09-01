@@ -86,6 +86,10 @@ static bool binary_kind_allows_broadcast(BinaryKind kind, const Value & lhs, con
         case BinaryKind::Div:
             return lhs_full;
         case BinaryKind::SwiGLU:
+        case BinaryKind::GeGLU:
+        case BinaryKind::RegLU:
+        case BinaryKind::GeGLUErf:
+        case BinaryKind::GeGLUQuick:
             return lhs_full && rhs_full;
     }
     return false;

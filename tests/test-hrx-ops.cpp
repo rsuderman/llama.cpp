@@ -1821,7 +1821,7 @@ static void run_add_f32_cpu_reference_case() {
     ggml_backend_free(hrx_backend);
 }
 
-static void run_swiglu_split_f32_cpu_reference_case() {
+static void run_glu_split_f32_cpu_reference_case(ggml_glu_op glu_op) {
     ggml_backend_t cpu_backend = init_cpu_backend();
     ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
     REQUIRE(hrx_backend != nullptr);
@@ -1838,10 +1838,10 @@ static void run_swiglu_split_f32_cpu_reference_case() {
     constexpr int64_t token_count = 3;
     ggml_tensor *     cpu_gate    = ggml_new_tensor_2d(cpu_ctx, GGML_TYPE_F32, hidden_size, token_count);
     ggml_tensor *     cpu_up      = ggml_new_tensor_2d(cpu_ctx, GGML_TYPE_F32, hidden_size, token_count);
-    ggml_tensor *     cpu_output  = ggml_glu_split(cpu_ctx, cpu_gate, cpu_up, GGML_GLU_OP_SWIGLU);
+    ggml_tensor *     cpu_output  = ggml_glu_split(cpu_ctx, cpu_gate, cpu_up, glu_op);
     ggml_tensor *     hrx_gate    = ggml_new_tensor_2d(hrx_ctx, GGML_TYPE_F32, hidden_size, token_count);
     ggml_tensor *     hrx_up      = ggml_new_tensor_2d(hrx_ctx, GGML_TYPE_F32, hidden_size, token_count);
-    ggml_tensor *     hrx_output  = ggml_glu_split(hrx_ctx, hrx_gate, hrx_up, GGML_GLU_OP_SWIGLU);
+    ggml_tensor *     hrx_output  = ggml_glu_split(hrx_ctx, hrx_gate, hrx_up, glu_op);
     REQUIRE(cpu_output != nullptr);
     REQUIRE(hrx_output != nullptr);
 
@@ -2175,7 +2175,8 @@ static void run_dense_matmul_swiglu_cpu_reference_case(ggml_type    gate_weight_
                                                        ggml_type    up_weight_type,
                                                        const char * expected_kernel,
                                                        int64_t      token_count,
-                                                       int64_t      output_size) {
+                                                       int64_t      output_size,
+                                                       ggml_glu_op  glu_op = GGML_GLU_OP_SWIGLU) {
     ggml_backend_t cpu_backend = init_cpu_backend();
     ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
     REQUIRE(hrx_backend != nullptr);
@@ -2194,13 +2195,13 @@ static void run_dense_matmul_swiglu_cpu_reference_case(ggml_type    gate_weight_
     ggml_tensor *     cpu_input       = ggml_new_tensor_2d(cpu_ctx, GGML_TYPE_F32, input_size, token_count);
     ggml_tensor *     cpu_gate        = ggml_mul_mat(cpu_ctx, cpu_gate_weight, cpu_input);
     ggml_tensor *     cpu_up          = ggml_mul_mat(cpu_ctx, cpu_up_weight, cpu_input);
-    ggml_tensor *     cpu_output      = ggml_glu_split(cpu_ctx, cpu_gate, cpu_up, GGML_GLU_OP_SWIGLU);
+    ggml_tensor *     cpu_output      = ggml_glu_split(cpu_ctx, cpu_gate, cpu_up, glu_op);
     ggml_tensor *     hrx_gate_weight = ggml_new_tensor_2d(hrx_ctx, gate_weight_type, input_size, output_size);
     ggml_tensor *     hrx_up_weight   = ggml_new_tensor_2d(hrx_ctx, up_weight_type, input_size, output_size);
     ggml_tensor *     hrx_input       = ggml_new_tensor_2d(hrx_ctx, GGML_TYPE_F32, input_size, token_count);
     ggml_tensor *     hrx_gate        = ggml_mul_mat(hrx_ctx, hrx_gate_weight, hrx_input);
     ggml_tensor *     hrx_up          = ggml_mul_mat(hrx_ctx, hrx_up_weight, hrx_input);
-    ggml_tensor *     hrx_output      = ggml_glu_split(hrx_ctx, hrx_gate, hrx_up, GGML_GLU_OP_SWIGLU);
+    ggml_tensor *     hrx_output      = ggml_glu_split(hrx_ctx, hrx_gate, hrx_up, glu_op);
     REQUIRE(cpu_output != nullptr);
     REQUIRE(hrx_output != nullptr);
 
@@ -2224,6 +2225,76 @@ static void run_dense_matmul_swiglu_cpu_reference_case(ggml_type    gate_weight_
     set_tensor_pair_bytes(cpu_backend, cpu_gate_weight, hrx_backend, hrx_gate_weight, gate_weight.data(),
                           gate_weight.size());
     set_tensor_pair_bytes(cpu_backend, cpu_up_weight, hrx_backend, hrx_up_weight, up_weight.data(), up_weight.size());
+    set_tensor_pair_bytes(cpu_backend, cpu_input, hrx_backend, hrx_input, input.data(), input.size() * sizeof(float));
+
+    REQUIRE(ggml_backend_graph_compute(cpu_backend, cpu_graph) == GGML_STATUS_SUCCESS);
+    REQUIRE(ggml_backend_graph_compute(hrx_backend, hrx_graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(cpu_backend);
+    ggml_backend_synchronize(hrx_backend);
+    require_close(get_f32_tensor(hrx_backend, hrx_output), get_f32_tensor(cpu_backend, cpu_output), 1.0f, 3.0e-2f);
+
+    ggml_backend_buffer_free(cpu_buffer);
+    ggml_backend_buffer_free(hrx_buffer);
+    ggml_free(cpu_ctx);
+    ggml_free(hrx_ctx);
+    ggml_backend_free(cpu_backend);
+    ggml_backend_free(hrx_backend);
+}
+
+static void run_dense_matmul_binary_cpu_reference_case(ggml_type    lhs_weight_type,
+                                                       ggml_type    rhs_weight_type,
+                                                       const char * expected_kernel,
+                                                       int64_t      token_count,
+                                                       int64_t      output_size) {
+    ggml_backend_t cpu_backend = init_cpu_backend();
+    ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
+    REQUIRE(hrx_backend != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size         = static_cast<size_t>(48 * 1024 * 1024);
+    params.no_alloc         = true;
+    ggml_context * cpu_ctx  = ggml_init(params);
+    ggml_context * hrx_ctx  = ggml_init(params);
+    REQUIRE(cpu_ctx != nullptr);
+    REQUIRE(hrx_ctx != nullptr);
+
+    constexpr int64_t input_size     = kQwenHiddenSize;
+    ggml_tensor *     cpu_lhs_weight = ggml_new_tensor_2d(cpu_ctx, lhs_weight_type, input_size, output_size);
+    ggml_tensor *     cpu_rhs_weight = ggml_new_tensor_2d(cpu_ctx, rhs_weight_type, input_size, output_size);
+    ggml_tensor *     cpu_input      = ggml_new_tensor_2d(cpu_ctx, GGML_TYPE_F32, input_size, token_count);
+    ggml_tensor *     cpu_lhs        = ggml_mul_mat(cpu_ctx, cpu_lhs_weight, cpu_input);
+    ggml_tensor *     cpu_rhs        = ggml_mul_mat(cpu_ctx, cpu_rhs_weight, cpu_input);
+    ggml_tensor *     cpu_output     = ggml_sub(cpu_ctx, cpu_lhs, cpu_rhs);
+    ggml_tensor *     hrx_lhs_weight = ggml_new_tensor_2d(hrx_ctx, lhs_weight_type, input_size, output_size);
+    ggml_tensor *     hrx_rhs_weight = ggml_new_tensor_2d(hrx_ctx, rhs_weight_type, input_size, output_size);
+    ggml_tensor *     hrx_input      = ggml_new_tensor_2d(hrx_ctx, GGML_TYPE_F32, input_size, token_count);
+    ggml_tensor *     hrx_lhs        = ggml_mul_mat(hrx_ctx, hrx_lhs_weight, hrx_input);
+    ggml_tensor *     hrx_rhs        = ggml_mul_mat(hrx_ctx, hrx_rhs_weight, hrx_input);
+    ggml_tensor *     hrx_output     = ggml_sub(hrx_ctx, hrx_lhs, hrx_rhs);
+    REQUIRE(cpu_output != nullptr);
+    REQUIRE(hrx_output != nullptr);
+
+    ggml_cgraph * cpu_graph = ggml_new_graph(cpu_ctx);
+    ggml_cgraph * hrx_graph = ggml_new_graph(hrx_ctx);
+    REQUIRE(cpu_graph != nullptr);
+    REQUIRE(hrx_graph != nullptr);
+    ggml_build_forward_expand(cpu_graph, cpu_output);
+    ggml_build_forward_expand(hrx_graph, hrx_output);
+
+    require_kernel_subsequence(scheduled_kernel_sequence(hrx_graph), { expected_kernel });
+
+    ggml_backend_buffer_t cpu_buffer = ggml_backend_alloc_ctx_tensors(cpu_ctx, cpu_backend);
+    ggml_backend_buffer_t hrx_buffer = ggml_backend_alloc_ctx_tensors(hrx_ctx, hrx_backend);
+    REQUIRE(cpu_buffer != nullptr);
+    REQUIRE(hrx_buffer != nullptr);
+
+    const std::vector<uint8_t> lhs_weight = make_matmul_weight_bytes(lhs_weight_type, input_size, output_size, 6);
+    const std::vector<uint8_t> rhs_weight = make_matmul_weight_bytes(rhs_weight_type, input_size, output_size, 11);
+    const std::vector<float>   input(static_cast<size_t>(input_size * token_count), 0.00390625f);
+    set_tensor_pair_bytes(cpu_backend, cpu_lhs_weight, hrx_backend, hrx_lhs_weight, lhs_weight.data(),
+                          lhs_weight.size());
+    set_tensor_pair_bytes(cpu_backend, cpu_rhs_weight, hrx_backend, hrx_rhs_weight, rhs_weight.data(),
+                          rhs_weight.size());
     set_tensor_pair_bytes(cpu_backend, cpu_input, hrx_backend, hrx_input, input.data(), input.size() * sizeof(float));
 
     REQUIRE(ggml_backend_graph_compute(cpu_backend, cpu_graph) == GGML_STATUS_SUCCESS);
@@ -3147,7 +3218,11 @@ int main() {
     }
 
     run_add_f32_cpu_reference_case();
-    run_swiglu_split_f32_cpu_reference_case();
+    run_glu_split_f32_cpu_reference_case(GGML_GLU_OP_REGLU);
+    run_glu_split_f32_cpu_reference_case(GGML_GLU_OP_SWIGLU);
+    run_glu_split_f32_cpu_reference_case(GGML_GLU_OP_GEGLU);
+    run_glu_split_f32_cpu_reference_case(GGML_GLU_OP_GEGLU_ERF);
+    run_glu_split_f32_cpu_reference_case(GGML_GLU_OP_GEGLU_QUICK);
     run_gather_add_f32_cpu_reference_case();
     run_get_rows_f32_cpu_reference_case(GGML_TYPE_Q4_K);
     run_get_rows_f32_cpu_reference_case(GGML_TYPE_Q6_K);
@@ -3172,6 +3247,16 @@ int main() {
     run_dense_matmul_cpu_reference_case(GGML_TYPE_F32, "loom_libs:ggml_mul_mat_f32_f32_decode_wave64", 1, 256);
     run_dense_matmul_unary_cpu_reference_case(GGML_TYPE_F32, "loom_libs:ggml_mul_mat_f32_f32_wmma", 2, 128);
     run_dense_matmul_swiglu_cpu_reference_case(GGML_TYPE_Q4_K, GGML_TYPE_F16,
+                                               "loom_libs:ggml_mul_mat_swiglu_f32_f32_wmma", 2, 128);
+    run_dense_matmul_swiglu_cpu_reference_case(GGML_TYPE_Q4_K, GGML_TYPE_F16,
+                                               "loom_libs:ggml_mul_mat_swiglu_f32_f32_wmma", 2, 128, GGML_GLU_OP_GEGLU);
+    run_dense_matmul_swiglu_cpu_reference_case(GGML_TYPE_Q4_K, GGML_TYPE_F16,
+                                               "loom_libs:ggml_mul_mat_swiglu_f32_f32_wmma", 2, 128, GGML_GLU_OP_REGLU);
+    run_dense_matmul_swiglu_cpu_reference_case(
+        GGML_TYPE_Q4_K, GGML_TYPE_F16, "loom_libs:ggml_mul_mat_swiglu_f32_f32_wmma", 2, 128, GGML_GLU_OP_GEGLU_ERF);
+    run_dense_matmul_swiglu_cpu_reference_case(
+        GGML_TYPE_Q4_K, GGML_TYPE_F16, "loom_libs:ggml_mul_mat_swiglu_f32_f32_wmma", 2, 128, GGML_GLU_OP_GEGLU_QUICK);
+    run_dense_matmul_binary_cpu_reference_case(GGML_TYPE_Q4_K, GGML_TYPE_F16,
                                                "loom_libs:ggml_mul_mat_swiglu_f32_f32_wmma", 2, 128);
     run_dense_matmul_postops_cpu_reference_case(GGML_TYPE_F16, "loom_libs:ggml_mul_mat_bias_f32_f32_wmma", 33, 256,
                                                 true, false, false);

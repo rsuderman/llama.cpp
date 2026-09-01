@@ -279,10 +279,10 @@ static const ggml_backend_buffer_i buffer_i = {
 };
 
 static ggml_backend_buffer_t buffer_alloc(ggml_backend_buffer_type_t buft, size_t size) {
-    auto *              type_context = static_cast<ggml_backend_hrx_buffer_type_context *>(buft->context);
-    const bool          host_visible = type_context->host_visible;
-    const bool          direct_host_binding = host_visible && type_context->device->use_direct_host_bindings;
-    hrx_memory_type_t   memory_type          = HRX_MEMORY_TYPE_DEVICE_LOCAL;
+    auto *            type_context        = static_cast<ggml_backend_hrx_buffer_type_context *>(buft->context);
+    const bool        host_visible        = type_context->host_visible;
+    const bool        direct_host_binding = host_visible && type_context->device->use_direct_host_bindings;
+    hrx_memory_type_t memory_type         = HRX_MEMORY_TYPE_DEVICE_LOCAL;
     // Direct command-program bindings require coherent CPU/GPU visibility. Otherwise HRX host buffers are pinned
     // transfer memory: DEVICE_VISIBLE permits handle-based stream copies without implying direct device access.
     if (host_visible) {
@@ -291,7 +291,7 @@ static ggml_backend_buffer_t buffer_alloc(ggml_backend_buffer_type_t buft, size_
             memory_type |= HRX_MEMORY_TYPE_HOST_COHERENT;
         }
     }
-    hrx_buffer_params_t params       = {
+    hrx_buffer_params_t params = {
         memory_type,
         HRX_MEMORY_ACCESS_ALL,
         host_visible ?
@@ -365,11 +365,11 @@ static bool synchronous_upload_fallback(ggml_backend_hrx_context * backend,
                                         hrx_buffer_t               destination,
                                         size_t                     destination_offset,
                                         size_t                     size) {
-    const uint64_t fallback =
-        backend->device->synchronous_upload_fallbacks.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t fallback = backend->device->synchronous_upload_fallbacks.fetch_add(1, std::memory_order_relaxed);
     if (fallback == 0) {
-        GGML_LOG_WARN("ggml_hrx: synchronous upload fallback for an unregistered host pointer; use the HRX host "
-                      "buffer type for asynchronous transfers\n");
+        GGML_LOG_WARN(
+            "ggml_hrx: synchronous upload fallback for an unregistered host pointer; use the HRX host "
+            "buffer type for asynchronous transfers\n");
     }
     // Compatibility path for arbitrary GGML pointers. Keep the synchronization explicit until a bounded staging ring
     // with transfer retirement is available.
@@ -387,11 +387,11 @@ static bool synchronous_download_fallback(ggml_backend_hrx_context * backend,
                                           size_t                     source_offset,
                                           void *                     destination,
                                           size_t                     size) {
-    const uint64_t fallback =
-        backend->device->synchronous_download_fallbacks.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t fallback = backend->device->synchronous_download_fallbacks.fetch_add(1, std::memory_order_relaxed);
     if (fallback == 0) {
-        GGML_LOG_WARN("ggml_hrx: synchronous download fallback for an unregistered host pointer; use the HRX host "
-                      "buffer type for asynchronous transfers\n");
+        GGML_LOG_WARN(
+            "ggml_hrx: synchronous download fallback for an unregistered host pointer; use the HRX host "
+            "buffer type for asynchronous transfers\n");
     }
     // Compatibility path for arbitrary GGML pointers. Keep the synchronization explicit until a bounded staging ring
     // with transfer retirement is available.
@@ -473,8 +473,8 @@ static bool backend_copy_tensor_async(ggml_backend_t      backend_src,
     }
     ggml_backend_buffer_t source_buffer = source->view_src != nullptr ? source->view_src->buffer : source->buffer;
     if (source_buffer != nullptr && ggml_backend_buffer_is_host(source_buffer)) {
-        return synchronous_upload_fallback(
-            destination_backend, source->data, destination_context->buffer, destination_offset, size);
+        return synchronous_upload_fallback(destination_backend, source->data, destination_context->buffer,
+                                           destination_offset, size);
     }
     return false;
 }
@@ -660,10 +660,9 @@ static bool tensor_broadcastable_to(const ggml_tensor * source, const ggml_tenso
 
 static bool tensor_has_supported_source_layout(const ggml_tensor * tensor) {
     // ggml_clamp is represented as a zero-offset in-place view, so allow full aliases that preserve packed layout.
-    return tensor != nullptr &&
-           (tensor->view_src == nullptr ||
-            (tensor->view_offs == 0 && ggml_nbytes(tensor) == ggml_nbytes(tensor->view_src) &&
-             (tensor->op == GGML_OP_RESHAPE || tensor->op == GGML_OP_CLAMP)));
+    return tensor != nullptr && (tensor->view_src == nullptr ||
+                                 (tensor->view_offs == 0 && ggml_nbytes(tensor) == ggml_nbytes(tensor->view_src) &&
+                                  (tensor->op == GGML_OP_RESHAPE || tensor->op == GGML_OP_CLAMP)));
 }
 
 static bool binary_kind_allows_broadcast(ggml::hrx::BinaryKind kind,
@@ -684,6 +683,10 @@ static bool binary_kind_allows_broadcast(ggml::hrx::BinaryKind kind,
         case ggml::hrx::BinaryKind::Div:
             return lhs_full;
         case ggml::hrx::BinaryKind::SwiGLU:
+        case ggml::hrx::BinaryKind::GeGLU:
+        case ggml::hrx::BinaryKind::RegLU:
+        case ggml::hrx::BinaryKind::GeGLUErf:
+        case ggml::hrx::BinaryKind::GeGLUQuick:
             return lhs_full && rhs_full;
     }
     return false;

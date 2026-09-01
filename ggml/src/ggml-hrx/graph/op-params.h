@@ -39,11 +39,15 @@ struct GluParams {
 };
 
 enum class BinaryKind : uint32_t {
-    Add    = 0,
-    Sub    = 1,
-    Mul    = 2,
-    Div    = 3,
-    SwiGLU = 4,
+    Add        = 0,
+    Sub        = 1,
+    Mul        = 2,
+    Div        = 3,
+    SwiGLU     = 4,
+    GeGLU      = 5,
+    RegLU      = 6,
+    GeGLUErf   = 7,
+    GeGLUQuick = 8,
 };
 
 struct BinaryParams {

@@ -1640,6 +1640,7 @@
         ],
         "library_sources": [
           "motifs/dequant.loom",
+          "motifs/unary_f32_apply.loom",
           "motifs/q4_k_f16.loom",
           "motifs/q6_k_f16.loom",
           "motifs/q8_0_f16.loom",
@@ -1651,6 +1652,7 @@
       },
       "compile_dependencies": [
         "motifs/dequant.loom",
+        "motifs/unary_f32_apply.loom",
         "motifs/q4_k_f16.loom",
         "motifs/q6_k_f16.loom",
         "motifs/q8_0_f16.loom",

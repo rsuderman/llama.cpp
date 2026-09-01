@@ -96,18 +96,35 @@ bool import_binary_kind(const ggml_tensor & tensor, BinaryKind & kind) {
             kind = BinaryKind::Div;
             return true;
         case GGML_OP_GLU:
-            if (tensor.src[1] != nullptr && ggml_get_glu_op(&tensor) == GGML_GLU_OP_SWIGLU) {
-                kind = BinaryKind::SwiGLU;
-                return true;
+            if (tensor.src[1] == nullptr) {
+                return false;
             }
-            return false;
+            switch (ggml_get_glu_op(&tensor)) {
+                case GGML_GLU_OP_REGLU:
+                    kind = BinaryKind::RegLU;
+                    return true;
+                case GGML_GLU_OP_SWIGLU:
+                    kind = BinaryKind::SwiGLU;
+                    return true;
+                case GGML_GLU_OP_GEGLU:
+                    kind = BinaryKind::GeGLU;
+                    return true;
+                case GGML_GLU_OP_GEGLU_ERF:
+                    kind = BinaryKind::GeGLUErf;
+                    return true;
+                case GGML_GLU_OP_GEGLU_QUICK:
+                    kind = BinaryKind::GeGLUQuick;
+                    return true;
+                default:
+                    return false;
+            }
         default:
             return false;
     }
 }
 
 bool binary_kind_supported(BinaryKind kind) {
-    return static_cast<uint32_t>(kind) <= static_cast<uint32_t>(BinaryKind::SwiGLU);
+    return static_cast<uint32_t>(kind) <= static_cast<uint32_t>(BinaryKind::GeGLUQuick);
 }
 
 uint32_t binary_kind_config_value(BinaryKind kind) {
