@@ -3063,20 +3063,8 @@ static void run_qwen_flash_attention_dispatch_checks() {
         REQUIRE(unsetenv(kDisableQwenDispatchEnv) == 0);
     }
     {
-        REQUIRE(setenv(kDisableQwenDispatchEnv, "1", 1) == 0);
-        ggml_tensor * output =
-            build_qwen_flash_attention_graph(ctx, 128, 128, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true, false, 256, 1.0f);
-        schedule_common_flash_attention_command(ctx, output, 128, 128, 4, 2, 256, 1.0f);
-        REQUIRE(unsetenv(kDisableQwenDispatchEnv) == 0);
-    }
-    {
         ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 1, 8, 4, 2);
         schedule_common_flash_attention_decode_split_command(ctx, output, 1, 8, 4, 2);
-    }
-    {
-        ggml_tensor * output =
-            build_qwen_flash_attention_graph(ctx, 1, 64, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true, false, 256, 1.0f);
-        schedule_common_flash_attention_decode_split_command(ctx, output, 1, 64, 4, 2, 256, 1.0f);
     }
     {
         ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2, GGML_TYPE_F32, GGML_TYPE_F32);

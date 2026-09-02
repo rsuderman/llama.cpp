@@ -452,7 +452,7 @@ int main() {
     REQUIRE(async_jit->async_enabled());
 
     std::vector<ggml::hrx::LoomCompiledKernelRef> refs;
-    refs.reserve(32);
+    refs.reserve(30);
     const auto enqueue_begin = std::chrono::steady_clock::now();
     refs.push_back(compile_kernel(*async_jit, "async-binary-add-64", binary, binary_f32_exact_workload(64),
                                   binary_f32_exact_config("0")));
@@ -556,14 +556,9 @@ int main() {
     refs.push_back(compile_kernel(*async_jit, "async-flash-prefill-128", flash_prefill,
                                   flash_attention_workload(128, 128),
                                   flash_attention_config("32", "4", "128", "0.0883883461")));
-    refs.push_back(compile_kernel(*async_jit, "async-flash-prefill-256-scale1", flash_prefill,
-                                  flash_attention_workload(128, 128), flash_attention_config("32", "4", "256", "1")));
     refs.push_back(compile_kernel(*async_jit, "async-flash-decode-128", flash_decode,
                                   flash_attention_decode_workload(64),
                                   flash_attention_decode_config("32", "4", "128", "0.0883883461", "64")));
-    refs.push_back(compile_kernel(*async_jit, "async-flash-decode-256-scale1", flash_decode,
-                                  flash_attention_decode_workload(64),
-                                  flash_attention_decode_config("32", "4", "256", "1", "64")));
     const auto    enqueue_end = std::chrono::steady_clock::now();
     const int64_t enqueue_us  = elapsed_us(enqueue_begin, enqueue_end);
     std::printf("async Loom enqueue completed in %ld us\n", static_cast<long>(enqueue_us));

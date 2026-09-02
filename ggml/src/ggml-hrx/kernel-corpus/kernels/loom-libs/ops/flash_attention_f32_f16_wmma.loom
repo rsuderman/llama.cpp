@@ -4,7 +4,7 @@
 // 64 KV rows at a time. The ownership changes mirror the cooperative-matrix
 // schedule used by llama.cpp's Vulkan CM1 kernel:
 //
-//   1. All workitems stage a scaled 16xhead_size F16 query tile.
+//   1. All workitems stage a scaled 16x128 F16 query tile.
 //   2. Each wave computes one 16x16 QK score slice.
 //   3. Scores cross LDS so each wave can normalize four complete query rows.
 //   4. F16 probabilities cross LDS for four P*V WMMA steps.
@@ -12,7 +12,7 @@
 //      four query rows across subsequent 64-row KV blocks.
 //
 // K and V remain in the row-major llama.cpp cache layout
-// [KV token][KV head][head_size]. Their aligned F16 fragments load directly
+// [KV token][KV head][128]. Their aligned F16 fragments load directly
 // from global memory; there is no expanded or repacked persistent allocation.
 // QK and the online-softmax statistics remain F32, while the P*V accumulation
 // and carried output match the Vulkan oracle's F16 policy.
@@ -22,7 +22,7 @@ config.decl @ggml.flash_attention.query_head_count : %value: index where [range(
 
 config.decl @ggml.flash_attention.key_value_head_count : %value: index where [range(%value, 1, 64)]
 
-config.decl @ggml.flash_attention.head_size : %value: index where [range(%value, 64, 256), mul(%value, 64)]
+config.decl @ggml.flash_attention.head_size : %value: index where [range(%value, 128, 128), mul(%value, 64)]
 
 config.decl @ggml.flash_attention.attention_scale : f32
 
@@ -43,7 +43,7 @@ kernel.def target(@ggml_flash_attention_gfx11_wave64) @ggml_flash_attention_f32_
   %query_head_count = config.get @ggml.flash_attention.query_head_count : index
   %key_value_head_count = config.get @ggml.flash_attention.key_value_head_count : index
   %head_size0 = config.get @ggml.flash_attention.head_size : index
-  %head_size = index.assume %head_size0 [range(%head_size0, 64, 256), mul(%head_size0, 64)] : index
+  %head_size = index.assume %head_size0 [range(%head_size0, 128, 128), mul(%head_size0, 64)] : index
   %query_tile = kernel.workgroup.id<x> : index
   %query_head0 = kernel.workgroup.id<y> : index
   %query_head, %launch_query_head_count = index.assume %query_head0, %query_head_count [lt(%query_head0, %query_head_count)] : index, index

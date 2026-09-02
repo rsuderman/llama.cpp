@@ -3285,13 +3285,9 @@ int main() {
     run_router_projection_case(4);
     run_router_top8_case(4);
     run_qwen_flash_attention_case();
-    run_common_flash_attention_cpu_reference_case(256, 16, 16, 1.0f, "loom_libs:ggml_flash_attention_f32_f16_wmma");
-    run_common_flash_attention_cpu_reference_case(256, 1, 64, 1.0f,
-                                                  "loom_libs:ggml_flash_attention_decode_split_f32_f16_wmma_next_q8");
     run_qwen_decode_split_flash_attention_scheduling_case(1, 512);
     run_qwen_decode_split_flash_attention_scheduling_case(4, 513);
     run_qwen_decode_split_flash_attention_scheduling_case(1, 512, true);
-    run_qwen_decode_split_flash_attention_scheduling_case(1, 64, false, 256, 1.0f);
     run_qwen_decode_attention_output_next_q8_scheduling_case(false);
     run_qwen_decode_attention_output_next_q8_scheduling_case(true);
     run_qwen_full_cache_prefill_flash_attention_scheduling_case(512);
