@@ -6285,6 +6285,140 @@ static void run_layout_alias_scheduler_elision_checks() {
     ggml_free(ctx);
 }
 
+static void run_zero_output_scheduler_elision_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 512 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    {
+        ggml_tensor * input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3840, 1);
+        ggml_tensor * ids   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 0);
+        REQUIRE(input != nullptr);
+        REQUIRE(ids != nullptr);
+        ggml_tensor * rows = ggml_get_rows(ctx, input, ids);
+        REQUIRE(rows != nullptr);
+        REQUIRE(rows->ne[0] == 3840);
+        REQUIRE(rows->ne[1] == 0);
+
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        REQUIRE(graph != nullptr);
+        ggml_build_forward_expand(graph, rows);
+
+        ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+        REQUIRE(imported.graph.nodes().size() == 1);
+        REQUIRE(imported.graph.nodes()[0].op == GGML_OP_GET_ROWS);
+        const ggml::hrx::Value * rows_value = imported.graph.values().find_tensor(rows);
+        REQUIRE(rows_value != nullptr);
+        REQUIRE(rows_value->element_count == 0);
+        REQUIRE(rows_value->byte_count == 0);
+
+        ggml::hrx::DispatchScheduler scheduler;
+        REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+        REQUIRE(scheduler.plan().valid());
+        REQUIRE(scheduler.plan().dispatches.empty());
+
+        const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+            imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(commands.valid());
+        REQUIRE(commands.commands.empty());
+        REQUIRE(command_program_verifies(commands));
+
+        ggml::hrx::GraphProgramCache  cache;
+        ggml::hrx::GraphProgramLookup lookup =
+            cache.get_or_build(*graph, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(lookup.valid());
+        REQUIRE(lookup.match.external_bindings.size() == 1);
+        REQUIRE(lookup.match.external_bindings[0].tensor == input);
+    }
+
+    {
+        ggml_tensor * input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3840, 1);
+        ggml_tensor * ids   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 0);
+        REQUIRE(input != nullptr);
+        REQUIRE(ids != nullptr);
+        ggml_tensor * rows = ggml_get_rows(ctx, input, ids);
+        ggml_tensor * norm = ggml_rms_norm(ctx, rows, 0.000001f);
+        REQUIRE(rows != nullptr);
+        REQUIRE(norm != nullptr);
+        REQUIRE(norm->ne[0] == 3840);
+        REQUIRE(norm->ne[1] == 0);
+
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        REQUIRE(graph != nullptr);
+        ggml_build_forward_expand(graph, norm);
+
+        ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+        REQUIRE(imported.graph.nodes().size() == 2);
+        REQUIRE(imported.graph.nodes()[0].op == GGML_OP_GET_ROWS);
+        REQUIRE(imported.graph.nodes()[1].op == GGML_OP_RMS_NORM);
+
+        ggml::hrx::DispatchScheduler scheduler;
+        REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+        REQUIRE(scheduler.plan().valid());
+        REQUIRE(scheduler.plan().dispatches.empty());
+
+        ggml::hrx::GraphProgramCache  cache;
+        ggml::hrx::GraphProgramLookup lookup =
+            cache.get_or_build(*graph, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(lookup.valid());
+        REQUIRE(lookup.match.external_bindings.size() == 1);
+        REQUIRE(lookup.match.external_bindings[0].tensor == input);
+    }
+
+    {
+        ggml_tensor * lhs = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3840, 0);
+        ggml_tensor * rhs = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3840, 0);
+        REQUIRE(lhs != nullptr);
+        REQUIRE(rhs != nullptr);
+        ggml_tensor * sum = ggml_add(ctx, lhs, rhs);
+        REQUIRE(sum != nullptr);
+        REQUIRE(sum->ne[0] == 3840);
+        REQUIRE(sum->ne[1] == 0);
+
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        REQUIRE(graph != nullptr);
+        ggml_build_forward_expand(graph, sum);
+
+        ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+        REQUIRE(imported.graph.nodes().size() == 1);
+        REQUIRE(imported.graph.nodes()[0].op == GGML_OP_ADD);
+
+        ggml::hrx::DispatchScheduler scheduler;
+        REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+        REQUIRE(scheduler.plan().valid());
+        REQUIRE(scheduler.plan().dispatches.empty());
+
+        ggml::hrx::GraphProgramCache  cache;
+        ggml::hrx::GraphProgramLookup lookup =
+            cache.get_or_build(*graph, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(lookup.valid());
+        REQUIRE(lookup.match.external_bindings.empty());
+    }
+
+    {
+        ggml_tensor * input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3840, 1);
+        REQUIRE(input != nullptr);
+        ggml_tensor * sin = ggml_sin(ctx, input);
+        REQUIRE(sin != nullptr);
+
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        REQUIRE(graph != nullptr);
+        ggml_build_forward_expand(graph, sin);
+
+        ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+        ggml::hrx::DispatchScheduler scheduler;
+        REQUIRE(!scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+    }
+
+    ggml_free(ctx);
+}
+
 static void run_transient_import_checks() {
     ggml_init_params params = {};
     params.mem_size         = 256 * 1024;
@@ -7472,6 +7606,7 @@ int main() {
     run_alias_value_import_checks();
     run_multi_dispatch_checks();
     run_layout_alias_scheduler_elision_checks();
+    run_zero_output_scheduler_elision_checks();
     run_transient_import_checks();
     run_chained_dispatch_requires_transients();
     run_graph_replay_host_staging_is_not_ineligible();

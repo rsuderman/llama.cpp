@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <sstream>
+#include <unordered_set>
 #include <utility>
 
 namespace ggml::hrx {
@@ -56,6 +57,28 @@ static void apply_graph_replay_result(PreparedCommandProgramCacheExecutionResult
 
 static bool graph_replay_should_fallback(HrxGraphReplayEvent event) {
     return event == HrxGraphReplayEvent::Ineligible || event == HrxGraphReplayEvent::BuildFailed;
+}
+
+static void collect_command_graph_values(const std::vector<Command> & commands, std::unordered_set<int32_t> & values) {
+    for (const Command & command : commands) {
+        for (const CommandBinding & binding : command.bindings) {
+            if (binding.origin == CommandBindingOrigin::GraphValue) {
+                values.insert(binding.value.value);
+            }
+        }
+    }
+}
+
+static std::unordered_set<int32_t> collect_command_graph_values(const CommandProgram & commands) {
+    std::unordered_set<int32_t> values;
+    collect_command_graph_values(commands.initialization_commands, values);
+    collect_command_graph_values(commands.commands, values);
+    return values;
+}
+
+static bool can_skip_external_binding(const Value & value, const std::unordered_set<int32_t> & command_graph_values) {
+    return (value.element_count == 0 || value.byte_count == 0) &&
+           command_graph_values.find(value.id.value) == command_graph_values.end();
 }
 
 static Status bind_current_value(const ValueMap &                                   values,
@@ -411,11 +434,20 @@ GraphProgramMatch GraphProgram::match_current_graph(const ggml_cgraph & current_
         }
     }
 
+    const std::unordered_set<int32_t> command_graph_values = collect_command_graph_values(*commands_);
     for (const ValueId id : values.external_value_ids()) {
+        const Value * value = values.find(id);
+        if (value == nullptr) {
+            result.status.log("external value %d is missing from the cached graph", id.value);
+            return result;
+        }
         if (id.value < 0 || static_cast<size_t>(id.value) >= tensor_by_value.size() ||
             tensor_by_value[static_cast<size_t>(id.value)] == nullptr) {
             result.status.log("external value %d is missing from the current graph", id.value);
             return result;
+        }
+        if (can_skip_external_binding(*value, command_graph_values)) {
+            continue;
         }
         result.external_bindings.push_back({ id, tensor_by_value[static_cast<size_t>(id.value)] });
     }
