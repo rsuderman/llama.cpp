@@ -49,7 +49,7 @@ static bool is_supported_head_count(int64_t head_count) {
 }
 
 static bool is_supported_head_size(int64_t head_size) {
-    return head_size == 128 || head_size == 256;
+    return head_size >= 128 && head_size <= 512 && head_size % 64 == 0;
 }
 
 static bool is_supported_decode_head_size(int64_t head_size) {

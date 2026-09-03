@@ -3287,6 +3287,10 @@ int main() {
     run_qwen_flash_attention_case();
     run_common_flash_attention_cpu_reference_case(256, 16, 64, 1.0f / std::sqrt(256.0f),
                                                   "loom_libs:ggml_flash_attention_f32_f16_wmma");
+    run_common_flash_attention_cpu_reference_case(384, 16, 64, 1.0f / std::sqrt(384.0f),
+                                                  "loom_libs:ggml_flash_attention_f32_f16_wmma");
+    run_common_flash_attention_cpu_reference_case(512, 16, 64, 1.0f / std::sqrt(512.0f),
+                                                  "loom_libs:ggml_flash_attention_f32_f16_wmma");
     run_qwen_decode_split_flash_attention_scheduling_case(1, 512);
     run_qwen_decode_split_flash_attention_scheduling_case(4, 513);
     run_qwen_decode_split_flash_attention_scheduling_case(1, 512, true);
