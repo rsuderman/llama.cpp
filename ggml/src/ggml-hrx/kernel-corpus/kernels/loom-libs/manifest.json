@@ -943,6 +943,7 @@
           "motifs/q8_0_f16.loom",
           "motifs/q8_1_f16.loom",
           "motifs/f16_f16.loom",
+          "motifs/bf16_f16.loom",
           "motifs/f32_f16.loom"
         ]
       },
@@ -958,6 +959,7 @@
         "motifs/q8_0_f16.loom",
         "motifs/q8_1_f16.loom",
         "motifs/f16_f16.loom",
+        "motifs/bf16_f16.loom",
         "motifs/f32_f16.loom"
       ]
     },

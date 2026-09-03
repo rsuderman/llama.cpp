@@ -244,7 +244,7 @@ static int64_t matmul_weight_format_config(ggml_type type) {
         case GGML_TYPE_F16:
             return 16;
         case GGML_TYPE_BF16:
-            return 17;
+            return 30;
         case GGML_TYPE_F32:
             return 32;
         default:
@@ -4881,7 +4881,7 @@ static std::string common_mul_mat_weight_format(ggml_type type) {
         case GGML_TYPE_F16:
             return "16";
         case GGML_TYPE_BF16:
-            return "17";
+            return "30";
         case GGML_TYPE_F32:
             return "32";
         default:
