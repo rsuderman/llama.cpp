@@ -49,16 +49,11 @@ static bool is_supported_head_count(int64_t head_count) {
 }
 
 static bool is_supported_head_size(int64_t head_size) {
-    return head_size == 128;
+    return head_size == 128 || head_size == 256;
 }
 
 static bool is_supported_decode_head_size(int64_t head_size) {
     return head_size == 128;
-}
-
-static bool is_supported_attention_scale(float scale, int64_t head_size) {
-    const float standard_scale = 1.0f / std::sqrt(static_cast<float>(head_size));
-    return nearly_equal(scale, standard_scale) || nearly_equal(scale, 1.0f);
 }
 
 static bool has_query_layout(const Value & value, int64_t query_head_count, int64_t head_size) {
@@ -86,13 +81,12 @@ static bool has_output_layout(const Value & value, int64_t query_head_count, int
            value.nb[2] == static_cast<size_t>(query_head_count * head_size) * element_size;
 }
 
-static bool has_flash_attention_params(const GraphNode & node, int64_t head_size) {
+static bool has_flash_attention_params(const GraphNode & node) {
     const FlashAttnExtParams * params = op_params_as<FlashAttnExtParams>(node.params);
     if (params == nullptr) {
         return false;
     }
-    return is_supported_attention_scale(params->scale, head_size) && nearly_equal(params->max_bias, 0.0f) &&
-           nearly_equal(params->logit_softcap, 0.0f) &&
+    return nearly_equal(params->max_bias, 0.0f) && nearly_equal(params->logit_softcap, 0.0f) &&
            (params->prec == GGML_PREC_DEFAULT || params->prec == GGML_PREC_F32);
 }
 
@@ -185,7 +179,7 @@ static FlashAttentionMatch match_flash_attention_f32_f16(const Graph &       gra
         return {};
     }
     const int64_t head_size = query->ne[0];
-    if (!is_supported_head_size(head_size) || !has_flash_attention_params(*node, head_size)) {
+    if (!is_supported_head_size(head_size) || !has_flash_attention_params(*node)) {
         return {};
     }
     if (query->ne[0] != head_size || key->ne[0] != head_size || value->ne[0] != head_size ||
@@ -280,7 +274,7 @@ static DecodeSplitFlashAttentionMatch match_decode_split_flash_attention_f32_f16
     }
 
     const int64_t head_size = query->ne[0];
-    if (!is_supported_decode_head_size(head_size) || !has_flash_attention_params(*node, head_size)) {
+    if (!is_supported_decode_head_size(head_size) || !has_flash_attention_params(*node)) {
         return {};
     }
     if (key->ne[0] != head_size || value->ne[0] != head_size || output->ne[0] != head_size) {

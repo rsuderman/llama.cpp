@@ -3063,6 +3063,16 @@ static void run_qwen_flash_attention_dispatch_checks() {
         REQUIRE(unsetenv(kDisableQwenDispatchEnv) == 0);
     }
     {
+        REQUIRE(setenv(kDisableQwenDispatchEnv, "1", 1) == 0);
+        constexpr int64_t head_size = 256;
+        ggml_tensor *     output =
+            build_qwen_flash_attention_graph(ctx, 16, 16, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true, false, head_size,
+                                             1.0f / std::sqrt(static_cast<float>(head_size)));
+        schedule_common_flash_attention_command(ctx, output, 16, 16, 4, 2, head_size,
+                                                1.0f / std::sqrt(static_cast<float>(head_size)));
+        REQUIRE(unsetenv(kDisableQwenDispatchEnv) == 0);
+    }
+    {
         ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 1, 8, 4, 2);
         schedule_common_flash_attention_decode_split_command(ctx, output, 1, 8, 4, 2);
     }

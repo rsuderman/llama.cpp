@@ -4,7 +4,7 @@
 // 64 KV rows at a time. The ownership changes mirror the cooperative-matrix
 // schedule used by llama.cpp's Vulkan CM1 kernel:
 //
-//   1. All workitems stage a scaled 16x128 F16 query tile.
+//   1. All workitems stage a scaled 16xhead_size F16 query tile.
 //   2. Each wave computes one 16x16 QK score slice.
 //   3. Scores cross LDS so each wave can normalize four complete query rows.
 //   4. F16 probabilities cross LDS for four P*V WMMA steps.
@@ -12,7 +12,7 @@
 //      four query rows across subsequent 64-row KV blocks.
 //
 // K and V remain in the row-major llama.cpp cache layout
-// [KV token][KV head][128]. Their aligned F16 fragments load directly
+// [KV token][KV head][head_size]. Their aligned F16 fragments load directly
 // from global memory; there is no expanded or repacked persistent allocation.
 // QK and the online-softmax statistics remain F32, while the P*V accumulation
 // and carried output match the Vulkan oracle's F16 policy.
@@ -22,7 +22,7 @@ config.decl @ggml.flash_attention.query_head_count : %value: index where [range(
 
 config.decl @ggml.flash_attention.key_value_head_count : %value: index where [range(%value, 1, 64)]
 
-config.decl @ggml.flash_attention.head_size : %value: index where [range(%value, 128, 128), mul(%value, 64)]
+config.decl @ggml.flash_attention.head_size : %value: index where [range(%value, 128, 256), mul(%value, 64)]
 
 config.decl @ggml.flash_attention.attention_scale : f32
 
@@ -43,7 +43,7 @@ kernel.def target(@ggml_flash_attention_gfx11_wave64) @ggml_flash_attention_f32_
   %query_head_count = config.get @ggml.flash_attention.query_head_count : index
   %key_value_head_count = config.get @ggml.flash_attention.key_value_head_count : index
   %head_size0 = config.get @ggml.flash_attention.head_size : index
-  %head_size = index.assume %head_size0 [range(%head_size0, 128, 128), mul(%head_size0, 64)] : index
+  %head_size = index.assume %head_size0 [range(%head_size0, 128, 256), mul(%head_size0, 64)] : index
   %query_tile = kernel.workgroup.id<x> : index
   %query_head0 = kernel.workgroup.id<y> : index
   %query_head, %launch_query_head_count = index.assume %query_head0, %query_head_count [lt(%query_head0, %query_head_count)] : index, index
@@ -574,12 +574,13 @@ kernel.def target(@ggml_flash_attention_gfx11_wave64) @ggml_flash_attention_test
 // this helper from production roots.
 kernel.def target(@ggml_flash_attention_gfx11_wave64) @ggml_flash_attention_test_extract_row(%query_token_count: index, %context_count: index, %source_row: index) {
   %query_head_count = config.get @ggml.flash_attention.query_head_count : index
+  %head_size0 = config.get @ggml.flash_attention.head_size : index
+  %head_size = index.assume %head_size0 [range(%head_size0, 128, 256), mul(%head_size0, 64)] : index
   %context_capacity = config.get @ggml.flash_attention.test.context_capacity : index
-  %c128 = index.constant 128 : index
   %c255 = index.constant 255 : index
   %c256 = index.constant 256 : index
   %c1 = index.constant 1 : index
-  %query_element_count = index.mul %query_head_count, %c128 : index
+  %query_element_count = index.mul %query_head_count, %head_size : index
   %element_count = index.add %query_element_count, %context_capacity : index
   %padded_element_count = index.add %element_count, %c255 : index
   %workgroup_count = index.div %padded_element_count, %c256 : index
@@ -587,9 +588,10 @@ kernel.def target(@ggml_flash_attention_gfx11_wave64) @ggml_flash_attention_test
 } launch(%query_token_count: index, %context_count: index, %source_row: index, %source_query: buffer, %source_mask: buffer, %target_query: buffer, %target_mask: buffer) {
   %c0 = index.constant 0 : index
   %c0_offset = index.constant 0 : offset
-  %c128 = index.constant 128 : index
   %c256 = index.constant 256 : index
   %query_head_count = config.get @ggml.flash_attention.query_head_count : index
+  %head_size0 = config.get @ggml.flash_attention.head_size : index
+  %head_size = index.assume %head_size0 [range(%head_size0, 128, 256), mul(%head_size0, 64)] : index
   %context_capacity = config.get @ggml.flash_attention.test.context_capacity : index
   %bounded_query_token_count = index.assume %query_token_count [range(%query_token_count, 1, 2048)] : index
   %bounded_context_count = index.assume %context_count [range(%context_count, 1, 32768), le(%context_count, %context_capacity)] : index
@@ -597,21 +599,21 @@ kernel.def target(@ggml_flash_attention_gfx11_wave64) @ggml_flash_attention_test
   %workgroup = kernel.workgroup.id<x> : index
   %workitem = kernel.workitem.id<x> : index
   %linear = index.madd %workgroup, %c256, %workitem : index
-  %query_element_count = index.mul %query_head_count, %c128 : index
+  %query_element_count = index.mul %query_head_count, %head_size : index
   %element_count = index.add %query_element_count, %bounded_context_count : index
   %in_bounds = index.cmp ult, %linear, %element_count : index
   %source_query_noalias, %source_mask_noalias, %target_query_noalias, %target_mask_noalias = buffer.assume.noalias %source_query, %source_mask, %target_query, %target_mask : buffer, buffer, buffer, buffer
-  %source_query_view = buffer.view %source_query_noalias[%c0_offset] : buffer -> view<[%source_query_token_count]x[%query_head_count]x128xf32>
+  %source_query_view = buffer.view %source_query_noalias[%c0_offset] : buffer -> view<[%source_query_token_count]x[%query_head_count]x[%head_size]xf32>
   %source_mask_view = buffer.view %source_mask_noalias[%c0_offset] : buffer -> view<[%source_query_token_count]x[%bounded_context_count]xf16>
-  %target_query_view = buffer.view %target_query_noalias[%c0_offset] : buffer -> view<1x[%query_head_count]x128xf32>
+  %target_query_view = buffer.view %target_query_noalias[%c0_offset] : buffer -> view<1x[%query_head_count]x[%head_size]xf32>
   %target_mask_view = buffer.view %target_mask_noalias[%c0_offset] : buffer -> view<1x[%bounded_context_count]xf16>
   scf.if %in_bounds {
     %is_query_element = index.cmp ult, %linear, %query_element_count : index
     scf.if %is_query_element {
-      %query_head = index.div %linear, %c128 : index
-      %query_channel = index.rem %linear, %c128 : index
-      %value = view.load %source_query_view[%bounded_source_row, %query_head, %query_channel] : view<[%source_query_token_count]x[%query_head_count]x128xf32> -> f32
-      view.store %value, %target_query_view[%c0, %query_head, %query_channel] : f32, view<1x[%query_head_count]x128xf32>
+      %query_head = index.div %linear, %head_size : index
+      %query_channel = index.rem %linear, %head_size : index
+      %value = view.load %source_query_view[%bounded_source_row, %query_head, %query_channel] : view<[%source_query_token_count]x[%query_head_count]x[%head_size]xf32> -> f32
+      view.store %value, %target_query_view[%c0, %query_head, %query_channel] : f32, view<1x[%query_head_count]x[%head_size]xf32>
     } else {
       %mask_column = index.sub %linear, %query_element_count : index
       %value = view.load %source_mask_view[%bounded_source_row, %mask_column] : view<[%source_query_token_count]x[%bounded_context_count]xf16> -> f16
