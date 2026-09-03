@@ -5334,32 +5334,39 @@ static void append_qwen_weighted_reduce_for_graph(ggml::hrx::Graph &            
 
     const ggml::hrx::Value * route_weights_value = graph.values().find_tensor(tensors.route_weights);
     const ggml::hrx::Value * routed_output_value = graph.values().find_tensor(tensors.output);
+    const ggml::hrx::Value * hidden_state_value  = graph.values().find_tensor(tensors.hidden_state);
     const ggml::hrx::Value * residual_value      = graph.values().find_tensor(tensors.residual);
     REQUIRE(route_weights_value != nullptr);
     REQUIRE(routed_output_value != nullptr);
+    REQUIRE(hidden_state_value != nullptr);
     REQUIRE(residual_value != nullptr);
 
     const ggml::hrx::Dispatch & dispatch = plan.dispatches.back();
     REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == expected_kernel_name);
     REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == tensors.output->ne[2]);
-    REQUIRE(dispatch.bindings.size() == (tensors.next_output != nullptr ? 5 : 3));
+    REQUIRE(dispatch.bindings.size() == (tensors.next_output != nullptr ? 5 : 4));
     REQUIRE(dispatch.bindings[0].value == route_weights_value->id);
     REQUIRE(dispatch.bindings[0].length == route_weights_value->byte_count);
     REQUIRE(dispatch.bindings[1].value == plan.metadata.alternate_values().back().alternate_value);
     REQUIRE(dispatch.bindings[1].length == qwen_routed_down_f16_output_size(tensors.output->ne[2]));
-    REQUIRE(dispatch.bindings[2].value == residual_value->id);
-    REQUIRE(dispatch.bindings[2].length == residual_value->byte_count);
     require_compile_parameter(dispatch, "qwen3_moe.routed_down.route_count", "8");
     require_compile_parameter(dispatch, "qwen3_moe.routed_down.output_size", "2048");
     require_compile_parameter(dispatch, "qwen3_moe.workload.token_capacity", std::to_string(tensors.output->ne[2]));
 
     if (tensors.next_output != nullptr) {
+        REQUIRE(dispatch.bindings[2].value == residual_value->id);
+        REQUIRE(dispatch.bindings[2].length == residual_value->byte_count);
         const ggml::hrx::Value * next_output_value = graph.values().find_tensor(tensors.next_output);
         REQUIRE(next_output_value != nullptr);
         REQUIRE(dispatch.bindings[4].value == next_output_value->id);
         REQUIRE(dispatch.bindings[4].length == next_output_value->byte_count);
         require_compile_parameter(dispatch, "qwen3_moe.model.hidden_size", "2048");
         require_compile_parameter(dispatch, "qwen3_moe.model.rms_epsilon", "0.000001");
+    } else {
+        REQUIRE(dispatch.bindings[2].value == hidden_state_value->id);
+        REQUIRE(dispatch.bindings[2].length == hidden_state_value->byte_count);
+        REQUIRE(dispatch.bindings[3].value == residual_value->id);
+        REQUIRE(dispatch.bindings[3].length == residual_value->byte_count);
     }
 }
 
@@ -5680,12 +5687,14 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         REQUIRE(commands.valid());
         REQUIRE(commands.commands.size() == 6);
         REQUIRE(command_program_verifies(commands));
-        REQUIRE(commands.commands.back().bindings.size() == 3);
+        REQUIRE(commands.commands.back().bindings.size() == 4);
         REQUIRE(commands.commands.back().bindings[0].name == "route_weights");
         REQUIRE(commands.commands.back().bindings[1].name == "routed_output");
         REQUIRE(commands.commands.back().bindings[1].origin == ggml::hrx::CommandBindingOrigin::Transient);
-        REQUIRE(commands.commands.back().bindings[2].name == "output");
-        REQUIRE(commands.commands.back().bindings[2].access == ggml::hrx::ResourceAccess::ReadWrite);
+        REQUIRE(commands.commands.back().bindings[2].name == "residual_input");
+        REQUIRE(commands.commands.back().bindings[2].access == ggml::hrx::ResourceAccess::Read);
+        REQUIRE(commands.commands.back().bindings[3].name == "output");
+        REQUIRE(commands.commands.back().bindings[3].access == ggml::hrx::ResourceAccess::Write);
     }
 
     {
@@ -5772,7 +5781,7 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         REQUIRE(kernel_name_for_id(plan.dispatches.back().kernel.kernel_id) ==
                 "qwen3_moe:qwen3_moe_routed_down_weighted_reduce_f16_f32");
         REQUIRE(weighted_match.value_aliases.empty());
-        REQUIRE(plan.dispatches.back().bindings.size() == 3);
+        REQUIRE(plan.dispatches.back().bindings.size() == 4);
         const ggml::hrx::Value * hidden_state_value = imported.graph.values().find_tensor(tensors.hidden_state);
         const ggml::hrx::Value * residual_value     = imported.graph.values().find_tensor(tensors.residual);
         REQUIRE(hidden_state_value != nullptr);

@@ -1190,6 +1190,7 @@ static bool match_routed_ffn_down_weighted_reduce_dispatch(const DispatchMatchCo
     } else {
         dispatch.bindings.push_back({ match.route_weights->id, 0, match.route_weights->byte_count });
         dispatch.bindings.push_back({ match.routed_alternate->alternate_value, 0, match.routed_alternate->byte_count });
+        dispatch.bindings.push_back({ match.residual_input->id, 0, match.residual_input->byte_count });
         dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
     }
 
