@@ -19,6 +19,10 @@ static constexpr KernelCatalogRef kFlashAttentionDecodeSplitNextQ8Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_flash_attention_decode_split_f32_f16_wmma_next_q8");
 static constexpr int64_t kDecodeRowCapacity = 16;
 static constexpr int64_t kDecodeKvTileSize  = 64;
+static constexpr int64_t kPrefillHeadSizeBlock = 64;
+static constexpr int64_t kPrefillMinHeadSize   = kPrefillHeadSizeBlock;
+// Current cap keeps full-head Q/K staging within the kernel's fixed LDS budget.
+static constexpr int64_t kPrefillMaxHeadSize = 512;
 
 static const Value * graph_value(const Graph & graph, ValueId id) {
     return graph.values().find(id);
@@ -49,7 +53,8 @@ static bool is_supported_head_count(int64_t head_count) {
 }
 
 static bool is_supported_head_size(int64_t head_size) {
-    return head_size >= 128 && head_size <= 512 && head_size % 64 == 0;
+    return head_size >= kPrefillMinHeadSize && head_size <= kPrefillMaxHeadSize &&
+           head_size % kPrefillHeadSizeBlock == 0;
 }
 
 static bool is_supported_decode_head_size(int64_t head_size) {
