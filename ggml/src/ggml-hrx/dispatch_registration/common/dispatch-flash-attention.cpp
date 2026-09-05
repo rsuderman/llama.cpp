@@ -49,7 +49,7 @@ static bool is_supported_head_count(int64_t head_count) {
 }
 
 static bool is_supported_head_size(int64_t head_size) {
-    return head_size == 64 || head_size == 128;
+    return head_size >= 64 && head_size <= 256 && head_size % 64 == 0;
 }
 
 static bool has_query_layout(const Value & value, int64_t query_head_count, int64_t head_size) {
@@ -129,6 +129,7 @@ struct FlashAttentionMatch {
     int64_t           query_head_count      = 0;
     int64_t           key_value_head_count  = 0;
     int64_t           head_size             = 0;
+
     bool matched() const {
         return query != nullptr && key != nullptr && value != nullptr && mask != nullptr && output != nullptr;
     }
@@ -173,7 +174,7 @@ static FlashAttentionMatch match_flash_attention_f32_f16(const Graph &       gra
         return {};
     }
     const int64_t head_size = query->ne[0];
-    if (head_size != kDecodeHeadSize || !has_flash_attention_params(*node, kDecodeHeadSize)) {
+    if (!is_supported_head_size(head_size) || !has_flash_attention_params(*node, head_size)) {
         return {};
     }
     if (query->ne[0] != head_size || key->ne[0] != head_size || value->ne[0] != head_size ||
@@ -323,11 +324,105 @@ static void add_flash_attention_decode_compile_parameters(KernelSpecialization &
 static void add_flash_attention_compile_parameters(KernelSpecialization & kernel,
                                                    int64_t                query_head_count,
                                                    int64_t                key_value_head_count,
-                                                   int64_t                head_size) {
+                                                   int64_t                head_size,
+                                                   bool                   apply_gate,
+                                                   int64_t                gate_stride_head,
+                                                   int64_t                gate_stride_token) {
     kernel.compile_parameters.emplace("ggml.flash_attention.query_head_count", to_config_value(query_head_count));
     kernel.compile_parameters.emplace("ggml.flash_attention.key_value_head_count",
                                       to_config_value(key_value_head_count));
     kernel.compile_parameters.emplace("ggml.flash_attention.head_size", to_config_value(head_size));
+    kernel.compile_parameters.emplace("ggml.flash_attention.apply_gate", apply_gate ? "1" : "0");
+    kernel.compile_parameters.emplace("ggml.flash_attention.gate_stride_head", to_config_value(gate_stride_head));
+    kernel.compile_parameters.emplace("ggml.flash_attention.gate_stride_token", to_config_value(gate_stride_token));
+}
+
+static const GraphNode * single_consumer_with_op(const Graph & graph, ValueId value, ggml_op op) {
+    const std::vector<const GraphNode *> & consumers = graph.index().consumers(value);
+    return consumers.size() == 1 && consumers.front() != nullptr && consumers.front()->op == op ? consumers.front() :
+                                                                                                  nullptr;
+}
+
+static bool match_flash_attention_gate_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
+    const FlashAttentionMatch match = match_flash_attention_f32_f16(context.graph, context.plan, context.root_node);
+    if (!match.matched() || match.output_layout == nullptr || match.output_layout->op != GGML_OP_RESHAPE) {
+        return false;
+    }
+
+    const GraphNode * reshape  = match.output_layout;
+    const Value *     reshaped = graph_value(context.graph, reshape->output);
+    const GraphNode * mul =
+        reshaped != nullptr ? single_consumer_with_op(context.graph, reshaped->id, GGML_OP_MUL) : nullptr;
+    if (reshape->inputs.size() != 1 || reshaped == nullptr || mul == nullptr || mul->inputs.size() != 2 ||
+        reshaped->type != GGML_TYPE_F32 || !reshaped->contiguous ||
+        reshaped->ne[0] != match.head_size * match.query_head_count || reshaped->ne[1] != match.query_token_count ||
+        reshaped->ne[2] != 1 || reshaped->ne[3] != 1) {
+        return false;
+    }
+
+    ValueId gate_value_id;
+    if (mul->inputs[0] == reshape->output) {
+        gate_value_id = mul->inputs[1];
+    } else if (mul->inputs[1] == reshape->output) {
+        gate_value_id = mul->inputs[0];
+    } else {
+        return false;
+    }
+
+    const GraphNode *   sigmoid        = context.graph.index().producer(gate_value_id);
+    const UnaryParams * sigmoid_params = sigmoid != nullptr ? op_params_as<UnaryParams>(sigmoid->params) : nullptr;
+    if (sigmoid == nullptr || sigmoid->op != GGML_OP_UNARY || sigmoid->inputs.size() != 1 ||
+        sigmoid_params == nullptr || sigmoid_params->op != UnaryKind::Sigmoid ||
+        single_consumer_with_op(context.graph, sigmoid->output, GGML_OP_MUL) != mul) {
+        return false;
+    }
+
+    const GraphNode * cont = context.graph.index().producer(sigmoid->inputs[0]);
+    if (cont == nullptr || cont->op != GGML_OP_CONT || cont->inputs.size() != 1 ||
+        single_consumer_with_op(context.graph, cont->output, GGML_OP_UNARY) != sigmoid) {
+        return false;
+    }
+
+    const GraphNode * gate_view = context.graph.index().producer(cont->inputs[0]);
+    const Value *     raw_gate  = gate_view != nullptr ? graph_value(context.graph, gate_view->output) : nullptr;
+    const Value *     output    = graph_value(context.graph, mul->output);
+    if (gate_view == nullptr || gate_view->op != GGML_OP_VIEW || gate_view->inputs.size() != 1 || raw_gate == nullptr ||
+        output == nullptr || raw_gate->type != GGML_TYPE_F32 || output->type != GGML_TYPE_F32 ||
+        raw_gate->ne[0] != match.head_size || raw_gate->ne[1] != match.query_head_count ||
+        raw_gate->ne[2] != match.query_token_count || raw_gate->ne[3] != 1 || raw_gate->nb[0] != sizeof(float) ||
+        output->ne != reshaped->ne || !output->contiguous ||
+        single_consumer_with_op(context.graph, gate_view->output, GGML_OP_CONT) != cont) {
+        return false;
+    }
+    if (output->storage_root == match.query->storage_root || output->storage_root == match.key->storage_root ||
+        output->storage_root == match.value->storage_root || output->storage_root == match.mask->storage_root ||
+        output->storage_root == raw_gate->storage_root) {
+        return false;
+    }
+
+    dispatch_match.covered_nodes.push_back(context.root_index);
+    for (const GraphNode * covered : { reshape, gate_view, cont, sigmoid, mul }) {
+        if (!append_covered_node_index_once(context.graph, context.covered_nodes, covered,
+                                            dispatch_match.covered_nodes)) {
+            return false;
+        }
+    }
+
+    Dispatch dispatch;
+    dispatch.kernel = make_kernel_specialization(kFlashAttentionF32F16WmmaKernel);
+    dispatch.kernel.integer_parameters.emplace("query_token_count", match.query_token_count);
+    dispatch.kernel.integer_parameters.emplace("key_value_token_count", match.key_value_token_count);
+    add_flash_attention_compile_parameters(dispatch.kernel, match.query_head_count, match.key_value_head_count,
+                                           match.head_size, true, static_cast<int64_t>(raw_gate->nb[1] / sizeof(float)),
+                                           static_cast<int64_t>(raw_gate->nb[2] / sizeof(float)));
+    dispatch.bindings.push_back({ match.query->id, 0, match.query->byte_count });
+    dispatch.bindings.push_back({ match.key->id, 0, match.key->byte_count });
+    dispatch.bindings.push_back({ match.value->id, 0, match.value->byte_count });
+    dispatch.bindings.push_back({ match.mask_binding_value, 0, match.mask_binding_bytes });
+    dispatch.bindings.push_back({ raw_gate->id, 0, raw_gate->byte_count });
+    dispatch.bindings.push_back({ output->id, 0, output->byte_count });
+    dispatch_match.dispatches.push_back(std::move(dispatch));
+    return true;
 }
 
 static bool match_flash_attention_f32_f16_dispatch(const DispatchMatchContext & context,
@@ -342,11 +437,12 @@ static bool match_flash_attention_f32_f16_dispatch(const DispatchMatchContext & 
     dispatch.kernel.integer_parameters.emplace("query_token_count", match.query_token_count);
     dispatch.kernel.integer_parameters.emplace("key_value_token_count", match.key_value_token_count);
     add_flash_attention_compile_parameters(dispatch.kernel, match.query_head_count, match.key_value_head_count,
-                                           match.head_size);
+                                           match.head_size, false, 1, 1);
     dispatch.bindings.push_back({ match.query->id, 0, match.query->byte_count });
     dispatch.bindings.push_back({ match.key->id, 0, match.key->byte_count });
     dispatch.bindings.push_back({ match.value->id, 0, match.value->byte_count });
     dispatch.bindings.push_back({ match.mask_binding_value, 0, match.mask_binding_bytes });
+    dispatch.bindings.push_back({ match.query->id, 0, match.query->byte_count });
     dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
 
     dispatch_match.covered_nodes.push_back(context.root_index);
@@ -450,6 +546,14 @@ static bool match_flash_attention_decode_split_next_q8_dispatch(const DispatchMa
 }  // namespace
 
 void register_flash_attention_dispatches(DispatchRegistryBuilder & registry) {
+    registry.add({
+        "common.flash_attention_f32_f16_gate",
+        GGML_OP_FLASH_ATTN_EXT,
+        DispatchMatchKind::Fused,
+        100,
+        DispatchSource::Common,
+        match_flash_attention_gate_dispatch,
+    });
     registry.add({
         "common.flash_attention_decode_split_next_q8",
         GGML_OP_FLASH_ATTN_EXT,

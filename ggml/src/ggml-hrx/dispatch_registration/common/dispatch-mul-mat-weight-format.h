@@ -8,7 +8,9 @@ namespace ggml::hrx {
 
 enum class CommonMulMatWeightFormat {
     Q4K,
+    Q5K,
     Q6K,
+    IQ4XS,
     Q8_0,
     Q8_1,
     F16,
@@ -21,8 +23,14 @@ inline bool common_mul_mat_format_for_type(ggml_type type, CommonMulMatWeightFor
         case GGML_TYPE_Q4_K:
             format = CommonMulMatWeightFormat::Q4K;
             return true;
+        case GGML_TYPE_Q5_K:
+            format = CommonMulMatWeightFormat::Q5K;
+            return true;
         case GGML_TYPE_Q6_K:
             format = CommonMulMatWeightFormat::Q6K;
+            return true;
+        case GGML_TYPE_IQ4_XS:
+            format = CommonMulMatWeightFormat::IQ4XS;
             return true;
         case GGML_TYPE_Q8_0:
             format = CommonMulMatWeightFormat::Q8_0;
@@ -48,8 +56,12 @@ inline int64_t common_mul_mat_format_config_value(CommonMulMatWeightFormat forma
     switch (format) {
         case CommonMulMatWeightFormat::Q4K:
             return 4;
+        case CommonMulMatWeightFormat::Q5K:
+            return 5;
         case CommonMulMatWeightFormat::Q6K:
             return 6;
+        case CommonMulMatWeightFormat::IQ4XS:
+            return 23;
         case CommonMulMatWeightFormat::Q8_0:
             return 80;
         case CommonMulMatWeightFormat::Q8_1:

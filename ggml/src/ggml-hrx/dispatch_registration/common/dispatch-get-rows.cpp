@@ -15,6 +15,7 @@ namespace {
 
 static constexpr KernelCatalogRef kGetRowsF32Kernel     = GGML_HRX_KERNEL_REF("loom_libs", "ggml_get_rows_f32");
 static constexpr KernelCatalogRef kGetRowsF32NextKernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_get_rows_f32_next");
+static constexpr int64_t          kMaximumHiddenElements = int64_t{ 1 } << 30;
 static constexpr int64_t          kQwenHiddenSize       = kQwen30BMoeDispatchProfile.hidden_size;
 static constexpr int64_t          kQwenVocabularyCount  = 151936;
 
@@ -36,7 +37,7 @@ static bool is_2d(const Value & value) {
 }
 
 static bool is_supported_hidden_size(int64_t hidden_size) {
-    return hidden_size >= 256 && hidden_size <= 32768 && hidden_size % 256 == 0;
+    return hidden_size >= 256 && hidden_size <= kMaximumHiddenElements && hidden_size % 256 == 0;
 }
 
 static bool is_supported_token_count(int64_t token_count) {
@@ -164,7 +165,9 @@ struct GetRowsMatch {
     int64_t       row_count           = 0;
     int64_t       hidden_size         = 0;
 
-    bool matched() const { return ids != nullptr && weight != nullptr && output != nullptr && weight_format_value != 0; }
+    bool matched() const {
+        return ids != nullptr && weight != nullptr && output != nullptr && weight_format_value != 0;
+    }
 };
 
 static void add_common_compile_parameters(Dispatch & dispatch, const GetRowsMatch & match) {
@@ -196,18 +199,18 @@ static GetRowsMatch match_get_rows_f32(const Graph & graph, const GraphNode * no
     const Value * ids    = graph_value(graph, node->inputs[1]);
     const Value * output = graph_value(graph, node->output);
     FormatConfig  weight_format;
-    if (weight == nullptr || ids == nullptr || output == nullptr || !format_config_for_type(weight->type, weight_format) ||
-        ids->type != GGML_TYPE_I32 || output->type != GGML_TYPE_F32 || !weight->contiguous || !ids->contiguous ||
-        !output->contiguous || !is_2d(*weight) || !is_1d_or_2d_column(*ids) || !is_2d(*output)) {
+    if (weight == nullptr || ids == nullptr || output == nullptr ||
+        !format_config_for_type(weight->type, weight_format) || ids->type != GGML_TYPE_I32 ||
+        output->type != GGML_TYPE_F32 || !weight->contiguous || !ids->contiguous || !output->contiguous ||
+        !is_2d(*weight) || !is_1d_or_2d_column(*ids) || !is_2d(*output)) {
         return {};
     }
 
     const int64_t hidden_size = weight->ne[0];
     const int64_t row_count   = weight->ne[1];
     const int64_t token_count = ids->ne[0];
-    if (output->ne[0] != hidden_size || output->ne[1] != token_count ||
-        !is_supported_hidden_size(hidden_size) || !is_supported_row_count(row_count) ||
-        !is_supported_token_count(token_count)) {
+    if (output->ne[0] != hidden_size || output->ne[1] != token_count || !is_supported_hidden_size(hidden_size) ||
+        !is_supported_row_count(row_count) || !is_supported_token_count(token_count)) {
         return {};
     }
 
@@ -298,7 +301,8 @@ static bool match_get_rows_f32_next_dispatch(const DispatchMatchContext & contex
             continue;
         }
 
-        const ValueId next_value(context.next_plan_value.value + static_cast<int32_t>(dispatch_match.transients.size()));
+        const ValueId next_value(context.next_plan_value.value +
+                                 static_cast<int32_t>(dispatch_match.transients.size()));
         dispatch_match.dispatches.push_back(
             make_get_rows_next_dispatch(match, next_format, next_value, next_byte_count));
         dispatch_match.transients.push_back({ next_value, alternate_name(type), next_byte_count, 256 });

@@ -189,6 +189,8 @@ ggml_add_backend_library(ggml-hrx
     dispatch_registration/common/dispatch-binary.h
     dispatch_registration/common/dispatch-common.cpp
     dispatch_registration/common/dispatch-common.h
+    dispatch_registration/common/dispatch-copy.cpp
+    dispatch_registration/common/dispatch-copy.h
     dispatch_registration/common/dispatch-flash-attention.cpp
     dispatch_registration/common/dispatch-flash-attention.h
     dispatch_registration/common/dispatch-gated-mul-mat-id.cpp
@@ -216,6 +218,10 @@ ggml_add_backend_library(ggml-hrx
     dispatch_registration/dispatch-registry.h
     dispatch_registration/llm/dispatch-attention-qkv.cpp
     dispatch_registration/llm/dispatch-attention-qkv.h
+    dispatch_registration/llm/dispatch-gated-delta-net.cpp
+    dispatch_registration/llm/dispatch-gated-delta-net.h
+    dispatch_registration/llm/dispatch-ssm-conv.cpp
+    dispatch_registration/llm/dispatch-ssm-conv.h
     dispatch_registration/qwen/dispatch-llm-profiles.h
     dispatch_registration/qwen/dispatch-llm-shapes.h
     dispatch_registration/qwen/dispatch-moe-router.cpp

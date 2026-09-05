@@ -32,6 +32,59 @@ struct CommonMulMatMatch {
     }
 };
 
+struct CommonSymmetricI4ActivationLayout {
+    size_t payload_bytes  = 0;
+    size_t scales_offset  = 0;
+    size_t metadata_bytes = 0;
+    size_t sums_offset    = 0;
+    size_t total_bytes    = 0;
+};
+
+inline constexpr const char kCommonSymmetricI4K32ActivationAlternateName[] =
+    "common.mul_mat.symmetric_i4_k32.activation";
+
+inline size_t common_align_up(size_t value, size_t alignment) {
+    return (value + alignment - 1) / alignment * alignment;
+}
+
+inline CommonSymmetricI4ActivationLayout common_symmetric_i4_activation_layout(int64_t input_size,
+                                                                               int64_t token_count) {
+    const size_t element_count  = static_cast<size_t>(input_size) * static_cast<size_t>(token_count);
+    const size_t payload_bytes  = element_count / 2;
+    const size_t metadata_bytes = element_count / 8;
+    const size_t scales_offset  = common_align_up(payload_bytes, 256);
+    const size_t sums_offset    = common_align_up(scales_offset + metadata_bytes, 256);
+    return {
+        payload_bytes, scales_offset, metadata_bytes, sums_offset, common_align_up(sums_offset + metadata_bytes, 256),
+    };
+}
+
+inline size_t common_symmetric_shared4_weight_byte_count(int64_t input_size, int64_t output_size, int64_t quant_bits) {
+    const size_t logical_output_size    = static_cast<size_t>(output_size);
+    const size_t row_group_size         = ((logical_output_size + 255) / 256) * 32;
+    const size_t padded_output_size     = (logical_output_size + row_group_size - 1) / row_group_size * row_group_size;
+    const size_t materialized_row_bytes = 4 + 8 * 32 * static_cast<size_t>(quant_bits) / 8;
+    return padded_output_size * static_cast<size_t>(input_size / 256) * materialized_row_bytes;
+}
+
+inline size_t common_symmetric_i4_shared4_weight_byte_count(int64_t input_size, int64_t output_size) {
+    return common_symmetric_shared4_weight_byte_count(input_size, output_size, 4);
+}
+
+inline DispatchBinding common_symmetric_i4_shared4_weight_binding(const Value & weight,
+                                                                  int64_t       input_size,
+                                                                  int64_t       output_size) {
+    DispatchBinding binding;
+    binding.value         = weight.id;
+    binding.length        = common_symmetric_i4_shared4_weight_byte_count(input_size, output_size);
+    binding.layout        = kSymmetricI4K32EightGroupsShared4Layout;
+    binding.source_type   = weight.type;
+    binding.input_size    = input_size;
+    binding.output_size   = output_size;
+    binding.source_length = weight.byte_count;
+    return binding;
+}
+
 inline const Value * common_graph_value(const Graph & graph, ValueId id) {
     return graph.values().find(id);
 }
@@ -122,6 +175,60 @@ inline const GraphNode * common_find_only_consumer_with_op(const Graph & graph, 
         return nullptr;
     }
     return consumers.front();
+}
+
+inline bool common_has_direct_symmetric_i4_lowrow_consumer(const Graph & graph, const Value & value) {
+    if (!graph.has_index() || value.type != GGML_TYPE_F32 || !value.contiguous || value.ne[0] < 256 ||
+        value.ne[0] > 32768 || value.ne[0] % 64 != 0 || value.element_count <= 0 ||
+        value.element_count % value.ne[0] != 0) {
+        return false;
+    }
+
+    const int64_t token_count = value.element_count / value.ne[0];
+    if (token_count < 1 || token_count > 16) {
+        return false;
+    }
+
+    for (const GraphNode * consumer : graph.index().consumers(value.id)) {
+        if (consumer == nullptr || consumer->op != GGML_OP_MUL_MAT || consumer->inputs.size() != 2 ||
+            consumer->inputs[1] != value.id) {
+            continue;
+        }
+
+        const Value * weight = common_graph_value(graph, consumer->inputs[0]);
+        const Value * output = common_graph_value(graph, consumer->output);
+        if (weight == nullptr || output == nullptr ||
+            (weight->type != GGML_TYPE_Q5_K && weight->type != GGML_TYPE_IQ4_XS) || weight->alias_source.value >= 0 ||
+            !weight->contiguous || !output->contiguous || output->type != GGML_TYPE_F32 ||
+            weight->ne[0] != value.ne[0] || weight->ne[1] != output->ne[0] || output->ne[0] % 64 != 0 ||
+            output->ne[1] != token_count || output->ne[2] != 1 || output->ne[3] != 1) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+inline bool common_has_symmetric_i4_lowrow_consumer(const Graph & graph, const Value & value) {
+    if (common_has_direct_symmetric_i4_lowrow_consumer(graph, value)) {
+        return true;
+    }
+
+    for (const GraphNode * consumer : graph.index().consumers(value.id)) {
+        if (consumer == nullptr || !is_layout_alias_node(graph, *consumer) || consumer->inputs.size() != 1 ||
+            consumer->inputs.front() != value.id) {
+            continue;
+        }
+
+        const Value * reshaped = common_graph_value(graph, consumer->output);
+        if (reshaped != nullptr && reshaped->type == GGML_TYPE_F32 && reshaped->contiguous &&
+            reshaped->storage_root == value.storage_root && reshaped->element_count == value.element_count &&
+            reshaped->byte_count == value.byte_count &&
+            common_has_direct_symmetric_i4_lowrow_consumer(graph, *reshaped)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 inline bool common_binary_node_is_mul(const GraphNode & node) {

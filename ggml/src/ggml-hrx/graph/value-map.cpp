@@ -13,12 +13,20 @@ const Value * ValueMap::find_alias_source(const ggml_tensor * tensor) const {
     return find_tensor(tensor->view_src);
 }
 
+void ValueMap::promote_storage_root_external(ValueId storage_root) {
+    if (storage_root.value < 0 || static_cast<size_t>(storage_root.value) >= values_.size()) {
+        return;
+    }
+    values_[static_cast<size_t>(storage_root.value)].kind = ValueKind::External;
+}
+
 ValueId ValueMap::get_or_add_tensor_value(const ggml_tensor * tensor, ValueKind kind) {
     const auto found = tensor_values_.find(tensor);
     if (found != tensor_values_.end()) {
         Value & value = values_[found->second];
         if (kind == ValueKind::External) {
             value.kind = ValueKind::External;
+            promote_storage_root_external(value.storage_root);
         }
         return value.id;
     }
@@ -39,6 +47,9 @@ ValueId ValueMap::get_or_add_tensor_value(const ggml_tensor * tensor, ValueKind 
         const Value * root = find(storage_root);
         if (root != nullptr && root->kind == ValueKind::External) {
             kind = ValueKind::External;
+        }
+        if (kind == ValueKind::External) {
+            promote_storage_root_external(storage_root);
         }
     } else {
         storage      = ValueStorageId(static_cast<int32_t>(storages_.size()));

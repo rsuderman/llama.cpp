@@ -4,18 +4,39 @@
 
 #include <cassert>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace ggml::hrx {
 namespace {
 
-static bool tensor_is_external(const ggml_tensor *                                  tensor,
-                               const std::unordered_map<const ggml_tensor *, int> & use_counts) {
-    if (tensor->op == GGML_OP_NONE) {
+static int32_t graph_use_count(const ggml_cgraph & graph, const ggml_tensor * tensor) {
+    if (graph.use_counts == nullptr) {
+        return -1;
+    }
+    const size_t position = ggml_hash_find(&graph.visited_hash_set, tensor);
+    if (position == GGML_HASHSET_FULL || !ggml_bitset_get(graph.visited_hash_set.used, position)) {
+        return -1;
+    }
+    return graph.use_counts[position];
+}
+
+static bool tensor_is_external(const ggml_cgraph &                                  graph,
+                               const ggml_tensor *                                  tensor,
+                               const std::unordered_map<const ggml_tensor *, int> & local_use_counts,
+                               const std::unordered_set<const ggml_tensor *> &      graph_nodes) {
+    if (graph_nodes.find(tensor) == graph_nodes.end()) {
         return true;
     }
-    const auto found = use_counts.find(tensor);
-    return found == use_counts.end() || found->second == 0;
+    if (tensor->op == GGML_OP_NONE || (tensor->flags & GGML_TENSOR_FLAG_OUTPUT) != 0) {
+        return true;
+    }
+    const auto found = local_use_counts.find(tensor);
+    if (found == local_use_counts.end() || found->second == 0) {
+        return true;
+    }
+    const int32_t total_use_count = graph_use_count(graph, tensor);
+    return total_use_count >= 0 && total_use_count > found->second;
 }
 
 }  // namespace
@@ -119,12 +140,15 @@ const GraphIndex & Graph::index() const {
 GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
     GraphImportResult                            result;
     std::unordered_map<const ggml_tensor *, int> use_counts;
+    std::unordered_set<const ggml_tensor *>      graph_nodes;
+    graph_nodes.reserve(static_cast<size_t>(graph.n_nodes));
     for (int i = 0; i < graph.n_nodes; ++i) {
         const ggml_tensor * node = graph.nodes[i];
         if (node == nullptr) {
             result.status.log("ggml graph contains a null node");
             return result;
         }
+        graph_nodes.insert(node);
         for (const ggml_tensor * source : node->src) {
             if (source != nullptr) {
                 ++use_counts[source];
@@ -140,11 +164,13 @@ GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
             if (source == nullptr) {
                 continue;
             }
-            const ValueKind kind = tensor_is_external(source, use_counts) ? ValueKind::External : ValueKind::Transient;
+            const ValueKind kind =
+                tensor_is_external(graph, source, use_counts, graph_nodes) ? ValueKind::External : ValueKind::Transient;
             inputs.push_back(values.get_or_add_tensor_value(source, kind));
         }
 
-        const ValueKind output_kind = tensor_is_external(node, use_counts) ? ValueKind::External : ValueKind::Transient;
+        const ValueKind output_kind =
+            tensor_is_external(graph, node, use_counts, graph_nodes) ? ValueKind::External : ValueKind::Transient;
         const ValueId   output      = values.get_or_add_tensor_value(node, output_kind);
         GraphNode &     graph_node  = result.graph.add_node(node->op, output, std::move(inputs));
         graph_node.params           = import_op_params(*node);

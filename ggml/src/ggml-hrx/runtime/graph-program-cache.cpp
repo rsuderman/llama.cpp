@@ -20,8 +20,15 @@ static bool tensor_metadata_matches(const Value & value, const ggml_tensor * ten
     }
     const bool tensor_alias = tensor->view_src != nullptr;
     const bool value_alias  = value.alias_source.value >= 0;
-    if (tensor_alias && (!value_alias || value.storage_offset != tensor->view_offs)) {
+    if (tensor_alias) {
+        if (value_alias) {
+            if (value.storage_offset != tensor->view_offs) {
         return false;
+    }
+        } else if (value.storage_root != value.id || value.storage_offset != 0) {
+            // A leading view whose base is outside this graph is its external storage root.
+            return false;
+        }
     }
     for (int i = 0; i < GGML_MAX_DIMS; ++i) {
         if (value.ne[i] != tensor->ne[i] || value.nb[i] != tensor->nb[i]) {
@@ -115,7 +122,9 @@ static std::string command_program_shape_key(const CommandProgram & commands) {
         out << "|bindings=" << command.bindings.size();
         for (const CommandBinding & binding : command.bindings) {
             out << "|b:" << binding.name << ':' << binding.value.value << ':' << static_cast<int>(binding.origin) << ':'
-                << binding.offset << ':' << binding.length << ':' << static_cast<int>(binding.access);
+                << binding.offset << ':' << binding.length << ':' << static_cast<int>(binding.access) << ':'
+                << binding.layout << ':' << static_cast<int>(binding.source_type) << ':' << binding.input_size << ':'
+                << binding.output_size << ':' << binding.source_length;
         }
         out << "|deps=" << command.dependencies.size();
         for (const uint32_t dependency : command.dependencies) {
@@ -288,7 +297,8 @@ bool GraphProgram::has_prepared_program() const {
 }
 
 bool GraphProgram::can_use_prepared_fast_path(const ggml_cgraph & graph) const {
-    return graph.nodes == fast_path_nodes_;
+    // The UID prevents graph-arena address reuse from passing the fast path.
+    return graph.uid == uid_ && graph.nodes == fast_path_nodes_;
 }
 
 PreparedCommandProgramCacheStats GraphProgram::prepared_stats() const {
@@ -534,6 +544,26 @@ GraphProgramLookup GraphProgramCache::get_or_build(const ggml_cgraph &  graph,
             }
             if (validate_fast_path) {
                 result.status.append(match.status);
+                return result;
+            }
+        }
+
+        // Physical bindings have a separate prepared-program cache key.
+        if (std::getenv("GGML_HRX_DUMP_COMMAND_PROGRAM_DIR") == nullptr) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (const auto & entry : programs_) {
+                GraphProgram * candidate = entry.second.get();
+                if (candidate == cached_program || candidate->target() != target) {
+                    continue;
+                }
+                GraphProgramMatch match = candidate->match_current_graph(graph);
+                if (!match.valid()) {
+                    continue;
+                }
+                last_program_ = candidate;
+                ++stats_.hits;
+                result.program = candidate;
+                result.match   = std::move(match);
                 return result;
             }
         }

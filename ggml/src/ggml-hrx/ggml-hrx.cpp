@@ -41,6 +41,22 @@ static bool environment_flag_enabled(const char * name) {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+static void log_hrx_device_event(void *, const hrx_device_event_t * event) {
+    if (event == nullptr || event->type != HRX_DEVICE_EVENT_TYPE_ASAN_REPORT || event->payload.data == nullptr ||
+        event->payload.data_length < sizeof(hrx_device_asan_report_t)) {
+        return;
+    }
+    hrx_device_asan_report_t report;
+    std::memcpy(&report, event->payload.data, sizeof(report));
+    GGML_LOG_ERROR("HRX ASAN: executable=%" PRIu64 " export=%u site=%" PRIu64 " access=%u address=0x%016" PRIx64
+                   " length=%" PRIu64 " workgroup=(%u,%u,%u) workitem=(%u,%u,%u) shadow=0x%016" PRIx64
+                   " value=0x%016" PRIx64 " dispatch=0x%016" PRIx64 "\n",
+                   event->source.executable_id, event->source.export_ordinal, report.site_id, report.access_kind,
+                   report.fault_address, report.access_length, report.workgroup_id[0], report.workgroup_id[1],
+                   report.workgroup_id[2], report.workitem_id[0], report.workitem_id[1], report.workitem_id[2],
+                   report.shadow_address, report.shadow_value, report.source_dispatch_ptr);
+}
+
 static bool hrx_check(hrx_status_t status, const char * expression, const char * file, int line) {
     if (hrx_status_is_ok(status)) {
         return true;
@@ -365,10 +381,10 @@ static bool synchronous_upload_fallback(ggml_backend_hrx_context * backend,
                                         hrx_buffer_t               destination,
                                         size_t                     destination_offset,
                                         size_t                     size) {
-    const uint64_t fallback =
-        backend->device->synchronous_upload_fallbacks.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t fallback = backend->device->synchronous_upload_fallbacks.fetch_add(1, std::memory_order_relaxed);
     if (fallback == 0) {
-        GGML_LOG_WARN("ggml_hrx: synchronous upload fallback for an unregistered host pointer; use the HRX host "
+        GGML_LOG_WARN(
+            "ggml_hrx: synchronous upload fallback for an unregistered host pointer; use the HRX host "
                       "buffer type for asynchronous transfers\n");
     }
     // Compatibility path for arbitrary GGML pointers. Keep the synchronization explicit until a bounded staging ring
@@ -387,10 +403,10 @@ static bool synchronous_download_fallback(ggml_backend_hrx_context * backend,
                                           size_t                     source_offset,
                                           void *                     destination,
                                           size_t                     size) {
-    const uint64_t fallback =
-        backend->device->synchronous_download_fallbacks.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t fallback = backend->device->synchronous_download_fallbacks.fetch_add(1, std::memory_order_relaxed);
     if (fallback == 0) {
-        GGML_LOG_WARN("ggml_hrx: synchronous download fallback for an unregistered host pointer; use the HRX host "
+        GGML_LOG_WARN(
+            "ggml_hrx: synchronous download fallback for an unregistered host pointer; use the HRX host "
                       "buffer type for asynchronous transfers\n");
     }
     // Compatibility path for arbitrary GGML pointers. Keep the synchronization explicit until a bounded staging ring
@@ -473,8 +489,8 @@ static bool backend_copy_tensor_async(ggml_backend_t      backend_src,
     }
     ggml_backend_buffer_t source_buffer = source->view_src != nullptr ? source->view_src->buffer : source->buffer;
     if (source_buffer != nullptr && ggml_backend_buffer_is_host(source_buffer)) {
-        return synchronous_upload_fallback(
-            destination_backend, source->data, destination_context->buffer, destination_offset, size);
+        return synchronous_upload_fallback(destination_backend, source->data, destination_context->buffer,
+                                           destination_offset, size);
     }
     return false;
 }
@@ -582,20 +598,32 @@ static bool eager_capability_declared(enum ggml_op op) {
         // TODO: split this into placement capability and exact graph execution capability once graph claiming owns the
         // full decision.
         case GGML_OP_NONE:
+        case GGML_OP_ADD:
         case GGML_OP_ARGSORT:
         case GGML_OP_CLAMP:
+        case GGML_OP_CONCAT:
+        case GGML_OP_CONT:
+        case GGML_OP_CPY:
+        case GGML_OP_DIV:
         case GGML_OP_FLASH_ATTN_EXT:
+        case GGML_OP_GATED_DELTA_NET:
         case GGML_OP_GET_ROWS:
         case GGML_OP_GLU:
+        case GGML_OP_L2_NORM:
+        case GGML_OP_MUL:
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
         case GGML_OP_PERMUTE:
         case GGML_OP_RESHAPE:
         case GGML_OP_RMS_NORM:
         case GGML_OP_ROPE:
+        case GGML_OP_SCALE:
         case GGML_OP_SET_ROWS:
         case GGML_OP_SOFT_MAX:
+        case GGML_OP_SSM_CONV:
         case GGML_OP_SUM_ROWS:
+        case GGML_OP_TRANSPOSE:
+        case GGML_OP_UNARY:
         case GGML_OP_VIEW:
             return true;
         default:
@@ -603,188 +631,9 @@ static bool eager_capability_declared(enum ggml_op op) {
     }
 }
 
-static const ggml_tensor * tensor_storage_root(const ggml_tensor * tensor) {
-    while (tensor != nullptr && tensor->view_src != nullptr) {
-        tensor = tensor->view_src;
-    }
-    return tensor;
-}
-
-static bool tensors_have_distinct_storage(const ggml_tensor * lhs,
-                                          const ggml_tensor * rhs,
-                                          const ggml_tensor * output) {
-    const ggml_tensor * lhs_root    = tensor_storage_root(lhs);
-    const ggml_tensor * rhs_root    = tensor_storage_root(rhs);
-    const ggml_tensor * output_root = tensor_storage_root(output);
-    return lhs_root != nullptr && rhs_root != nullptr && output_root != nullptr && lhs_root != rhs_root &&
-           lhs_root != output_root && rhs_root != output_root;
-}
-
-static bool tensor_has_positive_shape(const ggml_tensor * tensor) {
-    if (tensor == nullptr || ggml_nelements(tensor) <= 0) {
-        return false;
-    }
-    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
-        if (tensor->ne[i] <= 0) {
-            return false;
-        }
-    }
-    return true;
-}
-
-static bool tensor_has_packed_f32_layout(const ggml_tensor * tensor) {
-    if (tensor == nullptr) {
-        return false;
-    }
-    size_t expected_stride = sizeof(float);
-    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
-        if (tensor->nb[i] != expected_stride) {
-            return false;
-        }
-        expected_stride *= static_cast<size_t>(tensor->ne[i]);
-    }
-    return true;
-}
-
-static bool tensor_broadcastable_to(const ggml_tensor * source, const ggml_tensor * output) {
-    if (source == nullptr || output == nullptr) {
-        return false;
-    }
-    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
-        if (source->ne[i] != output->ne[i] && source->ne[i] != 1) {
-            return false;
-        }
-    }
-    return true;
-}
-
-static bool tensor_has_supported_source_layout(const ggml_tensor * tensor) {
-    // ggml_clamp is represented as a zero-offset in-place view, so allow full aliases that preserve packed layout.
-    return tensor != nullptr &&
-           (tensor->view_src == nullptr ||
-            (tensor->view_offs == 0 && ggml_nbytes(tensor) == ggml_nbytes(tensor->view_src) &&
-             (tensor->op == GGML_OP_RESHAPE || tensor->op == GGML_OP_CLAMP)));
-}
-
-static bool binary_kind_allows_broadcast(ggml::hrx::BinaryKind kind,
-                                         const ggml_tensor *   lhs,
-                                         const ggml_tensor *   rhs,
-                                         const ggml_tensor *   output) {
-    const bool lhs_full = ggml_are_same_shape(lhs, output);
-    const bool rhs_full = ggml_are_same_shape(rhs, output);
-    if (!tensor_broadcastable_to(lhs, output) || !tensor_broadcastable_to(rhs, output) || (!lhs_full && !rhs_full)) {
-        return false;
-    }
-
-    switch (kind) {
-        case ggml::hrx::BinaryKind::Add:
-        case ggml::hrx::BinaryKind::Mul:
-            return true;
-        case ggml::hrx::BinaryKind::Sub:
-        case ggml::hrx::BinaryKind::Div:
-            return lhs_full;
-        case ggml::hrx::BinaryKind::SwiGLU:
-            return lhs_full && rhs_full;
-    }
-    return false;
-}
-
-static bool supported_binary_f32_tensor(const ggml_tensor * op) {
-    if (op == nullptr || op->src[0] == nullptr || op->src[1] == nullptr || op->type != GGML_TYPE_F32 ||
-        op->src[0]->type != GGML_TYPE_F32 || op->src[1]->type != GGML_TYPE_F32 || !tensor_has_positive_shape(op) ||
-        !ggml_is_contiguous(op) || !ggml_is_contiguous(op->src[0]) || !ggml_is_contiguous(op->src[1]) ||
-        !tensor_has_packed_f32_layout(op) || !tensor_has_packed_f32_layout(op->src[0]) ||
-        !tensor_has_packed_f32_layout(op->src[1]) || op->view_src != nullptr ||
-        !tensor_has_supported_source_layout(op->src[0]) || !tensor_has_supported_source_layout(op->src[1]) ||
-        !tensors_have_distinct_storage(op->src[0], op->src[1], op)) {
-        return false;
-    }
-
-    ggml::hrx::BinaryKind binary_kind;
-    if (!ggml::hrx::import_binary_kind(*op, binary_kind)) {
-        return false;
-    }
-
-    if (!ggml::hrx::binary_kind_supported(binary_kind)) {
-        return false;
-    }
-
-    return binary_kind_allows_broadcast(binary_kind, op->src[0], op->src[1], op);
-}
-
-static bool supported_qwen_attention_projection_get_rows_tensor(const ggml_tensor * op) {
-    if (op == nullptr || op->op != GGML_OP_GET_ROWS || op->src[0] == nullptr || op->src[1] == nullptr ||
-        op->src[0]->op != GGML_OP_MUL_MAT || op->type != GGML_TYPE_F32 || op->src[0]->type != GGML_TYPE_F32 ||
-        op->src[1]->type != GGML_TYPE_I32 || !ggml_is_contiguous(op) || !ggml_is_contiguous(op->src[0]) ||
-        !ggml_is_contiguous(op->src[1]) || op->ne[0] != op->src[0]->ne[0] || op->ne[1] <= 0 ||
-        op->src[1]->ne[0] != op->ne[1] || op->ne[2] != 1 || op->ne[3] != 1) {
-        return false;
-    }
-    return true;
-}
-
-static bool supported_qwen_attention_residual_add_tensor(const ggml_tensor * op) {
-    if (op == nullptr || op->op != GGML_OP_ADD || op->src[0] == nullptr || op->src[1] == nullptr ||
-        op->type != GGML_TYPE_F32 || op->src[0]->type != GGML_TYPE_F32 || op->src[1]->type != GGML_TYPE_F32 ||
-        !ggml_is_contiguous(op) || !ggml_is_contiguous(op->src[0]) || !ggml_is_contiguous(op->src[1]) ||
-        !ggml_are_same_shape(op, op->src[0]) || !ggml_are_same_shape(op, op->src[1])) {
-        return false;
-    }
-
-    return op->src[0]->op == GGML_OP_GET_ROWS || op->src[1]->op == GGML_OP_GET_ROWS ||
-           op->src[0]->op == GGML_OP_MUL_MAT || op->src[1]->op == GGML_OP_MUL_MAT;
-}
-
-static bool supported_qwen_routed_ffn_reduce_add_tensor(const ggml_tensor * op) {
-    if (op == nullptr || op->op != GGML_OP_ADD || op->src[0] == nullptr || op->src[1] == nullptr ||
-        op->type != GGML_TYPE_F32 || op->src[0]->type != GGML_TYPE_F32 || op->src[1]->type != GGML_TYPE_F32 ||
-        !ggml_is_contiguous(op) || !ggml_are_same_shape(op, op->src[0]) || !ggml_are_same_shape(op, op->src[1]) ||
-        op->ne[0] != 2048 || op->ne[3] != 1 ||
-        !((op->ne[1] > 0 && op->ne[2] == 1) || (op->ne[1] == 1 && op->ne[2] > 0))) {
-        return false;
-    }
-
-    return op->src[0]->op == GGML_OP_VIEW || op->src[1]->op == GGML_OP_VIEW || op->src[0]->op == GGML_OP_ADD ||
-           op->src[1]->op == GGML_OP_ADD;
-}
-
-static bool supported_unary_f32_tensor(const ggml_tensor * op) {
-    if (op == nullptr || op->src[0] == nullptr || op->type != GGML_TYPE_F32 || op->src[0]->type != GGML_TYPE_F32 ||
-        !ggml_are_same_shape(op, op->src[0]) || !ggml_is_contiguous(op) || !ggml_is_contiguous(op->src[0])) {
-        return false;
-    }
-
-    ggml::hrx::UnaryKind unary_kind;
-    if (!ggml::hrx::import_unary_kind(*op, unary_kind)) {
-        return false;
-    }
-
-    return ggml::hrx::unary_kind_supported(unary_kind);
-}
-
 static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op) {
     GGML_UNUSED(device);
-    if (op == nullptr) {
-        return false;
-    }
-    const bool supported_binary = supported_binary_f32_tensor(op);
-    if (supported_binary) {
-        return true;
-    }
-    if (supported_qwen_attention_projection_get_rows_tensor(op)) {
-        return true;
-    }
-    if (supported_qwen_attention_residual_add_tensor(op)) {
-        return true;
-    }
-    if (supported_qwen_routed_ffn_reduce_add_tensor(op)) {
-        return true;
-    }
-    const bool supported_unary = supported_unary_f32_tensor(op);
-    if (supported_unary) {
-        return true;
-    }
-    return eager_capability_declared(op->op);
+    return op != nullptr && eager_capability_declared(op->op);
 }
 
 static bool device_supports_buffer_type(ggml_backend_dev_t device, ggml_backend_buffer_type_t buft) {
@@ -835,6 +684,12 @@ static const ggml_backend_reg_i registry_i = { registry_name, registry_device_co
 
 static std::unique_ptr<ggml_backend_hrx_reg_context> create_registry_context() {
     auto         context = std::make_unique<ggml_backend_hrx_reg_context>();
+    if (environment_flag_enabled("GGML_HRX_LOG_DEVICE_EVENTS")) {
+        hrx_device_event_sink_t sink = { log_hrx_device_event, nullptr };
+        if (!HRX_CHECK(hrx_runtime_set_device_event_sink(sink))) {
+            return context;
+        }
+    }
     hrx_status_t status  = hrx_gpu_initialize(0);
     if (hrx_status_is_ok(status)) {
         context->initialized = true;
