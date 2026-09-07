@@ -20,6 +20,13 @@ static constexpr KernelCatalogRef kQuantizeF32SymmetricI4K32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_quantize_f32_symmetric_i4_k32");
 static constexpr KernelCatalogRef kMulMatSymmetricI4LowRowAdjacentDualWmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_wmma");
+static constexpr KernelCatalogRef kMulMatSymmetricI4LowRowAdjacentDualDirectDotKernels[] = {
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c1"),
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c2"),
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c3"),
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c4"),
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c5"),
+};
 static constexpr KernelCatalogRef kMulMatSwiGLUSymmetricI4WmmaQ8PlaneKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_symmetric_i4_wmma_q8_plane");
 static constexpr KernelCatalogRef kMulMatQ5KQ8PlaneWmmaToken256Kernel =
@@ -107,7 +114,7 @@ static DispatchBinding symmetric_i5_weight_binding(const Value & weight, int64_t
 }
 
 static MulMatSwiGLUMatch match_mul_mat_swiglu(const DispatchMatchContext & context) {
-    MulMatSwiGLUMatch       match;
+    MulMatSwiGLUMatch match;
     CommonMulMatMatch root =
         common_match_mul_mat_any_format(context.graph, context.root_node, kMulMatF32F32WmmaKernel, false);
     if (!root.matched()) {
@@ -236,18 +243,33 @@ static bool match_mul_mat_swiglu_symmetric_i4_lowrow_dispatch(const DispatchMatc
         }
     }
 
+    const bool use_direct_dot = match.token_count <= 5 && match.input_size % 256 == 0 &&
+                                match.output_size >= 2 * match.input_size;
+
     Dispatch gate_up;
-    gate_up.kernel = make_kernel_specialization(kMulMatSymmetricI4LowRowAdjacentDualWmmaKernel);
+    gate_up.kernel = make_kernel_specialization(
+        use_direct_dot ? kMulMatSymmetricI4LowRowAdjacentDualDirectDotKernels[match.token_count - 1] :
+                         kMulMatSymmetricI4LowRowAdjacentDualWmmaKernel);
     gate_up.kernel.compile_parameters.emplace("ggml.mul_mat.symmetric_i4.lowrow.input_size",
                                               common_to_config_value(match.input_size));
     gate_up.kernel.compile_parameters.emplace("ggml.mul_mat.symmetric_i4.lowrow.output_size",
                                               common_to_config_value(match.output_size));
     gate_up.kernel.compile_parameters.emplace("ggml.mul_mat.symmetric_i4.lowrow.token_count",
                                               common_to_config_value(match.token_count));
+    gate_up.kernel.compile_parameters.emplace(
+        "ggml.mul_mat.symmetric_i4.lowrow.row_group_size",
+        common_to_config_value(static_cast<int64_t>(
+            common_symmetric_shared4_row_group_size(match.input_size, match.output_size, 4))));
     gate_up.bindings.push_back(
-        common_symmetric_i4_shared4_weight_binding(*match.gate_weight, match.input_size, match.output_size));
+        match.gate_weight->type == GGML_TYPE_Q5_K && match.token_count == 1 ?
+            common_symmetric_i4_shared4_multistart_weight_binding(*match.gate_weight, match.input_size,
+                                                                  match.output_size) :
+            common_symmetric_i4_shared4_weight_binding(*match.gate_weight, match.input_size, match.output_size));
     gate_up.bindings.push_back(
-        common_symmetric_i4_shared4_weight_binding(*match.up_weight, match.input_size, match.output_size));
+        match.up_weight->type == GGML_TYPE_Q5_K && match.token_count == 1 ?
+            common_symmetric_i4_shared4_multistart_weight_binding(*match.up_weight, match.input_size,
+                                                                  match.output_size) :
+            common_symmetric_i4_shared4_weight_binding(*match.up_weight, match.input_size, match.output_size));
     gate_up.bindings.push_back({ match.gate_output->id, 0, match.gate_output->byte_count });
     gate_up.bindings.push_back({ match.up_output->id, 0, match.up_output->byte_count });
     gate_up.bindings.push_back({ activation, 0, activation_layout.payload_bytes });

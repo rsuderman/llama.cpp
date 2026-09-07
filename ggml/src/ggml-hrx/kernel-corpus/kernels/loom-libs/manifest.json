@@ -2162,6 +2162,366 @@
       "compile_dependencies": []
     },
     {
+      "name": "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c1",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c1",
+      "source": "ops/mul_mat_symmetric_i4_wmma.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "first_weight",
+        "second_weight",
+        "first_output",
+        "second_output",
+        "quantized_values",
+        "scales",
+        "sums"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "write",
+        "write",
+        "read",
+        "read",
+        "read"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/mul_mat_symmetric_i4_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
+      "name": "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c2",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c2",
+      "source": "ops/mul_mat_symmetric_i4_wmma.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "first_weight",
+        "second_weight",
+        "first_output",
+        "second_output",
+        "quantized_values",
+        "scales",
+        "sums"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "write",
+        "write",
+        "read",
+        "read",
+        "read"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/mul_mat_symmetric_i4_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
+      "name": "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c3",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c3",
+      "source": "ops/mul_mat_symmetric_i4_wmma.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "first_weight",
+        "second_weight",
+        "first_output",
+        "second_output",
+        "quantized_values",
+        "scales",
+        "sums"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "write",
+        "write",
+        "read",
+        "read",
+        "read"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/mul_mat_symmetric_i4_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
+      "name": "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c4",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c4",
+      "source": "ops/mul_mat_symmetric_i4_wmma.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "first_weight",
+        "second_weight",
+        "first_output",
+        "second_output",
+        "quantized_values",
+        "scales",
+        "sums"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "write",
+        "write",
+        "read",
+        "read",
+        "read"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/mul_mat_symmetric_i4_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
+      "name": "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c5",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_direct_dot_c5",
+      "source": "ops/mul_mat_symmetric_i4_wmma.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "first_weight",
+        "second_weight",
+        "first_output",
+        "second_output",
+        "quantized_values",
+        "scales",
+        "sums"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "write",
+        "write",
+        "read",
+        "read",
+        "read"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/mul_mat_symmetric_i4_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
+      "name": "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c1",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c1",
+      "source": "ops/mul_mat_symmetric_i4_wmma.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "weight",
+        "input",
+        "output",
+        "quantized_values",
+        "scales",
+        "sums",
+        "partial",
+        "completion_counters"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write",
+        "read",
+        "read",
+        "read",
+        "read_write",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/mul_mat_symmetric_i4_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
+      "name": "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c2",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c2",
+      "source": "ops/mul_mat_symmetric_i4_wmma.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "weight",
+        "input",
+        "output",
+        "quantized_values",
+        "scales",
+        "sums",
+        "partial",
+        "completion_counters"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write",
+        "read",
+        "read",
+        "read",
+        "read_write",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/mul_mat_symmetric_i4_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
+      "name": "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c3",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c3",
+      "source": "ops/mul_mat_symmetric_i4_wmma.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "weight",
+        "input",
+        "output",
+        "quantized_values",
+        "scales",
+        "sums",
+        "partial",
+        "completion_counters"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write",
+        "read",
+        "read",
+        "read",
+        "read_write",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/mul_mat_symmetric_i4_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
+      "name": "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c4",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c4",
+      "source": "ops/mul_mat_symmetric_i4_wmma.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "weight",
+        "input",
+        "output",
+        "quantized_values",
+        "scales",
+        "sums",
+        "partial",
+        "completion_counters"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write",
+        "read",
+        "read",
+        "read",
+        "read_write",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/mul_mat_symmetric_i4_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
+      "name": "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c5",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c5",
+      "source": "ops/mul_mat_symmetric_i4_wmma.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "weight",
+        "input",
+        "output",
+        "quantized_values",
+        "scales",
+        "sums",
+        "partial",
+        "completion_counters"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read_write",
+        "read",
+        "read",
+        "read",
+        "read_write",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/mul_mat_symmetric_i4_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
       "name": "ggml_mul_mat_symmetric_i4_lowrow_split_k2_wmma",
       "family": "loom_libs",
       "symbol": "ggml_mul_mat_symmetric_i4_lowrow_split_k2_wmma",
@@ -2427,6 +2787,31 @@
       "compile_dependencies": []
     },
     {
+      "name": "ggml_select_symmetric_i4_k32_groups",
+      "family": "loom_libs",
+      "symbol": "ggml_select_symmetric_i4_k32_groups",
+      "source": "ops/mul_mat_q6_k_packed_f16_wmma.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "input",
+        "selected_groups"
+      ],
+      "binding_access": [
+        "read",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/mul_mat_q6_k_packed_f16_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
       "name": "ggml_mul_mat_q6_k_symmetric_i2_scan_token1",
       "family": "loom_libs",
       "symbol": "ggml_mul_mat_q6_k_symmetric_i2_scan_token1",
@@ -2437,11 +2822,13 @@
         "weight",
         "output",
         "qact",
-        "scales"
+        "scales",
+        "selected_mask"
       ],
       "binding_access": [
         "read",
         "write",
+        "read",
         "read",
         "read"
       ],
@@ -3186,6 +3573,47 @@
       "compile_dependencies": []
     },
     {
+      "name": "llm_gated_delta_net_f32_wmma_head128_projection_epilogue",
+      "family": "loom_libs",
+      "symbol": "llm_gated_delta_net_f32_wmma_head128_projection_epilogue",
+      "source": "ops/gated_delta_net_f32_wmma.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "q",
+        "k",
+        "v",
+        "alpha_raw",
+        "beta_raw",
+        "bias",
+        "a_scale",
+        "state_in",
+        "dst",
+        "rms_scales"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "write",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/gated_delta_net_f32_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
       "name": "llm_gated_delta_net_f32_wmma_head128_inplace",
       "family": "loom_libs",
       "symbol": "llm_gated_delta_net_f32_wmma_head128_inplace",
@@ -3203,6 +3631,47 @@
         "rms_scales"
       ],
       "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write",
+        "write",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/gated_delta_net_f32_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
+      "name": "llm_gated_delta_net_f32_wmma_head128_inplace_projection_epilogue",
+      "family": "loom_libs",
+      "symbol": "llm_gated_delta_net_f32_wmma_head128_inplace_projection_epilogue",
+      "source": "ops/gated_delta_net_f32_wmma.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "q",
+        "k",
+        "v",
+        "alpha_raw",
+        "beta_raw",
+        "bias",
+        "a_scale",
+        "state_inout",
+        "dst",
+        "rms_scales"
+      ],
+      "binding_access": [
+        "read",
+        "read",
         "read",
         "read",
         "read",
@@ -3241,6 +3710,49 @@
         "rms_scales"
       ],
       "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "write",
+        "write",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/gated_delta_net_f32_wmma.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
+      "name": "llm_gated_delta_net_f32_wmma_head128_snapshot_projection_epilogue",
+      "family": "loom_libs",
+      "symbol": "llm_gated_delta_net_f32_wmma_head128_snapshot_projection_epilogue",
+      "source": "ops/gated_delta_net_f32_wmma.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "q",
+        "k",
+        "v",
+        "alpha_raw",
+        "beta_raw",
+        "bias",
+        "a_scale",
+        "state_in",
+        "snapshot_cache",
+        "dst",
+        "rms_scales"
+      ],
+      "binding_access": [
+        "read",
+        "read",
         "read",
         "read",
         "read",

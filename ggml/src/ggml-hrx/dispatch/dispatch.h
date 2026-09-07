@@ -16,6 +16,8 @@ inline constexpr const char kNativeWeightLayout[]                     = "ggml-na
 inline constexpr const char kSymmetricI4K32Row64Layout[]              = "symi4-k32-row64";
 inline constexpr const char kSymmetricI2K32EightGroupsShared4Layout[] = "symi2-k32-eightgroups-shared4-payload-first";
 inline constexpr const char kSymmetricI4K32EightGroupsShared4Layout[] = "symi4-k32-eightgroups-shared4-payload-first";
+inline constexpr const char kSymmetricI4K32EightGroupsShared4MultistartLayout[] =
+    "symi4-k32-eightgroups-shared4-multistart-payload-first";
 inline constexpr const char kQ6KSymmetricI2PackedK256Row64ScaleRowLayout[] =
     "q6k-symi2-k32-eightgroups-shared4-plus-packed-k256-row64-scalerow";
 inline constexpr const char kSymmetricI4K64Row64Layout[]        = "symi4-k64-row64";

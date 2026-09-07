@@ -33,6 +33,13 @@ static constexpr KernelCatalogRef kMulMatSymmetricI4LowRowWmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_wmma");
 static constexpr KernelCatalogRef kMulMatSymmetricI4LowRowSplitK2WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_split_k2_wmma");
+static constexpr KernelCatalogRef kMulMatSymmetricI4LowRowSplitK2DirectDotKernels[] = {
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c1"),
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c2"),
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c3"),
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c4"),
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_split_k2_direct_dot_c5"),
+};
 static constexpr KernelCatalogRef kQuantizeF32SymmetricI8K256Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_quantize_f32_symmetric_i8_k256");
 static constexpr KernelCatalogRef kMulMatQ5KSymmetricI8WmmaKernel =
@@ -43,6 +50,8 @@ static constexpr KernelCatalogRef kMulMatQ6KPackedToken1F16WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_q6_k_packed_token1_f16_wmma");
 static constexpr KernelCatalogRef kMulMatQ6KI8PrepackedF16WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_q6_k_i8_prepacked_f16_wmma");
+static constexpr KernelCatalogRef kSelectSymmetricI4K32GroupsKernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_select_symmetric_i4_k32_groups");
 static constexpr KernelCatalogRef kMulMatQ6KSymmetricI2ScanToken1Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_q6_k_symmetric_i2_scan_token1");
 static constexpr KernelCatalogRef kTopK8F32PartitionsRegisterKernel =
@@ -238,7 +247,6 @@ static bool match_symmetric_i4_low_row_dispatch(const DispatchMatchContext & con
         match.input_size % 64 != 0 || match.output_size % 64 != 0) {
         return false;
     }
-
     const CommonSymmetricI4ActivationLayout activation_layout =
         common_symmetric_i4_activation_layout(match.input_size, match.token_count);
     const CommandPlanAlternateValue * alternate = find_alternate_value(context.graph, context.plan, match.input->id,
@@ -295,17 +303,27 @@ static bool match_symmetric_i4_low_row_dispatch(const DispatchMatchContext & con
         });
     }
 
+    const bool use_split_direct_dot = split_k && match.token_count <= 5 && match.input_size % 256 == 0;
+
     Dispatch contraction;
-    contraction.kernel = make_kernel_specialization(split_k ? kMulMatSymmetricI4LowRowSplitK2WmmaKernel :
-                                                              kMulMatSymmetricI4LowRowWmmaKernel);
+    contraction.kernel = make_kernel_specialization(
+        use_split_direct_dot ? kMulMatSymmetricI4LowRowSplitK2DirectDotKernels[match.token_count - 1] :
+        split_k              ? kMulMatSymmetricI4LowRowSplitK2WmmaKernel :
+                               kMulMatSymmetricI4LowRowWmmaKernel);
     contraction.kernel.compile_parameters.emplace("ggml.mul_mat.symmetric_i4.lowrow.input_size",
                                                   common_to_config_value(match.input_size));
     contraction.kernel.compile_parameters.emplace("ggml.mul_mat.symmetric_i4.lowrow.output_size",
                                                   common_to_config_value(match.output_size));
     contraction.kernel.compile_parameters.emplace("ggml.mul_mat.symmetric_i4.lowrow.token_count",
                                                   common_to_config_value(match.token_count));
+    contraction.kernel.compile_parameters.emplace(
+        "ggml.mul_mat.symmetric_i4.lowrow.row_group_size",
+        common_to_config_value(static_cast<int64_t>(
+            common_symmetric_shared4_row_group_size(match.input_size, match.output_size, 4))));
     contraction.bindings.push_back(
-        common_symmetric_i4_shared4_weight_binding(*match.weight, match.input_size, match.output_size));
+        match.weight->type == GGML_TYPE_Q5_K && match.token_count == 1 ?
+            common_symmetric_i4_shared4_multistart_weight_binding(*match.weight, match.input_size, match.output_size) :
+            common_symmetric_i4_shared4_weight_binding(*match.weight, match.input_size, match.output_size));
     contraction.bindings.push_back({ match.input->id, 0, match.input->byte_count });
     contraction.bindings.push_back({ match.output->id, 0, match.output->byte_count });
     contraction.bindings.push_back({ activation, 0, activation_layout.payload_bytes });
@@ -322,6 +340,7 @@ static bool match_symmetric_i4_low_row_dispatch(const DispatchMatchContext & con
 }
 
 static bool match_q6_k_token1_shortlist_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
+    constexpr int64_t selected_group_count  = 96;
     constexpr int64_t candidate_count       = 128;
     constexpr int64_t refine_tile_size      = 64;
     constexpr size_t  partition_entry_count = 1024;
@@ -330,8 +349,8 @@ static bool match_q6_k_token1_shortlist_dispatch(const DispatchMatchContext & co
         common_match_mul_mat_any_format(context.graph, context.root_node, kMulMatQ6KSymmetricI2ScanToken1Kernel, true);
     if (!match.matched() || !context.graph.has_index() || match.weight->type != GGML_TYPE_Q6_K ||
         match.token_count != 1 || match.weight->alias_source.value >= 0 || match.input_size % 256 != 0 ||
-        match.output_size < 65536 || match.output_size % 64 != 0 || match.output_size < 16 * match.input_size ||
-        !context.graph.index().consumers(match.output->id).empty() ||
+        match.input_size > 8192 || match.output_size < 65536 || match.output_size % 64 != 0 ||
+        match.output_size < 16 * match.input_size || !context.graph.index().consumers(match.output->id).empty() ||
         !has_embedded_external_concat_projection_ancestor(context.graph, match.input->id, match.input_size)) {
         return false;
     }
@@ -346,10 +365,11 @@ static bool match_q6_k_token1_shortlist_dispatch(const DispatchMatchContext & co
 
     const ValueId activation     = alternate != nullptr ? alternate->alternate_value : context.next_plan_value;
     const int32_t transient_base = context.next_plan_value.value + (alternate == nullptr ? 1 : 0);
-    const ValueId partial_values(transient_base);
-    const ValueId partial_ids(transient_base + 1);
-    const ValueId candidates(transient_base + 2);
-    const ValueId candidate_values(transient_base + 3);
+    const ValueId selected_groups(transient_base);
+    const ValueId partial_values(transient_base + 1);
+    const ValueId partial_ids(transient_base + 2);
+    const ValueId candidates(transient_base + 3);
+    const ValueId candidate_values(transient_base + 4);
 
     if (alternate == nullptr) {
         dispatch_match.transients.push_back(
@@ -377,6 +397,8 @@ static bool match_q6_k_token1_shortlist_dispatch(const DispatchMatchContext & co
         }
     }
 
+    dispatch_match.transients.push_back({ selected_groups, "common.mul_mat.q6_k_shortlist.selected_groups",
+                                          static_cast<size_t>(selected_group_count) * sizeof(int32_t), 256 });
     dispatch_match.transients.push_back(
         { partial_values, "common.mul_mat.q6_k_shortlist.partial_values", partition_entry_count * sizeof(float), 256 });
     dispatch_match.transients.push_back(
@@ -385,6 +407,17 @@ static bool match_q6_k_token1_shortlist_dispatch(const DispatchMatchContext & co
         { candidates, "common.mul_mat.q6_k_shortlist.candidates", candidate_count * sizeof(int32_t), 256 });
     dispatch_match.transients.push_back(
         { candidate_values, "common.mul_mat.q6_k_shortlist.candidate_values", candidate_count * sizeof(float), 256 });
+
+    Dispatch select_groups;
+    select_groups.kernel = make_kernel_specialization(kSelectSymmetricI4K32GroupsKernel);
+    select_groups.kernel.compile_parameters.emplace("ggml.mul_mat_q6_k_shortlist.input_size",
+                                                    common_to_config_value(match.input_size));
+    select_groups.kernel.compile_parameters.emplace("ggml.mul_mat_q6_k_shortlist.selected_group_count",
+                                                    common_to_config_value(selected_group_count));
+    select_groups.bindings.push_back({ match.input->id, 0, match.input->byte_count });
+    select_groups.bindings.push_back(
+        { selected_groups, 0, static_cast<size_t>(selected_group_count) * sizeof(int32_t) });
+    dispatch_match.dispatches.push_back(std::move(select_groups));
 
     const size_t symmetric_i2_bytes =
         common_symmetric_shared4_weight_byte_count(match.input_size, match.output_size, 2);
@@ -398,12 +431,16 @@ static bool match_q6_k_token1_shortlist_dispatch(const DispatchMatchContext & co
                                            common_to_config_value(match.input_size));
     scan.kernel.compile_parameters.emplace("ggml.mul_mat_q6_k_shortlist.output_size",
                                            common_to_config_value(match.output_size));
+    scan.kernel.compile_parameters.emplace("ggml.mul_mat_q6_k_shortlist.selected_group_count",
+                                           common_to_config_value(selected_group_count));
     scan.bindings.push_back({ match.weight->id, 0, materialized_weight_bytes,
                               kQ6KSymmetricI2PackedK256Row64ScaleRowLayout, match.weight->type, match.input_size,
                               match.output_size, match.weight->byte_count });
     scan.bindings.push_back({ match.output->id, 0, match.output->byte_count });
     scan.bindings.push_back({ activation, 0, activation_layout.payload_bytes });
     scan.bindings.push_back({ activation, activation_layout.scales_offset, activation_layout.metadata_bytes });
+    scan.bindings.push_back(
+        { selected_groups, 0, static_cast<size_t>(selected_group_count) * sizeof(int32_t) });
     dispatch_match.dispatches.push_back(std::move(scan));
 
     Dispatch partition_top_k;

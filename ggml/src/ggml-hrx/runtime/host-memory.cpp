@@ -148,6 +148,7 @@ static bool fit_shared_symmetric_scale(const std::array<std::array<float, QK_K>,
                                        size_t                                         group,
                                        int                                            quant_min,
                                        int                                            quant_max,
+                                       bool                                           multistart,
                                        float &                                        encoded_scale) {
     float positive_max = 0.0f;
     float negative_max = 0.0f;
@@ -168,13 +169,56 @@ static bool fit_shared_symmetric_scale(const std::array<std::array<float, QK_K>,
         return true;
     }
 
-    float scale = std::max(positive_max / quant_max, negative_max / -quant_min);
-    if (!std::isfinite(scale) || scale <= 0.0f) {
+    const float initial_scale = std::max(positive_max / quant_max, negative_max / -quant_min);
+    if (!std::isfinite(initial_scale) || initial_scale <= 0.0f) {
         return false;
     }
-    for (int iteration = 0; iteration < 2; ++iteration) {
-        double numerator   = 0.0;
-        double denominator = 0.0;
+
+    auto refit = [&](float & scale) {
+        const int iteration_count = multistart ? 4 : 2;
+        for (int iteration = 0; iteration < iteration_count; ++iteration) {
+            double numerator   = 0.0;
+            double denominator = 0.0;
+            for (size_t row = 0; row < row_count; ++row) {
+                const float * group_values = values[row].data() + group * 32;
+                for (size_t element = 0; element < 32; ++element) {
+                    int quantized = 0;
+                    if (!quantize_symmetric_value(group_values[element], scale, quant_min, quant_max, quantized)) {
+                        return false;
+                    }
+                    numerator += static_cast<double>(group_values[element]) * quantized;
+                    denominator += static_cast<double>(quantized) * quantized;
+                }
+            }
+            if (denominator > 0.0) {
+                scale = static_cast<float>(numerator / denominator);
+                if (!std::isfinite(scale) || scale <= 0.0f) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+
+    if (!multistart) {
+        float scale = initial_scale;
+        if (!refit(scale)) {
+            return false;
+        }
+        encoded_scale = ggml_fp16_to_fp32(ggml_fp32_to_fp16(scale));
+        return std::isfinite(encoded_scale) && encoded_scale > 0.0f;
+    }
+
+    constexpr std::array<float, 7> kInitialScaleRatios = { 0.50f, 0.60f, 0.70f, 0.80f, 0.90f, 1.00f, 1.10f };
+    double                         best_error          = std::numeric_limits<double>::infinity();
+    float                          best_scale          = 0.0f;
+    for (float ratio : kInitialScaleRatios) {
+        float scale = initial_scale * ratio;
+        if (!refit(scale)) {
+            return false;
+        }
+        scale        = ggml_fp16_to_fp32(ggml_fp32_to_fp16(scale));
+        double error = 0.0;
         for (size_t row = 0; row < row_count; ++row) {
             const float * group_values = values[row].data() + group * 32;
             for (size_t element = 0; element < 32; ++element) {
@@ -182,19 +226,18 @@ static bool fit_shared_symmetric_scale(const std::array<std::array<float, QK_K>,
                 if (!quantize_symmetric_value(group_values[element], scale, quant_min, quant_max, quantized)) {
                     return false;
                 }
-                numerator += static_cast<double>(group_values[element]) * quantized;
-                denominator += static_cast<double>(quantized) * quantized;
+                const double delta =
+                    static_cast<double>(group_values[element]) - static_cast<double>(quantized) * scale;
+                error += delta * delta;
             }
         }
-        if (denominator > 0.0) {
-            scale = static_cast<float>(numerator / denominator);
-            if (!std::isfinite(scale) || scale <= 0.0f) {
-                return false;
-            }
+        if (error < best_error) {
+            best_error = error;
+            best_scale = scale;
         }
     }
 
-    encoded_scale = ggml_fp16_to_fp32(ggml_fp32_to_fp16(scale));
+    encoded_scale = best_scale;
     return std::isfinite(encoded_scale) && encoded_scale > 0.0f;
 }
 
@@ -383,7 +426,14 @@ static Status materialize_symmetric_k32_eightgroups_shared4(const HostWeightSour
         status.log("layout %s row count overflows row-group sizing", source.layout.c_str());
         return status;
     }
-    const size_t row_group = ((logical_rows + 255) / 256) * 32;
+    const size_t materialized_row_bytes = 4 + 8 * 32 * static_cast<size_t>(quant_bits) / 8;
+    const size_t unpadded_bytes =
+        logical_rows * static_cast<size_t>(source.input_size / QK_K) * materialized_row_bytes;
+    const size_t dynamic_row_group = ((logical_rows + 255) / 256) * 32;
+    const size_t row_group =
+        quant_bits == 4 && unpadded_bytes < size_t{ 16 } * 1024 * 1024 ? 32 :
+        quant_bits == 4 && unpadded_bytes <= size_t{ 32 } * 1024 * 1024 && source.output_size > source.input_size ? 96 :
+                                                                                                                   dynamic_row_group;
     if (logical_rows > std::numeric_limits<size_t>::max() - (row_group - 1)) {
         status.log("layout %s row count overflows row-group padding", source.layout.c_str());
         return status;
@@ -406,11 +456,11 @@ static Status materialize_symmetric_k32_eightgroups_shared4(const HostWeightSour
     const int    quant_min              = -(1 << (quant_bits - 1));
     const int    quant_max              = (1 << (quant_bits - 1)) - 1;
     const size_t field_bytes            = 32 * static_cast<size_t>(quant_bits) / 8;
-    const size_t materialized_row_bytes = 4 + 8 * field_bytes;
+    const size_t encoded_row_bytes = 4 + 8 * field_bytes;
     const size_t block_count            = static_cast<size_t>(source.input_size / QK_K);
     size_t       expected_output_bytes  = 0;
     if (!checked_multiply(physical_rows, block_count, expected_output_bytes) ||
-        !checked_multiply(expected_output_bytes, materialized_row_bytes, expected_output_bytes) ||
+        !checked_multiply(expected_output_bytes, encoded_row_bytes, expected_output_bytes) ||
         source.materialized_length != expected_output_bytes) {
         status.log("layout %s materialized length %zu does not match expected %zu", source.layout.c_str(),
                    source.materialized_length, expected_output_bytes);
@@ -451,8 +501,10 @@ static Status materialize_symmetric_k32_eightgroups_shared4(const HostWeightSour
                 uint8_t *    header = output.data() + scale_region + block * scale_plane_bytes + cohort_lane * 16;
                 std::array<float, 8> scales = {};
                 for (size_t group = 0; group < scales.size(); ++group) {
-                    float scale = 0.0f;
-                    if (!fit_shared_symmetric_scale(decoded, row_count, group, quant_min, quant_max, scale)) {
+                    float      scale      = 0.0f;
+                    const bool multistart = source.layout == kSymmetricI4K32EightGroupsShared4MultistartLayout;
+                    if (!fit_shared_symmetric_scale(decoded, row_count, group, quant_min, quant_max, multistart,
+                                                    scale)) {
                         conversion_failed.store(true, std::memory_order_relaxed);
                         return;
                     }
@@ -1012,7 +1064,8 @@ static Status materialize_weight(const HostWeightSource & source,
         upload_size = source.length;
         return status;
     }
-    if (source.layout == kSymmetricI4K32EightGroupsShared4Layout) {
+    if (source.layout == kSymmetricI4K32EightGroupsShared4Layout ||
+        source.layout == kSymmetricI4K32EightGroupsShared4MultistartLayout) {
         status = materialize_symmetric_i4_k32_eightgroups_shared4(source, transformed);
         if (status.success()) {
             upload_data = transformed.data();

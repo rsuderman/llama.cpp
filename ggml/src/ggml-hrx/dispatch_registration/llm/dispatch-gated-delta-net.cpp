@@ -23,10 +23,16 @@ static constexpr KernelCatalogRef kGatedDeltaNetProjectionEpilogueKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_gated_delta_net_projection_epilogue_f32");
 static constexpr KernelCatalogRef kGatedDeltaNetPrefillKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_gated_delta_net_f32_wmma_head128");
+static constexpr KernelCatalogRef kGatedDeltaNetPrefillProjectionEpilogueKernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "llm_gated_delta_net_f32_wmma_head128_projection_epilogue");
 static constexpr KernelCatalogRef kGatedDeltaNetInplaceKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_gated_delta_net_f32_wmma_head128_inplace");
+static constexpr KernelCatalogRef kGatedDeltaNetInplaceProjectionEpilogueKernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "llm_gated_delta_net_f32_wmma_head128_inplace_projection_epilogue");
 static constexpr KernelCatalogRef kGatedDeltaNetSnapshotKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_gated_delta_net_f32_wmma_head128_snapshot");
+static constexpr KernelCatalogRef kGatedDeltaNetSnapshotProjectionEpilogueKernel = GGML_HRX_KERNEL_REF(
+    "loom_libs", "llm_gated_delta_net_f32_wmma_head128_snapshot_projection_epilogue");
 static constexpr KernelCatalogRef kCopyF32Kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_copy_f32");
 static constexpr KernelCatalogRef kMulMatSymmetricI4LowRowAdjacentDualWmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_wmma");
@@ -624,6 +630,10 @@ static bool match_gated_delta_net_projection_pair_dispatch(const DispatchMatchCo
                                                   common_to_config_value(match.output_size));
     projections.kernel.compile_parameters.emplace("ggml.mul_mat.symmetric_i4.lowrow.token_count",
                                                   common_to_config_value(match.token_count));
+    projections.kernel.compile_parameters.emplace(
+        "ggml.mul_mat.symmetric_i4.lowrow.row_group_size",
+        common_to_config_value(static_cast<int64_t>(
+            common_symmetric_shared4_row_group_size(match.input_size, match.output_size, 4))));
     projections.bindings.push_back(
         common_symmetric_i4_shared4_weight_binding(*match.first_weight, match.input_size, match.output_size));
     projections.bindings.push_back(
@@ -658,7 +668,16 @@ static bool match_gated_delta_net_dispatch(const DispatchMatchContext & context,
     const ValueId rms_scales = context.next_plan_value;
     dispatch_match.transients.push_back({ rms_scales, "llm_gated_delta_net_rms_scales", rms_scales_bytes, 256 });
 
-    if (match.has_projection_epilogue()) {
+    const int64_t written_snapshot_count = std::min(match.token_count, match.snapshot_count);
+    const int64_t prefix_token_count     = match.token_count - written_snapshot_count;
+    const size_t  cache_stride           = match.cache->nb[2];
+    const bool can_fuse_projection_epilogue = match.has_projection_epilogue() && match.token_count <= 16;
+    const bool fuse_snapshot_projection_epilogue =
+        can_fuse_projection_epilogue && match.snapshot_count != 1 && prefix_token_count == 0 &&
+        written_snapshot_count == match.token_count && (match.token_count >= 2 || match.sequence_count > 1) &&
+        match.token_count <= 5 && cache_stride % sizeof(float) == 0;
+
+    if (match.has_projection_epilogue() && !can_fuse_projection_epilogue) {
         Dispatch epilogue;
         epilogue.kernel = make_kernel_specialization(kGatedDeltaNetProjectionEpilogueKernel);
         set_compile_parameter(epilogue.kernel, "llm.gated_delta_net.epilogue_head_count", match.head_count);
@@ -676,13 +695,22 @@ static bool match_gated_delta_net_dispatch(const DispatchMatchContext & context,
 
     if (match.snapshot_count == 1) {
         Dispatch gdn;
-        gdn.kernel = make_kernel_specialization(kGatedDeltaNetPrefillKernel);
+        gdn.kernel = make_kernel_specialization(can_fuse_projection_epilogue ?
+                                                    kGatedDeltaNetPrefillProjectionEpilogueKernel :
+                                                    kGatedDeltaNetPrefillKernel);
         configure_gated_delta_net_kernel(gdn, match, match.token_count);
         gdn.bindings.push_back({ match.raw_q->id, 0, match.raw_q->byte_count });
         gdn.bindings.push_back({ match.raw_k->id, 0, match.raw_k->byte_count });
         gdn.bindings.push_back({ match.v->id, 0, match.v->byte_count });
-        gdn.bindings.push_back({ match.gate->id, 0, match.gate->byte_count });
-        gdn.bindings.push_back({ match.beta->id, 0, match.beta->byte_count });
+        if (can_fuse_projection_epilogue) {
+            gdn.bindings.push_back({ match.alpha_raw->id, 0, match.alpha_raw->byte_count });
+            gdn.bindings.push_back({ match.beta_raw->id, 0, match.beta_raw->byte_count });
+            gdn.bindings.push_back({ match.bias->id, 0, match.bias->byte_count });
+            gdn.bindings.push_back({ match.a_scale->id, 0, match.a_scale->byte_count });
+        } else {
+            gdn.bindings.push_back({ match.gate->id, 0, match.gate->byte_count });
+            gdn.bindings.push_back({ match.beta->id, 0, match.beta->byte_count });
+        }
         gdn.bindings.push_back({ match.state->id, 0, match.state->byte_count });
         gdn.bindings.push_back({ match.gdn_output->id, 0, match.gdn_output->byte_count });
         gdn.bindings.push_back({ rms_scales, 0, rms_scales_bytes });
@@ -698,28 +726,34 @@ static bool match_gated_delta_net_dispatch(const DispatchMatchContext & context,
         return true;
     }
 
-    const int64_t written_snapshot_count = std::min(match.token_count, match.snapshot_count);
-    const int64_t prefix_token_count     = match.token_count - written_snapshot_count;
     const size_t  q_token_bytes          = static_cast<size_t>(match.width * match.q_head_count) * sizeof(float);
     const size_t  v_token_bytes          = static_cast<size_t>(match.width * match.head_count) * sizeof(float);
     const size_t  gate_token_bytes       = static_cast<size_t>(match.head_count) * sizeof(float);
     const size_t  attention_token_bytes  = v_token_bytes;
     const size_t  state_bytes       = static_cast<size_t>(match.width * match.width * match.head_count) * sizeof(float);
     const size_t  state_plane_bytes = state_bytes * static_cast<size_t>(match.sequence_count);
-    const size_t  cache_stride      = match.cache->nb[2];
 
     if (prefix_token_count == 0 && written_snapshot_count == match.token_count &&
         (match.token_count >= 2 || match.sequence_count > 1) && match.token_count <= 5 &&
         cache_stride % sizeof(float) == 0) {
         Dispatch gdn;
-        gdn.kernel = make_kernel_specialization(kGatedDeltaNetSnapshotKernel);
+        gdn.kernel = make_kernel_specialization(fuse_snapshot_projection_epilogue ?
+                                                    kGatedDeltaNetSnapshotProjectionEpilogueKernel :
+                                                    kGatedDeltaNetSnapshotKernel);
         configure_gated_delta_net_kernel(gdn, match, match.token_count);
         set_compile_parameter(gdn.kernel, "llm.gated_delta_net.snapshot_stride", cache_stride / sizeof(float));
         gdn.bindings.push_back({ match.raw_q->id, 0, match.raw_q->byte_count });
         gdn.bindings.push_back({ match.raw_k->id, 0, match.raw_k->byte_count });
         gdn.bindings.push_back({ match.v->id, 0, match.v->byte_count });
-        gdn.bindings.push_back({ match.gate->id, 0, match.gate->byte_count });
-        gdn.bindings.push_back({ match.beta->id, 0, match.beta->byte_count });
+        if (fuse_snapshot_projection_epilogue) {
+            gdn.bindings.push_back({ match.alpha_raw->id, 0, match.alpha_raw->byte_count });
+            gdn.bindings.push_back({ match.beta_raw->id, 0, match.beta_raw->byte_count });
+            gdn.bindings.push_back({ match.bias->id, 0, match.bias->byte_count });
+            gdn.bindings.push_back({ match.a_scale->id, 0, match.a_scale->byte_count });
+        } else {
+            gdn.bindings.push_back({ match.gate->id, 0, match.gate->byte_count });
+            gdn.bindings.push_back({ match.beta->id, 0, match.beta->byte_count });
+        }
         gdn.bindings.push_back({ match.state->id, 0, state_plane_bytes });
         gdn.bindings.push_back(
             { match.cache->id, 0, state_plane_bytes + static_cast<size_t>(written_snapshot_count - 1) * cache_stride });
@@ -750,13 +784,26 @@ static bool match_gated_delta_net_dispatch(const DispatchMatchContext & context,
         const size_t prefix_rms_bytes       = static_cast<size_t>(prefix_token_count) * gate_token_bytes;
 
         Dispatch prefix;
-        prefix.kernel = make_kernel_specialization(kGatedDeltaNetPrefillKernel);
+        prefix.kernel = make_kernel_specialization(can_fuse_projection_epilogue ?
+                                                       kGatedDeltaNetPrefillProjectionEpilogueKernel :
+                                                       kGatedDeltaNetPrefillKernel);
         configure_gated_delta_net_kernel(prefix, match, prefix_token_count);
         prefix.bindings.push_back({ match.raw_q->id, 0, q_span });
         prefix.bindings.push_back({ match.raw_k->id, 0, k_span });
         prefix.bindings.push_back({ match.v->id, 0, v_span });
-        prefix.bindings.push_back({ match.gate->id, 0, gate_span });
-        prefix.bindings.push_back({ match.beta->id, 0, beta_span });
+        if (can_fuse_projection_epilogue) {
+            const size_t alpha_span = static_cast<size_t>(prefix_token_count - 1) * match.alpha_raw->nb[1] +
+                                      gate_token_bytes;
+            const size_t beta_raw_span = static_cast<size_t>(prefix_token_count - 1) * match.beta_raw->nb[1] +
+                                         gate_token_bytes;
+            prefix.bindings.push_back({ match.alpha_raw->id, 0, alpha_span });
+            prefix.bindings.push_back({ match.beta_raw->id, 0, beta_raw_span });
+            prefix.bindings.push_back({ match.bias->id, 0, match.bias->byte_count });
+            prefix.bindings.push_back({ match.a_scale->id, 0, match.a_scale->byte_count });
+        } else {
+            prefix.bindings.push_back({ match.gate->id, 0, gate_span });
+            prefix.bindings.push_back({ match.beta->id, 0, beta_span });
+        }
         prefix.bindings.push_back({ match.state->id, 0, state_bytes });
         prefix.bindings.push_back({ match.gdn_output->id, 0, prefix_attention_bytes + state_bytes });
         prefix.bindings.push_back({ rms_scales, 0, prefix_rms_bytes });
@@ -777,13 +824,26 @@ static bool match_gated_delta_net_dispatch(const DispatchMatchContext & context,
         }
 
         Dispatch gdn;
-        gdn.kernel = make_kernel_specialization(kGatedDeltaNetInplaceKernel);
+        gdn.kernel = make_kernel_specialization(can_fuse_projection_epilogue ?
+                                                    kGatedDeltaNetInplaceProjectionEpilogueKernel :
+                                                    kGatedDeltaNetInplaceKernel);
         configure_gated_delta_net_kernel(gdn, match, 1);
         gdn.bindings.push_back({ match.raw_q->id, static_cast<size_t>(token) * match.raw_q->nb[2], q_token_bytes });
         gdn.bindings.push_back({ match.raw_k->id, static_cast<size_t>(token) * match.raw_k->nb[2], q_token_bytes });
         gdn.bindings.push_back({ match.v->id, static_cast<size_t>(token) * match.v->nb[2], v_token_bytes });
-        gdn.bindings.push_back({ match.gate->id, static_cast<size_t>(token) * match.gate->nb[2], gate_token_bytes });
-        gdn.bindings.push_back({ match.beta->id, static_cast<size_t>(token) * match.beta->nb[2], gate_token_bytes });
+        if (can_fuse_projection_epilogue) {
+            gdn.bindings.push_back(
+                { match.alpha_raw->id, static_cast<size_t>(token) * match.alpha_raw->nb[1], gate_token_bytes });
+            gdn.bindings.push_back(
+                { match.beta_raw->id, static_cast<size_t>(token) * match.beta_raw->nb[1], gate_token_bytes });
+            gdn.bindings.push_back({ match.bias->id, 0, match.bias->byte_count });
+            gdn.bindings.push_back({ match.a_scale->id, 0, match.a_scale->byte_count });
+        } else {
+            gdn.bindings.push_back(
+                { match.gate->id, static_cast<size_t>(token) * match.gate->nb[2], gate_token_bytes });
+            gdn.bindings.push_back(
+                { match.beta->id, static_cast<size_t>(token) * match.beta->nb[2], gate_token_bytes });
+        }
         gdn.bindings.push_back({ match.cache->id, static_cast<size_t>(slot) * cache_stride, state_bytes });
         gdn.bindings.push_back(
             { match.gdn_output->id, static_cast<size_t>(token) * attention_token_bytes, attention_token_bytes });

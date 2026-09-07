@@ -59,9 +59,23 @@ inline CommonSymmetricI4ActivationLayout common_symmetric_i4_activation_layout(i
     };
 }
 
+inline size_t common_symmetric_shared4_row_group_size(int64_t input_size, int64_t output_size, int64_t quant_bits) {
+    const size_t logical_output_size    = static_cast<size_t>(output_size);
+    const size_t materialized_row_bytes = 4 + 8 * 32 * static_cast<size_t>(quant_bits) / 8;
+    const size_t materialized_bytes =
+        logical_output_size * static_cast<size_t>(input_size / 256) * materialized_row_bytes;
+    if (quant_bits == 4 && materialized_bytes < size_t{ 16 } * 1024 * 1024) {
+        return 32;
+    }
+    if (quant_bits == 4 && materialized_bytes <= size_t{ 32 } * 1024 * 1024 && output_size > input_size) {
+        return 96;
+    }
+    return ((logical_output_size + 255) / 256) * 32;
+}
+
 inline size_t common_symmetric_shared4_weight_byte_count(int64_t input_size, int64_t output_size, int64_t quant_bits) {
     const size_t logical_output_size    = static_cast<size_t>(output_size);
-    const size_t row_group_size         = ((logical_output_size + 255) / 256) * 32;
+    const size_t row_group_size = common_symmetric_shared4_row_group_size(input_size, output_size, quant_bits);
     const size_t padded_output_size     = (logical_output_size + row_group_size - 1) / row_group_size * row_group_size;
     const size_t materialized_row_bytes = 4 + 8 * 32 * static_cast<size_t>(quant_bits) / 8;
     return padded_output_size * static_cast<size_t>(input_size / 256) * materialized_row_bytes;
@@ -82,6 +96,14 @@ inline DispatchBinding common_symmetric_i4_shared4_weight_binding(const Value & 
     binding.input_size    = input_size;
     binding.output_size   = output_size;
     binding.source_length = weight.byte_count;
+    return binding;
+}
+
+inline DispatchBinding common_symmetric_i4_shared4_multistart_weight_binding(const Value & weight,
+                                                                             int64_t       input_size,
+                                                                             int64_t       output_size) {
+    DispatchBinding binding = common_symmetric_i4_shared4_weight_binding(weight, input_size, output_size);
+    binding.layout          = kSymmetricI4K32EightGroupsShared4MultistartLayout;
     return binding;
 }
 

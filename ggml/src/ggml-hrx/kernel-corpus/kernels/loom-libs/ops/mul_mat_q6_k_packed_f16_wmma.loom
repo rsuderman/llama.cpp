@@ -6,12 +6,11 @@ config.decl @ggml.mul_mat_q6_k_packed.output_accumulation : %value: index where 
 
 config.decl @ggml.mul_mat_q6_k_packed.weight_offset : %value: index where [range(%value, 0, 2147483647), mul(%value, 256)]
 
-
-
-
 config.decl @ggml.mul_mat_q6_k_shortlist.input_size : %value: index where [range(%value, 256, 32768), mul(%value, 256)]
 
 config.decl @ggml.mul_mat_q6_k_shortlist.output_size : %value: index where [range(%value, 64, 262144), mul(%value, 64)]
+
+config.decl @ggml.mul_mat_q6_k_shortlist.selected_group_count : %value: index where [range(%value, 1, 1024)]
 
 template.decl @ggml.mul_mat_q6_k_packed.publish_f16_wave32(%result: vector<16xf16>, %token_offset: index, %token_tile_base: index, %bounded_token_count: index, %bounded_output_size: index, %channel_tile_base: index, %subgroup_channel_add: index, %result_stage: buffer, %output_noalias: buffer, %output_accumulation: index)
 
@@ -20,7 +19,6 @@ template.decl @ggml.mul_mat_q6_k_packed.token1.body(%token_count: index, %input_
 template.decl @ggml.mul_mat_q6_k_i8_prepacked.body(%token_count: index, %input_size0: index, %output_size0: index, %channel_tile: index, %input: buffer, %weight: buffer, %output: buffer)
 
 template.decl @ggml.mul_mat_q6_k_packed.selected_refine.body(%token_count: index, %input_size0: index, %output_size0: index, %scale_row_layout: index, %candidate_count0: index, %input: buffer, %weight: buffer, %candidates: buffer, %output: buffer)
-
 
 template.def<@ggml.mul_mat_q6_k_packed.publish_f16_wave32> device @ggml_mul_mat_q6_k_packed_publish_f16_wave32(%result: vector<16xf16>, %token_offset: index, %token_tile_base: index, %bounded_token_count: index, %bounded_output_size: index, %channel_tile_base: index, %subgroup_channel_add: index, %result_stage: buffer, %output_noalias: buffer, %output_accumulation: index) {
   %lane = kernel.subgroup.lane.id : index
@@ -73,7 +71,6 @@ template.def<@ggml.mul_mat_q6_k_packed.publish_f16_wave32> device @ggml_mul_mat_
   kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
   template.return
 }
-
 
 template.def<@ggml.mul_mat_q6_k_packed.token1.body> device @ggml_mul_mat_q6_k_packed_token1_body(%token_count: index, %input_size0: index, %output_size0: index, %channel_tile: index, %scale_row_layout: index, %input: buffer, %weight: buffer, %output: buffer) {
   %output_accumulation = config.get @ggml.mul_mat_q6_k_packed.output_accumulation : index
@@ -472,43 +469,146 @@ kernel.def export("ggml_mul_mat_q6_k_i8_prepacked_f16_wmma") @ggml_mul_mat_q6_k_
   kernel.return
 }
 
-func.def inline @ggml_mul_mat_symmetric_i2_full_dot(%acc: f32, %weight_words: vector<4xi32>, %weight_scale: f32, %group: index, %input_size: index, %group_count: index, %qact: buffer, %scales: buffer) -> (f32) {
-  %base = index.constant 0 : offset
-  %c0 = index.constant 0 : index
-  %c2 = index.constant 2 : index
-  %c16 = index.constant 16 : index
+func.def inline @ggml_expand_symmetric_i2_words(%q2_packed: vector<2xi32>) -> (vector<4xi32>) {
+  %q2_mask16 = vector.constant 65535 : vector<2xi32>
+  %q2_mask8 = vector.constant 16711935 : vector<2xi32>
+  %q2_mask4 = vector.constant 252645135 : vector<2xi32>
+  %q2_mask2 = vector.constant 858993459 : vector<2xi32>
+  %q2_sign = vector.constant 572662306 : vector<2xi32>
+  %q2_shift16 = vector.constant 16 : vector<2xi32>
+  %q2_shift8 = vector.constant 8 : vector<2xi32>
+  %q2_shift4 = vector.constant 4 : vector<2xi32>
+  %q2_shift2 = vector.constant 2 : vector<2xi32>
+  %q2_shift1 = vector.constant 1 : vector<2xi32>
+  %q2_lo0 = vector.andi %q2_packed, %q2_mask16 : vector<2xi32>
+  %q2_hi0 = vector.shrui %q2_packed, %q2_shift16 : vector<2xi32>
+  %q2_lo1s = vector.shli %q2_lo0, %q2_shift8 : vector<2xi32>
+  %q2_lo1o = vector.ori %q2_lo0, %q2_lo1s : vector<2xi32>
+  %q2_lo1 = vector.andi %q2_lo1o, %q2_mask8 : vector<2xi32>
+  %q2_lo2s = vector.shli %q2_lo1, %q2_shift4 : vector<2xi32>
+  %q2_lo2o = vector.ori %q2_lo1, %q2_lo2s : vector<2xi32>
+  %q2_lo2 = vector.andi %q2_lo2o, %q2_mask4 : vector<2xi32>
+  %q2_lo3s = vector.shli %q2_lo2, %q2_shift2 : vector<2xi32>
+  %q2_lo3o = vector.ori %q2_lo2, %q2_lo3s : vector<2xi32>
+  %q2_lo3 = vector.andi %q2_lo3o, %q2_mask2 : vector<2xi32>
+  %q2_losign = vector.andi %q2_lo3, %q2_sign : vector<2xi32>
+  %q2_losign2 = vector.shli %q2_losign, %q2_shift1 : vector<2xi32>
+  %q2_losign3 = vector.shli %q2_losign, %q2_shift2 : vector<2xi32>
+  %q2_lo4 = vector.ori %q2_lo3, %q2_losign2 : vector<2xi32>
+  %q2_lo = vector.ori %q2_lo4, %q2_losign3 : vector<2xi32>
+  %q2_hi1s = vector.shli %q2_hi0, %q2_shift8 : vector<2xi32>
+  %q2_hi1o = vector.ori %q2_hi0, %q2_hi1s : vector<2xi32>
+  %q2_hi1 = vector.andi %q2_hi1o, %q2_mask8 : vector<2xi32>
+  %q2_hi2s = vector.shli %q2_hi1, %q2_shift4 : vector<2xi32>
+  %q2_hi2o = vector.ori %q2_hi1, %q2_hi2s : vector<2xi32>
+  %q2_hi2 = vector.andi %q2_hi2o, %q2_mask4 : vector<2xi32>
+  %q2_hi3s = vector.shli %q2_hi2, %q2_shift2 : vector<2xi32>
+  %q2_hi3o = vector.ori %q2_hi2, %q2_hi3s : vector<2xi32>
+  %q2_hi3 = vector.andi %q2_hi3o, %q2_mask2 : vector<2xi32>
+  %q2_hisign = vector.andi %q2_hi3, %q2_sign : vector<2xi32>
+  %q2_hisign2 = vector.shli %q2_hisign, %q2_shift1 : vector<2xi32>
+  %q2_hisign3 = vector.shli %q2_hisign, %q2_shift2 : vector<2xi32>
+  %q2_hi4 = vector.ori %q2_hi3, %q2_hisign2 : vector<2xi32>
+  %q2_hi = vector.ori %q2_hi4, %q2_hisign3 : vector<2xi32>
+  %weight_word0 = vector.extract %q2_lo[0] : vector<2xi32> -> i32
+  %weight_word1 = vector.extract %q2_hi[0] : vector<2xi32> -> i32
+  %weight_word2 = vector.extract %q2_lo[1] : vector<2xi32> -> i32
+  %weight_word3 = vector.extract %q2_hi[1] : vector<2xi32> -> i32
+  %weight_words = vector.from_elements %weight_word0, %weight_word1, %weight_word2, %weight_word3 : vector<4xi32>
+  func.return %weight_words : vector<4xi32>
+}
+
+func.def inline @ggml_symmetric_i2_dot_preloaded(%acc: f32, %weight_words: vector<4xi32>, %activation_words: vector<4xi32>, %combined_scale: f32) -> (f32) {
   %zero_i32 = scalar.constant 0 : i32
   %zero_i32x4 = vector.constant 0 : vector<4xi32>
-  %qact_flat = buffer.view %qact[%base] : buffer -> view<1073741824xi8>
-  %scale_flat = buffer.view %scales[%base] : buffer -> view<33554432xf32>
-  %token_bytes = index.div %input_size, %c2 : index
-  %group_payload_add = index.mul %group, %c16 : index
-  %payload_index = index.assume %group_payload_add [range(%group_payload_add, 0, 1073741808)] : index
-  %activation_bytes = vector.load %qact_flat[%payload_index] : view<1073741824xi8> -> vector<16xi8>
-  %activation_words = vector.bitcast %activation_bytes : vector<16xi8> to vector<4xi32>
   %dot_parts = vector.dot8i4<s4s4> %weight_words, %activation_words, %zero_i32x4 : vector<4xi32>
   %dot_i32 = vector.reduce<addi> %dot_parts, %zero_i32 : vector<4xi32>, i32
   %dot = scalar.sitofp %dot_i32 : i32 to f32
-  %scale_index = index.assume %group [range(%group, 0, 33554431)] : index
-  %activation_scale = view.load %scale_flat[%scale_index] : view<33554432xf32> -> f32
-  %combined_scale = scalar.mulf %weight_scale, %activation_scale : f32
   %next = scalar.fmaf %dot, %combined_scale, %acc : f32
   func.return %next : f32
+}
+
+kernel.def export("ggml_select_symmetric_i4_k32_groups") @ggml_select_symmetric_i4_k32_groups() {
+  %c1 = index.constant 1 : index
+  %c256 = index.constant 256 : index
+  kernel.launch.config workgroups(%c1, %c1, %c1) workgroup_size(%c256, %c1, %c1) : index
+} launch(%input: buffer, %selected_groups: buffer) {
+  %input_size0 = config.get @ggml.mul_mat_q6_k_shortlist.input_size : index
+  %input_size = index.assume %input_size0 [range(%input_size0, 256, 32768), mul(%input_size0, 256)] : index
+  %selected_count = config.get @ggml.mul_mat_q6_k_shortlist.selected_group_count : index
+  %tid0 = kernel.workitem.id<x> : index
+  %tid = index.assume %tid0 [range(%tid0, 0, 255)] : index
+  %c0 = index.constant 0 : index
+  %c1 = index.constant 1 : index
+  %c4 = index.constant 4 : index
+  %c32 = index.constant 32 : index
+  %base = index.constant 0 : offset
+  %zero_f32 = scalar.constant 0.0 : f32
+  %negative_large = scalar.constant -3.4028234663852886e+38 : f32
+  %zero_i32 = scalar.constant 0 : i32
+  %one_i32 = scalar.constant 1 : i32
+  %largest_i32 = scalar.constant 2147483647 : i32
+  %group_count0 = index.div %input_size, %c32 : index
+  %group_count = index.assume %group_count0 [range(%group_count0, 8, 256)] : index
+  %valid = index.cmp ult, %tid, %group_count : index
+  %input_global = buffer.assume.memory_space<global> %input : buffer
+  %groups_global = buffer.assume.memory_space<global> %selected_groups : buffer
+  %input_noalias, %groups_noalias = buffer.assume.noalias %input_global, %groups_global : buffer, buffer
+  %input_view = buffer.view %input_noalias[%base] : buffer -> view<[%input_size]xf32>
+  %groups_view = buffer.view %groups_noalias[%base] : buffer -> view<[%selected_count]xi32>
+  %score = scf.if %valid -> (f32) {
+    %group_base = index.mul %tid, %c32 : index
+    %sum = scf.for %offset = [%c0 to %c32 step %c4](%iter = %zero_f32 : f32) -> (f32) unroll {
+      %element = index.add %group_base, %offset : index
+      %values = vector.load %input_view[%element] : view<[%input_size]xf32> -> vector<4xf32>
+      %absolute = vector.absf %values : vector<4xf32>
+      %partial = vector.reduce<addf, reassoc|nnan|nsz> %absolute, %zero_f32 : vector<4xf32>, f32
+      %next = scalar.addf<reassoc|nnan|nsz> %iter, %partial : f32
+      scf.yield %next : f32
+    }
+    scf.yield %sum : f32
+  } else {
+    scf.yield %negative_large : f32
+  }
+  %tid_i32 = index.cast %tid : index to i32
+  %final = scf.for %rank = [%c0 to %selected_count step %c1](%remaining = %score : f32) -> (f32) {
+    %winner_score = kernel.workgroup.reduce<maxnumf> %remaining : f32
+    %matches = scalar.cmpf oeq, %remaining, %winner_score : f32
+    %winner_candidate = scf.select %matches, %tid_i32, %largest_i32 : i32
+    %winner_id = kernel.workgroup.reduce<minui> %winner_candidate : i32
+    %is_winner = scalar.cmpi eq, %tid_i32, %winner_id : i32
+    %next = scf.select %is_winner, %negative_large, %remaining : f32
+    scf.yield %next : f32
+  }
+  %matches_selected_sentinel = scalar.cmpf oeq, %final, %negative_large : f32
+  %is_selected = scalar.andi %valid, %matches_selected_sentinel : i1
+  %selected_i32 = scf.select %is_selected, %one_i32, %zero_i32 : i32
+  %rank_i32 = kernel.workgroup.scan<addi> %selected_i32 {direction = forward, mode = exclusive} : i32
+  scf.if %is_selected {
+    %rank0 = index.cast %rank_i32 : i32 to index
+    %bounded_rank = index.assume %rank0 [range(%rank0, 0, 255)] : index
+    %rank, %bounded_selected_count = index.assume %bounded_rank, %selected_count [lt(%bounded_rank, %selected_count)] : index, index
+    view.store %tid_i32, %groups_view[%rank] : i32, view<[%selected_count]xi32>
+  }
+  kernel.return
 }
 
 kernel.def export("ggml_mul_mat_q6_k_symmetric_i2_scan_token1") @ggml_mul_mat_q6_k_symmetric_i2_scan_token1() {
   %rows = config.get @ggml.mul_mat_q6_k_shortlist.output_size : index
   %c1 = index.constant 1 : index
-  %c127 = index.constant 127 : index
   %c128 = index.constant 128 : index
-  %rows_up = index.add %rows, %c127 : index
-  %workgroups = index.div %rows_up, %c128 : index
+  %c511 = index.constant 511 : index
+  %c512 = index.constant 512 : index
+  %rows_up = index.add %rows, %c511 : index
+  %workgroups = index.div %rows_up, %c512 : index
   kernel.launch.config workgroups(%workgroups, %c1, %c1) workgroup_size(%c128, %c1, %c1) : index
-} launch(%weight: buffer, %output: buffer, %qact: buffer, %scales: buffer) {
+} launch(%weight: buffer, %output: buffer, %qact: buffer, %scales: buffer, %selected_groups: buffer) {
   %input_size0 = config.get @ggml.mul_mat_q6_k_shortlist.input_size : index
   %output_size0 = config.get @ggml.mul_mat_q6_k_shortlist.output_size : index
+  %selected_count0 = config.get @ggml.mul_mat_q6_k_shortlist.selected_group_count : index
   %input_size = index.assume %input_size0 [range(%input_size0, 256, 32768), mul(%input_size0, 256)] : index
   %output_size = index.assume %output_size0 [range(%output_size0, 64, 262144), mul(%output_size0, 64)] : index
+  %selected_count = index.assume %selected_count0 [range(%selected_count0, 1, 1024)] : index
   %base = index.constant 0 : offset
   %c0 = index.constant 0 : index
   %c1 = index.constant 1 : index
@@ -521,22 +621,13 @@ kernel.def export("ggml_mul_mat_q6_k_symmetric_i2_scan_token1") @ggml_mul_mat_q6
   %c255 = index.constant 255 : index
   %c256 = index.constant 256 : index
   %zero_f32 = scalar.constant 0.0 : f32
-  %q2_mask16 = vector.constant 65535 : vector<2xi32>
-  %q2_mask8 = vector.constant 16711935 : vector<2xi32>
-  %q2_mask4 = vector.constant 252645135 : vector<2xi32>
-  %q2_mask2 = vector.constant 858993459 : vector<2xi32>
-  %q2_sign = vector.constant 572662306 : vector<2xi32>
-  %q2_shift16 = vector.constant 16 : vector<2xi32>
-  %q2_shift8 = vector.constant 8 : vector<2xi32>
-  %q2_shift4 = vector.constant 4 : vector<2xi32>
-  %q2_shift2 = vector.constant 2 : vector<2xi32>
-  %q2_shift1 = vector.constant 1 : vector<2xi32>
   %workgroup = kernel.workgroup.id<x> : index
   %workitem0 = kernel.workitem.id<x> : index
   %workitem = index.assume %workitem0 [range(%workitem0, 0, 127)] : index
-  %row_base = index.mul %workgroup, %c128 : index
-  %row = index.add %row_base, %workitem : index
-  %valid_row = index.cmp ult, %row, %output_size : index
+  %cohort_base = index.mul %workgroup, %c128 : index
+  %cohort = index.add %cohort_base, %workitem : index
+  %row = index.mul %cohort, %c4 : index
+  %valid_cohort = index.cmp ult, %row, %output_size : index
   %block_count = index.div %input_size, %c256 : index
   %group_count = index.div %input_size, %c32 : index
   %rows_plus = index.add %output_size, %c255 : index
@@ -558,9 +649,16 @@ kernel.def export("ggml_mul_mat_q6_k_symmetric_i2_scan_token1") @ggml_mul_mat_q6
   %output_global = buffer.assume.memory_space<global> %output : buffer
   %qact_global = buffer.assume.memory_space<global> %qact : buffer
   %scales_global = buffer.assume.memory_space<global> %scales : buffer
-  %weight_na, %output_na, %qact_na, %scales_na = buffer.assume.noalias %weight_global, %output_global, %qact_global, %scales_global : buffer, buffer, buffer, buffer
-  %result = scf.if %valid_row -> (f32) {
-    %acc = scf.for %group = [%c0 to %group_count step %c1](%iter = %zero_f32 : f32) -> (f32) {
+  %groups_global = buffer.assume.memory_space<global> %selected_groups : buffer
+  %weight_na, %output_na, %qact_na, %scales_na, %groups_na = buffer.assume.noalias %weight_global, %output_global, %qact_global, %scales_global, %groups_global : buffer, buffer, buffer, buffer, buffer
+  %groups_view = buffer.view %groups_na[%base] : buffer -> view<[%selected_count]xi32>
+  %qact_flat = buffer.view %qact_na[%base] : buffer -> view<1073741824xi8>
+  %activation_scale_view = buffer.view %scales_na[%base] : buffer -> view<33554432xf32>
+  %result0, %result1, %result2, %result3 = scf.if %valid_cohort -> (f32, f32, f32, f32) {
+    %acc0, %acc1, %acc2, %acc3 = scf.for %selected_index = [%c0 to %selected_count step %c1](%iter0 = %zero_f32 : f32, %iter1 = %zero_f32 : f32, %iter2 = %zero_f32 : f32, %iter3 = %zero_f32 : f32) -> (f32, f32, f32, f32) {
+      %group_i32 = view.load %groups_view[%selected_index] : view<[%selected_count]xi32> -> i32
+      %group0 = index.cast %group_i32 : i32 to index
+      %group = index.assume %group0 [range(%group0, 0, 1023)] : index
       %block = index.div %group, %c8 : index
       %group_in_block = index.rem %group, %c8 : index
       %block_payload_add = index.mul %block, %payload_block_bytes : index
@@ -570,43 +668,24 @@ kernel.def export("ggml_mul_mat_q6_k_symmetric_i2_scan_token1") @ggml_mul_mat_q6
       %payload_index1 = index.add %payload_index0, %group_payload_add : index
       %payload_index = index.add %payload_index1, %row_payload_add : index
       %payload_base = index.cast %payload_index : index to offset
-      %weight_view = buffer.view %weight_na[%payload_base] : buffer -> view<2xi32>
-      %q2_packed = vector.load %weight_view[%c0] : view<2xi32> -> vector<2xi32>
-      %q2_lo0 = vector.andi %q2_packed, %q2_mask16 : vector<2xi32>
-      %q2_hi0 = vector.shrui %q2_packed, %q2_shift16 : vector<2xi32>
-      %q2_lo1s = vector.shli %q2_lo0, %q2_shift8 : vector<2xi32>
-      %q2_lo1o = vector.ori %q2_lo0, %q2_lo1s : vector<2xi32>
-      %q2_lo1 = vector.andi %q2_lo1o, %q2_mask8 : vector<2xi32>
-      %q2_lo2s = vector.shli %q2_lo1, %q2_shift4 : vector<2xi32>
-      %q2_lo2o = vector.ori %q2_lo1, %q2_lo2s : vector<2xi32>
-      %q2_lo2 = vector.andi %q2_lo2o, %q2_mask4 : vector<2xi32>
-      %q2_lo3s = vector.shli %q2_lo2, %q2_shift2 : vector<2xi32>
-      %q2_lo3o = vector.ori %q2_lo2, %q2_lo3s : vector<2xi32>
-      %q2_lo3 = vector.andi %q2_lo3o, %q2_mask2 : vector<2xi32>
-      %q2_losign = vector.andi %q2_lo3, %q2_sign : vector<2xi32>
-      %q2_losign2 = vector.shli %q2_losign, %q2_shift1 : vector<2xi32>
-      %q2_losign3 = vector.shli %q2_losign, %q2_shift2 : vector<2xi32>
-      %q2_lo4 = vector.ori %q2_lo3, %q2_losign2 : vector<2xi32>
-      %q2_lo = vector.ori %q2_lo4, %q2_losign3 : vector<2xi32>
-      %q2_hi1s = vector.shli %q2_hi0, %q2_shift8 : vector<2xi32>
-      %q2_hi1o = vector.ori %q2_hi0, %q2_hi1s : vector<2xi32>
-      %q2_hi1 = vector.andi %q2_hi1o, %q2_mask8 : vector<2xi32>
-      %q2_hi2s = vector.shli %q2_hi1, %q2_shift4 : vector<2xi32>
-      %q2_hi2o = vector.ori %q2_hi1, %q2_hi2s : vector<2xi32>
-      %q2_hi2 = vector.andi %q2_hi2o, %q2_mask4 : vector<2xi32>
-      %q2_hi3s = vector.shli %q2_hi2, %q2_shift2 : vector<2xi32>
-      %q2_hi3o = vector.ori %q2_hi2, %q2_hi3s : vector<2xi32>
-      %q2_hi3 = vector.andi %q2_hi3o, %q2_mask2 : vector<2xi32>
-      %q2_hisign = vector.andi %q2_hi3, %q2_sign : vector<2xi32>
-      %q2_hisign2 = vector.shli %q2_hisign, %q2_shift1 : vector<2xi32>
-      %q2_hisign3 = vector.shli %q2_hisign, %q2_shift2 : vector<2xi32>
-      %q2_hi4 = vector.ori %q2_hi3, %q2_hisign2 : vector<2xi32>
-      %q2_hi = vector.ori %q2_hi4, %q2_hisign3 : vector<2xi32>
-      %weight_word0 = vector.extract %q2_lo[0] : vector<2xi32> -> i32
-      %weight_word1 = vector.extract %q2_hi[0] : vector<2xi32> -> i32
-      %weight_word2 = vector.extract %q2_lo[1] : vector<2xi32> -> i32
-      %weight_word3 = vector.extract %q2_hi[1] : vector<2xi32> -> i32
-      %weight_words = vector.from_elements %weight_word0, %weight_word1, %weight_word2, %weight_word3 : vector<4xi32>
+      %weight_view = buffer.view %weight_na[%payload_base] : buffer -> view<8xi32>
+      %q2_payload = vector.load %weight_view[%c0] : view<8xi32> -> vector<8xi32>
+      %q2_00 = vector.extract %q2_payload[0] : vector<8xi32> -> i32
+      %q2_01 = vector.extract %q2_payload[1] : vector<8xi32> -> i32
+      %q2_10 = vector.extract %q2_payload[2] : vector<8xi32> -> i32
+      %q2_11 = vector.extract %q2_payload[3] : vector<8xi32> -> i32
+      %q2_20 = vector.extract %q2_payload[4] : vector<8xi32> -> i32
+      %q2_21 = vector.extract %q2_payload[5] : vector<8xi32> -> i32
+      %q2_30 = vector.extract %q2_payload[6] : vector<8xi32> -> i32
+      %q2_31 = vector.extract %q2_payload[7] : vector<8xi32> -> i32
+      %q2_packed0 = vector.from_elements %q2_00, %q2_01 : vector<2xi32>
+      %q2_packed1 = vector.from_elements %q2_10, %q2_11 : vector<2xi32>
+      %q2_packed2 = vector.from_elements %q2_20, %q2_21 : vector<2xi32>
+      %q2_packed3 = vector.from_elements %q2_30, %q2_31 : vector<2xi32>
+      %weight_words0 = func.call @ggml_expand_symmetric_i2_words(%q2_packed0) : (vector<2xi32>) -> (vector<4xi32>)
+      %weight_words1 = func.call @ggml_expand_symmetric_i2_words(%q2_packed1) : (vector<2xi32>) -> (vector<4xi32>)
+      %weight_words2 = func.call @ggml_expand_symmetric_i2_words(%q2_packed2) : (vector<2xi32>) -> (vector<4xi32>)
+      %weight_words3 = func.call @ggml_expand_symmetric_i2_words(%q2_packed3) : (vector<2xi32>) -> (vector<4xi32>)
       %block_scale_add = index.mul %block, %scale_plane_bytes : index
       %cohort_scale_add = index.mul %cohort_lane, %c16 : index
       %group_scale_add = index.mul %group_in_block, %c2 : index
@@ -617,16 +696,27 @@ kernel.def export("ggml_mul_mat_q6_k_symmetric_i2_scan_token1") @ggml_mul_mat_q6
       %weight_scale_view = buffer.view %weight_na[%scale_byte_base] : buffer -> view<1xf16>
       %weight_scale_f16 = view.load %weight_scale_view[%c0] : view<1xf16> -> f16
       %weight_scale = scalar.extf %weight_scale_f16 : f16 to f32
-      %next = func.call @ggml_mul_mat_symmetric_i2_full_dot(%iter, %weight_words, %weight_scale, %group, %input_size, %group_count, %qact_na, %scales_na) : (f32, vector<4xi32>, f32, index, index, index, buffer, buffer) -> (f32)
-      scf.yield %next : f32
+      %activation_payload_add = index.mul %group, %c16 : index
+      %activation_payload_index = index.assume %activation_payload_add [range(%activation_payload_add, 0, 1073741808)] : index
+      %activation_bytes = vector.load %qact_flat[%activation_payload_index] : view<1073741824xi8> -> vector<16xi8>
+      %activation_words = vector.bitcast %activation_bytes : vector<16xi8> to vector<4xi32>
+      %activation_scale_index = index.assume %group [range(%group, 0, 33554431)] : index
+      %activation_scale = view.load %activation_scale_view[%activation_scale_index] : view<33554432xf32> -> f32
+      %combined_scale = scalar.mulf %weight_scale, %activation_scale : f32
+      %next0 = func.call @ggml_symmetric_i2_dot_preloaded(%iter0, %weight_words0, %activation_words, %combined_scale) : (f32, vector<4xi32>, vector<4xi32>, f32) -> (f32)
+      %next1 = func.call @ggml_symmetric_i2_dot_preloaded(%iter1, %weight_words1, %activation_words, %combined_scale) : (f32, vector<4xi32>, vector<4xi32>, f32) -> (f32)
+      %next2 = func.call @ggml_symmetric_i2_dot_preloaded(%iter2, %weight_words2, %activation_words, %combined_scale) : (f32, vector<4xi32>, vector<4xi32>, f32) -> (f32)
+      %next3 = func.call @ggml_symmetric_i2_dot_preloaded(%iter3, %weight_words3, %activation_words, %combined_scale) : (f32, vector<4xi32>, vector<4xi32>, f32) -> (f32)
+      scf.yield %next0, %next1, %next2, %next3 : f32, f32, f32, f32
     }
-    scf.yield %acc : f32
+    scf.yield %acc0, %acc1, %acc2, %acc3 : f32, f32, f32, f32
   } else {
-    scf.yield %zero_f32 : f32
+    scf.yield %zero_f32, %zero_f32, %zero_f32, %zero_f32 : f32, f32, f32, f32
   }
-  scf.if %valid_row {
+  scf.if %valid_cohort {
     %output_view = buffer.view %output_na[%base] : buffer -> view<[%output_size]xf32>
-    view.store %result, %output_view[%row] : f32, view<[%output_size]xf32>
+    %results = vector.from_elements %result0, %result1, %result2, %result3 : vector<4xf32>
+    vector.store %results, %output_view[%row] : vector<4xf32>, view<[%output_size]xf32>
   }
   kernel.return
 }
@@ -1077,33 +1167,4 @@ kernel.def export("ggml_mul_mat_q6_k_packed_selected_refine_token1") @ggml_mul_m
     view.store %value, %output_view[%candidate] : f32, view<[%bounded_output_size]xf32>
   }
   kernel.return
-}
-
-// The smallest supported shape exercises both portions of the composite
-// resident layout: a 4,352-byte symmetric-I2 prefix followed by a 13,440-byte
-// exact packed-Q6 payload. Zero activations make the expected result exact
-// while the access sanitizer validates every address calculation.
-check.case public @ggml_mul_mat_q6_k_symmetric_i2_scan_token1_access_case {
-  %weight = check.generate.fill value(0) : tensor<17792xi8>
-  %output = check.generate.fill value(-1.0) : tensor<64xf32>
-  %qact = check.generate.fill value(0) : tensor<128xi8>
-  %scales = check.generate.fill value(1.0) : tensor<8xf32>
-  %expected = check.generate.fill value(0.0) : tensor<64xf32>
-  kernel.launch @ggml_mul_mat_q6_k_symmetric_i2_scan_token1(%weight, %output, %qact, %scales) : (tensor<17792xi8>, tensor<64xf32>, tensor<128xi8>, tensor<8xf32>)
-  check.expect.close actual(%output) expected(%expected) atol(0.0) rtol(0.0) nan(same) : tensor<64xf32>
-  check.return
-}
-
-check.case public @ggml_mul_mat_q6_k_packed_selected_refine_token1_access_case {
-  %token_count = check.literal value(1) : index
-  %candidate_count = check.literal value(64) : index
-  %input = check.generate.fill value(0.0) : tensor<256xf32>
-  %weight = check.generate.fill value(0) : tensor<17792xi8>
-  %candidates = check.generate.iota offset(0) step(1) : tensor<64xi32>
-  %exact_output = check.generate.fill value(-1.0) : tensor<64xf32>
-  %output = check.generate.fill value(0.0) : tensor<64xf32>
-  %expected = check.generate.fill value(0.0) : tensor<64xf32>
-  kernel.launch @ggml_mul_mat_q6_k_packed_selected_refine_token1[%token_count, %candidate_count](%token_count, %candidate_count, %input, %weight, %candidates, %exact_output, %output) : [index, index](index, index, tensor<256xf32>, tensor<17792xi8>, tensor<64xi32>, tensor<64xf32>, tensor<64xf32>)
-  check.expect.close actual(%output) expected(%expected) atol(0.0) rtol(0.0) nan(same) : tensor<64xf32>
-  check.return
 }
