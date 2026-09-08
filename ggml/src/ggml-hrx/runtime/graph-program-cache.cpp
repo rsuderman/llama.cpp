@@ -14,14 +14,73 @@
 namespace ggml::hrx {
 namespace {
 
-static bool tensor_metadata_matches(const Value & value, const ggml_tensor * tensor) {
+static const ggml_tensor * tensor_storage_root(const ggml_tensor * tensor) {
+    while (tensor != nullptr && tensor->view_src != nullptr) {
+        tensor = tensor->view_src;
+    }
+    return tensor;
+}
+
+static size_t tensor_storage_offset(const ggml_tensor * tensor) {
+    return tensor != nullptr && tensor->view_src != nullptr ? tensor->view_offs : 0;
+}
+
+static bool tensor_storage_relative_offset(const ggml_tensor * source, const ggml_tensor * tensor, size_t & offset) {
+    if (source == nullptr || tensor == nullptr || tensor_storage_root(source) != tensor_storage_root(tensor)) {
+        return false;
+    }
+    const size_t source_offset = tensor_storage_offset(source);
+    const size_t tensor_offset = tensor_storage_offset(tensor);
+    if (tensor_offset < source_offset) {
+        return false;
+    }
+    const size_t relative_offset = tensor_offset - source_offset;
+    if (relative_offset > ggml_nbytes(source) || ggml_nbytes(tensor) > ggml_nbytes(source) - relative_offset) {
+        return false;
+    }
+    offset = relative_offset;
+    return true;
+}
+
+static bool tensor_alias_matches(const ValueMap &                         values,
+                                 const Value &                            value,
+                                 const ggml_tensor *                      tensor,
+                                 const std::vector<const ggml_tensor *> & tensor_by_value) {
+    const bool tensor_alias = tensor->view_src != nullptr;
+    const bool value_alias  = value.alias_source.value >= 0;
+    if (!value_alias) {
+        return !tensor_alias || value.kind == ValueKind::External;
+    }
+    if (!tensor_alias) {
+        return true;
+    }
+
+    const Value * source_value = values.find(value.alias_source);
+    if (source_value == nullptr || value.alias_source.value < 0 ||
+        static_cast<size_t>(value.alias_source.value) >= tensor_by_value.size()) {
+        return false;
+    }
+    const ggml_tensor * source_tensor = tensor_by_value[static_cast<size_t>(value.alias_source.value)];
+    if (source_tensor == nullptr) {
+        return tensor_alias && value.storage_offset == tensor->view_offs;
+    }
+    size_t relative_offset = 0;
+    if (!tensor_storage_relative_offset(source_tensor, tensor, relative_offset) ||
+        value.storage_offset < source_value->storage_offset) {
+        return false;
+    }
+    return relative_offset == value.storage_offset - source_value->storage_offset;
+}
+
+static bool tensor_metadata_matches(const ValueMap &                         values,
+                                    const Value &                            value,
+                                    const ggml_tensor *                      tensor,
+                                    const std::vector<const ggml_tensor *> & tensor_by_value) {
     if (tensor == nullptr || value.type != tensor->type || value.element_count != ggml_nelements(tensor) ||
         value.byte_count != ggml_nbytes(tensor) || value.contiguous != ggml_is_contiguous(tensor)) {
         return false;
     }
-    const bool tensor_alias = tensor->view_src != nullptr;
-    const bool value_alias  = value.alias_source.value >= 0;
-    if (tensor_alias && (!value_alias || value.storage_offset != tensor->view_offs)) {
+    if (!tensor_alias_matches(values, value, tensor, tensor_by_value)) {
         return false;
     }
     for (int i = 0; i < GGML_MAX_DIMS; ++i) {
@@ -30,6 +89,33 @@ static bool tensor_metadata_matches(const Value & value, const ggml_tensor * ten
         }
     }
     return true;
+}
+
+static std::string format_tensor_metadata(const ggml_tensor * tensor) {
+    if (tensor == nullptr) {
+        return "null";
+    }
+    std::ostringstream out;
+    out << ggml_type_name(tensor->type) << " ne=[" << tensor->ne[0] << ',' << tensor->ne[1] << ',' << tensor->ne[2]
+        << ',' << tensor->ne[3] << "] nb=[" << tensor->nb[0] << ',' << tensor->nb[1] << ',' << tensor->nb[2] << ','
+        << tensor->nb[3] << "] elements=" << ggml_nelements(tensor) << " bytes=" << ggml_nbytes(tensor)
+        << " contiguous=" << (ggml_is_contiguous(tensor) ? 1 : 0);
+    if (tensor->view_src != nullptr) {
+        out << " view_offs=" << tensor->view_offs;
+    }
+    return out.str();
+}
+
+static std::string format_value_metadata(const Value & value) {
+    std::ostringstream out;
+    out << (value.kind == ValueKind::External ? "external " : "transient ") << ggml_type_name(value.type) << " ne=["
+        << value.ne[0] << ',' << value.ne[1] << ',' << value.ne[2] << ',' << value.ne[3] << "] nb=[" << value.nb[0]
+        << ',' << value.nb[1] << ',' << value.nb[2] << ',' << value.nb[3] << "] elements=" << value.element_count
+        << " bytes=" << value.byte_count << " contiguous=" << (value.contiguous ? 1 : 0);
+    if (value.alias_source.value >= 0) {
+        out << " storage_offset=" << value.storage_offset;
+    }
+    return out.str();
 }
 
 static bool graph_node_params_match(const GraphNode & cached_node, const ggml_tensor * current_node) {
@@ -113,8 +199,9 @@ static Status bind_current_value(const ValueMap &                               
     }
 
     if (existing_tensor == nullptr && existing_value == value_by_tensor.end() &&
-        !tensor_metadata_matches(*value, tensor)) {
-        status.log("node %zu %s value %d metadata does not match current tensor", node_index, role, expected.value);
+        !tensor_metadata_matches(values, *value, tensor, tensor_by_value)) {
+        status.log("node %zu %s value %d metadata does not match current tensor: cached %s current %s", node_index,
+                   role, expected.value, format_value_metadata(*value).c_str(), format_tensor_metadata(tensor).c_str());
         return status;
     }
 
@@ -344,6 +431,20 @@ PreparedCommandProgramCacheExecutionResult GraphProgram::execute_with_result(
         ++prepared_stats_.builds;
     } else {
         ++prepared_stats_.hits;
+    }
+
+    if (environment_flag_enabled("GGML_HRX_DISABLE_GRAPH_REPLAY")) {
+        result.graph_replay_event             = HrxGraphReplayEvent::Disabled;
+        result.graph_replay_ineligible_reason = "disabled_by_environment";
+        result.success = bind_and_execute_prepared_command_program(context, *commands_, bindings, prepared_);
+        if (!result.success) {
+            result.status.log("execute cached HRX command program failed");
+        }
+        return result;
+    }
+
+    if (environment_flag_enabled("GGML_HRX_REBUILD_GRAPH_REPLAY")) {
+        recorded_ = {};
     }
 
     const RecordedCommandGraphExecutionResult replay =

@@ -50,6 +50,9 @@ static constexpr int64_t kQwenRouterRouteCount  = 8;
 static constexpr int64_t kQwenHiddenSize        = 2048;
 static constexpr int64_t kQwenMoeIntermediate   = 768;
 static constexpr int64_t kQwenVocabularyCount   = 151936;
+static constexpr int64_t kGemmaHiddenSize       = 3840;
+static constexpr int64_t kGemmaPromptTokenCount = 18;
+static constexpr float   kGemmaRmsNormEps       = 0.000001f;
 
 static ggml::hrx::Value make_test_value(ggml::hrx::ValueId        id,
                                         ggml::hrx::ValueStorageId storage,
@@ -555,6 +558,15 @@ static std::vector<float> make_pattern_f32(size_t element_count, int seed, float
     return data;
 }
 
+static std::vector<float> make_gemma_scaled_embedding_input(int64_t hidden_size, int64_t token_count) {
+    std::vector<float> data            = make_pattern_f32(static_cast<size_t>(hidden_size * token_count), 29, 0.0005f);
+    const float        embedding_scale = std::sqrt(static_cast<float>(hidden_size));
+    for (float & value : data) {
+        value *= embedding_scale;
+    }
+    return data;
+}
+
 static std::vector<int32_t> make_i32_mod_data(size_t element_count, int32_t modulo) {
     std::vector<int32_t> data(element_count);
     for (size_t i = 0; i < element_count; ++i) {
@@ -671,7 +683,7 @@ static void require_close(const std::vector<float> & actual,
     for (size_t i = 0; i < actual.size(); ++i) {
         const float diff    = std::fabs(actual[i] - expected[i]);
         const float allowed = abs_tolerance + rel_tolerance * std::fabs(expected[i]);
-        if (diff > allowed) {
+        if (!std::isfinite(actual[i]) || !std::isfinite(expected[i]) || diff > allowed) {
             std::fprintf(stderr, "value mismatch at %zu: actual=%g expected=%g diff=%g allowed=%g\n", i, actual[i],
                          expected[i], diff, allowed);
             std::abort();
@@ -1187,17 +1199,15 @@ static void run_rmsnorm_binary_add_cpu_reference_case() {
     ggml_backend_free(hrx_backend);
 }
 
-static void run_rmsnorm_cpu_reference_case() {
+static void run_rmsnorm_cpu_reference_case(int64_t hidden_size = 256,
+                                           int64_t token_count = 4,
+                                           float   epsilon     = 1.0e-5f) {
     ggml_backend_t cpu_backend = init_cpu_backend();
     ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
     REQUIRE(hrx_backend != nullptr);
 
-    constexpr int64_t hidden_size = 256;
-    constexpr int64_t token_count = 4;
-    constexpr float   epsilon     = 1.0e-5f;
-
     ggml_init_params params = {};
-    params.mem_size         = 1024 * 1024;
+    params.mem_size         = static_cast<size_t>(hidden_size * token_count * sizeof(float) * 8 + 1024 * 1024);
     params.no_alloc         = true;
     ggml_context * cpu_ctx  = ggml_init(params);
     ggml_context * hrx_ctx  = ggml_init(params);
@@ -1244,6 +1254,446 @@ static void run_rmsnorm_cpu_reference_case() {
     ggml_free(cpu_ctx);
     ggml_free(hrx_ctx);
     ggml_backend_free(cpu_backend);
+    ggml_backend_free(hrx_backend);
+}
+
+static void run_rmsnorm_mul_cpu_reference_case(int64_t hidden_size, int64_t token_count, float epsilon) {
+    ggml_backend_t cpu_backend = init_cpu_backend();
+    ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
+    REQUIRE(hrx_backend != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size         = static_cast<size_t>(hidden_size * token_count * sizeof(float) * 8 + 1024 * 1024);
+    params.no_alloc         = true;
+    ggml_context * cpu_ctx  = ggml_init(params);
+    ggml_context * hrx_ctx  = ggml_init(params);
+    REQUIRE(cpu_ctx != nullptr);
+    REQUIRE(hrx_ctx != nullptr);
+
+    ggml_tensor * cpu_input  = ggml_new_tensor_2d(cpu_ctx, GGML_TYPE_F32, hidden_size, token_count);
+    ggml_tensor * cpu_weight = ggml_new_tensor_1d(cpu_ctx, GGML_TYPE_F32, hidden_size);
+    ggml_tensor * hrx_input  = ggml_new_tensor_2d(hrx_ctx, GGML_TYPE_F32, hidden_size, token_count);
+    ggml_tensor * hrx_weight = ggml_new_tensor_1d(hrx_ctx, GGML_TYPE_F32, hidden_size);
+    REQUIRE(cpu_input != nullptr);
+    REQUIRE(cpu_weight != nullptr);
+    REQUIRE(hrx_input != nullptr);
+    REQUIRE(hrx_weight != nullptr);
+
+    ggml_tensor * cpu_output = build_rmsnorm_mul_graph(cpu_ctx, cpu_input, cpu_weight, epsilon);
+    ggml_tensor * hrx_output = build_rmsnorm_mul_graph(hrx_ctx, hrx_input, hrx_weight, epsilon);
+
+    ggml_cgraph * cpu_graph = ggml_new_graph(cpu_ctx);
+    ggml_cgraph * hrx_graph = ggml_new_graph(hrx_ctx);
+    REQUIRE(cpu_graph != nullptr);
+    REQUIRE(hrx_graph != nullptr);
+    ggml_build_forward_expand(cpu_graph, cpu_output);
+    ggml_build_forward_expand(hrx_graph, hrx_output);
+
+    require_kernel_subsequence(scheduled_kernel_sequence(hrx_graph), { "loom_libs:ggml_rmsnorm_binary_f32" });
+
+    ggml_backend_buffer_t cpu_buffer = ggml_backend_alloc_ctx_tensors(cpu_ctx, cpu_backend);
+    ggml_backend_buffer_t hrx_buffer = ggml_backend_alloc_ctx_tensors(hrx_ctx, hrx_backend);
+    REQUIRE(cpu_buffer != nullptr);
+    REQUIRE(hrx_buffer != nullptr);
+
+    const std::vector<float> input  = make_pattern_f32(hidden_size * token_count, 23, 0.02f);
+    const std::vector<float> weight = make_weight(hidden_size);
+    set_tensor_pair_bytes(cpu_backend, cpu_input, hrx_backend, hrx_input, input.data(), input.size() * sizeof(float));
+    set_tensor_pair_bytes(cpu_backend, cpu_weight, hrx_backend, hrx_weight, weight.data(),
+                          weight.size() * sizeof(float));
+
+    REQUIRE(ggml_backend_graph_compute(cpu_backend, cpu_graph) == GGML_STATUS_SUCCESS);
+    REQUIRE(ggml_backend_graph_compute(hrx_backend, hrx_graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(cpu_backend);
+    ggml_backend_synchronize(hrx_backend);
+    require_close(get_f32_tensor(hrx_backend, hrx_output), get_f32_tensor(cpu_backend, cpu_output), 5.0e-4f);
+
+    ggml_backend_buffer_free(cpu_buffer);
+    ggml_backend_buffer_free(hrx_buffer);
+    ggml_free(cpu_ctx);
+    ggml_free(hrx_ctx);
+    ggml_backend_free(cpu_backend);
+    ggml_backend_free(hrx_backend);
+}
+
+static void run_gemma_scaled_rmsnorm_cpu_reference_case() {
+    ggml_backend_t cpu_backend = init_cpu_backend();
+    ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
+    REQUIRE(hrx_backend != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size = static_cast<size_t>(kGemmaHiddenSize * kGemmaPromptTokenCount * sizeof(float) * 8 + 1024 * 1024);
+    params.no_alloc = true;
+    ggml_context * cpu_ctx = ggml_init(params);
+    ggml_context * hrx_ctx = ggml_init(params);
+    REQUIRE(cpu_ctx != nullptr);
+    REQUIRE(hrx_ctx != nullptr);
+
+    ggml_tensor * cpu_input = ggml_new_tensor_2d(cpu_ctx, GGML_TYPE_F32, kGemmaHiddenSize, kGemmaPromptTokenCount);
+    ggml_tensor * hrx_input = ggml_new_tensor_2d(hrx_ctx, GGML_TYPE_F32, kGemmaHiddenSize, kGemmaPromptTokenCount);
+    REQUIRE(cpu_input != nullptr);
+    REQUIRE(hrx_input != nullptr);
+
+    ggml_tensor * cpu_output = ggml_rms_norm(cpu_ctx, cpu_input, kGemmaRmsNormEps);
+    ggml_tensor * hrx_output = ggml_rms_norm(hrx_ctx, hrx_input, kGemmaRmsNormEps);
+    REQUIRE(cpu_output != nullptr);
+    REQUIRE(hrx_output != nullptr);
+
+    ggml_cgraph * cpu_graph = ggml_new_graph(cpu_ctx);
+    ggml_cgraph * hrx_graph = ggml_new_graph(hrx_ctx);
+    REQUIRE(cpu_graph != nullptr);
+    REQUIRE(hrx_graph != nullptr);
+    ggml_build_forward_expand(cpu_graph, cpu_output);
+    ggml_build_forward_expand(hrx_graph, hrx_output);
+
+    require_kernel_subsequence(scheduled_kernel_sequence(hrx_graph), { "loom_libs:ggml_rmsnorm_f32" });
+
+    ggml_backend_buffer_t cpu_buffer = ggml_backend_alloc_ctx_tensors(cpu_ctx, cpu_backend);
+    ggml_backend_buffer_t hrx_buffer = ggml_backend_alloc_ctx_tensors(hrx_ctx, hrx_backend);
+    REQUIRE(cpu_buffer != nullptr);
+    REQUIRE(hrx_buffer != nullptr);
+
+    const std::vector<float> input = make_gemma_scaled_embedding_input(kGemmaHiddenSize, kGemmaPromptTokenCount);
+    set_tensor_pair_bytes(cpu_backend, cpu_input, hrx_backend, hrx_input, input.data(), input.size() * sizeof(float));
+
+    REQUIRE(ggml_backend_graph_compute(cpu_backend, cpu_graph) == GGML_STATUS_SUCCESS);
+    REQUIRE(ggml_backend_graph_compute(hrx_backend, hrx_graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(cpu_backend);
+    ggml_backend_synchronize(hrx_backend);
+    require_close(get_f32_tensor(hrx_backend, hrx_output), get_f32_tensor(cpu_backend, cpu_output), 5.0e-4f);
+
+    ggml_backend_buffer_free(cpu_buffer);
+    ggml_backend_buffer_free(hrx_buffer);
+    ggml_free(cpu_ctx);
+    ggml_free(hrx_ctx);
+    ggml_backend_free(cpu_backend);
+    ggml_backend_free(hrx_backend);
+}
+
+static void run_gemma_scaled_rmsnorm_mul_cpu_reference_case() {
+    ggml_backend_t cpu_backend = init_cpu_backend();
+    ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
+    REQUIRE(hrx_backend != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size = static_cast<size_t>(kGemmaHiddenSize * kGemmaPromptTokenCount * sizeof(float) * 8 + 1024 * 1024);
+    params.no_alloc = true;
+    ggml_context * cpu_ctx = ggml_init(params);
+    ggml_context * hrx_ctx = ggml_init(params);
+    REQUIRE(cpu_ctx != nullptr);
+    REQUIRE(hrx_ctx != nullptr);
+
+    ggml_tensor * cpu_input  = ggml_new_tensor_2d(cpu_ctx, GGML_TYPE_F32, kGemmaHiddenSize, kGemmaPromptTokenCount);
+    ggml_tensor * cpu_weight = ggml_new_tensor_1d(cpu_ctx, GGML_TYPE_F32, kGemmaHiddenSize);
+    ggml_tensor * hrx_input  = ggml_new_tensor_2d(hrx_ctx, GGML_TYPE_F32, kGemmaHiddenSize, kGemmaPromptTokenCount);
+    ggml_tensor * hrx_weight = ggml_new_tensor_1d(hrx_ctx, GGML_TYPE_F32, kGemmaHiddenSize);
+    REQUIRE(cpu_input != nullptr);
+    REQUIRE(cpu_weight != nullptr);
+    REQUIRE(hrx_input != nullptr);
+    REQUIRE(hrx_weight != nullptr);
+
+    ggml_tensor * cpu_output = build_rmsnorm_mul_graph(cpu_ctx, cpu_input, cpu_weight, kGemmaRmsNormEps);
+    ggml_tensor * hrx_output = build_rmsnorm_mul_graph(hrx_ctx, hrx_input, hrx_weight, kGemmaRmsNormEps);
+
+    ggml_cgraph * cpu_graph = ggml_new_graph(cpu_ctx);
+    ggml_cgraph * hrx_graph = ggml_new_graph(hrx_ctx);
+    REQUIRE(cpu_graph != nullptr);
+    REQUIRE(hrx_graph != nullptr);
+    ggml_build_forward_expand(cpu_graph, cpu_output);
+    ggml_build_forward_expand(hrx_graph, hrx_output);
+
+    require_kernel_subsequence(scheduled_kernel_sequence(hrx_graph), { "loom_libs:ggml_rmsnorm_binary_f32" });
+
+    ggml_backend_buffer_t cpu_buffer = ggml_backend_alloc_ctx_tensors(cpu_ctx, cpu_backend);
+    ggml_backend_buffer_t hrx_buffer = ggml_backend_alloc_ctx_tensors(hrx_ctx, hrx_backend);
+    REQUIRE(cpu_buffer != nullptr);
+    REQUIRE(hrx_buffer != nullptr);
+
+    const std::vector<float> input  = make_gemma_scaled_embedding_input(kGemmaHiddenSize, kGemmaPromptTokenCount);
+    const std::vector<float> weight = make_weight(kGemmaHiddenSize);
+    set_tensor_pair_bytes(cpu_backend, cpu_input, hrx_backend, hrx_input, input.data(), input.size() * sizeof(float));
+    set_tensor_pair_bytes(cpu_backend, cpu_weight, hrx_backend, hrx_weight, weight.data(),
+                          weight.size() * sizeof(float));
+
+    REQUIRE(ggml_backend_graph_compute(cpu_backend, cpu_graph) == GGML_STATUS_SUCCESS);
+    REQUIRE(ggml_backend_graph_compute(hrx_backend, hrx_graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(cpu_backend);
+    ggml_backend_synchronize(hrx_backend);
+    require_close(get_f32_tensor(hrx_backend, hrx_output), get_f32_tensor(cpu_backend, cpu_output), 5.0e-4f);
+
+    ggml_backend_buffer_free(cpu_buffer);
+    ggml_backend_buffer_free(hrx_buffer);
+    ggml_free(cpu_ctx);
+    ggml_free(hrx_ctx);
+    ggml_backend_free(cpu_backend);
+    ggml_backend_free(hrx_backend);
+}
+
+static void run_scheduled_cpu_scale_hrx_rmsnorm_boundary_case() {
+    ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
+    ggml_backend_t cpu_backend = init_cpu_backend();
+    REQUIRE(hrx_backend != nullptr);
+
+    ggml_backend_t       backends[] = { hrx_backend, cpu_backend };
+    ggml_backend_sched_t sched = ggml_backend_sched_new(backends, nullptr, 2, GGML_DEFAULT_GRAPH_SIZE, false, true);
+    REQUIRE(sched != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size = static_cast<size_t>(kGemmaHiddenSize * kGemmaPromptTokenCount * sizeof(float) * 8 + 1024 * 1024);
+    params.no_alloc = true;
+    ggml_context * ctx = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kGemmaHiddenSize, kGemmaPromptTokenCount);
+    REQUIRE(input != nullptr);
+    ggml_backend_sched_set_tensor_backend(sched, input, hrx_backend);
+
+    ggml_tensor * scaled = ggml_scale(ctx, input, std::sqrt(static_cast<float>(kGemmaHiddenSize)));
+    ggml_tensor * output = ggml_rms_norm(ctx, scaled, kGemmaRmsNormEps);
+    REQUIRE(scaled != nullptr);
+    REQUIRE(output != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    REQUIRE(ggml_backend_sched_alloc_graph(sched, graph));
+    REQUIRE(ggml_backend_sched_get_tensor_backend(sched, scaled) == cpu_backend);
+    REQUIRE(ggml_backend_sched_get_tensor_backend(sched, output) == hrx_backend);
+
+    const std::vector<float> input_data =
+        make_pattern_f32(static_cast<size_t>(kGemmaHiddenSize * kGemmaPromptTokenCount), 31, 0.0005f);
+    std::vector<float> scaled_input    = input_data;
+    const float        embedding_scale = std::sqrt(static_cast<float>(kGemmaHiddenSize));
+    for (float & value : scaled_input) {
+        value *= embedding_scale;
+    }
+    const std::vector<float> expected =
+        rmsnorm_reference(scaled_input, kGemmaHiddenSize, kGemmaPromptTokenCount, kGemmaRmsNormEps);
+
+    ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+    REQUIRE(ggml_backend_sched_graph_compute(sched, graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_sched_synchronize(sched);
+
+    std::vector<float> actual(expected.size());
+    ggml_backend_tensor_get(output, actual.data(), 0, actual.size() * sizeof(float));
+    require_close(actual, expected, 5.0e-4f);
+
+    ggml_free(ctx);
+    ggml_backend_sched_free(sched);
+    ggml_backend_free(hrx_backend);
+    ggml_backend_free(cpu_backend);
+}
+
+static void run_scheduled_hrx_rmsnorm_cpu_scale_boundary_case() {
+    ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
+    ggml_backend_t cpu_backend = init_cpu_backend();
+    REQUIRE(hrx_backend != nullptr);
+
+    ggml_backend_t       backends[] = { hrx_backend, cpu_backend };
+    ggml_backend_sched_t sched = ggml_backend_sched_new(backends, nullptr, 2, GGML_DEFAULT_GRAPH_SIZE, false, true);
+    REQUIRE(sched != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size = static_cast<size_t>(kGemmaHiddenSize * kGemmaPromptTokenCount * sizeof(float) * 8 + 1024 * 1024);
+    params.no_alloc = true;
+    ggml_context * ctx = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kGemmaHiddenSize, kGemmaPromptTokenCount);
+    REQUIRE(input != nullptr);
+    ggml_backend_sched_set_tensor_backend(sched, input, hrx_backend);
+
+    ggml_tensor * normalized = ggml_rms_norm(ctx, input, kGemmaRmsNormEps);
+    ggml_tensor * output     = ggml_scale(ctx, normalized, 0.5f);
+    REQUIRE(normalized != nullptr);
+    REQUIRE(output != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    REQUIRE(ggml_backend_sched_alloc_graph(sched, graph));
+    REQUIRE(ggml_backend_sched_get_tensor_backend(sched, normalized) == hrx_backend);
+    REQUIRE(ggml_backend_sched_get_tensor_backend(sched, output) == cpu_backend);
+
+    const std::vector<float> input_data =
+        make_pattern_f32(static_cast<size_t>(kGemmaHiddenSize * kGemmaPromptTokenCount), 37, 0.0005f);
+    std::vector<float> expected =
+        rmsnorm_reference(input_data, kGemmaHiddenSize, kGemmaPromptTokenCount, kGemmaRmsNormEps);
+    for (float & value : expected) {
+        value *= 0.5f;
+    }
+
+    ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+    REQUIRE(ggml_backend_sched_graph_compute(sched, graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_sched_synchronize(sched);
+
+    std::vector<float> actual(expected.size());
+    ggml_backend_tensor_get(output, actual.data(), 0, actual.size() * sizeof(float));
+    require_close(actual, expected, 5.0e-4f);
+
+    ggml_free(ctx);
+    ggml_backend_sched_free(sched);
+    ggml_backend_free(hrx_backend);
+    ggml_backend_free(cpu_backend);
+}
+
+static void run_scheduled_hrx_rmsnorm_view_cpu_scale_boundary_case() {
+    ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
+    ggml_backend_t cpu_backend = init_cpu_backend();
+    REQUIRE(hrx_backend != nullptr);
+
+    ggml_backend_t       backends[] = { hrx_backend, cpu_backend };
+    ggml_backend_sched_t sched = ggml_backend_sched_new(backends, nullptr, 2, GGML_DEFAULT_GRAPH_SIZE, false, true);
+    REQUIRE(sched != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size = static_cast<size_t>(kGemmaHiddenSize * kGemmaPromptTokenCount * sizeof(float) * 8 + 1024 * 1024);
+    params.no_alloc = true;
+    ggml_context * ctx = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kGemmaHiddenSize, kGemmaPromptTokenCount);
+    REQUIRE(input != nullptr);
+    ggml_backend_sched_set_tensor_backend(sched, input, hrx_backend);
+
+    ggml_tensor * normalized = ggml_rms_norm(ctx, input, kGemmaRmsNormEps);
+    ggml_tensor * view       = ggml_reshape_2d(ctx, normalized, kGemmaHiddenSize, kGemmaPromptTokenCount);
+    ggml_tensor * output     = ggml_scale(ctx, view, 0.25f);
+    REQUIRE(normalized != nullptr);
+    REQUIRE(view != nullptr);
+    REQUIRE(output != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    REQUIRE(ggml_backend_sched_alloc_graph(sched, graph));
+    REQUIRE(ggml_backend_sched_get_tensor_backend(sched, normalized) == hrx_backend);
+    REQUIRE(ggml_backend_sched_get_tensor_backend(sched, output) == cpu_backend);
+
+    const std::vector<float> input_data =
+        make_pattern_f32(static_cast<size_t>(kGemmaHiddenSize * kGemmaPromptTokenCount), 41, 0.0005f);
+    std::vector<float> expected =
+        rmsnorm_reference(input_data, kGemmaHiddenSize, kGemmaPromptTokenCount, kGemmaRmsNormEps);
+    for (float & value : expected) {
+        value *= 0.25f;
+    }
+
+    ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+    REQUIRE(ggml_backend_sched_graph_compute(sched, graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_sched_synchronize(sched);
+
+    std::vector<float> actual(expected.size());
+    ggml_backend_tensor_get(output, actual.data(), 0, actual.size() * sizeof(float));
+    require_close(actual, expected, 5.0e-4f);
+
+    ggml_free(ctx);
+    ggml_backend_sched_free(sched);
+    ggml_backend_free(hrx_backend);
+    ggml_backend_free(cpu_backend);
+}
+
+static void run_external_view_input_rmsnorm_case() {
+    ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
+    REQUIRE(hrx_backend != nullptr);
+
+    static constexpr int64_t kHeadSize  = 256;
+    static constexpr int64_t kHeadCount = 16;
+    const int64_t            row_count  = kHeadCount * kGemmaPromptTokenCount;
+
+    ggml_init_params params = {};
+    params.mem_size         = static_cast<size_t>(kHeadSize * row_count * sizeof(float) * 4 + 1024 * 1024);
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * root = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, kHeadSize, kHeadCount, kGemmaPromptTokenCount, 1);
+    REQUIRE(root != nullptr);
+    ggml_tensor * input_view = ggml_view_4d(ctx, root, kHeadSize, kHeadCount, kGemmaPromptTokenCount, 1, root->nb[1],
+                                            root->nb[2], root->nb[3], 0);
+    REQUIRE(input_view != nullptr);
+    ggml_tensor * output = ggml_rms_norm(ctx, input_view, kGemmaRmsNormEps);
+    REQUIRE(output != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_graph_add_node(graph, output);
+
+    require_kernel_subsequence(scheduled_kernel_sequence(graph), { "loom_libs:ggml_rmsnorm_f32" });
+
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, hrx_backend);
+    REQUIRE(buffer != nullptr);
+
+    const std::vector<float> input    = make_pattern_f32(static_cast<size_t>(kHeadSize * row_count), 29, 0.0025f);
+    const std::vector<float> expected = rmsnorm_reference(input, kHeadSize, row_count, kGemmaRmsNormEps);
+
+    ggml_backend_tensor_set(root, input.data(), 0, input.size() * sizeof(float));
+    REQUIRE(ggml_backend_graph_compute(hrx_backend, graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(hrx_backend);
+    require_close(get_f32_tensor(hrx_backend, output), expected, 5.0e-4f);
+
+    ggml_backend_buffer_free(buffer);
+    ggml_free(ctx);
+    ggml_backend_free(hrx_backend);
+}
+
+static void run_split_local_view_alias_import_case() {
+    static constexpr int64_t kHeadSize       = 256;
+    static constexpr int64_t kKeyValueHeads  = 8;
+    static constexpr int64_t kKeyValueHidden = kHeadSize * kKeyValueHeads;
+    static constexpr int64_t kRootHeads      = kKeyValueHeads + 1;
+    const size_t             split_offset    = static_cast<size_t>(kHeadSize * sizeof(float));
+
+    ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
+    REQUIRE(hrx_backend != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size =
+        static_cast<size_t>(kHeadSize * kRootHeads * kGemmaPromptTokenCount * sizeof(float) * 4 + 1024 * 1024);
+    params.no_alloc    = true;
+    ggml_context * ctx = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * root = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, kHeadSize, kRootHeads, kGemmaPromptTokenCount, 1);
+    REQUIRE(root != nullptr);
+    ggml_tensor * split_input = ggml_view_4d(ctx, root, kHeadSize, kKeyValueHeads, kGemmaPromptTokenCount, 1,
+                                             root->nb[1], root->nb[2], root->nb[3], split_offset);
+    REQUIRE(split_input != nullptr);
+    ggml_tensor * flattened =
+        ggml_view_2d(ctx, split_input, kKeyValueHidden, kGemmaPromptTokenCount, split_input->nb[2], 0);
+    REQUIRE(flattened != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_graph_add_node(graph, flattened);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    REQUIRE(imported.graph.nodes().size() == 1);
+    REQUIRE(ggml::hrx::is_layout_alias_node(imported.graph, imported.graph.nodes().front()));
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(imported.graph, { "gfx1151" }));
+    REQUIRE(scheduler.plan().dispatches.empty());
+
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, hrx_backend);
+    REQUIRE(buffer != nullptr);
+
+    const size_t             root_element_count = static_cast<size_t>(kHeadSize * kRootHeads * kGemmaPromptTokenCount);
+    const std::vector<float> root_data          = make_pattern_f32(root_element_count, 37, 0.001f);
+    ggml_backend_tensor_set(root, root_data.data(), 0, root_data.size() * sizeof(float));
+    REQUIRE(ggml_backend_graph_compute(hrx_backend, graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(hrx_backend);
+
+    std::vector<float> actual(static_cast<size_t>(kKeyValueHidden * kGemmaPromptTokenCount));
+    ggml_backend_tensor_get(flattened, actual.data(), 0, actual.size() * sizeof(float));
+    const float * expected = root_data.data() + split_offset / sizeof(float);
+    require_close(actual, std::vector<float>(expected, expected + actual.size()), 0.0f);
+
+    ggml_backend_buffer_free(buffer);
+    ggml_free(ctx);
     ggml_backend_free(hrx_backend);
 }
 
@@ -2092,7 +2542,7 @@ static void run_dense_matmul_cpu_reference_case(ggml_type    weight_type,
     const bool                 weight_is_dense_float = weight_is_f16 || weight_is_bf16 || weight_is_f32;
     const std::vector<float>   input =
         weight_is_dense_float ? std::vector<float>(static_cast<size_t>(input_size * token_count), 0.00390625f) :
-                                make_pattern_f32(input_size * token_count, 7, 0.01f);
+                                  make_pattern_f32(input_size * token_count, 7, 0.01f);
     set_tensor_pair_bytes(cpu_backend, cpu_weight, hrx_backend, hrx_weight, weight.data(), weight.size());
     set_tensor_pair_bytes(cpu_backend, cpu_input, hrx_backend, hrx_input, input.data(), input.size() * sizeof(float));
 
@@ -3270,7 +3720,16 @@ int main() {
                                                 true, true, true);
     run_endpoint_rmsnorm_q6k_q8_cpu_reference_case();
     run_rmsnorm_cpu_reference_case();
+    run_rmsnorm_cpu_reference_case(3840, 18, 1.0e-6f);
     run_rmsnorm_binary_add_cpu_reference_case();
+    run_rmsnorm_mul_cpu_reference_case(3840, 18, 1.0e-6f);
+    run_gemma_scaled_rmsnorm_cpu_reference_case();
+    run_gemma_scaled_rmsnorm_mul_cpu_reference_case();
+    run_scheduled_cpu_scale_hrx_rmsnorm_boundary_case();
+    run_scheduled_hrx_rmsnorm_cpu_scale_boundary_case();
+    run_scheduled_hrx_rmsnorm_view_cpu_scale_boundary_case();
+    run_external_view_input_rmsnorm_case();
+    run_split_local_view_alias_import_case();
     run_rope_set_rows_cpu_reference_case();
     run_attention_postprocess_cpu_reference_case();
     run_routed_moe_cpu_reference_case(GGML_TYPE_Q4_K, true);
