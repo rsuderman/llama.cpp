@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -718,6 +719,12 @@ static bool tensors_have_distinct_storage(const ggml_tensor * lhs,
            lhs_root != output_root && rhs_root != output_root;
 }
 
+static bool tensors_have_distinct_storage(const ggml_tensor * lhs, const ggml_tensor * output) {
+    const ggml_tensor * lhs_root    = tensor_storage_root(lhs);
+    const ggml_tensor * output_root = tensor_storage_root(output);
+    return lhs_root != nullptr && output_root != nullptr && lhs_root != output_root;
+}
+
 static bool tensor_has_positive_shape(const ggml_tensor * tensor) {
     if (tensor == nullptr || ggml_nelements(tensor) <= 0) {
         return false;
@@ -813,6 +820,15 @@ static bool supported_binary_f32_tensor(const ggml_tensor * op) {
     return binary_kind_allows_broadcast(binary_kind, op->src[0], op->src[1], op);
 }
 
+static bool supported_scale_f32_tensor(const ggml_tensor * op) {
+    return op != nullptr && op->op == GGML_OP_SCALE && op->src[0] != nullptr && op->type == GGML_TYPE_F32 &&
+           op->src[0]->type == GGML_TYPE_F32 && ggml_are_same_shape(op, op->src[0]) && tensor_has_positive_shape(op) &&
+           ggml_is_contiguous(op) && ggml_is_contiguous(op->src[0]) && tensor_has_packed_f32_layout(op) &&
+           tensor_has_packed_f32_layout(op->src[0]) && op->view_src == nullptr &&
+           tensor_has_supported_source_layout(op->src[0]) && tensors_have_distinct_storage(op->src[0], op) &&
+           static_cast<uint64_t>(ggml_nelements(op)) <= std::numeric_limits<uint32_t>::max();
+}
+
 static bool supported_qwen_attention_projection_get_rows_tensor(const ggml_tensor * op) {
     if (op == nullptr || op->op != GGML_OP_GET_ROWS || op->src[0] == nullptr || op->src[1] == nullptr ||
         op->src[0]->op != GGML_OP_MUL_MAT || op->type != GGML_TYPE_F32 || op->src[0]->type != GGML_TYPE_F32 ||
@@ -873,6 +889,9 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
     }
     const bool supported_binary = supported_binary_f32_tensor(op);
     if (supported_binary) {
+        return true;
+    }
+    if (supported_scale_f32_tensor(op)) {
         return true;
     }
     if (supported_qwen_attention_projection_get_rows_tensor(op)) {

@@ -38,6 +38,11 @@ struct GluParams {
     ggml_glu_op op = GGML_GLU_OP_REGLU;
 };
 
+struct ScaleParams {
+    float scale = 0.0f;
+    float bias  = 0.0f;
+};
+
 enum class BinaryKind : uint32_t {
     Add        = 0,
     Sub        = 1,
@@ -112,6 +117,7 @@ using OpParams = std::variant<
     ArgsortParams,
     ClampParams,
     GluParams,
+    ScaleParams,
     BinaryParams,
     UnaryParams,
     RopeParams>;

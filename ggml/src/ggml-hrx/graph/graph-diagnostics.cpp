@@ -142,6 +142,12 @@ json op_params_json(const OpParams & params) {
                     { "kind", "glu"                      },
                     { "op",   static_cast<int>(value.op) }
                 };
+            } else if constexpr (std::is_same_v<T, ScaleParams>) {
+                return {
+                    { "kind",  "scale"     },
+                    { "scale", value.scale },
+                    { "bias",  value.bias  }
+                };
             } else if constexpr (std::is_same_v<T, BinaryParams>) {
                 return {
                     { "kind", "binary"                   },
@@ -198,6 +204,9 @@ OpParams parse_op_params(const json & item) {
     }
     if (kind == "glu") {
         return GluParams{ static_cast<ggml_glu_op>(item.value("op", static_cast<int>(GGML_GLU_OP_REGLU))) };
+    }
+    if (kind == "scale") {
+        return ScaleParams{ item.value("scale", 0.0f), item.value("bias", 0.0f) };
     }
     if (kind == "binary") {
         return BinaryParams{ static_cast<BinaryKind>(item.value("op", static_cast<int>(BinaryKind::Add))) };

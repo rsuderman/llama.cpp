@@ -1429,7 +1429,7 @@ static void run_gemma_scaled_rmsnorm_mul_cpu_reference_case() {
     ggml_backend_free(hrx_backend);
 }
 
-static void run_scheduled_cpu_scale_hrx_rmsnorm_boundary_case() {
+static void run_scheduled_hrx_scale_rmsnorm_case() {
     ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
     ggml_backend_t cpu_backend = init_cpu_backend();
     REQUIRE(hrx_backend != nullptr);
@@ -1458,7 +1458,7 @@ static void run_scheduled_cpu_scale_hrx_rmsnorm_boundary_case() {
     ggml_build_forward_expand(graph, output);
 
     REQUIRE(ggml_backend_sched_alloc_graph(sched, graph));
-    REQUIRE(ggml_backend_sched_get_tensor_backend(sched, scaled) == cpu_backend);
+    REQUIRE(ggml_backend_sched_get_tensor_backend(sched, scaled) == hrx_backend);
     REQUIRE(ggml_backend_sched_get_tensor_backend(sched, output) == hrx_backend);
 
     const std::vector<float> input_data =
@@ -1485,7 +1485,7 @@ static void run_scheduled_cpu_scale_hrx_rmsnorm_boundary_case() {
     ggml_backend_free(cpu_backend);
 }
 
-static void run_scheduled_hrx_rmsnorm_cpu_scale_boundary_case() {
+static void run_scheduled_hrx_rmsnorm_scale_case() {
     ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
     ggml_backend_t cpu_backend = init_cpu_backend();
     REQUIRE(hrx_backend != nullptr);
@@ -1515,7 +1515,7 @@ static void run_scheduled_hrx_rmsnorm_cpu_scale_boundary_case() {
 
     REQUIRE(ggml_backend_sched_alloc_graph(sched, graph));
     REQUIRE(ggml_backend_sched_get_tensor_backend(sched, normalized) == hrx_backend);
-    REQUIRE(ggml_backend_sched_get_tensor_backend(sched, output) == cpu_backend);
+    REQUIRE(ggml_backend_sched_get_tensor_backend(sched, output) == hrx_backend);
 
     const std::vector<float> input_data =
         make_pattern_f32(static_cast<size_t>(kGemmaHiddenSize * kGemmaPromptTokenCount), 37, 0.0005f);
@@ -1539,7 +1539,7 @@ static void run_scheduled_hrx_rmsnorm_cpu_scale_boundary_case() {
     ggml_backend_free(cpu_backend);
 }
 
-static void run_scheduled_hrx_rmsnorm_view_cpu_scale_boundary_case() {
+static void run_scheduled_hrx_rmsnorm_view_scale_case() {
     ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
     ggml_backend_t cpu_backend = init_cpu_backend();
     REQUIRE(hrx_backend != nullptr);
@@ -1571,7 +1571,7 @@ static void run_scheduled_hrx_rmsnorm_view_cpu_scale_boundary_case() {
 
     REQUIRE(ggml_backend_sched_alloc_graph(sched, graph));
     REQUIRE(ggml_backend_sched_get_tensor_backend(sched, normalized) == hrx_backend);
-    REQUIRE(ggml_backend_sched_get_tensor_backend(sched, output) == cpu_backend);
+    REQUIRE(ggml_backend_sched_get_tensor_backend(sched, output) == hrx_backend);
 
     const std::vector<float> input_data =
         make_pattern_f32(static_cast<size_t>(kGemmaHiddenSize * kGemmaPromptTokenCount), 41, 0.0005f);
@@ -3725,9 +3725,9 @@ int main() {
     run_rmsnorm_mul_cpu_reference_case(3840, 18, 1.0e-6f);
     run_gemma_scaled_rmsnorm_cpu_reference_case();
     run_gemma_scaled_rmsnorm_mul_cpu_reference_case();
-    run_scheduled_cpu_scale_hrx_rmsnorm_boundary_case();
-    run_scheduled_hrx_rmsnorm_cpu_scale_boundary_case();
-    run_scheduled_hrx_rmsnorm_view_cpu_scale_boundary_case();
+    run_scheduled_hrx_scale_rmsnorm_case();
+    run_scheduled_hrx_rmsnorm_scale_case();
+    run_scheduled_hrx_rmsnorm_view_scale_case();
     run_external_view_input_rmsnorm_case();
     run_split_local_view_alias_import_case();
     run_rope_set_rows_cpu_reference_case();

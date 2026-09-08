@@ -6,6 +6,9 @@
       "path": "ops/unary_f32.loom"
     },
     {
+      "path": "ops/scale_f32.loom"
+    },
+    {
       "path": "ops/binary_f32.loom"
     },
     {
@@ -207,6 +210,41 @@
       "compile_dependencies": [
         "motifs/unary_f32_apply.loom"
       ]
+    },
+    {
+      "name": "ggml_scale_f32",
+      "family": "loom_libs",
+      "symbol": "ggml_scale_f32",
+      "source": "ops/scale_f32.loom",
+      "workload_parameters": [
+        {
+          "name": "element_count",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "element_count",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "input",
+        "output"
+      ],
+      "binding_access": [
+        "read",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/scale_f32.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
     },
     {
       "name": "ggml_binary_f32",

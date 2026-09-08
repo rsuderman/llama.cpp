@@ -210,6 +210,8 @@ ggml_add_backend_library(ggml-hrx
     dispatch_registration/common/dispatch-rope-set-rows.h
     dispatch_registration/common/dispatch-rmsnorm.cpp
     dispatch_registration/common/dispatch-rmsnorm.h
+    dispatch_registration/common/dispatch-scale.cpp
+    dispatch_registration/common/dispatch-scale.h
     dispatch_registration/common/dispatch-unary.cpp
     dispatch_registration/common/dispatch-unary.h
     dispatch_registration/dispatch-registry.cpp

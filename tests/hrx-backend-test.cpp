@@ -1174,11 +1174,11 @@ static void run_graph_import_mixed_backend_boundary_checks() {
     ggml_context * ctx      = ggml_init(params);
     REQUIRE(ctx != nullptr);
 
-    ggml_tensor * input      = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 8, 4);
-    ggml_tensor * cpu_scaled = ggml_scale(ctx, input, 2.0f);
-    ggml_tensor * hrx_norm   = ggml_rms_norm(ctx, cpu_scaled, 1.0e-6f);
+    ggml_tensor * input    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 8, 4);
+    ggml_tensor * cpu_sin  = ggml_sin(ctx, input);
+    ggml_tensor * hrx_norm = ggml_rms_norm(ctx, cpu_sin, 1.0e-6f);
     REQUIRE(input != nullptr);
-    REQUIRE(cpu_scaled != nullptr);
+    REQUIRE(cpu_sin != nullptr);
     REQUIRE(hrx_norm != nullptr);
 
     ggml_cgraph * cpu_to_hrx = ggml_new_graph(ctx);
@@ -1190,17 +1190,17 @@ static void run_graph_import_mixed_backend_boundary_checks() {
     REQUIRE(imported_cpu_to_hrx.graph.nodes().size() == 1);
     REQUIRE(imported_cpu_to_hrx.graph.nodes()[0].op == GGML_OP_RMS_NORM);
 
-    const ggml::hrx::Value * cpu_scaled_value = imported_cpu_to_hrx.graph.values().find_tensor(cpu_scaled);
-    const ggml::hrx::Value * hrx_norm_value   = imported_cpu_to_hrx.graph.values().find_tensor(hrx_norm);
-    REQUIRE(cpu_scaled_value != nullptr);
+    const ggml::hrx::Value * cpu_sin_value  = imported_cpu_to_hrx.graph.values().find_tensor(cpu_sin);
+    const ggml::hrx::Value * hrx_norm_value = imported_cpu_to_hrx.graph.values().find_tensor(hrx_norm);
+    REQUIRE(cpu_sin_value != nullptr);
     REQUIRE(hrx_norm_value != nullptr);
-    REQUIRE(cpu_scaled_value->kind == ggml::hrx::ValueKind::External);
+    REQUIRE(cpu_sin_value->kind == ggml::hrx::ValueKind::External);
     REQUIRE(hrx_norm_value->kind == ggml::hrx::ValueKind::External);
 
     ggml_tensor * hrx_norm_for_cpu = ggml_rms_norm(ctx, input, 1.0e-6f);
-    ggml_tensor * cpu_scale_after  = ggml_scale(ctx, hrx_norm_for_cpu, 0.5f);
+    ggml_tensor * cpu_sin_after    = ggml_sin(ctx, hrx_norm_for_cpu);
     REQUIRE(hrx_norm_for_cpu != nullptr);
-    REQUIRE(cpu_scale_after != nullptr);
+    REQUIRE(cpu_sin_after != nullptr);
 
     ggml_cgraph * hrx_to_cpu = ggml_new_graph(ctx);
     REQUIRE(hrx_to_cpu != nullptr);
@@ -1218,39 +1218,37 @@ static void run_graph_import_mixed_backend_boundary_checks() {
     REQUIRE(input_value->kind == ggml::hrx::ValueKind::External);
     REQUIRE(output_value->kind == ggml::hrx::ValueKind::External);
 
-    ggml_tensor * cpu_scaled_for_view = ggml_scale(ctx, input, 3.0f);
-    ggml_tensor * cpu_scaled_view     = ggml_reshape_2d(ctx, cpu_scaled_for_view, 8, 4);
-    ggml_tensor * hrx_norm_from_view  = ggml_rms_norm(ctx, cpu_scaled_view, 1.0e-6f);
-    REQUIRE(cpu_scaled_for_view != nullptr);
-    REQUIRE(cpu_scaled_view != nullptr);
+    ggml_tensor * cpu_sin_for_view   = ggml_sin(ctx, input);
+    ggml_tensor * cpu_sin_view       = ggml_reshape_2d(ctx, cpu_sin_for_view, 8, 4);
+    ggml_tensor * hrx_norm_from_view = ggml_rms_norm(ctx, cpu_sin_view, 1.0e-6f);
+    REQUIRE(cpu_sin_for_view != nullptr);
+    REQUIRE(cpu_sin_view != nullptr);
     REQUIRE(hrx_norm_from_view != nullptr);
 
     ggml_cgraph * cpu_view_to_hrx = ggml_new_graph(ctx);
     REQUIRE(cpu_view_to_hrx != nullptr);
-    ggml_graph_add_node(cpu_view_to_hrx, cpu_scaled_view);
+    ggml_graph_add_node(cpu_view_to_hrx, cpu_sin_view);
     ggml_graph_add_node(cpu_view_to_hrx, hrx_norm_from_view);
 
     ggml::hrx::GraphImportResult imported_cpu_view_to_hrx = ggml::hrx::import_ggml_graph(*cpu_view_to_hrx);
     REQUIRE(imported_cpu_view_to_hrx.valid());
     REQUIRE(imported_cpu_view_to_hrx.graph.nodes().size() == 2);
 
-    const ggml::hrx::Value * cpu_scaled_for_view_value =
-        imported_cpu_view_to_hrx.graph.values().find_tensor(cpu_scaled_for_view);
-    const ggml::hrx::Value * cpu_scaled_view_value =
-        imported_cpu_view_to_hrx.graph.values().find_tensor(cpu_scaled_view);
-    REQUIRE(cpu_scaled_for_view_value != nullptr);
-    REQUIRE(cpu_scaled_view_value != nullptr);
-    REQUIRE(cpu_scaled_for_view_value->kind == ggml::hrx::ValueKind::External);
-    REQUIRE(cpu_scaled_view_value->kind == ggml::hrx::ValueKind::External);
-    REQUIRE(
-        imported_cpu_view_to_hrx.graph.values().same_storage(cpu_scaled_for_view_value->id, cpu_scaled_view_value->id));
+    const ggml::hrx::Value * cpu_sin_for_view_value =
+        imported_cpu_view_to_hrx.graph.values().find_tensor(cpu_sin_for_view);
+    const ggml::hrx::Value * cpu_sin_view_value = imported_cpu_view_to_hrx.graph.values().find_tensor(cpu_sin_view);
+    REQUIRE(cpu_sin_for_view_value != nullptr);
+    REQUIRE(cpu_sin_view_value != nullptr);
+    REQUIRE(cpu_sin_for_view_value->kind == ggml::hrx::ValueKind::External);
+    REQUIRE(cpu_sin_view_value->kind == ggml::hrx::ValueKind::External);
+    REQUIRE(imported_cpu_view_to_hrx.graph.values().same_storage(cpu_sin_for_view_value->id, cpu_sin_view_value->id));
 
     ggml_tensor * hrx_norm_for_view = ggml_rms_norm(ctx, input, 1.0e-6f);
     ggml_tensor * hrx_norm_view     = ggml_reshape_2d(ctx, hrx_norm_for_view, 8, 4);
-    ggml_tensor * cpu_scale_view    = ggml_scale(ctx, hrx_norm_view, 0.25f);
+    ggml_tensor * cpu_sin_view_out  = ggml_sin(ctx, hrx_norm_view);
     REQUIRE(hrx_norm_for_view != nullptr);
     REQUIRE(hrx_norm_view != nullptr);
-    REQUIRE(cpu_scale_view != nullptr);
+    REQUIRE(cpu_sin_view_out != nullptr);
 
     ggml_cgraph * hrx_view_to_cpu = ggml_new_graph(ctx);
     REQUIRE(hrx_view_to_cpu != nullptr);
@@ -1297,6 +1295,36 @@ static bool can_schedule_tensor(ggml_context * ctx, ggml_tensor * output) {
 
 static void require_compile_param(const ggml::hrx::Dispatch & dispatch, const char * name, const char * value) {
     REQUIRE(dispatch.kernel.compile_parameters.at(name) == value);
+}
+
+static void run_scale_f32_dispatch_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 256 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3840, 18);
+    ggml_tensor * output = ggml_scale(ctx, input, 1.75f);
+    REQUIRE(input != nullptr);
+    REQUIRE(output != nullptr);
+
+    const ggml::hrx::Dispatch dispatch = schedule_single_dispatch_for_tensor(ctx, output);
+    REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_scale_f32");
+    REQUIRE(dispatch.kernel.integer_parameters.at("element_count") == 69120);
+    require_compile_parameter(dispatch, "ggml.scale_f32.scale", expected_config_value(1.75f));
+    require_compile_parameter(dispatch, "ggml.scale_f32.bias", expected_config_value(0.0f));
+
+    ggml_tensor * biased = ggml_scale_bias(ctx, input, -0.5f, 0.25f);
+    REQUIRE(biased != nullptr);
+
+    const ggml::hrx::Dispatch bias_dispatch = schedule_single_dispatch_for_tensor(ctx, biased);
+    REQUIRE(kernel_name_for_id(bias_dispatch.kernel.kernel_id) == "loom_libs:ggml_scale_f32");
+    REQUIRE(bias_dispatch.kernel.integer_parameters.at("element_count") == 69120);
+    require_compile_parameter(bias_dispatch, "ggml.scale_f32.scale", expected_config_value(-0.5f));
+    require_compile_parameter(bias_dispatch, "ggml.scale_f32.bias", expected_config_value(0.25f));
+
+    ggml_free(ctx);
 }
 
 static void run_binary_f32_broadcast_dispatch_checks() {
@@ -7491,6 +7519,52 @@ static void run_add_f32() {
     ggml_backend_free(backend);
 }
 
+static void run_scale_f32() {
+    ggml_backend_t backend = ggml_backend_hrx_init(0);
+    REQUIRE(backend != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size         = 512 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    constexpr int64_t element_count = 1024;
+    ggml_tensor *     input         = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, element_count);
+    ggml_tensor *     out           = ggml_scale_bias(ctx, input, -1.5f, 0.25f);
+    REQUIRE(input != nullptr);
+    REQUIRE(out != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, out);
+
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    REQUIRE(buffer != nullptr);
+
+    std::vector<float> input_data(element_count);
+    std::vector<float> expected(element_count);
+    for (int64_t i = 0; i < element_count; ++i) {
+        input_data[i] = static_cast<float>(i % 23) * 0.125f - 1.0f;
+        expected[i]   = input_data[i] * -1.5f + 0.25f;
+    }
+
+    ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+
+    REQUIRE(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(backend);
+
+    std::vector<float> actual(element_count);
+    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+    for (int64_t i = 0; i < element_count; ++i) {
+        REQUIRE(std::fabs(actual[i] - expected[i]) <= 1.0e-6f);
+    }
+
+    ggml_backend_buffer_free(buffer);
+    ggml_free(ctx);
+    ggml_backend_free(backend);
+}
+
 static void run_two_independent_add_f32() {
     ggml_backend_t backend = ggml_backend_hrx_init(0);
     REQUIRE(backend != nullptr);
@@ -7823,6 +7897,7 @@ int main() {
     run_dispatch_registry_checks();
     run_graph_import_checks();
     run_graph_import_mixed_backend_boundary_checks();
+    run_scale_f32_dispatch_checks();
     run_binary_f32_broadcast_dispatch_checks();
     run_graph_snapshot_diagnostics_checks();
     run_unmatched_graph_diagnostics_checks();
@@ -7867,6 +7942,7 @@ int main() {
     run_zero_output_device_support_checks();
     run_qwen_expert_table_partition_prefill_512_execution();
     run_add_f32();
+    run_scale_f32();
     run_two_independent_add_f32();
     run_chained_add_f32();
     run_same_uid_distinct_graph_reuses_graph_program();
