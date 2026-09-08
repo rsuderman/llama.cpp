@@ -6511,6 +6511,35 @@ static void run_zero_output_scheduler_elision_checks() {
     }
 
     {
+        ggml_tensor * input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3840, 0);
+        REQUIRE(input != nullptr);
+        ggml_tensor * scaled = ggml_scale(ctx, input, 2.0f);
+        REQUIRE(scaled != nullptr);
+        REQUIRE(scaled->ne[0] == 3840);
+        REQUIRE(scaled->ne[1] == 0);
+
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        REQUIRE(graph != nullptr);
+        ggml_build_forward_expand(graph, scaled);
+
+        ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+        REQUIRE(imported.graph.nodes().size() == 1);
+        REQUIRE(imported.graph.nodes()[0].op == GGML_OP_SCALE);
+
+        ggml::hrx::DispatchScheduler scheduler;
+        REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+        REQUIRE(scheduler.plan().valid());
+        REQUIRE(scheduler.plan().dispatches.empty());
+
+        ggml::hrx::GraphProgramCache  cache;
+        ggml::hrx::GraphProgramLookup lookup =
+            cache.get_or_build(*graph, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(lookup.valid());
+        REQUIRE(lookup.match.external_bindings.empty());
+    }
+
+    {
         ggml_tensor * input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3840, 1);
         REQUIRE(input != nullptr);
         ggml_tensor * sin = ggml_sin(ctx, input);
@@ -6527,6 +6556,45 @@ static void run_zero_output_scheduler_elision_checks() {
     }
 
     ggml_free(ctx);
+}
+
+static void run_zero_output_device_support_checks() {
+    ggml_backend_t backend = ggml_backend_hrx_init(0);
+    REQUIRE(backend != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size         = 512 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * lhs = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3840, 0);
+    ggml_tensor * rhs = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3840, 0);
+    REQUIRE(lhs != nullptr);
+    REQUIRE(rhs != nullptr);
+
+    ggml_tensor * sum    = ggml_add(ctx, lhs, rhs);
+    ggml_tensor * prod   = ggml_mul(ctx, lhs, rhs);
+    ggml_tensor * scaled = ggml_scale(ctx, lhs, 2.0f);
+    REQUIRE(sum != nullptr);
+    REQUIRE(prod != nullptr);
+    REQUIRE(scaled != nullptr);
+    REQUIRE(ggml_backend_supports_op(backend, sum));
+    REQUIRE(ggml_backend_supports_op(backend, prod));
+    REQUIRE(ggml_backend_supports_op(backend, scaled));
+
+    ggml_tensor * acc = ggml_acc(ctx, lhs, rhs, lhs->nb[1], lhs->nb[2], lhs->nb[3], 0);
+    ggml_tensor * set = ggml_set(ctx, lhs, rhs, lhs->nb[1], lhs->nb[2], lhs->nb[3], 0);
+    ggml_tensor * cpy = ggml_cpy(ctx, lhs, rhs);
+    REQUIRE(acc != nullptr);
+    REQUIRE(set != nullptr);
+    REQUIRE(cpy != nullptr);
+    REQUIRE(!ggml_backend_supports_op(backend, acc));
+    REQUIRE(!ggml_backend_supports_op(backend, set));
+    REQUIRE(!ggml_backend_supports_op(backend, cpy));
+
+    ggml_free(ctx);
+    ggml_backend_free(backend);
 }
 
 static void run_transient_import_checks() {
@@ -7796,6 +7864,7 @@ int main() {
         return 0;
     }
 
+    run_zero_output_device_support_checks();
     run_qwen_expert_table_partition_prefill_512_execution();
     run_add_f32();
     run_two_independent_add_f32();

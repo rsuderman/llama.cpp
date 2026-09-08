@@ -603,6 +603,104 @@ static bool eager_capability_declared(enum ggml_op op) {
     }
 }
 
+static bool zero_output_elision_safe_op(enum ggml_op op) {
+    switch (op) {
+        case GGML_OP_DUP:
+        case GGML_OP_ADD:
+        case GGML_OP_ADD_ID:
+        case GGML_OP_ADD1:
+        case GGML_OP_SUB:
+        case GGML_OP_MUL:
+        case GGML_OP_DIV:
+        case GGML_OP_SQR:
+        case GGML_OP_SQRT:
+        case GGML_OP_LOG:
+        case GGML_OP_SIN:
+        case GGML_OP_COS:
+        case GGML_OP_SUM:
+        case GGML_OP_SUM_ROWS:
+        case GGML_OP_CUMSUM:
+        case GGML_OP_MEAN:
+        case GGML_OP_ARGMAX:
+        case GGML_OP_COUNT_EQUAL:
+        case GGML_OP_REPEAT:
+        case GGML_OP_REPEAT_BACK:
+        case GGML_OP_CONCAT:
+        case GGML_OP_SILU_BACK:
+        case GGML_OP_NORM:
+        case GGML_OP_RMS_NORM:
+        case GGML_OP_RMS_NORM_BACK:
+        case GGML_OP_GROUP_NORM:
+        case GGML_OP_L2_NORM:
+        case GGML_OP_MUL_MAT:
+        case GGML_OP_MUL_MAT_ID:
+        case GGML_OP_OUT_PROD:
+        case GGML_OP_SCALE:
+        case GGML_OP_CONT:
+        case GGML_OP_GET_ROWS:
+        case GGML_OP_GET_ROWS_BACK:
+        case GGML_OP_DIAG:
+        case GGML_OP_DIAG_MASK_INF:
+        case GGML_OP_DIAG_MASK_ZERO:
+        case GGML_OP_SOFT_MAX:
+        case GGML_OP_SOFT_MAX_BACK:
+        case GGML_OP_ROPE:
+        case GGML_OP_ROPE_BACK:
+        case GGML_OP_CLAMP:
+        case GGML_OP_CONV_TRANSPOSE_1D:
+        case GGML_OP_IM2COL:
+        case GGML_OP_IM2COL_BACK:
+        case GGML_OP_IM2COL_3D:
+        case GGML_OP_COL2IM_1D:
+        case GGML_OP_CONV_2D:
+        case GGML_OP_CONV_3D:
+        case GGML_OP_CONV_2D_DW:
+        case GGML_OP_CONV_TRANSPOSE_2D:
+        case GGML_OP_POOL_1D:
+        case GGML_OP_POOL_2D:
+        case GGML_OP_POOL_2D_BACK:
+        case GGML_OP_UPSCALE:
+        case GGML_OP_PAD:
+        case GGML_OP_PAD_REFLECT_1D:
+        case GGML_OP_ROLL:
+        case GGML_OP_ARANGE:
+        case GGML_OP_TIMESTEP_EMBEDDING:
+        case GGML_OP_ARGSORT:
+        case GGML_OP_TOP_K:
+        case GGML_OP_LEAKY_RELU:
+        case GGML_OP_TRI:
+        case GGML_OP_FILL:
+        case GGML_OP_FLASH_ATTN_EXT:
+        case GGML_OP_FLASH_ATTN_BACK:
+        case GGML_OP_SSM_CONV:
+        case GGML_OP_SSM_SCAN:
+        case GGML_OP_WIN_PART:
+        case GGML_OP_WIN_UNPART:
+        case GGML_OP_GET_REL_POS:
+        case GGML_OP_ADD_REL_POS:
+        case GGML_OP_RWKV_WKV6:
+        case GGML_OP_GATED_LINEAR_ATTN:
+        case GGML_OP_RWKV_WKV7:
+        case GGML_OP_SOLVE_TRI:
+        case GGML_OP_GATED_DELTA_NET:
+        case GGML_OP_LIGHTNING_INDEXER:
+        case GGML_OP_DSV4_HC_COMB:
+        case GGML_OP_DSV4_HC_PRE:
+        case GGML_OP_DSV4_HC_POST:
+        case GGML_OP_UNARY:
+        case GGML_OP_CROSS_ENTROPY_LOSS:
+        case GGML_OP_CROSS_ENTROPY_LOSS_BACK:
+        case GGML_OP_GLU:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool zero_output_elision_supported(const ggml_tensor * op) {
+    return op != nullptr && (ggml_nelements(op) == 0 || ggml_nbytes(op) == 0) && zero_output_elision_safe_op(op->op);
+}
+
 static const ggml_tensor * tensor_storage_root(const ggml_tensor * tensor) {
     while (tensor != nullptr && tensor->view_src != nullptr) {
         tensor = tensor->view_src;
@@ -769,6 +867,9 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
     GGML_UNUSED(device);
     if (op == nullptr) {
         return false;
+    }
+    if (zero_output_elision_supported(op)) {
+        return true;
     }
     const bool supported_binary = supported_binary_f32_tensor(op);
     if (supported_binary) {
