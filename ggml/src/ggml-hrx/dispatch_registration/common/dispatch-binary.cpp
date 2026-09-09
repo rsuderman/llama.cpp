@@ -1,5 +1,6 @@
 #include "dispatch-binary.h"
 
+#include "dispatch-mul-mat-common.h"
 #include "ggml.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
@@ -13,6 +14,8 @@ namespace {
 
 static constexpr KernelCatalogRef kBinaryF32Kernel   = GGML_HRX_KERNEL_REF("loom_libs", "ggml_binary_f32");
 static constexpr KernelCatalogRef kBinaryBcF32Kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_binary_bc_f32");
+static constexpr KernelCatalogRef kBinarySwiGluSymmetricI4K32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_binary_swiglu_symmetric_i4_k32");
 
 static bool same_shape(const Value & lhs, const Value & rhs) {
     for (int i = 0; i < GGML_MAX_DIMS; ++i) {
@@ -130,6 +133,65 @@ static void bind_binary_buffers(Dispatch & dispatch, const Value & lhs, const Va
     dispatch.bindings.push_back({ output.id, 0, output.byte_count });
 }
 
+static bool match_binary_swiglu_symmetric_i4_dispatch(const DispatchMatchContext & context, DispatchMatch & match) {
+    const GraphNode * node = context.root_node;
+    if (node == nullptr || node->op != GGML_OP_GLU || node->inputs.size() != 2 ||
+        !common_is_swiglu_params(node->params)) {
+        return false;
+    }
+
+    const Value * lhs    = graph_value(context.graph, node->inputs[0]);
+    const Value * rhs    = graph_value(context.graph, node->inputs[1]);
+    const Value * output = graph_value(context.graph, node->output);
+    if (lhs == nullptr || rhs == nullptr || output == nullptr || lhs->type != GGML_TYPE_F32 ||
+        rhs->type != GGML_TYPE_F32 || output->type != GGML_TYPE_F32 || !same_shape(*lhs, *output) ||
+        !same_shape(*rhs, *output) || !packed_f32_layout(*lhs) || !packed_f32_layout(*rhs) ||
+        !packed_f32_layout(*output) || output->alias_source.value >= 0 ||
+        !supported_source_layout(context.graph, *lhs) || !supported_source_layout(context.graph, *rhs) ||
+        !distinct_storage(*lhs, *rhs, *output) || output->ne[0] < 256 || output->ne[0] > 32768 ||
+        output->ne[0] % 64 != 0 || output->element_count <= 0 || output->element_count % output->ne[0] != 0 ||
+        !common_has_symmetric_i4_lowrow_consumer(context.graph, *output)) {
+        return false;
+    }
+
+    const int64_t input_size  = output->ne[0];
+    const int64_t token_count = output->element_count / input_size;
+    if (token_count < 1 || token_count > 16) {
+        return false;
+    }
+    const CommonSymmetricI4ActivationLayout activation_layout =
+        common_symmetric_i4_activation_layout(input_size, token_count);
+    if (activation_layout.total_bytes == 0) {
+        return false;
+    }
+    const ValueId activation = context.next_plan_value;
+
+    Dispatch dispatch;
+    dispatch.kernel = make_kernel_specialization(kBinarySwiGluSymmetricI4K32Kernel);
+    dispatch.kernel.compile_parameters.emplace("ggml.binary_swiglu_symmetric_i4.input_size",
+                                               std::to_string(input_size));
+    dispatch.kernel.compile_parameters.emplace("ggml.binary_swiglu_symmetric_i4.token_count",
+                                               std::to_string(token_count));
+    bind_binary_buffers(dispatch, *lhs, *rhs, *output);
+    dispatch.bindings.push_back({ activation, 0, activation_layout.payload_bytes });
+    dispatch.bindings.push_back({ activation, activation_layout.scales_offset, activation_layout.metadata_bytes });
+    dispatch.bindings.push_back({ activation, activation_layout.sums_offset, activation_layout.metadata_bytes });
+
+    Status metadata_status;
+    if (!match.metadata.append_alternate_value({ output->id, activation, GGML_TYPE_COUNT, activation_layout.total_bytes,
+                                                 kCommonSymmetricI4K32ActivationAlternateName },
+                                               metadata_status)) {
+        match.status.append(metadata_status);
+        return false;
+    }
+
+    match.covered_nodes.push_back(context.root_index);
+    match.dispatches.push_back(std::move(dispatch));
+    match.transients.push_back(
+        { activation, kCommonSymmetricI4K32ActivationAlternateName, activation_layout.total_bytes, 256 });
+    return match.status.success();
+}
+
 static bool match_binary_f32_dispatch(const DispatchMatchContext & context, DispatchMatch & match) {
     const GraphNode * node = context.root_node;
     if (node == nullptr || node->inputs.size() != 2) {
@@ -195,6 +257,14 @@ static void register_binary_dispatch_for(DispatchRegistryBuilder & registry, ggm
 }  // namespace
 
 void register_binary_dispatch(DispatchRegistryBuilder & registry) {
+    registry.add({
+        "common.binary_swiglu_symmetric_i4_k32",
+        GGML_OP_GLU,
+        DispatchMatchKind::Fused,
+        100,
+        DispatchSource::Common,
+        match_binary_swiglu_symmetric_i4_dispatch,
+    });
     register_binary_dispatch_for(registry, GGML_OP_ADD);
     register_binary_dispatch_for(registry, GGML_OP_SUB);
     register_binary_dispatch_for(registry, GGML_OP_MUL);

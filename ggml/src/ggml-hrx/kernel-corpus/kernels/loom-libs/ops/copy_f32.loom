@@ -1,0 +1,187 @@
+// Copyright 2026 The HRX Authors
+// SPDX-License-Identifier: Apache-2.0
+
+amdgpu.target<gfx11-generic> @ggml_copy_f32_gfx11_wave64 {subgroup_size = 64}
+
+kernel.def target(@ggml_copy_f32_gfx11_wave64) export("ggml_copy_f32") @ggml_copy_f32(%element_count: index) {
+  %one = index.constant 1 : index
+  %twofiftysix = index.constant 256 : index
+  %rounding = index.constant 255 : index
+  %rounded = index.add %element_count, %rounding : index
+  %workgroup_count = index.div %rounded, %twofiftysix : index
+  kernel.launch.config workgroups(%workgroup_count, %one, %one) workgroup_size(%twofiftysix, %one, %one) : index
+} launch(%element_count: index, %source: buffer, %output: buffer) {
+  %count = index.assume %element_count [range(%element_count, 1, 1073741824)] : index
+  %workgroup = kernel.workgroup.id<x> : index
+  %workitem = kernel.workitem.id<x> : index
+  %twofiftysix = index.constant 256 : index
+  %base = index.mul %workgroup, %twofiftysix : index
+  %linear0 = index.add %base, %workitem : index
+  %linear = index.assume %linear0 [range(%linear0, 0, 1073742079)] : index
+  %in_bounds = index.cmp ult, %linear, %count : index
+  %zero_offset = index.constant 0 : offset
+  %source_noalias, %output_noalias = buffer.assume.noalias %source, %output : buffer, buffer
+  %source_view = buffer.view %source_noalias[%zero_offset] : buffer -> view<[%count]xf32>
+  %output_view = buffer.view %output_noalias[%zero_offset] : buffer -> view<[%count]xf32>
+  scf.if %in_bounds {
+    %value = view.load %source_view[%linear] : view<[%count]xf32> -> f32
+    view.store %value, %output_view[%linear] : f32, view<[%count]xf32>
+  }
+  kernel.return
+}
+
+check.case public @ggml_copy_f32_small_case {
+  %four = check.literal value(4) : index
+  %source = check.generate.iota offset(-2.0) step(1.0) : tensor<4xf32>
+  %output = check.generate.fill value(0.0) : tensor<4xf32>
+  %expected = check.generate.iota offset(-2.0) step(1.0) : tensor<4xf32>
+  kernel.launch @ggml_copy_f32[%four](%four, %source, %output) : [index](index, tensor<4xf32>, tensor<4xf32>)
+  check.expect.close actual(%output) expected(%expected) atol(0.0) rtol(0.0) nan(same) : tensor<4xf32>
+  check.return
+}
+
+check.benchmark<@ggml_copy_f32_small_case> @ggml_copy_f32_small
+
+config.decl @ggml.copy_strided_source_f32.ne0 : %value: index where [range(%value, 1, 1073741824)]
+
+config.decl @ggml.copy_strided_source_f32.ne1 : %value: index where [range(%value, 1, 1073741824)]
+
+config.decl @ggml.copy_strided_source_f32.ne2 : %value: index where [range(%value, 1, 1073741824)]
+
+config.decl @ggml.copy_strided_source_f32.stride0 : %value: index where [range(%value, 1, 1073741824)]
+
+config.decl @ggml.copy_strided_source_f32.stride1 : %value: index where [range(%value, 1, 1073741824)]
+
+config.decl @ggml.copy_strided_source_f32.stride2 : %value: index where [range(%value, 1, 1073741824)]
+
+config.decl @ggml.copy_strided_source_f32.stride3 : %value: index where [range(%value, 1, 1073741824)]
+
+kernel.def target(@ggml_copy_f32_gfx11_wave64) export("ggml_copy_strided_source_f32") @ggml_copy_strided_source_f32(%element_count: index, %source_span: index) {
+  %one = index.constant 1 : index
+  %twofiftysix = index.constant 256 : index
+  %rounding = index.constant 255 : index
+  %rounded = index.add %element_count, %rounding : index
+  %workgroup_count = index.div %rounded, %twofiftysix : index
+  kernel.launch.config workgroups(%workgroup_count, %one, %one) workgroup_size(%twofiftysix, %one, %one) : index
+} launch(%element_count: index, %source_span: index, %source: buffer, %output: buffer) {
+  %count = index.assume %element_count [range(%element_count, 1, 1073741824)] : index
+  %n0 = config.get @ggml.copy_strided_source_f32.ne0 : index
+  %n1 = config.get @ggml.copy_strided_source_f32.ne1 : index
+  %n2 = config.get @ggml.copy_strided_source_f32.ne2 : index
+  %span = index.assume %source_span [range(%source_span, 1, 1073741824)] : index
+  %s0 = config.get @ggml.copy_strided_source_f32.stride0 : index
+  %s1 = config.get @ggml.copy_strided_source_f32.stride1 : index
+  %s2 = config.get @ggml.copy_strided_source_f32.stride2 : index
+  %s3 = config.get @ggml.copy_strided_source_f32.stride3 : index
+  %workgroup = kernel.workgroup.id<x> : index
+  %workitem = kernel.workitem.id<x> : index
+  %twofiftysix = index.constant 256 : index
+  %base = index.mul %workgroup, %twofiftysix : index
+  %linear0 = index.add %base, %workitem : index
+  %linear = index.assume %linear0 [range(%linear0, 0, 1073742079)] : index
+  %in_bounds = index.cmp ult, %linear, %count : index
+  %zero_offset = index.constant 0 : offset
+  %source_noalias, %output_noalias = buffer.assume.noalias %source, %output : buffer, buffer
+  %output_view = buffer.view %output_noalias[%zero_offset] : buffer -> view<[%count]xf32>
+  scf.if %in_bounds {
+    %coord0 = index.rem %linear, %n0 : index
+    %remaining0 = index.div %linear, %n0 : index
+    %coord1 = index.rem %remaining0, %n1 : index
+    %remaining1 = index.div %remaining0, %n1 : index
+    %coord2 = index.rem %remaining1, %n2 : index
+    %coord3 = index.div %remaining1, %n2 : index
+    %offset0 = index.mul %coord0, %s0 : index
+    %offset1 = index.mul %coord1, %s1 : index
+    %offset2 = index.mul %coord2, %s2 : index
+    %offset3 = index.mul %coord3, %s3 : index
+    %offset01 = index.add %offset0, %offset1 : index
+    %offset23 = index.add %offset2, %offset3 : index
+    %source_index0 = index.add %offset01, %offset23 : index
+    %source_index, %view_span = index.assume %source_index0, %span [lt(%source_index0, %span)] : index, index
+    %source_view = buffer.view %source_noalias[%zero_offset] : buffer -> view<[%view_span]xf32>
+    %value = view.load %source_view[%source_index] : view<[%view_span]xf32> -> f32
+    view.store %value, %output_view[%linear] : f32, view<[%count]xf32>
+  }
+  kernel.return
+}
+
+check.case public @ggml_copy_strided_source_f32_small_case {
+  %six = check.literal value(6) : index
+  %eight = check.literal value(8) : index
+  %source = check.generate.iota offset(0.0) step(1.0) period(5) : tensor<10xf32>
+  %output = check.generate.fill value(-1.0) : tensor<6xf32>
+  %expected = check.generate.iota offset(0.0) step(1.0) period(3) : tensor<6xf32>
+  kernel.launch @ggml_copy_strided_source_f32[%six, %eight](%six, %eight, %source, %output) : [index, index](index, index, tensor<10xf32>, tensor<6xf32>)
+  check.expect.close actual(%output) expected(%expected) atol(0.0) rtol(0.0) nan(same) : tensor<6xf32>
+  check.return
+}
+
+check.benchmark<@ggml_copy_strided_source_f32_small_case> @ggml_copy_strided_source_f32_small
+
+config.decl @ggml.concat_dim0_f32.lhs_width : %value: index where [range(%value, 1, 65536)]
+
+config.decl @ggml.concat_dim0_f32.rhs_width : %value: index where [range(%value, 1, 65536)]
+
+config.decl @ggml.concat_dim0_f32.row_count : %value: index where [range(%value, 1, 1048576)]
+
+kernel.def target(@ggml_copy_f32_gfx11_wave64) export("ggml_concat_dim0_f32") @ggml_concat_dim0_f32() {
+  %one = index.constant 1 : index
+  %workgroup_size = index.constant 256 : index
+  %rounding = index.constant 255 : index
+  %lhs_width = config.get @ggml.concat_dim0_f32.lhs_width : index
+  %rhs_width = config.get @ggml.concat_dim0_f32.rhs_width : index
+  %row_count = config.get @ggml.concat_dim0_f32.row_count : index
+  %output_width = index.add %lhs_width, %rhs_width : index
+  %element_count = index.mul %output_width, %row_count : index
+  %rounded = index.add %element_count, %rounding : index
+  %workgroup_count = index.div %rounded, %workgroup_size : index
+  kernel.launch.config workgroups(%workgroup_count, %one, %one) workgroup_size(%workgroup_size, %one, %one) : index
+} launch(%lhs: buffer, %rhs: buffer, %output: buffer) {
+  %base = index.constant 0 : offset
+  %workgroup_size = index.constant 256 : index
+  %lhs_width0 = config.get @ggml.concat_dim0_f32.lhs_width : index
+  %rhs_width0 = config.get @ggml.concat_dim0_f32.rhs_width : index
+  %row_count0 = config.get @ggml.concat_dim0_f32.row_count : index
+  %lhs_width = index.assume %lhs_width0 [range(%lhs_width0, 1, 65536)] : index
+  %rhs_width = index.assume %rhs_width0 [range(%rhs_width0, 1, 65536)] : index
+  %row_count = index.assume %row_count0 [range(%row_count0, 1, 1048576)] : index
+  %output_width0 = index.add %lhs_width, %rhs_width : index
+  %output_width = index.assume %output_width0 [range(%output_width0, 2, 131072)] : index
+  %element_count0 = index.mul %output_width, %row_count : index
+  %element_count = index.assume %element_count0 [range(%element_count0, 1, 1073741824)] : index
+  %workgroup0 = kernel.workgroup.id<x> : index
+  %workitem0 = kernel.workitem.id<x> : index
+  %workgroup = index.assume %workgroup0 [range(%workgroup0, 0, 4194303)] : index
+  %workitem = index.assume %workitem0 [range(%workitem0, 0, 255)] : index
+  %linear_base = index.mul %workgroup, %workgroup_size : index
+  %linear0 = index.add %linear_base, %workitem : index
+  %linear = index.assume %linear0 [range(%linear0, 0, 1073742079)] : index
+  %in_bounds = index.cmp ult, %linear, %element_count : index
+
+  %lhs_noalias, %rhs_noalias, %output_noalias = buffer.assume.noalias %lhs, %rhs, %output : buffer, buffer, buffer
+  %lhs_view = buffer.view %lhs_noalias[%base] : buffer -> view<1073741824xf32>
+  %rhs_view = buffer.view %rhs_noalias[%base] : buffer -> view<1073741824xf32>
+  %output_view = buffer.view %output_noalias[%base] : buffer -> view<1073741824xf32>
+
+  scf.if %in_bounds {
+    %row = index.div %linear, %output_width : index
+    %column = index.rem %linear, %output_width : index
+    %from_lhs = index.cmp ult, %column, %lhs_width : index
+    %value = scf.if %from_lhs -> (f32) {
+      %lhs_row = index.mul %row, %lhs_width : index
+      %lhs_index0 = index.add %lhs_row, %column : index
+      %lhs_index = index.assume %lhs_index0 [range(%lhs_index0, 0, 1073741823)] : index
+      %loaded = view.load %lhs_view[%lhs_index] : view<1073741824xf32> -> f32
+      scf.yield %loaded : f32
+    } else {
+      %rhs_column = index.sub %column, %lhs_width : index
+      %rhs_row = index.mul %row, %rhs_width : index
+      %rhs_index0 = index.add %rhs_row, %rhs_column : index
+      %rhs_index = index.assume %rhs_index0 [range(%rhs_index0, 0, 1073741823)] : index
+      %loaded = view.load %rhs_view[%rhs_index] : view<1073741824xf32> -> f32
+      scf.yield %loaded : f32
+    }
+    view.store %value, %output_view[%linear] : f32, view<1073741824xf32>
+  }
+  kernel.return
+}

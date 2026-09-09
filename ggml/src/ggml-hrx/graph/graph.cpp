@@ -22,7 +22,7 @@ static int32_t graph_tensor_use_count(const ggml_cgraph & graph, const ggml_tens
         return -1;
     }
     const size_t hash_pos = ggml_hash_find(&graph.visited_hash_set, tensor);
-    if (!ggml_bitset_get(graph.visited_hash_set.used, hash_pos)) {
+    if (hash_pos == GGML_HASHSET_FULL || !ggml_bitset_get(graph.visited_hash_set.used, hash_pos)) {
         return -1;
     }
     return graph.use_counts[hash_pos];
@@ -150,6 +150,7 @@ GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
     GraphImportResult                            result;
     std::unordered_map<const ggml_tensor *, int> use_counts;
     std::unordered_set<const ggml_tensor *>      graph_nodes;
+    graph_nodes.reserve(static_cast<size_t>(graph.n_nodes));
     for (int i = 0; i < graph.n_nodes; ++i) {
         const ggml_tensor * node = graph.nodes[i];
         if (node == nullptr) {

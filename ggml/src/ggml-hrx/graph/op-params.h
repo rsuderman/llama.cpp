@@ -2,6 +2,7 @@
 
 #include "ggml.h"
 
+#include <array>
 #include <cstdint>
 #include <variant>
 
@@ -106,6 +107,7 @@ struct RopeParams {
     float attn_factor = 0.0f;
     float beta_fast   = 0.0f;
     float beta_slow   = 0.0f;
+    std::array<int, GGML_MROPE_SECTIONS> sections    = {};
 };
 
 // clang-format off

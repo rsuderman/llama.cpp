@@ -170,6 +170,7 @@ json op_params_json(const OpParams & params) {
                     { "attn_factor", value.attn_factor },
                     { "beta_fast",   value.beta_fast   },
                     { "beta_slow",   value.beta_slow   },
+                    { "sections",    value.sections    },
                 };
             }
         },
@@ -215,10 +216,16 @@ OpParams parse_op_params(const json & item) {
         return UnaryParams{ static_cast<UnaryKind>(item.value("op", static_cast<int>(UnaryKind::Abs))) };
     }
     if (kind == "rope") {
+        std::array<int, GGML_MROPE_SECTIONS> sections = {};
+        if (item.contains("sections")) {
+            sections = item["sections"].get<std::array<int, GGML_MROPE_SECTIONS>>();
+        }
         return RopeParams{
-            item.value("n_dims", 0),         item.value("mode", 0),          item.value("n_ctx_orig", 0),
-            item.value("freq_base", 0.0f),   item.value("freq_scale", 0.0f), item.value("ext_factor", 0.0f),
-            item.value("attn_factor", 0.0f), item.value("beta_fast", 0.0f),  item.value("beta_slow", 0.0f),
+            item.value("n_dims", 0),         item.value("mode", 0),
+            item.value("n_ctx_orig", 0),     item.value("freq_base", 0.0f),
+            item.value("freq_scale", 0.0f),  item.value("ext_factor", 0.0f),
+            item.value("attn_factor", 0.0f), item.value("beta_fast", 0.0f),
+            item.value("beta_slow", 0.0f),   sections,
         };
     }
     return std::monostate{};

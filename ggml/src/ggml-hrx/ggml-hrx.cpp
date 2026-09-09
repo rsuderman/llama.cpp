@@ -42,6 +42,22 @@ static bool environment_flag_enabled(const char * name) {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+static void log_hrx_device_event(void *, const hrx_device_event_t * event) {
+    if (event == nullptr || event->type != HRX_DEVICE_EVENT_TYPE_ASAN_REPORT || event->payload.data == nullptr ||
+        event->payload.data_length < sizeof(hrx_device_asan_report_t)) {
+        return;
+    }
+    hrx_device_asan_report_t report;
+    std::memcpy(&report, event->payload.data, sizeof(report));
+    GGML_LOG_ERROR("HRX ASAN: executable=%" PRIu64 " export=%u site=%" PRIu64 " access=%u address=0x%016" PRIx64
+                   " length=%" PRIu64 " workgroup=(%u,%u,%u) workitem=(%u,%u,%u) shadow=0x%016" PRIx64
+                   " value=0x%016" PRIx64 " dispatch=0x%016" PRIx64 "\n",
+                   event->source.executable_id, event->source.export_ordinal, report.site_id, report.access_kind,
+                   report.fault_address, report.access_length, report.workgroup_id[0], report.workgroup_id[1],
+                   report.workgroup_id[2], report.workitem_id[0], report.workitem_id[1], report.workitem_id[2],
+                   report.shadow_address, report.shadow_value, report.source_dispatch_ptr);
+}
+
 static bool hrx_check(hrx_status_t status, const char * expression, const char * file, int line) {
     if (hrx_status_is_ok(status)) {
         return true;
@@ -583,20 +599,32 @@ static bool eager_capability_declared(enum ggml_op op) {
         // TODO: split this into placement capability and exact graph execution capability once graph claiming owns the
         // full decision.
         case GGML_OP_NONE:
+        case GGML_OP_ADD:
         case GGML_OP_ARGSORT:
         case GGML_OP_CLAMP:
+        case GGML_OP_CONCAT:
+        case GGML_OP_CONT:
+        case GGML_OP_CPY:
+        case GGML_OP_DIV:
         case GGML_OP_FLASH_ATTN_EXT:
+        case GGML_OP_GATED_DELTA_NET:
         case GGML_OP_GET_ROWS:
         case GGML_OP_GLU:
+        case GGML_OP_L2_NORM:
+        case GGML_OP_MUL:
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
         case GGML_OP_PERMUTE:
         case GGML_OP_RESHAPE:
         case GGML_OP_RMS_NORM:
         case GGML_OP_ROPE:
+        case GGML_OP_SCALE:
         case GGML_OP_SET_ROWS:
         case GGML_OP_SOFT_MAX:
+        case GGML_OP_SSM_CONV:
         case GGML_OP_SUM_ROWS:
+        case GGML_OP_TRANSPOSE:
+        case GGML_OP_UNARY:
         case GGML_OP_VIEW:
             return true;
         default:
@@ -962,6 +990,12 @@ static const ggml_backend_reg_i registry_i = { registry_name, registry_device_co
 
 static std::unique_ptr<ggml_backend_hrx_reg_context> create_registry_context() {
     auto         context = std::make_unique<ggml_backend_hrx_reg_context>();
+    if (environment_flag_enabled("GGML_HRX_LOG_DEVICE_EVENTS")) {
+        hrx_device_event_sink_t sink = { log_hrx_device_event, nullptr };
+        if (!HRX_CHECK(hrx_runtime_set_device_event_sink(sink))) {
+            return context;
+        }
+    }
     hrx_status_t status  = hrx_gpu_initialize(0);
     if (hrx_status_is_ok(status)) {
         context->initialized = true;

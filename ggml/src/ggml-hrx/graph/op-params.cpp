@@ -83,7 +83,7 @@ static bool rope_params_equivalent(const OpParams & lhs, const OpParams & rhs) {
            nearly_equal(lhs_params->ext_factor, rhs_params->ext_factor) &&
            nearly_equal(lhs_params->attn_factor, rhs_params->attn_factor) &&
            nearly_equal(lhs_params->beta_fast, rhs_params->beta_fast) &&
-           nearly_equal(lhs_params->beta_slow, rhs_params->beta_slow);
+           nearly_equal(lhs_params->beta_slow, rhs_params->beta_slow) && lhs_params->sections == rhs_params->sections;
 }
 
 }  // namespace
@@ -256,6 +256,7 @@ OpParams import_op_params(const ggml_tensor & tensor) {
 
     switch (tensor.op) {
         case GGML_OP_RMS_NORM:
+        case GGML_OP_L2_NORM:
             return RmsNormParams{ ggml_get_op_params_f32(&tensor, 0) };
         case GGML_OP_SOFT_MAX:
             return SoftMaxParams{
@@ -285,11 +286,21 @@ OpParams import_op_params(const ggml_tensor & tensor) {
             };
         case GGML_OP_ROPE:
             return RopeParams{
-                ggml_get_op_params_i32(&tensor, 1),  ggml_get_op_params_i32(&tensor, 2),
-                ggml_get_op_params_i32(&tensor, 4),  ggml_get_op_params_f32(&tensor, 5),
-                ggml_get_op_params_f32(&tensor, 6),  ggml_get_op_params_f32(&tensor, 7),
-                ggml_get_op_params_f32(&tensor, 8),  ggml_get_op_params_f32(&tensor, 9),
+                ggml_get_op_params_i32(&tensor, 1),
+                ggml_get_op_params_i32(&tensor, 2),
+                ggml_get_op_params_i32(&tensor, 4),
+                ggml_get_op_params_f32(&tensor, 5),
+                ggml_get_op_params_f32(&tensor, 6),
+                ggml_get_op_params_f32(&tensor, 7),
+                ggml_get_op_params_f32(&tensor, 8),
+                ggml_get_op_params_f32(&tensor, 9),
                 ggml_get_op_params_f32(&tensor, 10),
+                {
+                               ggml_get_op_params_i32(&tensor, 11),
+                               ggml_get_op_params_i32(&tensor, 12),
+                               ggml_get_op_params_i32(&tensor, 13),
+                               ggml_get_op_params_i32(&tensor, 14),
+                               },
             };
         default:
             return std::monostate{};
@@ -299,6 +310,7 @@ OpParams import_op_params(const ggml_tensor & tensor) {
 bool op_params_equivalent(ggml_op op, const OpParams & lhs, const OpParams & rhs) {
     switch (op) {
         case GGML_OP_RMS_NORM:
+        case GGML_OP_L2_NORM:
             return rms_norm_params_equivalent(lhs, rhs);
         case GGML_OP_SOFT_MAX:
             return soft_max_params_equivalent(lhs, rhs);

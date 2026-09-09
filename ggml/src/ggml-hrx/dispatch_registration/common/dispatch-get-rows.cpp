@@ -16,6 +16,7 @@ namespace {
 
 static constexpr KernelCatalogRef kGetRowsF32Kernel     = GGML_HRX_KERNEL_REF("loom_libs", "ggml_get_rows_f32");
 static constexpr KernelCatalogRef kGetRowsF32NextKernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_get_rows_f32_next");
+static constexpr int64_t          kMaximumHiddenElements = int64_t{ 1 } << 30;
 static constexpr int64_t          kQwenHiddenSize       = kQwen30BMoeDispatchProfile.hidden_size;
 static constexpr int64_t          kQwenVocabularyCount  = 151936;
 static constexpr int64_t          kMaxGetRowsRowCount   = 262208;
@@ -33,7 +34,7 @@ static bool is_2d(const Value & value) {
 }
 
 static bool is_supported_hidden_size(int64_t hidden_size) {
-    return hidden_size >= 256 && hidden_size <= 32768 && hidden_size % 256 == 0;
+    return hidden_size >= 256 && hidden_size <= kMaximumHiddenElements && hidden_size % 256 == 0;
 }
 
 static bool is_supported_token_count(int64_t token_count) {
