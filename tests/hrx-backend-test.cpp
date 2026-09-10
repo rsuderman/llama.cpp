@@ -1404,6 +1404,15 @@ static void run_scale_f32_dispatch_checks() {
     require_compile_parameter(bias_dispatch, "ggml.scale_f32.scale", expected_config_value(-0.5f));
     require_compile_parameter(bias_dispatch, "ggml.scale_f32.bias", expected_config_value(0.25f));
 
+    ggml_tensor * inplace = ggml_scale_bias_inplace(ctx, input, 2.0f, -1.0f);
+    REQUIRE(inplace != nullptr);
+
+    const ggml::hrx::Dispatch inplace_dispatch = schedule_single_dispatch_for_tensor(ctx, inplace);
+    REQUIRE(kernel_name_for_id(inplace_dispatch.kernel.kernel_id) == "loom_libs:ggml_scale_bias_f32");
+    REQUIRE(inplace_dispatch.kernel.integer_parameters.at("element_count") == 69120);
+    require_compile_parameter(inplace_dispatch, "ggml.scale.scale", expected_config_value(2.0f));
+    require_compile_parameter(inplace_dispatch, "ggml.scale.bias", expected_config_value(-1.0f));
+
     ggml_free(ctx);
 }
 
@@ -6818,6 +6827,38 @@ static void run_zero_output_device_support_checks() {
     ggml_backend_free(backend);
 }
 
+static void run_scale_f32_device_support_checks() {
+    ggml_backend_t backend = ggml_backend_hrx_init(0);
+    REQUIRE(backend != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size         = 512 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * input     = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 32);
+    ggml_tensor * out       = ggml_scale_bias(ctx, input, 1.5f, 0.5f);
+    ggml_tensor * inplace   = ggml_scale_bias_inplace(ctx, input, -2.0f, 1.0f);
+    ggml_tensor * view      = ggml_view_1d(ctx, input, 16, 8 * sizeof(float));
+    ggml_tensor * view_out  = ggml_scale_bias(ctx, view, 0.25f, -0.5f);
+    ggml_tensor * view_inpl = ggml_scale_bias_inplace(ctx, view, 0.5f, 0.25f);
+    REQUIRE(input != nullptr);
+    REQUIRE(out != nullptr);
+    REQUIRE(inplace != nullptr);
+    REQUIRE(view != nullptr);
+    REQUIRE(view_out != nullptr);
+    REQUIRE(view_inpl != nullptr);
+
+    REQUIRE(ggml_backend_supports_op(backend, out));
+    REQUIRE(ggml_backend_supports_op(backend, inplace));
+    REQUIRE(ggml_backend_supports_op(backend, view_out));
+    REQUIRE(ggml_backend_supports_op(backend, view_inpl));
+
+    ggml_free(ctx);
+    ggml_backend_free(backend);
+}
+
 static void run_transient_import_checks() {
     ggml_init_params params = {};
     params.mem_size         = 256 * 1024;
@@ -7758,6 +7799,52 @@ static void run_scale_f32() {
     ggml_backend_free(backend);
 }
 
+static void run_scale_f32_inplace() {
+    ggml_backend_t backend = ggml_backend_hrx_init(0);
+    REQUIRE(backend != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size         = 512 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    constexpr int64_t element_count = 1024;
+    ggml_tensor *     input         = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, element_count);
+    ggml_tensor *     out           = ggml_scale_bias_inplace(ctx, input, -1.5f, 0.25f);
+    REQUIRE(input != nullptr);
+    REQUIRE(out != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, out);
+
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    REQUIRE(buffer != nullptr);
+
+    std::vector<float> input_data(element_count);
+    std::vector<float> expected(element_count);
+    for (int64_t i = 0; i < element_count; ++i) {
+        input_data[i] = static_cast<float>(i % 23) * 0.125f - 1.0f;
+        expected[i]   = input_data[i] * -1.5f + 0.25f;
+    }
+
+    ggml_backend_tensor_set(input, input_data.data(), 0, input_data.size() * sizeof(float));
+
+    REQUIRE(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(backend);
+
+    std::vector<float> actual(element_count);
+    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+    for (int64_t i = 0; i < element_count; ++i) {
+        REQUIRE(std::fabs(actual[i] - expected[i]) <= 1.0e-6f);
+    }
+
+    ggml_backend_buffer_free(buffer);
+    ggml_free(ctx);
+    ggml_backend_free(backend);
+}
+
 static void run_two_independent_add_f32() {
     ggml_backend_t backend = ggml_backend_hrx_init(0);
     REQUIRE(backend != nullptr);
@@ -8134,9 +8221,11 @@ int main() {
     }
 
     run_zero_output_device_support_checks();
+    run_scale_f32_device_support_checks();
     run_qwen_expert_table_partition_prefill_512_execution();
     run_add_f32();
     run_scale_f32();
+    run_scale_f32_inplace();
     run_two_independent_add_f32();
     run_chained_add_f32();
     run_same_uid_distinct_graph_reuses_graph_program();

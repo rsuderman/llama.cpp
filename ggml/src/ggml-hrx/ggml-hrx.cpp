@@ -753,6 +753,56 @@ static bool tensors_have_distinct_storage(const ggml_tensor * lhs, const ggml_te
     return lhs_root != nullptr && output_root != nullptr && lhs_root != output_root;
 }
 
+struct TensorStorageRange {
+    const ggml_tensor * root   = nullptr;
+    size_t              offset = 0;
+    size_t              size   = 0;
+    bool                valid  = false;
+};
+
+static TensorStorageRange tensor_storage_range(const ggml_tensor * tensor) {
+    TensorStorageRange range;
+    if (tensor == nullptr) {
+        return range;
+    }
+    range.size = ggml_nbytes(tensor);
+    while (tensor->view_src != nullptr) {
+        if (range.offset > std::numeric_limits<size_t>::max() - tensor->view_offs) {
+            return {};
+        }
+        range.offset += tensor->view_offs;
+        tensor = tensor->view_src;
+    }
+    range.root  = tensor;
+    range.valid = true;
+    return range;
+}
+
+static bool tensor_storage_exactly_overlaps(const TensorStorageRange & lhs, const TensorStorageRange & rhs) {
+    return lhs.root == rhs.root && lhs.offset == rhs.offset && lhs.size == rhs.size;
+}
+
+static bool tensor_storage_ranges_disjoint(const TensorStorageRange & lhs, const TensorStorageRange & rhs) {
+    if (lhs.root != rhs.root) {
+        return true;
+    }
+    if (lhs.offset > std::numeric_limits<size_t>::max() - lhs.size ||
+        rhs.offset > std::numeric_limits<size_t>::max() - rhs.size) {
+        return false;
+    }
+    return lhs.offset + lhs.size <= rhs.offset || rhs.offset + rhs.size <= lhs.offset;
+}
+
+static bool scale_storage_is_safe(const ggml_tensor * input, const ggml_tensor * output) {
+    const TensorStorageRange input_range  = tensor_storage_range(input);
+    const TensorStorageRange output_range = tensor_storage_range(output);
+    if (!input_range.valid || !output_range.valid) {
+        return false;
+    }
+    return tensor_storage_exactly_overlaps(input_range, output_range) ||
+           tensor_storage_ranges_disjoint(input_range, output_range);
+}
+
 static bool tensor_has_positive_shape(const ggml_tensor * tensor) {
     if (tensor == nullptr || ggml_nelements(tensor) <= 0) {
         return false;
@@ -852,8 +902,7 @@ static bool supported_scale_f32_tensor(const ggml_tensor * op) {
     return op != nullptr && op->op == GGML_OP_SCALE && op->src[0] != nullptr && op->type == GGML_TYPE_F32 &&
            op->src[0]->type == GGML_TYPE_F32 && ggml_are_same_shape(op, op->src[0]) && tensor_has_positive_shape(op) &&
            ggml_is_contiguous(op) && ggml_is_contiguous(op->src[0]) && tensor_has_packed_f32_layout(op) &&
-           tensor_has_packed_f32_layout(op->src[0]) && op->view_src == nullptr &&
-           tensor_has_supported_source_layout(op->src[0]) && tensors_have_distinct_storage(op->src[0], op) &&
+           tensor_has_packed_f32_layout(op->src[0]) && scale_storage_is_safe(op->src[0], op) &&
            static_cast<uint64_t>(ggml_nelements(op)) <= std::numeric_limits<uint32_t>::max();
 }
 
