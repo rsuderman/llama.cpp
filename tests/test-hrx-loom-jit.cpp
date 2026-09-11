@@ -212,7 +212,21 @@ static std::map<std::string, std::string> flash_attention_config(const char * qu
     return {
         { "ggml.flash_attention.query_head_count",     query_head_count     },
         { "ggml.flash_attention.key_value_head_count", key_value_head_count },
-        { "ggml.flash_attention.head_size",            head_size            },
+        { "ggml.flash_attention.qk_head_size",         head_size            },
+        { "ggml.flash_attention.value_head_size",      head_size            },
+        { "ggml.flash_attention.attention_scale",      attention_scale      },
+    };
+}
+
+static std::map<std::string, std::string> flash_attention_decode_base_config(const char * query_head_count,
+                                                                             const char * key_value_head_count,
+                                                                             const char * head_size,
+                                                                             const char * attention_scale) {
+    return {
+        { "ggml.flash_attention.query_head_count",     query_head_count     },
+        { "ggml.flash_attention.key_value_head_count", key_value_head_count },
+        { "ggml.flash_attention.qk_head_size",         head_size            },
+        { "ggml.flash_attention.value_head_size",      head_size            },
         { "ggml.flash_attention.attention_scale",      attention_scale      },
     };
 }
@@ -223,7 +237,7 @@ static std::map<std::string, std::string> flash_attention_decode_config(const ch
                                                                         const char * attention_scale,
                                                                         const char * key_value_token_capacity) {
     std::map<std::string, std::string> config =
-        flash_attention_config(query_head_count, key_value_head_count, head_size, attention_scale);
+        flash_attention_decode_base_config(query_head_count, key_value_head_count, head_size, attention_scale);
     config["ggml.flash_attention.decode.key_value_token_capacity"] = key_value_token_capacity;
     return config;
 }

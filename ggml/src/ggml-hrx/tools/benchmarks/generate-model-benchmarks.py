@@ -384,25 +384,45 @@ def case_flash_attention(symbol: str, command: dict[str, Any], kernel: str, pref
     if prefix == "ggml":
         query_heads = config_int(command, "ggml.flash_attention.query_head_count")
         kv_heads = config_int(command, "ggml.flash_attention.key_value_head_count")
-        head_size = config_int(command, "ggml.flash_attention.head_size")
+        legacy_head_size = config_int(command, "ggml.flash_attention.head_size", 0)
+        qk_head_size = config_int(command, "ggml.flash_attention.qk_head_size", legacy_head_size)
+        value_head_size = config_int(command, "ggml.flash_attention.value_head_size", qk_head_size)
     else:
         query_heads = config_int(command, f"{prefix}.attention.query_head_count")
         kv_heads = config_int(command, f"{prefix}.attention.key_value_head_count")
-        head_size = 128
-    query_shape = f"{query_tokens}x{query_heads}x{head_size}"
-    kv_shape = f"{kv_tokens}x{kv_heads}x{head_size}"
+        qk_head_size = 128
+        value_head_size = 128
+    query_shape = f"{query_tokens}x{query_heads}x{qk_head_size}"
+    key_shape = f"{kv_tokens}x{kv_heads}x{qk_head_size}"
+    value_shape = f"{kv_tokens}x{kv_heads}x{value_head_size}"
+    output_shape = f"{query_tokens}x{query_heads}x{value_head_size}"
     mask_shape = f"{query_tokens}x{kv_tokens}"
+    if prefix == "ggml":
+        launch = (
+            f"  kernel.launch @{kernel}[%query_token_count, %key_value_token_count]"
+            f"(%query_token_count, %key_value_token_count, %query, %key, %value, %mask, %query, %output)"
+            f" : [index, index](index, index, tensor<{query_shape}xf32>, tensor<{key_shape}xf16>, "
+            f"tensor<{value_shape}xf16>, tensor<{mask_shape}xf16>, tensor<{query_shape}xf32>, "
+            f"tensor<{output_shape}xf32>)"
+        )
+    else:
+        launch = (
+            f"  kernel.launch @{kernel}[%query_token_count, %key_value_token_count]"
+            f"(%query_token_count, %key_value_token_count, %query, %key, %value, %mask, %output)"
+            f" : [index, index](index, index, tensor<{query_shape}xf32>, tensor<{key_shape}xf16>, "
+            f"tensor<{value_shape}xf16>, tensor<{mask_shape}xf16>, tensor<{output_shape}xf32>)"
+        )
     return "\n".join(
         [
             f"check.case public @{symbol}_case {{",
             f"  %query_token_count = check.literal value({query_tokens}) : index",
             f"  %key_value_token_count = check.literal value({kv_tokens}) : index",
             fill_tensor("query", "0.0", query_shape, "f32"),
-            fill_tensor("key", "0.0", kv_shape, "f16"),
-            fill_tensor("value", "0.0", kv_shape, "f16"),
+            fill_tensor("key", "0.0", key_shape, "f16"),
+            fill_tensor("value", "0.0", value_shape, "f16"),
             fill_tensor("mask", "0.0", mask_shape, "f16"),
-            fill_tensor("output", "1.0", query_shape, "f32"),
-            f"  kernel.launch @{kernel}[%query_token_count, %key_value_token_count](%query_token_count, %key_value_token_count, %query, %key, %value, %mask, %output) : [index, index](index, index, tensor<{query_shape}xf32>, tensor<{kv_shape}xf16>, tensor<{kv_shape}xf16>, tensor<{mask_shape}xf16>, tensor<{query_shape}xf32>)",
+            fill_tensor("output", "1.0", output_shape, "f32"),
+            launch,
             "  check.return",
             "}",
         ]
@@ -414,19 +434,22 @@ def case_flash_attention_decode_split(symbol: str, command: dict[str, Any], kern
     kv_capacity = config_int(command, "ggml.flash_attention.decode.key_value_token_capacity")
     query_heads = config_int(command, "ggml.flash_attention.query_head_count")
     kv_heads = config_int(command, "ggml.flash_attention.key_value_head_count")
-    head_size = 128
+    legacy_head_size = config_int(command, "ggml.flash_attention.head_size", 0)
+    qk_head_size = config_int(command, "ggml.flash_attention.qk_head_size", legacy_head_size)
+    value_head_size = config_int(command, "ggml.flash_attention.value_head_size", qk_head_size)
     partial_blocks = ceil_div(kv_capacity, 64)
-    query_shape = f"{query_heads}x{head_size}"
-    kv_shape = f"{kv_tokens}x{kv_heads}x{head_size}"
+    query_shape = f"{query_heads}x{qk_head_size}"
+    key_shape = f"{kv_tokens}x{kv_heads}x{qk_head_size}"
+    value_shape = f"{kv_tokens}x{kv_heads}x{value_head_size}"
     mask_shape = f"{kv_tokens}"
     partial_shape = f"{kv_heads}x{partial_blocks}x16"
-    partial_output_shape = f"{kv_heads}x{partial_blocks}x16x{head_size}"
+    partial_output_shape = f"{kv_heads}x{partial_blocks}x16x{value_head_size}"
     completion_shape = f"{kv_heads}"
-    output_shape = query_shape
+    output_shape = f"{query_heads}x{value_head_size}"
     tensors = [
         fill_tensor("query", "0.0", query_shape, "f32"),
-        fill_tensor("key", "0.0", kv_shape, "f16"),
-        fill_tensor("value", "0.0", kv_shape, "f16"),
+        fill_tensor("key", "0.0", key_shape, "f16"),
+        fill_tensor("value", "0.0", value_shape, "f16"),
         fill_tensor("mask", "0.0", mask_shape, "f16"),
         fill_tensor("partial_max", "0.0", partial_shape, "f32"),
         fill_tensor("partial_sum", "0.0", partial_shape, "f32"),
@@ -449,8 +472,8 @@ def case_flash_attention_decode_split(symbol: str, command: dict[str, Any], kern
     launch_types = [
         "index",
         f"tensor<{query_shape}xf32>",
-        f"tensor<{kv_shape}xf16>",
-        f"tensor<{kv_shape}xf16>",
+        f"tensor<{key_shape}xf16>",
+        f"tensor<{value_shape}xf16>",
         f"tensor<{mask_shape}xf16>",
         f"tensor<{partial_shape}xf32>",
         f"tensor<{partial_shape}xf32>",

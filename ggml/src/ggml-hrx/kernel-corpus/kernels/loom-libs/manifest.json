@@ -3272,9 +3272,13 @@
         "primary_sources": [
           "ops/flash_attention_decode_split_f32_f16_wmma.loom"
         ],
-        "library_sources": []
+        "library_sources": [
+          "motifs/quantize_q8_1_x4.loom"
+        ]
       },
-      "compile_dependencies": []
+      "compile_dependencies": [
+        "motifs/quantize_q8_1_x4.loom"
+      ]
     },
     {
       "name": "ggml_get_rows_f32",

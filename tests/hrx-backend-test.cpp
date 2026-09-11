@@ -417,18 +417,20 @@ static ggml_tensor * build_qwen_flash_attention_graph(ggml_context * ctx,
                                                       int64_t        key_value_token_count,
                                                       int64_t        query_head_count,
                                                       int64_t        key_value_head_count,
-                                                      ggml_type      query_type     = GGML_TYPE_F32,
-                                                      ggml_type      key_value_type = GGML_TYPE_F16,
-                                                      bool           include_mask   = true,
-                                                      bool           include_sinks  = false,
-                                                      int64_t        head_size      = kQwenFlashHeadSize,
-                                                      float          scale          = 1.0f / std::sqrt(128.0f),
-                                                      float          max_bias       = 0.0f,
-                                                      float          logit_softcap  = 0.0f) {
+                                                      ggml_type      query_type      = GGML_TYPE_F32,
+                                                      ggml_type      key_value_type  = GGML_TYPE_F16,
+                                                      bool           include_mask    = true,
+                                                      bool           include_sinks   = false,
+                                                      int64_t        head_size       = kQwenFlashHeadSize,
+                                                      float          scale           = 1.0f / std::sqrt(128.0f),
+                                                      int64_t        value_head_size = -1,
+                                                      float          max_bias        = 0.0f,
+                                                      float          logit_softcap   = 0.0f) {
+    const int64_t actual_value_head_size = value_head_size > 0 ? value_head_size : head_size;
     ggml_tensor * query = ggml_new_tensor_3d(ctx, query_type, head_size, query_token_count, query_head_count);
     ggml_tensor * key = ggml_new_tensor_3d(ctx, key_value_type, head_size, key_value_token_count, key_value_head_count);
     ggml_tensor * value =
-        ggml_new_tensor_3d(ctx, key_value_type, head_size, key_value_token_count, key_value_head_count);
+        ggml_new_tensor_3d(ctx, key_value_type, actual_value_head_size, key_value_token_count, key_value_head_count);
     REQUIRE(query != nullptr);
     REQUIRE(key != nullptr);
     REQUIRE(value != nullptr);
@@ -437,7 +439,7 @@ static ggml_tensor * build_qwen_flash_attention_graph(ggml_context * ctx,
     }
     if (key_value_type == GGML_TYPE_F16) {
         set_qwen_flash_key_value_layout(key, key_value_head_count, head_size);
-        set_qwen_flash_key_value_layout(value, key_value_head_count, head_size);
+        set_qwen_flash_key_value_layout(value, key_value_head_count, actual_value_head_size);
     }
     ggml_tensor * mask = nullptr;
     if (include_mask) {
@@ -3596,8 +3598,9 @@ static void schedule_flash_attention_command(ggml_context * ctx,
                                              int64_t        key_value_token_count,
                                              int64_t        query_head_count,
                                              int64_t        key_value_head_count,
-                                             int64_t        head_size = kQwenFlashHeadSize,
-                                             float          scale     = 1.0f / std::sqrt(128.0f)) {
+                                             int64_t        qk_head_size    = kQwenFlashHeadSize,
+                                             int64_t        value_head_size = kQwenFlashHeadSize,
+                                             float          scale           = 1.0f / std::sqrt(128.0f)) {
     ggml_cgraph * graph = ggml_new_graph(ctx);
     REQUIRE(graph != nullptr);
     ggml_build_forward_expand(graph, output);
@@ -3623,7 +3626,8 @@ static void schedule_flash_attention_command(ggml_context * ctx,
     require_compile_parameter(dispatch, (std::string(config_prefix) + "key_value_head_count").c_str(),
                               std::to_string(key_value_head_count));
     if (std::strcmp(config_prefix, "ggml.flash_attention.") == 0) {
-        require_compile_parameter(dispatch, "ggml.flash_attention.head_size", std::to_string(head_size));
+        require_compile_parameter(dispatch, "ggml.flash_attention.qk_head_size", std::to_string(qk_head_size));
+        require_compile_parameter(dispatch, "ggml.flash_attention.value_head_size", std::to_string(value_head_size));
         require_compile_parameter(dispatch, "ggml.flash_attention.attention_scale", expected_config_value(scale));
         require_compile_parameter(dispatch, "ggml.flash_attention.apply_gate", "0");
         require_compile_parameter(dispatch, "ggml.flash_attention.gate_stride_head", "1");
@@ -3657,11 +3661,12 @@ static void schedule_common_flash_attention_command(ggml_context * ctx,
                                                     int64_t        key_value_token_count,
                                                     int64_t        query_head_count,
                                                     int64_t        key_value_head_count,
-                                                    int64_t        head_size = kQwenFlashHeadSize,
-                                                    float          scale     = 1.0f / std::sqrt(128.0f)) {
+                                                    int64_t        qk_head_size    = kQwenFlashHeadSize,
+                                                    int64_t        value_head_size = kQwenFlashHeadSize,
+                                                    float          scale           = 1.0f / std::sqrt(128.0f)) {
     schedule_flash_attention_command(ctx, output, "loom_libs:ggml_flash_attention_f32_f16_wmma",
                                      "ggml.flash_attention.", query_token_count, key_value_token_count,
-                                     query_head_count, key_value_head_count, head_size, scale);
+                                     query_head_count, key_value_head_count, qk_head_size, value_head_size, scale);
 }
 
 static void schedule_common_flash_attention_decode_split_command(ggml_context * ctx,
@@ -3670,8 +3675,9 @@ static void schedule_common_flash_attention_decode_split_command(ggml_context * 
                                                                  int64_t        key_value_token_count,
                                                                  int64_t        query_head_count,
                                                                  int64_t        key_value_head_count,
-                                                                 int64_t        head_size = kQwenFlashHeadSize,
-                                                                 float          scale     = 1.0f / std::sqrt(128.0f)) {
+                                                                 int64_t        qk_head_size    = kQwenFlashHeadSize,
+                                                                 int64_t        value_head_size = kQwenFlashHeadSize,
+                                                                 float          scale = 1.0f / std::sqrt(128.0f)) {
     const int64_t key_value_capacity = ((key_value_token_count + 63) / 64) * 64;
     ggml_cgraph * graph              = ggml_new_graph(ctx);
     REQUIRE(graph != nullptr);
@@ -3695,7 +3701,8 @@ static void schedule_common_flash_attention_decode_split_command(ggml_context * 
         require_compile_parameter(dispatch, "ggml.flash_attention.query_head_count", std::to_string(query_head_count));
         require_compile_parameter(dispatch, "ggml.flash_attention.key_value_head_count",
                                   std::to_string(key_value_head_count));
-        require_compile_parameter(dispatch, "ggml.flash_attention.head_size", std::to_string(head_size));
+        require_compile_parameter(dispatch, "ggml.flash_attention.qk_head_size", std::to_string(qk_head_size));
+        require_compile_parameter(dispatch, "ggml.flash_attention.value_head_size", std::to_string(value_head_size));
         require_compile_parameter(dispatch, "ggml.flash_attention.attention_scale", expected_config_value(scale));
         require_compile_parameter(dispatch, "ggml.flash_attention.decode.key_value_token_capacity",
                                   std::to_string(key_value_capacity));
@@ -3752,13 +3759,35 @@ static void run_qwen_flash_attention_dispatch_checks() {
         ggml_tensor *     output =
             build_qwen_flash_attention_graph(ctx, 16, 16, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true, false, head_size,
                                              1.0f / std::sqrt(static_cast<float>(head_size)));
-        schedule_common_flash_attention_command(ctx, output, 16, 16, 4, 2, head_size,
+        schedule_common_flash_attention_command(ctx, output, 16, 16, 4, 2, head_size, head_size,
                                                 1.0f / std::sqrt(static_cast<float>(head_size)));
+        REQUIRE(unsetenv(kDisableQwenDispatchEnv) == 0);
+    }
+    {
+        REQUIRE(setenv(kDisableQwenDispatchEnv, "1", 1) == 0);
+        constexpr int64_t qk_head_size    = 96;
+        constexpr int64_t value_head_size = 64;
+        ggml_tensor *     output          = build_qwen_flash_attention_graph(
+            ctx, 23, 256, 40, 40, GGML_TYPE_F32, GGML_TYPE_F16, true, false, qk_head_size,
+            1.0f / std::sqrt(static_cast<float>(qk_head_size)), value_head_size);
+        schedule_common_flash_attention_command(ctx, output, 23, 256, 40, 40, qk_head_size, value_head_size,
+                                                1.0f / std::sqrt(static_cast<float>(qk_head_size)));
         REQUIRE(unsetenv(kDisableQwenDispatchEnv) == 0);
     }
     {
         ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 1, 8, 4, 2);
         schedule_common_flash_attention_decode_split_command(ctx, output, 1, 8, 4, 2);
+    }
+    {
+        REQUIRE(setenv(kDisableQwenDispatchEnv, "1", 1) == 0);
+        constexpr int64_t qk_head_size    = 96;
+        constexpr int64_t value_head_size = 64;
+        ggml_tensor *     output          = build_qwen_flash_attention_graph(
+            ctx, 1, 512, 32, 4, GGML_TYPE_F32, GGML_TYPE_F16, true, false, qk_head_size,
+            1.0f / std::sqrt(static_cast<float>(qk_head_size)), value_head_size);
+        schedule_common_flash_attention_decode_split_command(ctx, output, 1, 512, 32, 4, qk_head_size, value_head_size,
+                                                             1.0f / std::sqrt(static_cast<float>(qk_head_size)));
+        REQUIRE(unsetenv(kDisableQwenDispatchEnv) == 0);
     }
     {
         ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2, GGML_TYPE_F32, GGML_TYPE_F32);
@@ -3776,12 +3805,13 @@ static void run_qwen_flash_attention_dispatch_checks() {
     {
         ggml_tensor * output = build_qwen_flash_attention_graph(ctx, 16, 16, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true,
                                                                 false, kQwenFlashHeadSize, 1.0f);
-        schedule_common_flash_attention_command(ctx, output, 16, 16, 4, 2, kQwenFlashHeadSize, 1.0f);
+        schedule_common_flash_attention_command(ctx, output, 16, 16, 4, 2, kQwenFlashHeadSize, kQwenFlashHeadSize,
+                                                1.0f);
     }
     {
         ggml_tensor * output =
             build_qwen_flash_attention_graph(ctx, 4, 8, 4, 2, GGML_TYPE_F32, GGML_TYPE_F16, true, false,
-                                             kQwenFlashHeadSize, 1.0f / std::sqrt(128.0f), 1.0f);
+                                             kQwenFlashHeadSize, 1.0f / std::sqrt(128.0f), -1, 1.0f);
         REQUIRE(!graph_is_supported(ctx, output));
     }
 
