@@ -3073,6 +3073,24 @@ static void run_qwen_token_embedding_dispatch_checks() {
         schedule_token_embedding_command(ctx, output, 5, 151936, 2048, "30");
     }
     {
+        ggml_tensor * weight    = ggml_new_tensor_2d(ctx, GGML_TYPE_Q1_0, 2048, 151936);
+        ggml_tensor * token_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+        REQUIRE(weight != nullptr);
+        REQUIRE(token_ids != nullptr);
+        ggml_tensor * output = ggml_get_rows(ctx, weight, token_ids);
+        REQUIRE(output != nullptr);
+        schedule_token_embedding_command(ctx, output, 1, 151936, 2048, "10");
+    }
+    {
+        ggml_tensor * weight    = ggml_new_tensor_2d(ctx, GGML_TYPE_Q5_1, 640, 262144);
+        ggml_tensor * token_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+        REQUIRE(weight != nullptr);
+        REQUIRE(token_ids != nullptr);
+        ggml_tensor * output = ggml_get_rows(ctx, weight, token_ids);
+        REQUIRE(output != nullptr);
+        schedule_token_embedding_command(ctx, output, 1, 262144, 640, "51");
+    }
+    {
         ggml_tensor * weight    = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_0, 3840, 262208);
         ggml_tensor * token_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 64);
         REQUIRE(weight != nullptr);
@@ -3099,11 +3117,24 @@ static void run_qwen_token_embedding_dispatch_checks() {
         REQUIRE(output != nullptr);
         schedule_token_embedding_command(ctx, output, 64, 262208, 3840, "30");
     }
+    {
+        ggml_tensor * weight    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 262144, 4);
+        ggml_tensor * token_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+        REQUIRE(weight != nullptr);
+        REQUIRE(token_ids != nullptr);
+        ggml_tensor * output = ggml_get_rows(ctx, weight, token_ids);
+        REQUIRE(output != nullptr);
+        schedule_token_embedding_command(ctx, output, 1, 4, 262144, "32");
+    }
 
     REQUIRE(
         manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_F32, GGML_TYPE_I32, GGML_TYPE_F32, 2048, 151936, 1));
     REQUIRE(
         manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_Q6_K, GGML_TYPE_I32, GGML_TYPE_F32, 2048, 151936, 1));
+    REQUIRE(
+        manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_Q1_0, GGML_TYPE_I32, GGML_TYPE_F32, 2048, 151936, 1));
+    REQUIRE(
+        manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_Q5_1, GGML_TYPE_I32, GGML_TYPE_F32, 640, 262144, 1));
     REQUIRE(manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_IQ4_XS, GGML_TYPE_I32, GGML_TYPE_F32, 2048, 151936,
                                                       1));
     REQUIRE(!manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_IQ3_S, GGML_TYPE_I32, GGML_TYPE_F32, 2048, 151936,
@@ -3125,7 +3156,9 @@ static void run_qwen_token_embedding_dispatch_checks() {
     REQUIRE(
         !manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_Q4_K, GGML_TYPE_I32, GGML_TYPE_F16, 2048, 151936, 1));
     REQUIRE(
-        !manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_F32, GGML_TYPE_I32, GGML_TYPE_F32, 128, 151936, 1));
+        manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_F32, GGML_TYPE_I32, GGML_TYPE_F32, 128, 151936, 1));
+    REQUIRE(
+        manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_F32, GGML_TYPE_I32, GGML_TYPE_F32, 262144, 4, 1));
     REQUIRE(
         manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_F32, GGML_TYPE_I32, GGML_TYPE_F32, 33024, 151936, 1));
     REQUIRE(!manual_token_embedding_graph_is_supported(ctx, GGML_TYPE_Q4_K, GGML_TYPE_I32, GGML_TYPE_F32, 2048, 151936,

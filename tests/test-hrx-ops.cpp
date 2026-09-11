@@ -2461,7 +2461,10 @@ static void run_gather_add_f32_cpu_reference_case() {
     ggml_backend_free(hrx_backend);
 }
 
-static void run_get_rows_f32_cpu_reference_case(ggml_type weight_type) {
+static void run_get_rows_f32_cpu_reference_case(ggml_type weight_type,
+                                                int64_t   hidden_size      = kQwenHiddenSize,
+                                                int64_t   vocabulary_count = 64,
+                                                int64_t   token_count      = 7) {
     ggml_backend_t cpu_backend = init_cpu_backend();
     ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
     REQUIRE(hrx_backend != nullptr);
@@ -2474,15 +2477,12 @@ static void run_get_rows_f32_cpu_reference_case(ggml_type weight_type) {
     REQUIRE(cpu_ctx != nullptr);
     REQUIRE(hrx_ctx != nullptr);
 
-    constexpr int64_t vocabulary_count = 64;
-    constexpr int64_t hidden_size      = kQwenHiddenSize;
-    constexpr int64_t token_count      = 7;
-    ggml_tensor *     cpu_weight       = ggml_new_tensor_2d(cpu_ctx, weight_type, hidden_size, vocabulary_count);
-    ggml_tensor *     cpu_ids          = ggml_new_tensor_1d(cpu_ctx, GGML_TYPE_I32, token_count);
-    ggml_tensor *     cpu_output       = ggml_get_rows(cpu_ctx, cpu_weight, cpu_ids);
-    ggml_tensor *     hrx_weight       = ggml_new_tensor_2d(hrx_ctx, weight_type, hidden_size, vocabulary_count);
-    ggml_tensor *     hrx_ids          = ggml_new_tensor_1d(hrx_ctx, GGML_TYPE_I32, token_count);
-    ggml_tensor *     hrx_output       = ggml_get_rows(hrx_ctx, hrx_weight, hrx_ids);
+    ggml_tensor * cpu_weight = ggml_new_tensor_2d(cpu_ctx, weight_type, hidden_size, vocabulary_count);
+    ggml_tensor * cpu_ids    = ggml_new_tensor_1d(cpu_ctx, GGML_TYPE_I32, token_count);
+    ggml_tensor * cpu_output = ggml_get_rows(cpu_ctx, cpu_weight, cpu_ids);
+    ggml_tensor * hrx_weight = ggml_new_tensor_2d(hrx_ctx, weight_type, hidden_size, vocabulary_count);
+    ggml_tensor * hrx_ids    = ggml_new_tensor_1d(hrx_ctx, GGML_TYPE_I32, token_count);
+    ggml_tensor * hrx_output = ggml_get_rows(hrx_ctx, hrx_weight, hrx_ids);
     REQUIRE(cpu_output != nullptr);
     REQUIRE(hrx_output != nullptr);
 
@@ -2501,7 +2501,10 @@ static void run_get_rows_f32_cpu_reference_case(ggml_type weight_type) {
     REQUIRE(hrx_buffer != nullptr);
 
     const std::vector<uint8_t> weight = make_matmul_weight_bytes(weight_type, hidden_size, vocabulary_count, 5);
-    const std::vector<int32_t> ids    = { 3, 17, 29, 41, 53, 7, 19 };
+    std::vector<int32_t>       ids(static_cast<size_t>(token_count));
+    for (int64_t i = 0; i < token_count; ++i) {
+        ids[static_cast<size_t>(i)] = static_cast<int32_t>((i * 17 + 3) % vocabulary_count);
+    }
     set_tensor_pair_bytes(cpu_backend, cpu_weight, hrx_backend, hrx_weight, weight.data(), weight.size());
     set_tensor_pair_bytes(cpu_backend, cpu_ids, hrx_backend, hrx_ids, ids.data(), ids.size() * sizeof(int32_t));
 
@@ -3743,11 +3746,14 @@ int main() {
     run_gather_add_f32_cpu_reference_case();
     run_get_rows_f32_cpu_reference_case(GGML_TYPE_Q4_K);
     run_get_rows_f32_cpu_reference_case(GGML_TYPE_Q6_K);
+    run_get_rows_f32_cpu_reference_case(GGML_TYPE_Q1_0, 2048);
+    run_get_rows_f32_cpu_reference_case(GGML_TYPE_Q5_1, 640);
     run_get_rows_f32_cpu_reference_case(GGML_TYPE_Q8_0);
     run_get_rows_q8_1_zero_weight_case();
     run_get_rows_f32_cpu_reference_case(GGML_TYPE_F16);
     run_get_rows_f32_cpu_reference_case(GGML_TYPE_BF16);
     run_get_rows_f32_cpu_reference_case(GGML_TYPE_F32);
+    run_get_rows_f32_cpu_reference_case(GGML_TYPE_F32, 262144, 4, 1);
     run_dense_matmul_cpu_reference_case(GGML_TYPE_Q4_K, "loom_libs:ggml_mul_mat_f32_f32_wmma", 2, 128);
     run_dense_matmul_cpu_reference_case(GGML_TYPE_Q4_K, "loom_libs:ggml_mul_mat_f32_f32_decode_wave64", 1, 128);
     run_dense_matmul_cpu_reference_case(GGML_TYPE_Q4_0, "loom_libs:ggml_mul_mat_f32_f32_wmma", 2, 128);
