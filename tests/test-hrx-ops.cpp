@@ -3129,6 +3129,71 @@ static void run_rope_set_rows_cpu_reference_case() {
 
     {
         ggml_init_params params = {};
+        params.mem_size         = 8 * 1024 * 1024;
+        params.no_alloc         = true;
+        ggml_context * cpu_ctx  = ggml_init(params);
+        ggml_context * hrx_ctx  = ggml_init(params);
+        REQUIRE(cpu_ctx != nullptr);
+        REQUIRE(hrx_ctx != nullptr);
+
+        constexpr int64_t partial_head_size  = 128;
+        constexpr int64_t partial_n_dims     = 96;
+        constexpr int64_t partial_head_count = 3;
+        constexpr int64_t partial_tokens     = 4;
+        ggml_tensor * cpu_input = ggml_new_tensor_3d(cpu_ctx, GGML_TYPE_F32, partial_head_size, partial_head_count, partial_tokens);
+        ggml_tensor * cpu_pos   = ggml_new_tensor_1d(cpu_ctx, GGML_TYPE_I32, partial_tokens);
+        ggml_tensor * cpu_freq  = ggml_new_tensor_1d(cpu_ctx, GGML_TYPE_F32, partial_n_dims / 2);
+        ggml_tensor * cpu_out   = ggml_rope_ext(cpu_ctx, cpu_input, cpu_pos, cpu_freq, partial_n_dims,
+                                                GGML_ROPE_TYPE_NEOX, 0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f,
+                                                0.0f);
+        ggml_tensor * hrx_input = ggml_new_tensor_3d(hrx_ctx, GGML_TYPE_F32, partial_head_size, partial_head_count, partial_tokens);
+        ggml_tensor * hrx_pos   = ggml_new_tensor_1d(hrx_ctx, GGML_TYPE_I32, partial_tokens);
+        ggml_tensor * hrx_freq  = ggml_new_tensor_1d(hrx_ctx, GGML_TYPE_F32, partial_n_dims / 2);
+        ggml_tensor * hrx_out   = ggml_rope_ext(hrx_ctx, hrx_input, hrx_pos, hrx_freq, partial_n_dims,
+                                                GGML_ROPE_TYPE_NEOX, 0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f,
+                                                0.0f);
+        REQUIRE(cpu_out != nullptr);
+        REQUIRE(hrx_out != nullptr);
+
+        ggml_cgraph * cpu_graph = ggml_new_graph(cpu_ctx);
+        ggml_cgraph * hrx_graph = ggml_new_graph(hrx_ctx);
+        REQUIRE(cpu_graph != nullptr);
+        REQUIRE(hrx_graph != nullptr);
+        ggml_build_forward_expand(cpu_graph, cpu_out);
+        ggml_build_forward_expand(hrx_graph, hrx_out);
+        require_kernel_subsequence(scheduled_kernel_sequence(hrx_graph), { "loom_libs:ggml_rope_f32" });
+
+        ggml_backend_buffer_t cpu_buffer = ggml_backend_alloc_ctx_tensors(cpu_ctx, cpu_backend);
+        ggml_backend_buffer_t hrx_buffer = ggml_backend_alloc_ctx_tensors(hrx_ctx, hrx_backend);
+        REQUIRE(cpu_buffer != nullptr);
+        REQUIRE(hrx_buffer != nullptr);
+
+        const std::vector<float> input =
+            make_pattern_f32(static_cast<size_t>(partial_head_size * partial_head_count * partial_tokens), 47, 0.01f);
+        const std::vector<int32_t> pos = { 0, 1, 13, 29 };
+        std::vector<float>         freq(static_cast<size_t>(partial_n_dims / 2));
+        for (size_t i = 0; i < freq.size(); ++i) {
+            freq[i] = 1.0f + 0.01f * static_cast<float>(i);
+        }
+        set_tensor_pair_bytes(cpu_backend, cpu_input, hrx_backend, hrx_input, input.data(),
+                              input.size() * sizeof(float));
+        set_tensor_pair_bytes(cpu_backend, cpu_pos, hrx_backend, hrx_pos, pos.data(), pos.size() * sizeof(int32_t));
+        set_tensor_pair_bytes(cpu_backend, cpu_freq, hrx_backend, hrx_freq, freq.data(), freq.size() * sizeof(float));
+
+        REQUIRE(ggml_backend_graph_compute(cpu_backend, cpu_graph) == GGML_STATUS_SUCCESS);
+        REQUIRE(ggml_backend_graph_compute(hrx_backend, hrx_graph) == GGML_STATUS_SUCCESS);
+        ggml_backend_synchronize(cpu_backend);
+        ggml_backend_synchronize(hrx_backend);
+        require_close(get_f32_tensor(hrx_backend, hrx_out), get_f32_tensor(cpu_backend, cpu_out), 1.0e-4f, 1.0e-4f);
+
+        ggml_backend_buffer_free(cpu_buffer);
+        ggml_backend_buffer_free(hrx_buffer);
+        ggml_free(cpu_ctx);
+        ggml_free(hrx_ctx);
+    }
+
+    {
+        ggml_init_params params = {};
         params.mem_size         = 1024 * 1024;
         params.no_alloc         = true;
         ggml_context * cpu_ctx  = ggml_init(params);

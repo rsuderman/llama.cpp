@@ -1,5 +1,6 @@
 #include "dispatch-rope-set-rows.h"
 
+#include "dispatch-rope-utils.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
@@ -7,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,38 +45,94 @@ static bool is_2d_shape(const Value & value, int64_t ne0, int64_t ne1) {
     return value.ne[0] == ne0 && value.ne[1] == ne1 && value.ne[2] == 1 && value.ne[3] == 1;
 }
 
+static std::string value_layout_for_log(const Value * value) {
+    if (value == nullptr) {
+        return "null";
+    }
+    std::ostringstream out;
+    out << ggml_type_name(value->type) << " ne=[" << value->ne[0] << "," << value->ne[1] << "," << value->ne[2] << ","
+        << value->ne[3] << "] nb=[" << value->nb[0] << "," << value->nb[1] << "," << value->nb[2] << ","
+        << value->nb[3] << "] contiguous=" << (value->contiguous ? 1 : 0);
+    if (value->alias_source.value >= 0) {
+        out << " alias=" << value->alias_source.value << " storage_offset=" << value->storage_offset;
+    }
+    return out.str();
+}
+
+static void log_rope_reject(Status *      status,
+                            const char *  reason,
+                            const Value * input,
+                            const Value * positions,
+                            const Value * output,
+                            const Value * freq_factors = nullptr) {
+    if (status == nullptr) {
+        return;
+    }
+    status->log("ROPE matcher rejected node: %s input=%s positions=%s output=%s freq_factors=%s", reason,
+                value_layout_for_log(input).c_str(), value_layout_for_log(positions).c_str(),
+                value_layout_for_log(output).c_str(), value_layout_for_log(freq_factors).c_str());
+}
+
 static bool is_rope_shape(const Value & value) {
     return value.ne[0] >= 4 && value.ne[0] <= 1024 && value.ne[0] % 4 == 0 && value.ne[1] >= 1 && value.ne[1] <= 64 &&
            value.ne[2] >= 1 && value.ne[2] <= 2048 && value.ne[3] == 1;
 }
 
-static bool is_supported_rope_params(const RopeParams & params, int64_t head_size) {
-    const bool supported_mode = params.mode == GGML_ROPE_TYPE_NORMAL || params.mode == GGML_ROPE_TYPE_NEOX;
-    return params.n_dims == head_size && supported_mode && std::isfinite(params.freq_base) && params.freq_base > 0.0f &&
-           std::isfinite(params.freq_scale) && params.freq_scale > 0.0f && params.ext_factor == 0.0f &&
-           params.attn_factor == 1.0f;
+static bool is_packed_f32_rope_layout(const Value & value) {
+    if (value.type != GGML_TYPE_F32 || !is_rope_shape(value) || value.nb[0] != sizeof(float)) {
+        return false;
+    }
+    return value.nb[1] == static_cast<size_t>(value.ne[0]) * sizeof(float) &&
+           value.nb[2] == static_cast<size_t>(value.ne[1]) * value.nb[1] &&
+           value.nb[3] == static_cast<size_t>(value.ne[2]) * value.nb[2];
 }
 
-static bool build_rope_theta_table(const GraphNode & rope, int64_t head_size, std::vector<uint8_t> & data) {
-    const RopeParams * params = op_params_as<RopeParams>(rope.params);
-    if (params == nullptr || !is_supported_rope_params(*params, head_size)) {
+static bool is_supported_rope_input_layout(const Value & value, size_t & span_elements) {
+    if (value.type != GGML_TYPE_F32 || !is_rope_shape(value) || value.nb[0] != sizeof(float) ||
+        value.nb[1] % sizeof(float) != 0 || value.nb[2] % sizeof(float) != 0 ||
+        value.byte_count % sizeof(float) != 0) {
         return false;
     }
 
-    data.resize(static_cast<size_t>(head_size / 2) * sizeof(float));
-    const float theta_scale = std::pow(params->freq_base, -2.0f / static_cast<float>(head_size));
-    float       theta       = params->freq_scale;
-    for (int64_t i = 0; i < head_size / 2; ++i) {
-        std::memcpy(data.data() + static_cast<size_t>(i) * sizeof(float), &theta, sizeof(theta));
-        theta *= theta_scale;
+    const size_t stride1 = value.nb[1] / sizeof(float);
+    const size_t stride2 = value.nb[2] / sizeof(float);
+    if (stride1 < static_cast<size_t>(value.ne[0]) || stride2 < static_cast<size_t>(value.ne[1]) * stride1) {
+        return false;
     }
+
+    const size_t token_span = static_cast<size_t>(value.ne[2] - 1) * stride2;
+    const size_t head_span  = static_cast<size_t>(value.ne[1] - 1) * stride1;
+    const size_t required   = token_span + head_span + static_cast<size_t>(value.ne[0]);
+    span_elements           = value.byte_count / sizeof(float);
+    return required <= span_elements;
+}
+
+static bool is_supported_rope_params(const RopeParams & params, int64_t head_size) {
+    const bool supported_mode = params.mode == GGML_ROPE_TYPE_NORMAL || params.mode == GGML_ROPE_TYPE_NEOX;
+    return params.n_dims >= 4 && params.n_dims <= head_size && params.n_dims % 4 == 0 && supported_mode &&
+           std::isfinite(params.freq_base) && params.freq_base > 0.0f && std::isfinite(params.freq_scale) &&
+           params.freq_scale > 0.0f && std::isfinite(params.ext_factor) && std::isfinite(params.attn_factor);
+}
+
+static bool build_rope_theta_table(const GraphNode & rope, int64_t n_dims, std::vector<uint8_t> & data, float & mscale) {
+    const RopeParams * params = op_params_as<RopeParams>(rope.params);
+    if (params == nullptr) {
+        return false;
+    }
+
+    RopeFrequencyTable table;
+    if (!build_rope_frequency_table(*params, n_dims, table)) {
+        return false;
+    }
+    data   = std::move(table.data);
+    mscale = table.mscale;
     return true;
 }
 
-static void build_unit_frequency_factors(int64_t head_size, std::vector<uint8_t> & data) {
-    data.resize(static_cast<size_t>(head_size / 2) * sizeof(float));
+static void build_unit_frequency_factors(int64_t n_dims, std::vector<uint8_t> & data) {
+    data.resize(static_cast<size_t>(n_dims / 2) * sizeof(float));
     const float one = 1.0f;
-    for (int64_t i = 0; i < head_size / 2; ++i) {
+    for (int64_t i = 0; i < n_dims / 2; ++i) {
         std::memcpy(data.data() + static_cast<size_t>(i) * sizeof(float), &one, sizeof(one));
     }
 }
@@ -118,6 +176,11 @@ struct RopeMatch {
     int64_t              token_count        = 0;
     int64_t              head_count         = 0;
     int64_t              head_size          = 0;
+    int64_t              n_dims             = 0;
+    int64_t              input_stride1      = 0;
+    int64_t              input_stride2      = 0;
+    size_t               input_span         = 0;
+    float                rope_mscale        = 1.0f;
     int64_t              mode               = 0;
     size_t               theta_bytes        = 0;
     size_t               freq_factors_bytes = 0;
@@ -153,18 +216,22 @@ struct RopeSetRowsMatch {
     bool matched() const { return rope.matched() && set_rows.matched() && cache_rows != nullptr; }
 };
 
-static RopeMatch match_rope_f32(const Graph & graph, const GraphNode * node) {
+static RopeMatch match_rope_f32(const Graph & graph, const GraphNode * node, Status * status = nullptr) {
     RopeMatch match;
     if (node == nullptr || node->op != GGML_OP_ROPE || node->inputs.size() < 2 || node->inputs.size() > 3) {
+        log_rope_reject(status, "root is not a supported ROPE arity", nullptr, nullptr, nullptr);
         return match;
     }
 
     const Value * input     = graph_value(graph, node->inputs[0]);
     const Value * positions = graph_value(graph, node->inputs[1]);
     const Value * output    = graph_value(graph, node->output);
+    size_t        input_span = 0;
     if (input == nullptr || positions == nullptr || output == nullptr || input->type != GGML_TYPE_F32 ||
-        output->type != GGML_TYPE_F32 || positions->type != GGML_TYPE_I32 || !input->contiguous ||
-        !output->contiguous || !positions->contiguous || !is_rope_shape(*input) || !same_shape(*input, *output)) {
+        output->type != GGML_TYPE_F32 || positions->type != GGML_TYPE_I32 ||
+        !is_supported_rope_input_layout(*input, input_span) ||
+        !is_packed_f32_rope_layout(*output) || !positions->contiguous || !same_shape(*input, *output)) {
+        log_rope_reject(status, "input/output/positions shape or layout is unsupported", input, positions, output);
         return {};
     }
 
@@ -173,11 +240,27 @@ static RopeMatch match_rope_f32(const Graph & graph, const GraphNode * node) {
     const int64_t      token_count = input->ne[2];
     const RopeParams * params      = op_params_as<RopeParams>(node->params);
     if (params == nullptr || !is_supported_rope_params(*params, head_size) || !is_1d_shape(*positions, token_count)) {
+        std::string reason = "ROPE params or positions shape is unsupported";
+        if (params == nullptr) {
+            reason += " params=missing";
+        } else {
+            std::ostringstream out;
+            out << reason << " params={n_dims=" << params->n_dims << ", mode=" << params->mode
+                << ", n_ctx_orig=" << params->n_ctx_orig << ", freq_base=" << params->freq_base
+                << ", freq_scale=" << params->freq_scale << ", ext_factor=" << params->ext_factor
+                << ", attn_factor=" << params->attn_factor << ", beta_fast=" << params->beta_fast
+                << ", beta_slow=" << params->beta_slow << "}";
+            reason = out.str();
+        }
+        log_rope_reject(status, reason.c_str(), input, positions, output);
         return {};
     }
+    const int64_t n_dims = params->n_dims;
 
     std::vector<uint8_t> theta_data;
-    if (!build_rope_theta_table(*node, head_size, theta_data)) {
+    float                rope_mscale = 1.0f;
+    if (!build_rope_theta_table(*node, n_dims, theta_data, rope_mscale)) {
+        log_rope_reject(status, "failed to build supported ROPE theta table", input, positions, output);
         return {};
     }
 
@@ -187,12 +270,14 @@ static RopeMatch match_rope_f32(const Graph & graph, const GraphNode * node) {
     if (node->inputs.size() == 3) {
         freq_factors = graph_value(graph, node->inputs[2]);
         if (freq_factors == nullptr || freq_factors->type != GGML_TYPE_F32 || !freq_factors->contiguous ||
-            !is_1d_shape(*freq_factors, head_size / 2)) {
+            !is_1d_shape(*freq_factors, n_dims / 2)) {
+            log_rope_reject(status, "explicit frequency factors shape or layout is unsupported", input, positions,
+                            output, freq_factors);
             return {};
         }
         freq_factors_bytes = freq_factors->byte_count;
     } else {
-        build_unit_frequency_factors(head_size, freq_factors_data);
+        build_unit_frequency_factors(n_dims, freq_factors_data);
         freq_factors_bytes = freq_factors_data.size();
     }
 
@@ -204,6 +289,11 @@ static RopeMatch match_rope_f32(const Graph & graph, const GraphNode * node) {
     match.token_count        = token_count;
     match.head_count         = head_count;
     match.head_size          = head_size;
+    match.n_dims             = n_dims;
+    match.input_stride1      = static_cast<int64_t>(input->nb[1] / sizeof(float));
+    match.input_stride2      = static_cast<int64_t>(input->nb[2] / sizeof(float));
+    match.input_span         = input_span;
+    match.rope_mscale        = rope_mscale;
     match.mode               = params->mode;
     match.theta_bytes        = theta_data.size();
     match.freq_factors_bytes = freq_factors_bytes;
@@ -261,8 +351,13 @@ static SetRowsMatch match_set_rows_2d(const Graph & graph, const GraphNode * nod
 
 static void add_rope_compile_parameters(Dispatch & dispatch, const RopeMatch & match) {
     dispatch.kernel.compile_parameters.emplace("ggml.rope_f32.head_size", to_config_value(match.head_size));
+    dispatch.kernel.compile_parameters.emplace("ggml.rope_f32.n_dims", to_config_value(match.n_dims));
     dispatch.kernel.compile_parameters.emplace("ggml.rope_f32.head_count", to_config_value(match.head_count));
     dispatch.kernel.compile_parameters.emplace("ggml.rope_f32.token_capacity", to_config_value(match.token_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.rope_f32.input_stride1", to_config_value(match.input_stride1));
+    dispatch.kernel.compile_parameters.emplace("ggml.rope_f32.input_stride2", to_config_value(match.input_stride2));
+    dispatch.kernel.compile_parameters.emplace("ggml.rope_f32.mscale",
+                                               rope_mscale_config_value(match.rope_mscale));
     dispatch.kernel.compile_parameters.emplace("ggml.rope_f32.mode", to_config_value(match.mode));
 }
 
@@ -313,6 +408,7 @@ static Dispatch make_rope_dispatch(const DispatchMatchContext & context,
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kRopeF32Kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
+    dispatch.kernel.integer_parameters.emplace("input_span", match.input_span);
     add_rope_compile_parameters(dispatch, match);
     dispatch.bindings.push_back({ match.positions->id, 0, match.positions->byte_count });
     dispatch.bindings.push_back({ match.input->id, 0, match.input->byte_count });
@@ -344,12 +440,21 @@ static Dispatch make_rope_set_rows_dispatch(const DispatchMatchContext & context
     dispatch.kernel = make_kernel_specialization(kRopeSetRowsF32Kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", match.rope.token_count);
     dispatch.kernel.integer_parameters.emplace("cache_row_count", match.set_rows.cache_row_count);
+    dispatch.kernel.integer_parameters.emplace("input_span", match.rope.input_span);
     dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.head_size",
                                                to_config_value(match.rope.head_size));
+    dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.n_dims",
+                                               to_config_value(match.rope.n_dims));
     dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.head_count",
                                                to_config_value(match.rope.head_count));
     dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.token_capacity",
                                                to_config_value(match.rope.token_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.input_stride1",
+                                               to_config_value(match.rope.input_stride1));
+    dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.input_stride2",
+                                               to_config_value(match.rope.input_stride2));
+    dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.mscale",
+                                               rope_mscale_config_value(match.rope.rope_mscale));
     dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.output_format",
                                                to_config_value(match.set_rows.output_format));
     dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.mode", to_config_value(match.rope.mode));
@@ -428,7 +533,7 @@ static bool match_rope_set_rows_f32_dispatch(const DispatchMatchContext & contex
 }
 
 static bool match_rope_f32_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
-    const RopeMatch match = match_rope_f32(context.graph, context.root_node);
+    const RopeMatch match = match_rope_f32(context.graph, context.root_node, &dispatch_match.status);
     if (!match.matched()) {
         return false;
     }

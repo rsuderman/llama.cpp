@@ -1900,6 +1900,7 @@ static void run_rope_set_rows_dispatch_checks() {
         REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rope_f32");
         REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == token_count);
         require_compile_parameter(dispatch, "ggml.rope_f32.head_size", "8");
+        require_compile_parameter(dispatch, "ggml.rope_f32.n_dims", "8");
         require_compile_parameter(dispatch, "ggml.rope_f32.head_count", "2");
         require_compile_parameter(dispatch, "ggml.rope_f32.token_capacity", "3");
         require_compile_parameter(dispatch, "ggml.rope_f32.mode", "2");
@@ -1940,6 +1941,7 @@ static void run_rope_set_rows_dispatch_checks() {
         REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rope_f32");
         REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == token_count);
         require_compile_parameter(dispatch, "ggml.rope_f32.head_size", "8");
+        require_compile_parameter(dispatch, "ggml.rope_f32.n_dims", "8");
         require_compile_parameter(dispatch, "ggml.rope_f32.head_count", "2");
         require_compile_parameter(dispatch, "ggml.rope_f32.token_capacity", "3");
         require_compile_parameter(dispatch, "ggml.rope_f32.mode", "0");
@@ -1975,6 +1977,102 @@ static void run_rope_set_rows_dispatch_checks() {
         const ggml::hrx::Dispatch & dispatch = scheduler.plan().dispatches.front();
         REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rope_f32");
         require_compile_parameter(dispatch, "ggml.rope_f32.mode", "2");
+        require_compile_parameter(dispatch, "ggml.rope_f32.n_dims", "8");
+    }
+
+    {
+        constexpr int64_t partial_head_size  = 128;
+        constexpr int64_t partial_n_dims     = 96;
+        constexpr int64_t partial_head_count = 24;
+        constexpr int64_t partial_tokens     = 2;
+        ggml_tensor * input = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, partial_head_size, partial_head_count, partial_tokens);
+        ggml_tensor * pos   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, partial_tokens);
+        ggml_tensor * freqs = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, partial_n_dims / 2);
+        ggml_tensor * output =
+            ggml_rope_ext(ctx, input, pos, freqs, partial_n_dims, GGML_ROPE_TYPE_NEOX, 0, 10000.0f, 1.0f, 0.0f,
+                          1.0f, 0.0f, 0.0f);
+        REQUIRE(input != nullptr);
+        REQUIRE(pos != nullptr);
+        REQUIRE(freqs != nullptr);
+        REQUIRE(output != nullptr);
+
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        REQUIRE(graph != nullptr);
+        ggml_build_forward_expand(graph, output);
+
+        ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+
+        ggml::hrx::DispatchScheduler scheduler;
+        REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+        REQUIRE(scheduler.plan().valid());
+        REQUIRE(scheduler.plan().dispatches.size() == 1);
+        const ggml::hrx::Dispatch & dispatch = scheduler.plan().dispatches.front();
+        REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rope_f32");
+        require_compile_parameter(dispatch, "ggml.rope_f32.head_size", std::to_string(partial_head_size));
+        require_compile_parameter(dispatch, "ggml.rope_f32.n_dims", std::to_string(partial_n_dims));
+        require_compile_parameter(dispatch, "ggml.rope_f32.head_count", std::to_string(partial_head_count));
+        require_compile_parameter(dispatch, "ggml.rope_f32.token_capacity", std::to_string(partial_tokens));
+        require_compile_parameter(dispatch, "ggml.rope_f32.mode", "2");
+
+        const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+            imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(commands.valid());
+        REQUIRE(command_program_verifies(commands));
+    }
+
+    {
+        constexpr int64_t partial_head_size  = 128;
+        constexpr int64_t partial_n_dims     = 96;
+        constexpr int64_t partial_head_count = 24;
+        constexpr int64_t partial_tokens     = 2;
+        constexpr int64_t partial_token_stride = 5120;
+        constexpr size_t  input_offset       = 64;
+        constexpr size_t  input_elements =
+            input_offset / sizeof(float) + static_cast<size_t>(partial_tokens - 1) * partial_token_stride +
+            partial_head_size * partial_head_count;
+
+        ggml_tensor * storage = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, input_elements);
+        ggml_tensor * input   = ggml_view_3d(ctx, storage, partial_head_size, partial_head_count, partial_tokens,
+                                             partial_head_size * sizeof(float),
+                                             partial_token_stride * sizeof(float), input_offset);
+        ggml_tensor * pos     = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, partial_tokens);
+        ggml_tensor * freqs   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, partial_n_dims / 2);
+        ggml_tensor * output =
+            ggml_rope_ext(ctx, input, pos, freqs, partial_n_dims, GGML_ROPE_TYPE_NEOX, 0, 10000.0f, 1.0f, 0.0f,
+                          1.19024f, 32.0f, 1.0f);
+        REQUIRE(storage != nullptr);
+        REQUIRE(input != nullptr);
+        REQUIRE(pos != nullptr);
+        REQUIRE(freqs != nullptr);
+        REQUIRE(output != nullptr);
+
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        REQUIRE(graph != nullptr);
+        ggml_build_forward_expand(graph, output);
+
+        ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+
+        ggml::hrx::DispatchScheduler scheduler;
+        REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+        REQUIRE(scheduler.plan().valid());
+        REQUIRE(scheduler.plan().dispatches.size() == 1);
+        const ggml::hrx::Dispatch & dispatch = scheduler.plan().dispatches.front();
+        REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rope_f32");
+        require_compile_parameter(dispatch, "ggml.rope_f32.head_size", std::to_string(partial_head_size));
+        require_compile_parameter(dispatch, "ggml.rope_f32.n_dims", std::to_string(partial_n_dims));
+        require_compile_parameter(dispatch, "ggml.rope_f32.head_count", std::to_string(partial_head_count));
+        require_compile_parameter(dispatch, "ggml.rope_f32.token_capacity", std::to_string(partial_tokens));
+        require_compile_parameter(dispatch, "ggml.rope_f32.input_stride1", std::to_string(partial_head_size));
+        require_compile_parameter(dispatch, "ggml.rope_f32.input_stride2", std::to_string(partial_token_stride));
+        require_compile_parameter(dispatch, "ggml.rope_f32.mscale", "1.19024003");
+        require_compile_parameter(dispatch, "ggml.rope_f32.mode", "2");
+
+        const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+            imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(commands.valid());
+        REQUIRE(command_program_verifies(commands));
     }
 
     {
@@ -2082,6 +2180,7 @@ static void run_rope_set_rows_dispatch_checks() {
         REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == token_count);
         REQUIRE(dispatch.kernel.integer_parameters.at("cache_row_count") == cache_rows);
         require_compile_parameter(dispatch, "ggml.rope_set_rows_f32.output_format", "16");
+        require_compile_parameter(dispatch, "ggml.rope_set_rows_f32.n_dims", "8");
         require_compile_parameter(dispatch, "ggml.rope_set_rows_f32.mode", "2");
         REQUIRE(dispatch.bindings.size() == 6);
 
@@ -2130,6 +2229,7 @@ static void run_rope_set_rows_dispatch_checks() {
         REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == token_count);
         REQUIRE(dispatch.kernel.integer_parameters.at("cache_row_count") == cache_rows);
         require_compile_parameter(dispatch, "ggml.rope_set_rows_f32.output_format", "16");
+        require_compile_parameter(dispatch, "ggml.rope_set_rows_f32.n_dims", "8");
         require_compile_parameter(dispatch, "ggml.rope_set_rows_f32.mode", "0");
         REQUIRE(dispatch.bindings.size() == 6);
 
@@ -3536,7 +3636,13 @@ static QwenAttentionPostprocessTensors build_qwen_attention_postprocess_graph(gg
                                                                               int64_t        key_value_head_count,
                                                                               int64_t        cache_row_count,
                                                                               float          rms_epsilon = 0.000001f,
-                                                                              bool include_inverse_frequencies = true) {
+                                                                              bool           include_inverse_frequencies = true,
+                                                                              int            rope_n_ctx_orig = 0,
+                                                                              float          rope_freq_base  = 10000.0f,
+                                                                              float          rope_freq_scale = 1.0f,
+                                                                              float          rope_ext_factor = 0.0f,
+                                                                              float          rope_beta_fast  = 0.0f,
+                                                                              float          rope_beta_slow  = 0.0f) {
     QwenAttentionPostprocessTensors tensors;
     const int64_t                   query_size     = query_head_count * kQwenFlashHeadSize;
     const int64_t                   key_value_size = key_value_head_count * kQwenFlashHeadSize;
@@ -3579,20 +3685,18 @@ static QwenAttentionPostprocessTensors build_qwen_attention_postprocess_graph(gg
     ggml_tensor * query_mul  = ggml_mul(ctx, query_norm, query_norm_weight);
     REQUIRE(query_norm != nullptr);
     REQUIRE(query_mul != nullptr);
-    tensors.query_output = include_inverse_frequencies ?
-                               ggml_rope_ext(ctx, query_mul, tensors.positions, inverse_frequencies, kQwenFlashHeadSize,
-                                             GGML_ROPE_TYPE_NEOX, 0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f) :
-                               ggml_rope(ctx, query_mul, tensors.positions, kQwenFlashHeadSize, GGML_ROPE_TYPE_NEOX);
+    tensors.query_output = ggml_rope_ext(ctx, query_mul, tensors.positions, inverse_frequencies, kQwenFlashHeadSize,
+                                         GGML_ROPE_TYPE_NEOX, rope_n_ctx_orig, rope_freq_base, rope_freq_scale,
+                                         rope_ext_factor, 1.0f, rope_beta_fast, rope_beta_slow);
     REQUIRE(tensors.query_output != nullptr);
 
     ggml_tensor * key_norm = ggml_rms_norm(ctx, tensors.key_reshape, rms_epsilon);
     ggml_tensor * key_mul  = ggml_mul(ctx, key_norm, key_norm_weight);
     REQUIRE(key_norm != nullptr);
     REQUIRE(key_mul != nullptr);
-    ggml_tensor * key_rope = include_inverse_frequencies ?
-                                 ggml_rope_ext(ctx, key_mul, tensors.positions, inverse_frequencies, kQwenFlashHeadSize,
-                                               GGML_ROPE_TYPE_NEOX, 0, 10000.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f) :
-                                 ggml_rope(ctx, key_mul, tensors.positions, kQwenFlashHeadSize, GGML_ROPE_TYPE_NEOX);
+    ggml_tensor * key_rope = ggml_rope_ext(ctx, key_mul, tensors.positions, inverse_frequencies, kQwenFlashHeadSize,
+                                           GGML_ROPE_TYPE_NEOX, rope_n_ctx_orig, rope_freq_base, rope_freq_scale,
+                                           rope_ext_factor, 1.0f, rope_beta_fast, rope_beta_slow);
     REQUIRE(key_rope != nullptr);
 
     ggml_tensor * key_cache_rows =
@@ -3668,7 +3772,8 @@ static void schedule_qwen_attention_postprocess_command(ggml_context *          
                                                         int64_t                                 query_head_count,
                                                         int64_t                                 key_value_head_count,
                                                         int64_t                                 cache_row_count,
-                                                        bool expect_synthetic_inverse_frequencies = false) {
+                                                        bool  expect_synthetic_inverse_frequencies = false,
+                                                        const std::string & expected_rope_mscale = "1") {
     ggml::hrx::GraphImportResult imported = import_qwen_attention_postprocess_graph(ctx, tensors);
 
     ggml::hrx::DispatchScheduler scheduler;
@@ -3685,6 +3790,7 @@ static void schedule_qwen_attention_postprocess_command(ggml_context *          
     REQUIRE(dispatch.bindings.size() == 12);
     require_compile_parameter(dispatch, "qwen3_moe.model.rms_epsilon", "0.000001");
     require_compile_parameter(dispatch, "qwen3_moe.attention.head_size", std::to_string(kQwenFlashHeadSize));
+    require_compile_parameter(dispatch, "qwen3_moe.attention.rope_mscale", expected_rope_mscale);
     require_compile_parameter(dispatch, "qwen3_moe.attention.query_size",
                               std::to_string(query_head_count * kQwenFlashHeadSize));
     require_compile_parameter(dispatch, "qwen3_moe.attention.key_value_size",
@@ -3787,6 +3893,12 @@ static void run_qwen_attention_postprocess_dispatch_checks() {
         const QwenAttentionPostprocessTensors tensors =
             build_qwen_attention_postprocess_graph(ctx, 4, 4, 2, 16, 0.000001f, false);
         schedule_qwen_attention_postprocess_command(ctx, tensors, 4, 4, 2, 16, true);
+    }
+
+    {
+        const QwenAttentionPostprocessTensors tensors = build_qwen_attention_postprocess_graph(
+            ctx, 4, 4, 2, 16, 0.000001f, false, 8192, 1000000.0f, 0.25f, 1.0f, 32.0f, 1.0f);
+        schedule_qwen_attention_postprocess_command(ctx, tensors, 4, 4, 2, 16, true, "1.13862944");
     }
 
     {
