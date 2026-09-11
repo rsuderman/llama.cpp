@@ -638,6 +638,17 @@ static void restore_environment_value(const char * name, bool had_value, const s
 
 static void add_binary_f32_exact_dispatch_params(ggml::hrx::Dispatch & dispatch, int64_t element_count) {
     dispatch.kernel.integer_parameters.emplace("element_count", element_count);
+    dispatch.kernel.compile_parameters.emplace("ggml.binary_f32.ne0", std::to_string(element_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.binary_f32.ne1", "1");
+    dispatch.kernel.compile_parameters.emplace("ggml.binary_f32.ne2", "1");
+    dispatch.kernel.compile_parameters.emplace("ggml.binary_f32.src0_stride1", std::to_string(element_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.binary_f32.src0_stride2", std::to_string(element_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.binary_f32.src0_stride3", std::to_string(element_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.binary_f32.src1_stride1", std::to_string(element_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.binary_f32.src1_stride2", std::to_string(element_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.binary_f32.src1_stride3", std::to_string(element_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.binary_f32.src0_span", std::to_string(element_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.binary_f32.src1_span", std::to_string(element_count));
     dispatch.kernel.compile_parameters.emplace("ggml.binary_f32.op", "0");
 }
 
@@ -1442,10 +1453,40 @@ static void run_binary_f32_broadcast_dispatch_checks() {
         const ggml::hrx::Dispatch dispatch = schedule_single_dispatch_for_tensor(ctx, output);
         REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_binary_f32");
         REQUIRE(dispatch.kernel.integer_parameters.at("element_count") == 48);
-        REQUIRE(dispatch.kernel.integer_parameters.count("ne0") == 0);
+        require_compile_param(dispatch, "ggml.binary_f32.ne0", "16");
+        require_compile_param(dispatch, "ggml.binary_f32.src0_stride1", "16");
+        require_compile_param(dispatch, "ggml.binary_f32.src1_stride1", "16");
         REQUIRE(dispatch.kernel.integer_parameters.count("src0_element_count") == 0);
         require_compile_param(dispatch, "ggml.binary_f32.op", "0");
         REQUIRE(dispatch.kernel.compile_parameters.count("ggml.binary_bc_f32.src0_broadcast_dim0") == 0);
+
+        ggml_free(ctx);
+    }
+
+    {
+        ggml_init_params params = {};
+        params.mem_size         = 256 * 1024;
+        params.no_alloc         = true;
+        ggml_context * ctx      = ggml_init(params);
+        REQUIRE(ctx != nullptr);
+
+        ggml_tensor * source = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 2048, 3, 2);
+        REQUIRE(source != nullptr);
+        ggml_tensor * lhs = ggml_view_2d(ctx, source, 2048, 2, source->nb[2], 0);
+        ggml_tensor * rhs = ggml_view_2d(ctx, source, 2048, 2, source->nb[2], 2 * source->nb[1]);
+        REQUIRE(lhs != nullptr);
+        REQUIRE(rhs != nullptr);
+        ggml_tensor * output = ggml_mul(ctx, lhs, rhs);
+        REQUIRE(output != nullptr);
+
+        const ggml::hrx::Dispatch dispatch = schedule_single_dispatch_for_tensor(ctx, output);
+        REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_binary_f32");
+        REQUIRE(dispatch.kernel.integer_parameters.at("element_count") == 4096);
+        require_compile_param(dispatch, "ggml.binary_f32.src0_stride1", "6144");
+        require_compile_param(dispatch, "ggml.binary_f32.src1_stride1", "6144");
+        require_compile_param(dispatch, "ggml.binary_f32.src0_span", "8192");
+        require_compile_param(dispatch, "ggml.binary_f32.src1_span", "8192");
+        require_compile_param(dispatch, "ggml.binary_f32.op", "2");
 
         ggml_free(ctx);
     }
@@ -6438,7 +6479,7 @@ static void run_alias_value_import_checks() {
     REQUIRE(internal_view_value->storage_offset == internal_source->nb[1]);
 
     ggml::hrx::DispatchScheduler internal_scheduler;
-    REQUIRE(!internal_scheduler.schedule_graph(internal_imported.graph, test_dispatch_target()));
+    REQUIRE(internal_scheduler.schedule_graph(internal_imported.graph, test_dispatch_target()));
 
     REQUIRE(internal_imported.graph.values().bind_buffer(
         internal_source_value->id, { dummy_hrx_buffer(0x5000), 256, internal_source_value->byte_count }));

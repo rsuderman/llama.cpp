@@ -730,29 +730,6 @@ static bool zero_output_elision_supported(const ggml_tensor * op) {
     return op != nullptr && (ggml_nelements(op) == 0 || ggml_nbytes(op) == 0) && zero_output_elision_safe_op(op->op);
 }
 
-static const ggml_tensor * tensor_storage_root(const ggml_tensor * tensor) {
-    while (tensor != nullptr && tensor->view_src != nullptr) {
-        tensor = tensor->view_src;
-    }
-    return tensor;
-}
-
-static bool tensors_have_distinct_storage(const ggml_tensor * lhs,
-                                          const ggml_tensor * rhs,
-                                          const ggml_tensor * output) {
-    const ggml_tensor * lhs_root    = tensor_storage_root(lhs);
-    const ggml_tensor * rhs_root    = tensor_storage_root(rhs);
-    const ggml_tensor * output_root = tensor_storage_root(output);
-    return lhs_root != nullptr && rhs_root != nullptr && output_root != nullptr && lhs_root != rhs_root &&
-           lhs_root != output_root && rhs_root != output_root;
-}
-
-static bool tensors_have_distinct_storage(const ggml_tensor * lhs, const ggml_tensor * output) {
-    const ggml_tensor * lhs_root    = tensor_storage_root(lhs);
-    const ggml_tensor * output_root = tensor_storage_root(output);
-    return lhs_root != nullptr && output_root != nullptr && lhs_root != output_root;
-}
-
 struct TensorStorageRange {
     const ggml_tensor * root   = nullptr;
     size_t              offset = 0;
@@ -775,6 +752,14 @@ static TensorStorageRange tensor_storage_range(const ggml_tensor * tensor) {
     }
     range.root  = tensor;
     range.valid = true;
+    return range;
+}
+
+static TensorStorageRange tensor_storage_range(const ggml_tensor * tensor, size_t size) {
+    TensorStorageRange range = tensor_storage_range(tensor);
+    if (range.valid) {
+        range.size = size;
+    }
     return range;
 }
 
@@ -803,6 +788,32 @@ static bool scale_storage_is_safe(const ggml_tensor * input, const ggml_tensor *
            tensor_storage_ranges_disjoint(input_range, output_range);
 }
 
+static bool binary_output_storage_is_safe(const ggml_tensor * lhs, const ggml_tensor * rhs, const ggml_tensor * output) {
+    const TensorStorageRange lhs_range    = tensor_storage_range(lhs);
+    const TensorStorageRange rhs_range    = tensor_storage_range(rhs);
+    const TensorStorageRange output_range = tensor_storage_range(output);
+    if (!lhs_range.valid || !rhs_range.valid || !output_range.valid) {
+        return false;
+    }
+    return tensor_storage_ranges_disjoint(lhs_range, output_range) &&
+           tensor_storage_ranges_disjoint(rhs_range, output_range);
+}
+
+static bool binary_output_storage_is_safe(const ggml_tensor * lhs,
+                                          size_t              lhs_byte_count,
+                                          const ggml_tensor * rhs,
+                                          size_t              rhs_byte_count,
+                                          const ggml_tensor * output) {
+    const TensorStorageRange lhs_range    = tensor_storage_range(lhs, lhs_byte_count);
+    const TensorStorageRange rhs_range    = tensor_storage_range(rhs, rhs_byte_count);
+    const TensorStorageRange output_range = tensor_storage_range(output);
+    if (!lhs_range.valid || !rhs_range.valid || !output_range.valid) {
+        return false;
+    }
+    return tensor_storage_ranges_disjoint(lhs_range, output_range) &&
+           tensor_storage_ranges_disjoint(rhs_range, output_range);
+}
+
 static bool tensor_has_positive_shape(const ggml_tensor * tensor) {
     if (tensor == nullptr || ggml_nelements(tensor) <= 0) {
         return false;
@@ -829,6 +840,44 @@ static bool tensor_has_packed_f32_layout(const ggml_tensor * tensor) {
     return true;
 }
 
+static bool tensor_has_strided_f32_layout(const ggml_tensor * tensor) {
+    if (tensor == nullptr || tensor->nb[0] != sizeof(float)) {
+        return false;
+    }
+    for (int i = 1; i < GGML_MAX_DIMS; ++i) {
+        if (tensor->nb[i] % sizeof(float) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool tensor_storage_span_bytes(const ggml_tensor * tensor, size_t & byte_count) {
+    if (!tensor_has_strided_f32_layout(tensor)) {
+        return false;
+    }
+    size_t max_offset = 0;
+    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+        if (tensor->ne[i] <= 0) {
+            return false;
+        }
+        const size_t extent = static_cast<size_t>(tensor->ne[i] - 1);
+        if (extent != 0 && tensor->nb[i] > std::numeric_limits<size_t>::max() / extent) {
+            return false;
+        }
+        const size_t dim_offset = extent * tensor->nb[i];
+        if (max_offset > std::numeric_limits<size_t>::max() - dim_offset) {
+            return false;
+        }
+        max_offset += dim_offset;
+    }
+    if (max_offset > std::numeric_limits<size_t>::max() - sizeof(float)) {
+        return false;
+    }
+    byte_count = max_offset + sizeof(float);
+    return true;
+}
+
 static bool tensor_broadcastable_to(const ggml_tensor * source, const ggml_tensor * output) {
     if (source == nullptr || output == nullptr) {
         return false;
@@ -839,13 +888,6 @@ static bool tensor_broadcastable_to(const ggml_tensor * source, const ggml_tenso
         }
     }
     return true;
-}
-
-static bool tensor_has_supported_source_layout(const ggml_tensor * tensor) {
-    // ggml_clamp is represented as a zero-offset in-place view, so allow full aliases that preserve packed layout.
-    return tensor != nullptr && (tensor->view_src == nullptr ||
-                                 (tensor->view_offs == 0 && ggml_nbytes(tensor) == ggml_nbytes(tensor->view_src) &&
-                                  (tensor->op == GGML_OP_RESHAPE || tensor->op == GGML_OP_CLAMP)));
 }
 
 static bool binary_kind_allows_broadcast(ggml::hrx::BinaryKind kind,
@@ -876,13 +918,25 @@ static bool binary_kind_allows_broadcast(ggml::hrx::BinaryKind kind,
 }
 
 static bool supported_binary_f32_tensor(const ggml_tensor * op) {
-    if (op == nullptr || op->src[0] == nullptr || op->src[1] == nullptr || op->type != GGML_TYPE_F32 ||
-        op->src[0]->type != GGML_TYPE_F32 || op->src[1]->type != GGML_TYPE_F32 || !tensor_has_positive_shape(op) ||
-        !ggml_is_contiguous(op) || !ggml_is_contiguous(op->src[0]) || !ggml_is_contiguous(op->src[1]) ||
-        !tensor_has_packed_f32_layout(op) || !tensor_has_packed_f32_layout(op->src[0]) ||
-        !tensor_has_packed_f32_layout(op->src[1]) || op->view_src != nullptr ||
-        !tensor_has_supported_source_layout(op->src[0]) || !tensor_has_supported_source_layout(op->src[1]) ||
-        !tensors_have_distinct_storage(op->src[0], op->src[1], op)) {
+    if (op == nullptr || op->src[0] == nullptr || op->src[1] == nullptr) {
+        return false;
+    }
+    if (op->type != GGML_TYPE_F32 || op->src[0]->type != GGML_TYPE_F32 || op->src[1]->type != GGML_TYPE_F32) {
+        return false;
+    }
+    if (!tensor_has_positive_shape(op)) {
+        return false;
+    }
+    if (!ggml_is_contiguous(op) || !tensor_has_packed_f32_layout(op) || op->view_src != nullptr) {
+        return false;
+    }
+    size_t lhs_byte_count = 0;
+    size_t rhs_byte_count = 0;
+    if (!tensor_storage_span_bytes(op->src[0], lhs_byte_count) ||
+        !tensor_storage_span_bytes(op->src[1], rhs_byte_count)) {
+        return false;
+    }
+    if (!binary_output_storage_is_safe(op->src[0], lhs_byte_count, op->src[1], rhs_byte_count, op)) {
         return false;
     }
 
@@ -895,7 +949,17 @@ static bool supported_binary_f32_tensor(const ggml_tensor * op) {
         return false;
     }
 
-    return binary_kind_allows_broadcast(binary_kind, op->src[0], op->src[1], op);
+    if ((!ggml_are_same_shape(op->src[0], op) || !ggml_are_same_shape(op->src[1], op)) &&
+        (!ggml_is_contiguous(op->src[0]) || !ggml_is_contiguous(op->src[1]) ||
+         !tensor_has_packed_f32_layout(op->src[0]) || !tensor_has_packed_f32_layout(op->src[1]))) {
+        return false;
+    }
+
+    if (!binary_kind_allows_broadcast(binary_kind, op->src[0], op->src[1], op)) {
+        return false;
+    }
+
+    return true;
 }
 
 static bool supported_scale_f32_tensor(const ggml_tensor * op) {
