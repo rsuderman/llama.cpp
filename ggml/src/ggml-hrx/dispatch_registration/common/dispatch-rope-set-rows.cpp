@@ -1,5 +1,6 @@
 #include "dispatch-rope-set-rows.h"
 
+#include "dispatch-layout-utils.h"
 #include "dispatch-rope-utils.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
@@ -88,9 +89,8 @@ static bool is_packed_f32_rope_layout(const Value & value) {
 }
 
 static bool is_supported_rope_input_layout(const Value & value, size_t & span_elements) {
-    if (value.type != GGML_TYPE_F32 || !is_rope_shape(value) || value.nb[0] != sizeof(float) ||
-        value.nb[1] % sizeof(float) != 0 || value.nb[2] % sizeof(float) != 0 ||
-        value.byte_count % sizeof(float) != 0) {
+    if (!is_rope_shape(value) || value.nb[1] % sizeof(float) != 0 || value.nb[2] % sizeof(float) != 0 ||
+        !strided_f32_storage_span_elements(value, span_elements)) {
         return false;
     }
 
@@ -103,7 +103,6 @@ static bool is_supported_rope_input_layout(const Value & value, size_t & span_el
     const size_t token_span = static_cast<size_t>(value.ne[2] - 1) * stride2;
     const size_t head_span  = static_cast<size_t>(value.ne[1] - 1) * stride1;
     const size_t required   = token_span + head_span + static_cast<size_t>(value.ne[0]);
-    span_elements           = value.byte_count / sizeof(float);
     return required <= span_elements;
 }
 
@@ -180,6 +179,7 @@ struct RopeMatch {
     int64_t              input_stride1      = 0;
     int64_t              input_stride2      = 0;
     size_t               input_span         = 0;
+    size_t               input_span_bytes   = 0;
     float                rope_mscale        = 1.0f;
     int64_t              mode               = 0;
     size_t               theta_bytes        = 0;
@@ -293,6 +293,7 @@ static RopeMatch match_rope_f32(const Graph & graph, const GraphNode * node, Sta
     match.input_stride1      = static_cast<int64_t>(input->nb[1] / sizeof(float));
     match.input_stride2      = static_cast<int64_t>(input->nb[2] / sizeof(float));
     match.input_span         = input_span;
+    match.input_span_bytes   = input_span * sizeof(float);
     match.rope_mscale        = rope_mscale;
     match.mode               = params->mode;
     match.theta_bytes        = theta_data.size();
@@ -408,10 +409,10 @@ static Dispatch make_rope_dispatch(const DispatchMatchContext & context,
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kRopeF32Kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
-    dispatch.kernel.integer_parameters.emplace("input_span", match.input_span);
     add_rope_compile_parameters(dispatch, match);
+    dispatch.kernel.compile_parameters.emplace("ggml.rope_f32.input_span", to_config_value(match.input_span));
     dispatch.bindings.push_back({ match.positions->id, 0, match.positions->byte_count });
-    dispatch.bindings.push_back({ match.input->id, 0, match.input->byte_count });
+    dispatch.bindings.push_back({ match.input->storage_root, match.input->storage_offset, match.input_span_bytes });
     dispatch.bindings.push_back({ theta, 0, match.theta_bytes });
     dispatch.bindings.push_back({ freq_factors, 0, match.freq_factors_bytes });
     dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
@@ -440,7 +441,6 @@ static Dispatch make_rope_set_rows_dispatch(const DispatchMatchContext & context
     dispatch.kernel = make_kernel_specialization(kRopeSetRowsF32Kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", match.rope.token_count);
     dispatch.kernel.integer_parameters.emplace("cache_row_count", match.set_rows.cache_row_count);
-    dispatch.kernel.integer_parameters.emplace("input_span", match.rope.input_span);
     dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.head_size",
                                                to_config_value(match.rope.head_size));
     dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.n_dims",
@@ -453,6 +453,8 @@ static Dispatch make_rope_set_rows_dispatch(const DispatchMatchContext & context
                                                to_config_value(match.rope.input_stride1));
     dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.input_stride2",
                                                to_config_value(match.rope.input_stride2));
+    dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.input_span",
+                                               to_config_value(match.rope.input_span));
     dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.mscale",
                                                rope_mscale_config_value(match.rope.rope_mscale));
     dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.output_format",
@@ -460,7 +462,8 @@ static Dispatch make_rope_set_rows_dispatch(const DispatchMatchContext & context
     dispatch.kernel.compile_parameters.emplace("ggml.rope_set_rows_f32.mode", to_config_value(match.rope.mode));
     dispatch.bindings.push_back({ match.rope.positions->id, 0, match.rope.positions->byte_count });
     dispatch.bindings.push_back({ match.set_rows.indices->id, 0, match.set_rows.indices->byte_count });
-    dispatch.bindings.push_back({ match.rope.input->id, 0, match.rope.input->byte_count });
+    dispatch.bindings.push_back(
+        { match.rope.input->storage_root, match.rope.input->storage_offset, match.rope.input_span_bytes });
     dispatch.bindings.push_back({ theta, 0, match.rope.theta_bytes });
     dispatch.bindings.push_back({ freq_factors, 0, match.rope.freq_factors_bytes });
     dispatch.bindings.push_back({ match.set_rows.output->id, 0, match.set_rows.output->byte_count });

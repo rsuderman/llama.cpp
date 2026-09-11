@@ -1,5 +1,6 @@
 #include "dispatch-binary.h"
 
+#include "dispatch-layout-utils.h"
 #include "dispatch-mul-mat-common.h"
 #include "ggml.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
@@ -43,44 +44,6 @@ static bool packed_f32_layout(const Value & value) {
         }
         expected_stride *= static_cast<size_t>(value.ne[i]);
     }
-    return true;
-}
-
-static bool strided_f32_layout(const Value & value) {
-    if (value.nb[0] != sizeof(float)) {
-        return false;
-    }
-    for (int i = 1; i < GGML_MAX_DIMS; ++i) {
-        if (value.nb[i] % sizeof(float) != 0) {
-            return false;
-        }
-    }
-    return true;
-}
-
-static bool storage_span_bytes(const Value & value, size_t & byte_count) {
-    if (!strided_f32_layout(value)) {
-        return false;
-    }
-    size_t max_offset = 0;
-    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
-        if (value.ne[i] <= 0) {
-            return false;
-        }
-        const size_t extent = static_cast<size_t>(value.ne[i] - 1);
-        if (extent != 0 && value.nb[i] > std::numeric_limits<size_t>::max() / extent) {
-            return false;
-        }
-        const size_t dim_offset = extent * value.nb[i];
-        if (max_offset > std::numeric_limits<size_t>::max() - dim_offset) {
-            return false;
-        }
-        max_offset += dim_offset;
-    }
-    if (max_offset > std::numeric_limits<size_t>::max() - sizeof(float)) {
-        return false;
-    }
-    byte_count = max_offset + sizeof(float);
     return true;
 }
 
@@ -318,7 +281,8 @@ static bool match_binary_f32_dispatch(const DispatchMatchContext & context, Disp
     size_t rhs_byte_count = 0;
     if (output->type != GGML_TYPE_F32 || lhs->type != GGML_TYPE_F32 || rhs->type != GGML_TYPE_F32 ||
         !positive_shape(*output) || !output->contiguous || !packed_f32_layout(*output) ||
-        !storage_span_bytes(*lhs, lhs_byte_count) || !storage_span_bytes(*rhs, rhs_byte_count) ||
+        !strided_f32_storage_span_bytes(*lhs, lhs_byte_count) ||
+        !strided_f32_storage_span_bytes(*rhs, rhs_byte_count) ||
         output->alias_source.value >= 0 ||
         !binary_output_storage_is_safe(*lhs, lhs_byte_count, *rhs, rhs_byte_count, *output) ||
         static_cast<uint64_t>(output->element_count) > std::numeric_limits<uint32_t>::max()) {
