@@ -11,6 +11,10 @@ enum class CommonMulMatWeightFormat {
     Q4K,
     Q5K,
     Q6K,
+    Q4_0,
+    Q4_1,
+    Q5_0,
+    Q5_1,
     IQ3_S,
     IQ4_NL,
     IQ4_XS,
@@ -34,6 +38,18 @@ inline bool common_mul_mat_format_for_type(ggml_type type, CommonMulMatWeightFor
             return true;
         case GGML_TYPE_Q6_K:
             format = CommonMulMatWeightFormat::Q6K;
+            return true;
+        case GGML_TYPE_Q4_0:
+            format = CommonMulMatWeightFormat::Q4_0;
+            return true;
+        case GGML_TYPE_Q4_1:
+            format = CommonMulMatWeightFormat::Q4_1;
+            return true;
+        case GGML_TYPE_Q5_0:
+            format = CommonMulMatWeightFormat::Q5_0;
+            return true;
+        case GGML_TYPE_Q5_1:
+            format = CommonMulMatWeightFormat::Q5_1;
             return true;
         case GGML_TYPE_IQ3_S:
             format = CommonMulMatWeightFormat::IQ3_S;
@@ -74,6 +90,14 @@ inline int64_t common_mul_mat_format_config_value(CommonMulMatWeightFormat forma
             return 5;
         case CommonMulMatWeightFormat::Q6K:
             return 6;
+        case CommonMulMatWeightFormat::Q4_0:
+            return 40;
+        case CommonMulMatWeightFormat::Q4_1:
+            return 41;
+        case CommonMulMatWeightFormat::Q5_0:
+            return 50;
+        case CommonMulMatWeightFormat::Q5_1:
+            return 51;
         case CommonMulMatWeightFormat::IQ3_S:
             return 21;
         case CommonMulMatWeightFormat::IQ4_NL:

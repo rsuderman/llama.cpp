@@ -268,6 +268,14 @@ static int64_t matmul_weight_format_config(ggml_type type) {
             return 5;
         case GGML_TYPE_Q6_K:
             return 6;
+        case GGML_TYPE_Q4_0:
+            return 40;
+        case GGML_TYPE_Q4_1:
+            return 41;
+        case GGML_TYPE_Q5_0:
+            return 50;
+        case GGML_TYPE_Q5_1:
+            return 51;
         case GGML_TYPE_IQ3_S:
             return 21;
         case GGML_TYPE_IQ4_NL:
@@ -4325,6 +4333,25 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(q4_decode_output != nullptr);
         schedule_single_matmul_command(ctx, q4_decode_output, "loom_libs:ggml_mul_mat_f32_f32_decode_wave64", 1, 2048,
                                        128);
+
+        for (ggml_type legacy_type : { GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1 }) {
+            ggml_tensor * legacy_weight = ggml_new_tensor_2d(ctx, legacy_type, 2048, 128);
+            ggml_tensor * legacy_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 4);
+            REQUIRE(legacy_weight != nullptr);
+            REQUIRE(legacy_input != nullptr);
+            ggml_tensor * legacy_output = ggml_mul_mat(ctx, legacy_weight, legacy_input);
+            REQUIRE(legacy_output != nullptr);
+            schedule_single_matmul_command(ctx, legacy_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+
+            ggml_tensor * legacy_decode_weight = ggml_new_tensor_2d(ctx, legacy_type, 2048, 128);
+            ggml_tensor * legacy_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
+            REQUIRE(legacy_decode_weight != nullptr);
+            REQUIRE(legacy_decode_input != nullptr);
+            ggml_tensor * legacy_decode_output = ggml_mul_mat(ctx, legacy_decode_weight, legacy_decode_input);
+            REQUIRE(legacy_decode_output != nullptr);
+            schedule_single_matmul_command(ctx, legacy_decode_output, "loom_libs:ggml_mul_mat_f32_f32_decode_wave64",
+                                           1, 2048, 128);
+        }
 
         ggml_tensor * q3_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q3_K, 2048, 128);
         ggml_tensor * q3_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 4);
