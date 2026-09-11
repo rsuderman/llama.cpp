@@ -1258,6 +1258,76 @@ static void run_rmsnorm_cpu_reference_case(int64_t hidden_size = 256,
     ggml_backend_free(hrx_backend);
 }
 
+static void run_strided_rmsnorm_cpu_reference_case(int64_t token_count) {
+    ggml_backend_t cpu_backend = init_cpu_backend();
+    ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
+    REQUIRE(hrx_backend != nullptr);
+
+    constexpr int64_t hidden_size  = 256;
+    constexpr int64_t input_stride = 512;
+    constexpr float   epsilon      = 1.0e-5f;
+    constexpr size_t  input_offset = 4 * sizeof(float);
+    const size_t      storage_elements =
+        input_offset / sizeof(float) + static_cast<size_t>((token_count - 1) * input_stride + hidden_size);
+
+    ggml_init_params params = {};
+    params.mem_size         = 1024 * 1024;
+    params.no_alloc         = true;
+    ggml_context * cpu_ctx  = ggml_init(params);
+    ggml_context * hrx_ctx  = ggml_init(params);
+    REQUIRE(cpu_ctx != nullptr);
+    REQUIRE(hrx_ctx != nullptr);
+
+    ggml_tensor * cpu_storage = ggml_new_tensor_1d(cpu_ctx, GGML_TYPE_F32, storage_elements);
+    ggml_tensor * cpu_input =
+        ggml_view_2d(cpu_ctx, cpu_storage, hidden_size, token_count, input_stride * sizeof(float), input_offset);
+    ggml_tensor * cpu_output  = ggml_rms_norm(cpu_ctx, cpu_input, epsilon);
+    ggml_tensor * hrx_storage = ggml_new_tensor_1d(hrx_ctx, GGML_TYPE_F32, storage_elements);
+    ggml_tensor * hrx_input =
+        ggml_view_2d(hrx_ctx, hrx_storage, hidden_size, token_count, input_stride * sizeof(float), input_offset);
+    ggml_tensor * hrx_output = ggml_rms_norm(hrx_ctx, hrx_input, epsilon);
+    REQUIRE(cpu_output != nullptr);
+    REQUIRE(hrx_output != nullptr);
+
+    ggml_cgraph * cpu_graph = ggml_new_graph(cpu_ctx);
+    ggml_cgraph * hrx_graph = ggml_new_graph(hrx_ctx);
+    REQUIRE(cpu_graph != nullptr);
+    REQUIRE(hrx_graph != nullptr);
+    ggml_build_forward_expand(cpu_graph, cpu_output);
+    ggml_build_forward_expand(hrx_graph, hrx_output);
+    require_kernel_subsequence(scheduled_kernel_sequence(hrx_graph), { "loom_libs:ggml_rmsnorm_f32" });
+
+    ggml_backend_buffer_t cpu_buffer = ggml_backend_alloc_ctx_tensors(cpu_ctx, cpu_backend);
+    ggml_backend_buffer_t hrx_buffer = ggml_backend_alloc_ctx_tensors(hrx_ctx, hrx_backend);
+    REQUIRE(cpu_buffer != nullptr);
+    REQUIRE(hrx_buffer != nullptr);
+
+    const std::vector<float> rows = make_pattern_f32(static_cast<size_t>(hidden_size * token_count), 53, 0.015f);
+    std::vector<float>       storage(storage_elements, -19.0f);
+    for (int64_t token = 0; token < token_count; ++token) {
+        std::memcpy(storage.data() + input_offset / sizeof(float) + static_cast<size_t>(token * input_stride),
+                    rows.data() + static_cast<size_t>(token * hidden_size),
+                    static_cast<size_t>(hidden_size) * sizeof(float));
+    }
+    const std::vector<float> expected = rmsnorm_reference(rows, hidden_size, token_count, epsilon);
+    set_tensor_pair_bytes(cpu_backend, cpu_storage, hrx_backend, hrx_storage, storage.data(),
+                          storage.size() * sizeof(float));
+
+    REQUIRE(ggml_backend_graph_compute(cpu_backend, cpu_graph) == GGML_STATUS_SUCCESS);
+    REQUIRE(ggml_backend_graph_compute(hrx_backend, hrx_graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(cpu_backend);
+    ggml_backend_synchronize(hrx_backend);
+    require_close(get_f32_tensor(cpu_backend, cpu_output), expected, 5.0e-4f);
+    require_close(get_f32_tensor(hrx_backend, hrx_output), expected, 5.0e-4f);
+
+    ggml_backend_buffer_free(cpu_buffer);
+    ggml_backend_buffer_free(hrx_buffer);
+    ggml_free(cpu_ctx);
+    ggml_free(hrx_ctx);
+    ggml_backend_free(cpu_backend);
+    ggml_backend_free(hrx_backend);
+}
+
 static void run_rmsnorm_mul_cpu_reference_case(int64_t hidden_size, int64_t token_count, float epsilon) {
     ggml_backend_t cpu_backend = init_cpu_backend();
     ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
@@ -3959,6 +4029,8 @@ int main() {
     run_endpoint_rmsnorm_q6k_q8_cpu_reference_case();
     run_rmsnorm_cpu_reference_case();
     run_rmsnorm_cpu_reference_case(3840, 18, 1.0e-6f);
+    run_strided_rmsnorm_cpu_reference_case(2);
+    run_strided_rmsnorm_cpu_reference_case(23);
     run_rmsnorm_binary_add_cpu_reference_case();
     run_rmsnorm_mul_cpu_reference_case(3840, 18, 1.0e-6f);
     run_gemma_scaled_rmsnorm_cpu_reference_case();

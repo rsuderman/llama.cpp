@@ -5,7 +5,7 @@ template.decl @ggml.binary_f32.apply(%arg0: index, %arg1: f32, %arg2: f32) -> (f
 
 template.decl @ggml.quantize_q8_1_x4.publish_vector4(%arg0: i1, %arg1: offset, %arg2: index, %arg3: vector<4xf32>, %arg4: view<256xf32>, %arg5: view<32xf32>, %arg6: buffer)
 
-template.decl @ggml.rmsnorm_f32.row_scale(%arg0: index, %arg1: index, %arg2: index, %arg3: f32, %arg4: buffer) -> (f32, index, index, i1)
+template.decl @ggml.rmsnorm_f32.row_scale(%arg0: index, %arg1: index, %arg2: index, %arg3: index, %arg4: f32, %arg5: buffer) -> (f32, index, index, i1)
 
 amdgpu.target<gfx11-generic> @ggml_rmsnorm_binary_q8_1_x4_gfx11_wave32 {subgroup_size = 32}
 
@@ -42,7 +42,7 @@ kernel.def target(@ggml_rmsnorm_binary_q8_1_x4_gfx11_wave32) export("ggml_rmsnor
   %c0_offset = index.constant 0 : offset
   %c0_f32x4 = vector.constant 0.0 : vector<4xf32>
   %input_noalias, %rhs_noalias, %output_noalias, %q8_output_noalias = buffer.assume.noalias %input, %rhs, %output, %q8_output : buffer, buffer, buffer, buffer
-  %row_scale, %token, %launch_token_count, %valid_token = template.apply<@ggml.rmsnorm_f32.row_scale>(%token_count, %token0, %hidden_size, %epsilon, %input_noalias) : (index, index, index, f32, buffer) -> (f32, index, index, i1)
+  %row_scale, %token, %launch_token_count, %valid_token = template.apply<@ggml.rmsnorm_f32.row_scale>(%token_count, %token0, %hidden_size, %hidden_size, %epsilon, %input_noalias) : (index, index, index, index, f32, buffer) -> (f32, index, index, i1)
   %row_scale_vector = vector.splat %row_scale : vector<4xf32>
   %physical_group_count = index.div %hidden_size, %c128 : index
   %row_bytes = index.scale %physical_group_count, %group_bytes : index, offset -> offset

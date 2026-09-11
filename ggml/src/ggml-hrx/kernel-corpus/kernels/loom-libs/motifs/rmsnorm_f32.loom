@@ -5,11 +5,13 @@
 // geometry; this motif assumes a 256-workitem wave32 workgroup.
 template.decl @ggml.rmsnorm_f32.apply(%value: f32, %scale: f32) -> (f32)
 
-template.decl @ggml.rmsnorm_f32.row_scale(%token_count0: index, %token0: index, %hidden_size0: index, %epsilon: f32, %input: buffer) -> (f32, index, index, i1)
+template.decl @ggml.rmsnorm_f32.row_scale(%token_count0: index, %token0: index, %hidden_size0: index, %input_stride0: index, %epsilon: f32, %input: buffer) -> (f32, index, index, i1)
 
-template.def<@ggml.rmsnorm_f32.row_scale> device @ggml_rmsnorm_f32_row_scale(%token_count0: index, %token0: index, %hidden_size0: index, %epsilon: f32, %input: buffer) -> (f32, index, index, i1) {
+template.def<@ggml.rmsnorm_f32.row_scale> device @ggml_rmsnorm_f32_row_scale(%token_count0: index, %token0: index, %hidden_size0: index, %input_stride0: index, %epsilon: f32, %input: buffer) -> (f32, index, index, i1) {
   %token_count = index.assume %token_count0 [range(%token_count0, 1, 1048576)] : index
-  %hidden_size = index.assume %hidden_size0 [range(%hidden_size0, 128, 32768), mul(%hidden_size0, 128)] : index
+  %hidden_size1 = index.assume %hidden_size0 [range(%hidden_size0, 128, 32768), mul(%hidden_size0, 128)] : index
+  %input_stride1 = index.assume %input_stride0 [range(%input_stride0, 128, 1048576)] : index
+  %hidden_size, %input_stride = index.assume %hidden_size1, %input_stride1 [le(%hidden_size1, %input_stride1)] : index, index
   %workitem = kernel.workitem.id<x> : index
   %subgroup0 = kernel.subgroup.id : index
   %subgroup = index.assume %subgroup0 [range(%subgroup0, 0, 7)] : index
@@ -26,9 +28,9 @@ template.def<@ggml.rmsnorm_f32.row_scale> device @ggml_rmsnorm_f32_row_scale(%to
   %token = index.assume %safe_token0 [lt(%safe_token0, %token_count)] : index
   %hidden_size_i32 = index.cast %hidden_size : index to i32
   %hidden_size_f32 = scalar.sitofp %hidden_size_i32 : i32 to f32
-  %input_view = buffer.view %input[%c0_offset] : buffer -> view<[%token_count]x[%hidden_size]xf32>
+  %input_view = buffer.view %input[%c0_offset] : buffer -> view<[%token_count]x[%input_stride]xf32>
   %thread_sum = scf.for %channel = [%workitem to %hidden_size step %c256](%running_sum = %c0_f32 : f32) -> (f32) {
-    %value = view.load %input_view[%token, %channel] : view<[%token_count]x[%hidden_size]xf32> -> f32
+    %value = view.load %input_view[%token, %channel] : view<[%token_count]x[%input_stride]xf32> -> f32
     %square = scalar.mulf<reassoc|nnan|ninf|nsz> %value, %value : f32
     %next_sum = scalar.addf<reassoc|nnan|ninf|nsz> %running_sum, %square : f32
     scf.yield %next_sum : f32

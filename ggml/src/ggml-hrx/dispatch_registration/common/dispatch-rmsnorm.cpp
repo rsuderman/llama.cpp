@@ -1,5 +1,6 @@
 #include "dispatch-rmsnorm.h"
 
+#include "dispatch-layout-utils.h"
 #include "dispatch-mul-mat-common.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
@@ -48,6 +49,29 @@ static bool is_supported_hidden_size(int64_t hidden_size) {
 
 static bool is_supported_token_count(int64_t token_count) {
     return token_count >= 1 && token_count <= (1 << 20);
+}
+
+static bool supported_rmsnorm_input_layout(const Value & input,
+                                           int64_t       hidden_size,
+                                           int64_t       token_count,
+                                           int64_t &     input_stride,
+                                           size_t &      input_span_bytes) {
+    if (input.type != GGML_TYPE_F32 || input.ne[0] != hidden_size || input.ne[1] != token_count || input.ne[2] != 1 ||
+        input.ne[3] != 1 || input.nb[0] != sizeof(float) || input.nb[1] % sizeof(float) != 0) {
+        return false;
+    }
+
+    input_stride = static_cast<int64_t>(input.nb[1] / sizeof(float));
+    if (input_stride < hidden_size || input_stride > 1048576) {
+        return false;
+    }
+
+    if (input.contiguous) {
+        input_span_bytes = input.byte_count;
+        return true;
+    }
+
+    return strided_f32_storage_span_bytes(input, input_span_bytes);
 }
 
 static bool is_binary_op(ggml_op op) {
@@ -130,7 +154,9 @@ struct RmsNormMatch {
     const GraphNode * rms_node       = nullptr;
     const Value *     input          = nullptr;
     const Value *     output         = nullptr;
+    size_t            input_span     = 0;
     size_t            rms_node_index = 0;
+    int64_t           input_stride   = 0;
     int64_t           hidden_size    = 0;
     int64_t           token_count    = 0;
     float             epsilon        = 0.0f;
@@ -295,7 +321,7 @@ static RmsNormMatch match_rmsnorm_f32(const Graph & graph, const GraphNode * nod
     if (input == nullptr || output == nullptr) {
         return {};
     }
-    if (input->type != GGML_TYPE_F32 || output->type != GGML_TYPE_F32 || !input->contiguous || !output->contiguous ||
+    if (input->type != GGML_TYPE_F32 || output->type != GGML_TYPE_F32 || !output->contiguous ||
         !same_shape(*input, *output)) {
         return {};
     }
@@ -311,11 +337,18 @@ static RmsNormMatch match_rmsnorm_f32(const Graph & graph, const GraphNode * nod
     if (!is_supported_token_count(token_count)) {
         return {};
     }
+    int64_t input_stride = 0;
+    size_t  input_span   = 0;
+    if (!supported_rmsnorm_input_layout(*input, hidden_size, token_count, input_stride, input_span)) {
+        return {};
+    }
 
     match.rms_node       = node;
     match.input          = input;
     match.output         = output;
+    match.input_span     = input_span;
     match.rms_node_index = node_index;
+    match.input_stride   = input_stride;
     match.hidden_size    = hidden_size;
     match.token_count    = token_count;
     match.epsilon        = rms_params->eps;
@@ -829,7 +862,10 @@ static bool match_rmsnorm_f32_dispatch(const DispatchMatchContext & context, Dis
     dispatch.kernel.integer_parameters.emplace("token_count", rms_match.token_count);
     dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_f32.hidden_size", to_config_value(rms_match.hidden_size));
     dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_f32.rms_epsilon", to_config_value(rms_match.epsilon));
-    dispatch.bindings.push_back({ rms_match.input->id, 0, rms_match.input->byte_count });
+    dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_f32.input_stride",
+                                               to_config_value(rms_match.input_stride));
+    dispatch.bindings.push_back(
+        { rms_match.input->storage_root, rms_match.input->storage_offset, rms_match.input_span });
     dispatch.bindings.push_back({ rms_match.output->id, 0, rms_match.output->byte_count });
 
     match.covered_nodes.push_back(rms_match.rms_node_index);

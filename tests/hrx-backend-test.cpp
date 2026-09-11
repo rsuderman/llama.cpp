@@ -1856,8 +1856,60 @@ static void run_graph_index_checks() {
     REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_f32");
     REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == 4);
     require_compile_parameter(dispatch, "ggml.rmsnorm_f32.hidden_size", "256");
+    require_compile_parameter(dispatch, "ggml.rmsnorm_f32.input_stride", "256");
     REQUIRE(dispatch.kernel.compile_parameters.count("ggml.rmsnorm_f32.rms_epsilon") == 1);
     REQUIRE(dispatch.bindings.size() == 2);
+
+    {
+        constexpr int64_t view_hidden_size = 256;
+        constexpr int64_t view_tokens      = 23;
+        constexpr int64_t view_stride      = 512;
+        constexpr size_t  view_offset      = 4 * sizeof(float);
+        ggml_tensor *     storage          = ggml_new_tensor_1d(
+            ctx, GGML_TYPE_F32, view_offset / sizeof(float) + (view_tokens - 1) * view_stride + view_hidden_size);
+        ggml_tensor * view =
+            ggml_view_2d(ctx, storage, view_hidden_size, view_tokens, view_stride * sizeof(float), view_offset);
+        ggml_tensor * norm = ggml_rms_norm(ctx, view, 0.00001f);
+        REQUIRE(storage != nullptr);
+        REQUIRE(view != nullptr);
+        REQUIRE(norm != nullptr);
+
+        ggml_cgraph * view_graph = ggml_new_graph(ctx);
+        REQUIRE(view_graph != nullptr);
+        ggml_build_forward_expand(view_graph, norm);
+
+        ggml::hrx::GraphImportResult view_imported = ggml::hrx::import_ggml_graph(*view_graph);
+        REQUIRE(view_imported.valid());
+        REQUIRE(view_imported.graph.nodes().size() == 2);
+        REQUIRE(view_imported.graph.nodes()[0].op == GGML_OP_VIEW);
+        REQUIRE(view_imported.graph.nodes()[1].op == GGML_OP_RMS_NORM);
+
+        const ggml::hrx::Value * view_value =
+            view_imported.graph.values().find(view_imported.graph.nodes()[1].inputs[0]);
+        REQUIRE(view_value != nullptr);
+        const ggml::hrx::Value * storage_value = view_imported.graph.values().find(view_value->storage_root);
+        REQUIRE(storage_value != nullptr);
+        REQUIRE(view_value->storage_offset == view_offset);
+
+        REQUIRE(scheduler.schedule_graph(view_imported.graph, test_dispatch_target()));
+        REQUIRE(scheduler.plan().valid());
+        REQUIRE(scheduler.plan().dispatches.size() == 1);
+        const ggml::hrx::Dispatch & view_dispatch = scheduler.plan().dispatches[0];
+        REQUIRE(kernel_name_for_id(view_dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_f32");
+        REQUIRE(view_dispatch.kernel.integer_parameters.at("token_count") == view_tokens);
+        require_compile_parameter(view_dispatch, "ggml.rmsnorm_f32.hidden_size", std::to_string(view_hidden_size));
+        require_compile_parameter(view_dispatch, "ggml.rmsnorm_f32.input_stride", std::to_string(view_stride));
+        REQUIRE(view_dispatch.bindings.size() == 2);
+        REQUIRE(view_dispatch.bindings[0].value == storage_value->id);
+        REQUIRE(view_dispatch.bindings[0].offset == view_offset);
+        REQUIRE(view_dispatch.bindings[0].length == static_cast<size_t>(view_tokens - 1) * view->nb[1] +
+                                                        static_cast<size_t>(view_hidden_size) * sizeof(float));
+
+        const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+            view_imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(commands.valid());
+        REQUIRE(command_program_verifies(commands));
+    }
 
     ggml_free(ctx);
 }
