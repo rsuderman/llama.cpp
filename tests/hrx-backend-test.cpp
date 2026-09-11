@@ -1439,6 +1439,74 @@ static void run_scale_f32_dispatch_checks() {
     ggml_free(ctx);
 }
 
+static void run_cont_f32_dispatch_checks() {
+    ggml_init_params params = {};
+    params.mem_size         = 512 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    constexpr int64_t width        = 64;
+    constexpr int64_t row_count    = 40;
+    constexpr int64_t token_count  = 23;
+    constexpr int64_t token_stride = 4096;
+    constexpr size_t  view_offset  = 8 * sizeof(float);
+    const size_t      storage_elements =
+        view_offset / sizeof(float) + static_cast<size_t>((token_count - 1) * token_stride + width * row_count);
+
+    ggml_tensor * storage = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, storage_elements);
+    ggml_tensor * view    = ggml_view_3d(ctx, storage, width, row_count, token_count, width * sizeof(float),
+                                         token_stride * sizeof(float), view_offset);
+    ggml_tensor * output  = ggml_cont(ctx, view);
+    REQUIRE(storage != nullptr);
+    REQUIRE(view != nullptr);
+    REQUIRE(output != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    REQUIRE(imported.graph.nodes().size() == 2);
+    REQUIRE(imported.graph.nodes()[0].op == GGML_OP_VIEW);
+    REQUIRE(imported.graph.nodes()[1].op == GGML_OP_CONT);
+
+    const ggml::hrx::Value * view_value = imported.graph.values().find(imported.graph.nodes()[1].inputs[0]);
+    REQUIRE(view_value != nullptr);
+    const ggml::hrx::Value * storage_value = imported.graph.values().find(view_value->storage_root);
+    REQUIRE(storage_value != nullptr);
+    REQUIRE(view_value->storage_offset == view_offset);
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 1);
+    const ggml::hrx::Dispatch & dispatch = scheduler.plan().dispatches[0];
+    REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_copy_strided_source_f32");
+    REQUIRE(dispatch.kernel.integer_parameters.at("element_count") == width * row_count * token_count);
+    REQUIRE(dispatch.kernel.integer_parameters.at("source_span") ==
+            static_cast<int64_t>((token_count - 1) * token_stride + width * row_count));
+    require_compile_parameter(dispatch, "ggml.copy_strided_source_f32.ne0", std::to_string(width));
+    require_compile_parameter(dispatch, "ggml.copy_strided_source_f32.ne1", std::to_string(row_count));
+    require_compile_parameter(dispatch, "ggml.copy_strided_source_f32.ne2", std::to_string(token_count));
+    require_compile_parameter(dispatch, "ggml.copy_strided_source_f32.stride0", "1");
+    require_compile_parameter(dispatch, "ggml.copy_strided_source_f32.stride1", std::to_string(width));
+    require_compile_parameter(dispatch, "ggml.copy_strided_source_f32.stride2", std::to_string(token_stride));
+    REQUIRE(dispatch.bindings.size() == 2);
+    REQUIRE(dispatch.bindings[0].value == storage_value->id);
+    REQUIRE(dispatch.bindings[0].offset == view_offset);
+    REQUIRE(dispatch.bindings[0].length ==
+            static_cast<size_t>((token_count - 1) * token_stride + width * row_count) * sizeof(float));
+
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(commands.valid());
+    REQUIRE(command_program_verifies(commands));
+
+    ggml_free(ctx);
+}
+
 static void run_binary_f32_broadcast_dispatch_checks() {
     {
         ggml_init_params params = {};
@@ -8592,6 +8660,7 @@ int main() {
     run_graph_import_mixed_backend_boundary_checks();
     run_graph_view_external_use_checks();
     run_scale_f32_dispatch_checks();
+    run_cont_f32_dispatch_checks();
     run_binary_f32_broadcast_dispatch_checks();
     run_graph_snapshot_diagnostics_checks();
     run_unmatched_graph_diagnostics_checks();

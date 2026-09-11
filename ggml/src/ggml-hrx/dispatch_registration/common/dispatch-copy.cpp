@@ -1,5 +1,6 @@
 #include "dispatch-copy.h"
 
+#include "dispatch-layout-utils.h"
 #include "ggml.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
@@ -60,6 +61,41 @@ static void add_concat_strided_source_parameters(KernelSpecialization & kernel, 
     }
 }
 
+static bool make_copy_f32_dispatch(const Value & source, const Value & output, Dispatch & dispatch) {
+    if (source.type != GGML_TYPE_F32 || output.type != GGML_TYPE_F32 || !output.contiguous ||
+        !packed_f32_layout(output) || !f32_element_strides(source) || source.element_count <= 0 ||
+        source.element_count != output.element_count ||
+        static_cast<uint64_t>(source.element_count) > kMaximumCopyElements || source.storage == output.storage) {
+        return false;
+    }
+
+    size_t source_span = source.byte_count;
+    if (packed_f32_layout(source)) {
+        dispatch.kernel = make_kernel_specialization(kCopyF32Kernel);
+    } else {
+        if (!strided_f32_storage_span_bytes(source, source_span)) {
+            return false;
+        }
+        const size_t source_span_elements = source_span / sizeof(float);
+        if (source_span_elements > kMaximumCopyElements) {
+            return false;
+        }
+        dispatch.kernel = make_kernel_specialization(kCopyStridedSourceF32Kernel);
+        dispatch.kernel.integer_parameters.emplace("source_span", source_span_elements);
+        dispatch.kernel.compile_parameters.emplace("ggml.copy_strided_source_f32.ne0", std::to_string(source.ne[0]));
+        dispatch.kernel.compile_parameters.emplace("ggml.copy_strided_source_f32.ne1", std::to_string(source.ne[1]));
+        dispatch.kernel.compile_parameters.emplace("ggml.copy_strided_source_f32.ne2", std::to_string(source.ne[2]));
+        for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+            dispatch.kernel.compile_parameters.emplace("ggml.copy_strided_source_f32.stride" + std::to_string(i),
+                                                       std::to_string(source.nb[i] / sizeof(float)));
+        }
+    }
+    dispatch.kernel.integer_parameters.emplace("element_count", source.element_count);
+    dispatch.bindings.push_back({ source.storage_root, source.storage_offset, source_span });
+    dispatch.bindings.push_back({ output.id, 0, output.byte_count });
+    return true;
+}
+
 static bool match_copy_f32_dispatch(const DispatchMatchContext & context, DispatchMatch & match) {
     const GraphNode * node = context.root_node;
     if (node == nullptr || node->op != GGML_OP_CPY || node->inputs.size() != 2) {
@@ -69,37 +105,38 @@ static bool match_copy_f32_dispatch(const DispatchMatchContext & context, Dispat
     const Value * source = graph_value(context.graph, node->inputs[0]);
     const Value * target = graph_value(context.graph, node->inputs[1]);
     const Value * output = graph_value(context.graph, node->output);
-    if (source == nullptr || target == nullptr || output == nullptr || source->type != GGML_TYPE_F32 ||
-        target->type != GGML_TYPE_F32 || output->type != GGML_TYPE_F32 || !target->contiguous || !output->contiguous ||
-        !packed_f32_layout(*target) || !packed_f32_layout(*output) || !f32_element_strides(*source) ||
-        source->element_count <= 0 || source->element_count != output->element_count ||
-        target->element_count != output->element_count || target->byte_count != output->byte_count ||
-        source->storage == target->storage || source->storage == output->storage ||
-        static_cast<uint64_t>(source->element_count) > kMaximumCopyElements) {
+    if (source == nullptr || target == nullptr || output == nullptr || target->type != GGML_TYPE_F32 ||
+        !target->contiguous || !packed_f32_layout(*target) || target->element_count != output->element_count ||
+        target->byte_count != output->byte_count || source->storage == target->storage) {
         return false;
     }
 
     Dispatch dispatch;
-    if (packed_f32_layout(*source)) {
-        dispatch.kernel = make_kernel_specialization(kCopyF32Kernel);
-    } else {
-        const size_t source_span = source->byte_count / sizeof(float);
-        if (source_span > kMaximumCopyElements) {
-            return false;
-        }
-        dispatch.kernel = make_kernel_specialization(kCopyStridedSourceF32Kernel);
-        dispatch.kernel.integer_parameters.emplace("source_span", source_span);
-        dispatch.kernel.compile_parameters.emplace("ggml.copy_strided_source_f32.ne0", std::to_string(source->ne[0]));
-        dispatch.kernel.compile_parameters.emplace("ggml.copy_strided_source_f32.ne1", std::to_string(source->ne[1]));
-        dispatch.kernel.compile_parameters.emplace("ggml.copy_strided_source_f32.ne2", std::to_string(source->ne[2]));
-        for (int i = 0; i < GGML_MAX_DIMS; ++i) {
-            dispatch.kernel.compile_parameters.emplace("ggml.copy_strided_source_f32.stride" + std::to_string(i),
-                                                       std::to_string(source->nb[i] / sizeof(float)));
-        }
+    if (!make_copy_f32_dispatch(*source, *output, dispatch)) {
+        return false;
     }
-    dispatch.kernel.integer_parameters.emplace("element_count", source->element_count);
-    dispatch.bindings.push_back({ source->id, 0, source->byte_count });
-    dispatch.bindings.push_back({ output->id, 0, output->byte_count });
+
+    match.covered_nodes.push_back(context.root_index);
+    match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
+
+static bool match_cont_f32_dispatch(const DispatchMatchContext & context, DispatchMatch & match) {
+    const GraphNode * node = context.root_node;
+    if (node == nullptr || node->op != GGML_OP_CONT || node->inputs.size() != 1) {
+        return false;
+    }
+
+    const Value * source = graph_value(context.graph, node->inputs[0]);
+    const Value * output = graph_value(context.graph, node->output);
+    if (source == nullptr || output == nullptr) {
+        return false;
+    }
+
+    Dispatch dispatch;
+    if (!make_copy_f32_dispatch(*source, *output, dispatch)) {
+        return false;
+    }
 
     match.covered_nodes.push_back(context.root_index);
     match.dispatches.push_back(std::move(dispatch));
@@ -168,6 +205,14 @@ void register_copy_dispatch(DispatchRegistryBuilder & registry) {
         0,
         DispatchSource::Common,
         match_copy_f32_dispatch,
+    });
+    registry.add({
+        "common.cont_f32",
+        GGML_OP_CONT,
+        DispatchMatchKind::SingleOp,
+        0,
+        DispatchSource::Common,
+        match_cont_f32_dispatch,
     });
     registry.add({
         "common.concat_dim0_f32",

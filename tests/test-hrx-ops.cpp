@@ -1328,6 +1328,75 @@ static void run_strided_rmsnorm_cpu_reference_case(int64_t token_count) {
     ggml_backend_free(hrx_backend);
 }
 
+static void run_strided_cont_cpu_reference_case(int64_t token_count) {
+    ggml_backend_t cpu_backend = init_cpu_backend();
+    ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
+    REQUIRE(hrx_backend != nullptr);
+
+    constexpr int64_t width        = 64;
+    constexpr int64_t row_count    = 40;
+    constexpr int64_t token_stride = 4096;
+    constexpr size_t  view_offset  = 8 * sizeof(float);
+    const size_t      storage_elements =
+        view_offset / sizeof(float) + static_cast<size_t>((token_count - 1) * token_stride + width * row_count);
+
+    ggml_init_params params = {};
+    params.mem_size         = 1024 * 1024;
+    params.no_alloc         = true;
+    ggml_context * cpu_ctx  = ggml_init(params);
+    ggml_context * hrx_ctx  = ggml_init(params);
+    REQUIRE(cpu_ctx != nullptr);
+    REQUIRE(hrx_ctx != nullptr);
+
+    ggml_tensor * cpu_storage = ggml_new_tensor_1d(cpu_ctx, GGML_TYPE_F32, storage_elements);
+    ggml_tensor * cpu_view    = ggml_view_3d(cpu_ctx, cpu_storage, width, row_count, token_count, width * sizeof(float),
+                                             token_stride * sizeof(float), view_offset);
+    ggml_tensor * cpu_output  = ggml_cont(cpu_ctx, cpu_view);
+    ggml_tensor * hrx_storage = ggml_new_tensor_1d(hrx_ctx, GGML_TYPE_F32, storage_elements);
+    ggml_tensor * hrx_view    = ggml_view_3d(hrx_ctx, hrx_storage, width, row_count, token_count, width * sizeof(float),
+                                             token_stride * sizeof(float), view_offset);
+    ggml_tensor * hrx_output  = ggml_cont(hrx_ctx, hrx_view);
+    REQUIRE(cpu_output != nullptr);
+    REQUIRE(hrx_output != nullptr);
+
+    ggml_cgraph * cpu_graph = ggml_new_graph(cpu_ctx);
+    ggml_cgraph * hrx_graph = ggml_new_graph(hrx_ctx);
+    REQUIRE(cpu_graph != nullptr);
+    REQUIRE(hrx_graph != nullptr);
+    ggml_build_forward_expand(cpu_graph, cpu_output);
+    ggml_build_forward_expand(hrx_graph, hrx_output);
+    require_kernel_subsequence(scheduled_kernel_sequence(hrx_graph), { "loom_libs:ggml_copy_strided_source_f32" });
+
+    ggml_backend_buffer_t cpu_buffer = ggml_backend_alloc_ctx_tensors(cpu_ctx, cpu_backend);
+    ggml_backend_buffer_t hrx_buffer = ggml_backend_alloc_ctx_tensors(hrx_ctx, hrx_backend);
+    REQUIRE(cpu_buffer != nullptr);
+    REQUIRE(hrx_buffer != nullptr);
+
+    const std::vector<float> rows = make_pattern_f32(static_cast<size_t>(width * row_count * token_count), 59, 0.01f);
+    std::vector<float>       storage(storage_elements, -37.0f);
+    for (int64_t token = 0; token < token_count; ++token) {
+        std::memcpy(storage.data() + view_offset / sizeof(float) + static_cast<size_t>(token * token_stride),
+                    rows.data() + static_cast<size_t>(token * width * row_count),
+                    static_cast<size_t>(width * row_count) * sizeof(float));
+    }
+    set_tensor_pair_bytes(cpu_backend, cpu_storage, hrx_backend, hrx_storage, storage.data(),
+                          storage.size() * sizeof(float));
+
+    REQUIRE(ggml_backend_graph_compute(cpu_backend, cpu_graph) == GGML_STATUS_SUCCESS);
+    REQUIRE(ggml_backend_graph_compute(hrx_backend, hrx_graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(cpu_backend);
+    ggml_backend_synchronize(hrx_backend);
+    require_close(get_f32_tensor(cpu_backend, cpu_output), rows, 0.0f);
+    require_close(get_f32_tensor(hrx_backend, hrx_output), rows, 0.0f);
+
+    ggml_backend_buffer_free(cpu_buffer);
+    ggml_backend_buffer_free(hrx_buffer);
+    ggml_free(cpu_ctx);
+    ggml_free(hrx_ctx);
+    ggml_backend_free(cpu_backend);
+    ggml_backend_free(hrx_backend);
+}
+
 static void run_rmsnorm_mul_cpu_reference_case(int64_t hidden_size, int64_t token_count, float epsilon) {
     ggml_backend_t cpu_backend = init_cpu_backend();
     ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
@@ -3954,6 +4023,8 @@ int main() {
 
     run_add_f32_cpu_reference_case();
     run_view_mul_f32_cpu_reference_case();
+    run_strided_cont_cpu_reference_case(2);
+    run_strided_cont_cpu_reference_case(23);
     run_glu_split_f32_cpu_reference_case(GGML_GLU_OP_REGLU);
     run_glu_split_f32_cpu_reference_case(GGML_GLU_OP_SWIGLU);
     run_glu_split_f32_cpu_reference_case(GGML_GLU_OP_GEGLU);
