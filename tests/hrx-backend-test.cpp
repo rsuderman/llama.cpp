@@ -2118,6 +2118,63 @@ static void run_rope_set_rows_dispatch_checks() {
     }
 
     {
+        constexpr int64_t row_stride = hidden_size * 5;
+        constexpr size_t  row_offset = 4 * sizeof(float);
+        ggml_tensor *     cache      = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, hidden_size, cache_rows);
+        ggml_tensor *     storage    = ggml_new_tensor_1d(
+            ctx, GGML_TYPE_F32, row_offset / sizeof(float) + (token_count - 1) * row_stride + hidden_size);
+        ggml_tensor * rows =
+            ggml_view_2d(ctx, storage, hidden_size, token_count, row_stride * sizeof(float), row_offset);
+        ggml_tensor * indices = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, token_count);
+        ggml_tensor * output  = ggml_set_rows(ctx, cache, rows, indices);
+        REQUIRE(cache != nullptr);
+        REQUIRE(storage != nullptr);
+        REQUIRE(rows != nullptr);
+        REQUIRE(indices != nullptr);
+        REQUIRE(output != nullptr);
+
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        REQUIRE(graph != nullptr);
+        ggml_build_forward_expand(graph, output);
+
+        ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+        REQUIRE(imported.graph.nodes().size() == 2);
+        REQUIRE(imported.graph.nodes()[0].op == GGML_OP_VIEW);
+        REQUIRE(imported.graph.nodes()[1].op == GGML_OP_SET_ROWS);
+
+        const ggml::hrx::Value * rows_value = imported.graph.values().find(imported.graph.nodes()[1].inputs[0]);
+        REQUIRE(rows_value != nullptr);
+        const ggml::hrx::Value * storage_value = imported.graph.values().find(rows_value->storage_root);
+        REQUIRE(storage_value != nullptr);
+        REQUIRE(rows_value->storage_offset == row_offset);
+
+        ggml::hrx::DispatchScheduler scheduler;
+        REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+        REQUIRE(scheduler.plan().valid());
+        REQUIRE(scheduler.plan().dispatches.size() == 1);
+
+        const ggml::hrx::Dispatch & dispatch = scheduler.plan().dispatches.front();
+        REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_set_rows");
+        REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == token_count);
+        REQUIRE(dispatch.kernel.integer_parameters.at("cache_row_count") == cache_rows);
+        REQUIRE(dispatch.kernel.integer_parameters.at("hidden_size") == hidden_size);
+        require_compile_parameter(dispatch, "ggml.set_rows.input_format", "32");
+        require_compile_parameter(dispatch, "ggml.set_rows.output_format", "16");
+        require_compile_parameter(dispatch, "ggml.set_rows.input_stride", std::to_string(row_stride));
+        REQUIRE(dispatch.bindings.size() == 3);
+        REQUIRE(dispatch.bindings[0].value == storage_value->id);
+        REQUIRE(dispatch.bindings[0].offset == row_offset);
+        REQUIRE(dispatch.bindings[0].length ==
+                static_cast<size_t>(token_count - 1) * rows->nb[1] + static_cast<size_t>(hidden_size) * sizeof(float));
+
+        const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+            imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(commands.valid());
+        REQUIRE(command_program_verifies(commands));
+    }
+
+    {
         ggml_tensor * cache   = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, hidden_size, cache_rows);
         ggml_tensor * rows    = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, hidden_size, token_count);
         ggml_tensor * indices = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, token_count);

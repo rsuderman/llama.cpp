@@ -3193,6 +3193,86 @@ static void run_rope_set_rows_cpu_reference_case() {
         ggml_free(hrx_ctx);
     }
 
+    auto run_view_set_rows_case = [&](int64_t view_token_count) {
+        ggml_init_params params = {};
+        params.mem_size         = 16 * 1024 * 1024;
+        params.no_alloc         = true;
+        ggml_context * cpu_ctx  = ggml_init(params);
+        ggml_context * hrx_ctx  = ggml_init(params);
+        REQUIRE(cpu_ctx != nullptr);
+        REQUIRE(hrx_ctx != nullptr);
+
+        constexpr int64_t phi_hidden_size     = 1024;
+        constexpr int64_t phi_cache_row_count = 256;
+        constexpr int64_t phi_row_stride      = 5120;
+        constexpr size_t  row_offset          = 8 * sizeof(float);
+        const size_t      storage_elements =
+            row_offset / sizeof(float) + static_cast<size_t>((view_token_count - 1) * phi_row_stride + phi_hidden_size);
+
+        ggml_tensor * cpu_cache = ggml_new_tensor_2d(cpu_ctx, GGML_TYPE_F16, phi_hidden_size, phi_cache_row_count);
+        ggml_tensor * cpu_store = ggml_new_tensor_1d(cpu_ctx, GGML_TYPE_F32, storage_elements);
+        ggml_tensor * cpu_rows  = ggml_view_2d(cpu_ctx, cpu_store, phi_hidden_size, view_token_count,
+                                               phi_row_stride * sizeof(float), row_offset);
+        ggml_tensor * cpu_ids   = ggml_new_tensor_1d(cpu_ctx, GGML_TYPE_I64, view_token_count);
+        ggml_tensor * cpu_out   = ggml_set_rows(cpu_ctx, cpu_cache, cpu_rows, cpu_ids);
+        ggml_tensor * hrx_cache = ggml_new_tensor_2d(hrx_ctx, GGML_TYPE_F16, phi_hidden_size, phi_cache_row_count);
+        ggml_tensor * hrx_store = ggml_new_tensor_1d(hrx_ctx, GGML_TYPE_F32, storage_elements);
+        ggml_tensor * hrx_rows  = ggml_view_2d(hrx_ctx, hrx_store, phi_hidden_size, view_token_count,
+                                               phi_row_stride * sizeof(float), row_offset);
+        ggml_tensor * hrx_ids   = ggml_new_tensor_1d(hrx_ctx, GGML_TYPE_I64, view_token_count);
+        ggml_tensor * hrx_out   = ggml_set_rows(hrx_ctx, hrx_cache, hrx_rows, hrx_ids);
+        REQUIRE(cpu_out != nullptr);
+        REQUIRE(hrx_out != nullptr);
+
+        ggml_cgraph * cpu_graph = ggml_new_graph(cpu_ctx);
+        ggml_cgraph * hrx_graph = ggml_new_graph(hrx_ctx);
+        REQUIRE(cpu_graph != nullptr);
+        REQUIRE(hrx_graph != nullptr);
+        ggml_build_forward_expand(cpu_graph, cpu_out);
+        ggml_build_forward_expand(hrx_graph, hrx_out);
+        require_kernel_subsequence(scheduled_kernel_sequence(hrx_graph), { "loom_libs:ggml_set_rows" });
+
+        ggml_backend_buffer_t cpu_buffer = ggml_backend_alloc_ctx_tensors(cpu_ctx, cpu_backend);
+        ggml_backend_buffer_t hrx_buffer = ggml_backend_alloc_ctx_tensors(hrx_ctx, hrx_backend);
+        REQUIRE(cpu_buffer != nullptr);
+        REQUIRE(hrx_buffer != nullptr);
+
+        const std::vector<ggml_fp16_t> cache(static_cast<size_t>(phi_hidden_size * phi_cache_row_count),
+                                             ggml_fp32_to_fp16(-2.5f));
+        std::vector<float>             storage(storage_elements, -17.0f);
+        const std::vector<float>       rows =
+            make_pattern_f32(static_cast<size_t>(phi_hidden_size * view_token_count), 52, 0.004f);
+        for (int64_t token = 0; token < view_token_count; ++token) {
+            std::memcpy(storage.data() + row_offset / sizeof(float) + static_cast<size_t>(token * phi_row_stride),
+                        rows.data() + static_cast<size_t>(token * phi_hidden_size),
+                        static_cast<size_t>(phi_hidden_size) * sizeof(float));
+        }
+        std::vector<int64_t> ids(static_cast<size_t>(view_token_count));
+        for (int64_t i = 0; i < view_token_count; ++i) {
+            ids[static_cast<size_t>(i)] = (i * 17 + 3) % phi_cache_row_count;
+        }
+
+        set_tensor_pair_bytes(cpu_backend, cpu_cache, hrx_backend, hrx_cache, cache.data(),
+                              cache.size() * sizeof(ggml_fp16_t));
+        set_tensor_pair_bytes(cpu_backend, cpu_store, hrx_backend, hrx_store, storage.data(),
+                              storage.size() * sizeof(float));
+        set_tensor_pair_bytes(cpu_backend, cpu_ids, hrx_backend, hrx_ids, ids.data(), ids.size() * sizeof(int64_t));
+
+        REQUIRE(ggml_backend_graph_compute(cpu_backend, cpu_graph) == GGML_STATUS_SUCCESS);
+        REQUIRE(ggml_backend_graph_compute(hrx_backend, hrx_graph) == GGML_STATUS_SUCCESS);
+        ggml_backend_synchronize(cpu_backend);
+        ggml_backend_synchronize(hrx_backend);
+        require_close(get_f32_tensor(hrx_backend, hrx_out), get_f32_tensor(cpu_backend, cpu_out), 1.0e-3f, 1.0e-3f);
+
+        ggml_backend_buffer_free(cpu_buffer);
+        ggml_backend_buffer_free(hrx_buffer);
+        ggml_free(cpu_ctx);
+        ggml_free(hrx_ctx);
+    };
+
+    run_view_set_rows_case(2);
+    run_view_set_rows_case(14);
+
     {
         ggml_init_params params = {};
         params.mem_size         = 1024 * 1024;
