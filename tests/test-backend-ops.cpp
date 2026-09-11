@@ -9315,6 +9315,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_concat(GGML_TYPE_I64, {11, 12, 13, 14}, 7, dim, v));
         }
     }
+    for (int v : { 0, 1, 2, 3 }) {
+        test_cases.emplace_back(new test_concat(GGML_TYPE_F32, {64, 40, 2, 1}, 32, 0, v));
+        test_cases.emplace_back(new test_concat(GGML_TYPE_F32, {2, 2048, 1, 1}, 22, 0, v));
+    }
 
     for (ggml_type type_a : { GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0 }) {
         for (int v : { 0, 4, 8, 12 }) {

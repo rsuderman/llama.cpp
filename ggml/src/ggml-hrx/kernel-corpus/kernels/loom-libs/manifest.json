@@ -305,6 +305,51 @@
       "compile_dependencies": []
     },
     {
+      "name": "ggml_concat_dim0_strided_source_f32",
+      "family": "loom_libs",
+      "symbol": "ggml_concat_dim0_strided_source_f32",
+      "source": "ops/copy_f32.loom",
+      "workload_parameters": [
+        {
+          "name": "lhs_span",
+          "type": "index"
+        },
+        {
+          "name": "rhs_span",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "lhs_span",
+          "type": "index"
+        },
+        {
+          "name": "rhs_span",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "lhs",
+        "rhs",
+        "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/copy_f32.loom"
+        ],
+        "library_sources": []
+      },
+      "compile_dependencies": []
+    },
+    {
       "name": "ggml_scale_bias_f32",
       "family": "loom_libs",
       "symbol": "ggml_scale_bias_f32",
