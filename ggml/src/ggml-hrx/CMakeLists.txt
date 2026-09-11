@@ -201,6 +201,8 @@ ggml_add_backend_library(ggml-hrx
     dispatch_registration/common/dispatch-gather-add.h
     dispatch_registration/common/dispatch-get-rows.cpp
     dispatch_registration/common/dispatch-get-rows.h
+    dispatch_registration/common/dispatch-glu.cpp
+    dispatch_registration/common/dispatch-glu.h
     dispatch_registration/common/dispatch-mul-mat-id.cpp
     dispatch_registration/common/dispatch-mul-mat-id-common.h
     dispatch_registration/common/dispatch-mul-mat-id.h

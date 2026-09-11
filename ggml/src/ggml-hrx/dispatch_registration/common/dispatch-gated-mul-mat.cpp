@@ -6,6 +6,7 @@
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -71,6 +72,28 @@ struct MulMatSwiGLUProjectionMatch {
     }
 };
 
+struct PackedMulMatGluMatch {
+    const Value *            input              = nullptr;
+    const Value *            weight             = nullptr;
+    const Value *            packed_output      = nullptr;
+    const Value *            output             = nullptr;
+    const GraphNode *        matmul_node        = nullptr;
+    const GraphNode *        glu_node           = nullptr;
+    BinaryKind               op                 = BinaryKind::SwiGLU;
+    int64_t                  input_size         = 0;
+    int64_t                  output_size        = 0;
+    int64_t                  token_count        = 0;
+    size_t                   gate_weight_offset = 0;
+    size_t                   up_weight_offset   = 0;
+    size_t                   weight_half_bytes  = 0;
+    CommonMulMatWeightFormat weight_format      = CommonMulMatWeightFormat::Q4K;
+
+    bool matched() const {
+        return input != nullptr && weight != nullptr && packed_output != nullptr && output != nullptr &&
+               matmul_node != nullptr && glu_node != nullptr && token_count > 1;
+    }
+};
+
 static bool supported_symmetric_i4_pair(ggml_type gate_type, ggml_type up_type) {
     return (gate_type == GGML_TYPE_Q4_K && up_type == GGML_TYPE_Q4_K) ||
            (gate_type == GGML_TYPE_Q5_K && up_type == GGML_TYPE_IQ4_XS) ||
@@ -84,6 +107,14 @@ static bool supported_mixed_symmetric_i4_pair(ggml_type gate_type, ggml_type up_
 
 static bool distinct_storage(const Graph & graph, const Value & lhs, const Value & rhs) {
     return !graph.values().same_storage(lhs.id, rhs.id);
+}
+
+static bool checked_mul_size(size_t lhs, size_t rhs, size_t & result) {
+    if (rhs != 0 && lhs > std::numeric_limits<size_t>::max() / rhs) {
+        return false;
+    }
+    result = lhs * rhs;
+    return true;
 }
 
 static size_t symmetric_i4_weight_byte_count(int64_t input_size, int64_t output_size) {
@@ -197,6 +228,109 @@ static MulMatSwiGLUMatch match_mul_mat_swiglu(const DispatchMatchContext & conte
     match.output_size = root.output_size;
     match.token_count = root.token_count;
     return match;
+}
+
+// Fuses a packed projection followed by one-input GLU. The packed weight is split into
+// gate/up halves and lowered through the split-weight gated matmul kernel.
+static PackedMulMatGluMatch match_packed_mul_mat_glu(const DispatchMatchContext & context) {
+    PackedMulMatGluMatch    match;
+    const CommonMulMatMatch root =
+        common_match_mul_mat_any_format(context.graph, context.root_node, kMulMatSwiGLUF32F32WmmaKernel, false);
+    if (!root.matched() || !context.graph.has_index() || root.weight->alias_source.value >= 0) {
+        return {};
+    }
+
+    const std::vector<const GraphNode *> & root_consumers = context.graph.index().consumers(context.root_node->output);
+    if (root_consumers.size() != 1 || root_consumers.front() == nullptr || root_consumers.front()->op != GGML_OP_GLU) {
+        return {};
+    }
+
+    const GraphNode * glu_node = root_consumers.front();
+    BinaryKind        op;
+    if (glu_node->inputs.size() != 1 || glu_node->inputs[0] != context.root_node->output ||
+        !common_fused_binary_kind_from_params(glu_node->params, op)) {
+        return {};
+    }
+
+    const GluParams * glu_params = op_params_as<GluParams>(glu_node->params);
+    if (glu_params == nullptr) {
+        return {};
+    }
+
+    size_t glu_index = 0;
+    if (!context.graph.index().node_index(glu_node, glu_index) || glu_index >= context.covered_nodes.size() ||
+        context.covered_nodes[glu_index]) {
+        return {};
+    }
+
+    const Value * output = common_graph_value(context.graph, glu_node->output);
+    if (output == nullptr || output->type != GGML_TYPE_F32 || !output->contiguous || root.output_size % 2 != 0 ||
+        output->ne[0] != root.output_size / 2 || output->ne[1] != root.token_count || output->ne[2] != 1 ||
+        output->ne[3] != 1 || output->alias_source.value >= 0) {
+        return {};
+    }
+
+    const size_t row_bytes  = ggml_row_size(root.weight->type, root.input_size);
+    size_t       half_bytes = 0;
+    if (row_bytes == 0 || !checked_mul_size(row_bytes, static_cast<size_t>(output->ne[0]), half_bytes) ||
+        half_bytes > root.weight->byte_count || half_bytes > std::numeric_limits<size_t>::max() - half_bytes ||
+        2 * half_bytes > root.weight->byte_count) {
+        return {};
+    }
+
+    match.input              = root.input;
+    match.weight             = root.weight;
+    match.packed_output      = root.output;
+    match.output             = output;
+    match.matmul_node        = context.root_node;
+    match.glu_node           = glu_node;
+    match.op                 = op;
+    match.input_size         = root.input_size;
+    match.output_size        = output->ne[0];
+    match.token_count        = root.token_count;
+    match.gate_weight_offset = glu_params->swapped ? half_bytes : 0;
+    match.up_weight_offset   = glu_params->swapped ? 0 : half_bytes;
+    match.weight_half_bytes  = half_bytes;
+    match.weight_format      = root.weight_format;
+    return match;
+}
+
+static bool match_packed_mul_mat_glu_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
+    const PackedMulMatGluMatch match = match_packed_mul_mat_glu(context);
+    if (!match.matched()) {
+        return false;
+    }
+
+    Dispatch dispatch;
+    dispatch.kernel = make_kernel_specialization(kMulMatSwiGLUF32F32WmmaKernel);
+    dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
+    dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
+                                               common_to_config_value(match.token_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_swiglu.input_size",
+                                               common_to_config_value(match.input_size));
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_swiglu.output_size",
+                                               common_to_config_value(match.output_size));
+    dispatch.kernel.compile_parameters.emplace(
+        "ggml.mul_mat_swiglu.gate_weight_format",
+        common_to_config_value(common_mul_mat_format_config_value(match.weight_format)));
+    dispatch.kernel.compile_parameters.emplace(
+        "ggml.mul_mat_swiglu.up_weight_format",
+        common_to_config_value(common_mul_mat_format_config_value(match.weight_format)));
+    dispatch.kernel.compile_parameters.emplace(
+        "ggml.mul_mat_swiglu.op", common_to_config_value(static_cast<int64_t>(binary_kind_config_value(match.op))));
+    dispatch.bindings.push_back({ match.input->id, 0, match.input->byte_count });
+    dispatch.bindings.push_back({ match.weight->id, match.gate_weight_offset, match.weight_half_bytes });
+    dispatch.bindings.push_back({ match.weight->id, match.up_weight_offset, match.weight_half_bytes });
+    dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
+
+    if (!append_covered_node_index_once(context.graph, context.covered_nodes, match.matmul_node,
+                                        dispatch_match.covered_nodes) ||
+        !append_covered_node_index_once(context.graph, context.covered_nodes, match.glu_node,
+                                        dispatch_match.covered_nodes)) {
+        return false;
+    }
+    dispatch_match.dispatches.push_back(std::move(dispatch));
+    return true;
 }
 
 static bool match_mul_mat_swiglu_symmetric_i4_lowrow_dispatch(const DispatchMatchContext & context,
@@ -482,6 +616,14 @@ void register_gated_mul_mat_dispatches(DispatchRegistryBuilder & registry) {
         290,
         DispatchSource::Common,
         match_mul_mat_swiglu_dispatch,
+    });
+    registry.add({
+        "common.packed_mul_mat_glu.f32_f32_wmma",
+        GGML_OP_MUL_MAT,
+        DispatchMatchKind::Fused,
+        285,
+        DispatchSource::Common,
+        match_packed_mul_mat_glu_dispatch,
     });
 }
 

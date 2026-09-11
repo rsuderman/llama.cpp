@@ -37,6 +37,7 @@ struct ClampParams {
 
 struct GluParams {
     ggml_glu_op op = GGML_GLU_OP_REGLU;
+    bool        swapped = false;
 };
 
 struct ScaleParams {

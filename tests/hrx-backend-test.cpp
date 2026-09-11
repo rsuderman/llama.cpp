@@ -2846,6 +2846,108 @@ static void schedule_fused_matmul_swiglu_command(
     REQUIRE(commands.commands.front().bindings[3].name == "output");
 }
 
+static void schedule_packed_glu_command(ggml_context *        ctx,
+                                        ggml_tensor *         output,
+                                        ggml::hrx::BinaryKind expected_binary_op,
+                                        int64_t               expected_hidden_size,
+                                        int64_t               expected_token_count,
+                                        bool                  expected_swapped) {
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    REQUIRE(imported.graph.nodes().size() == 1);
+    REQUIRE(imported.graph.nodes()[0].op == GGML_OP_GLU);
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 1);
+
+    const ggml::hrx::Dispatch & dispatch    = scheduler.plan().dispatches.front();
+    const std::string           kernel_name = kernel_name_for_id(dispatch.kernel.kernel_id);
+    REQUIRE(kernel_name == "loom_libs:ggml_binary_f32");
+    REQUIRE(dispatch.kernel.integer_parameters.at("element_count") == expected_hidden_size * expected_token_count);
+    require_compile_parameter(dispatch, "ggml.binary_f32.op",
+                              std::to_string(ggml::hrx::binary_kind_config_value(expected_binary_op)));
+    require_compile_parameter(dispatch, "ggml.binary_f32.ne0", std::to_string(expected_hidden_size));
+    require_compile_parameter(dispatch, "ggml.binary_f32.ne1", std::to_string(expected_token_count));
+    REQUIRE(dispatch.bindings.size() == 3);
+
+    const size_t half_offset = static_cast<size_t>(expected_hidden_size) * sizeof(float);
+    REQUIRE(dispatch.bindings[0].offset == (expected_swapped ? half_offset : 0));
+    REQUIRE(dispatch.bindings[1].offset == (expected_swapped ? 0 : half_offset));
+    REQUIRE(dispatch.bindings[2].value == imported.graph.nodes()[0].output);
+
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(commands.valid());
+    REQUIRE(commands.commands.size() == 1);
+    REQUIRE(command_program_verifies(commands));
+    REQUIRE(commands.commands.front().bindings.size() == 3);
+    REQUIRE(commands.commands.front().bindings[0].name == "lhs");
+    REQUIRE(commands.commands.front().bindings[1].name == "rhs");
+    REQUIRE(commands.commands.front().bindings[2].name == "output");
+}
+
+static void schedule_packed_matmul_glu_command(ggml_context *        ctx,
+                                               ggml_tensor *         output,
+                                               ggml_type             expected_weight_type,
+                                               int64_t               expected_token_count,
+                                               int64_t               expected_input_size,
+                                               int64_t               expected_output_size,
+                                               ggml::hrx::BinaryKind expected_binary_op,
+                                               bool                  expected_swapped) {
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+    REQUIRE(imported.graph.nodes().size() == 2);
+    REQUIRE(imported.graph.nodes()[0].op == GGML_OP_MUL_MAT);
+    REQUIRE(imported.graph.nodes()[1].op == GGML_OP_GLU);
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() == 1);
+
+    const ggml::hrx::Dispatch & dispatch    = scheduler.plan().dispatches.front();
+    const std::string           kernel_name = kernel_name_for_id(dispatch.kernel.kernel_id);
+    REQUIRE(kernel_name == "loom_libs:ggml_mul_mat_swiglu_f32_f32_wmma");
+    REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == expected_token_count);
+    REQUIRE(dispatch.bindings.size() == 4);
+    require_compile_parameter(dispatch, "ggml.workload.token_capacity", std::to_string(expected_token_count));
+    require_compile_parameter(dispatch, "ggml.mul_mat_swiglu.input_size", std::to_string(expected_input_size));
+    require_compile_parameter(dispatch, "ggml.mul_mat_swiglu.output_size", std::to_string(expected_output_size));
+    require_compile_parameter(dispatch, "ggml.mul_mat_swiglu.gate_weight_format",
+                              std::to_string(matmul_weight_format_config(expected_weight_type)));
+    require_compile_parameter(dispatch, "ggml.mul_mat_swiglu.up_weight_format",
+                              std::to_string(matmul_weight_format_config(expected_weight_type)));
+    require_compile_parameter(dispatch, "ggml.mul_mat_swiglu.op",
+                              std::to_string(ggml::hrx::binary_kind_config_value(expected_binary_op)));
+
+    const size_t half_offset = ggml_row_size(expected_weight_type, expected_input_size) *
+                               static_cast<size_t>(expected_output_size);
+    REQUIRE(dispatch.bindings[1].offset == (expected_swapped ? half_offset : 0));
+    REQUIRE(dispatch.bindings[2].offset == (expected_swapped ? 0 : half_offset));
+    REQUIRE(dispatch.bindings[3].value == imported.graph.nodes()[1].output);
+
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(commands.valid());
+    REQUIRE(commands.commands.size() == 1);
+    REQUIRE(command_program_verifies(commands));
+    REQUIRE(commands.commands.front().bindings.size() == 4);
+    REQUIRE(commands.commands.front().bindings[0].name == "input");
+    REQUIRE(commands.commands.front().bindings[1].name == "gate_weight");
+    REQUIRE(commands.commands.front().bindings[2].name == "up_weight");
+    REQUIRE(commands.commands.front().bindings[3].name == "output");
+}
+
 static void schedule_fused_matmul_postops_command(ggml_context *                  ctx,
                                                   ggml_tensor *                   output,
                                                   const char *                    expected_kernel_name,
@@ -4561,6 +4663,48 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(output != nullptr);
         schedule_fused_matmul_swiglu_command(ctx, output, GGML_TYPE_IQ4_NL, GGML_TYPE_IQ4_NL, 2, 640, 2048,
                                              ggml::hrx::BinaryKind::GeGLU);
+    }
+
+    {
+        ggml_tensor * packed = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 3);
+        REQUIRE(packed != nullptr);
+        ggml_tensor * output = ggml_glu(ctx, packed, GGML_GLU_OP_SWIGLU, false);
+        REQUIRE(output != nullptr);
+        schedule_packed_glu_command(ctx, output, ggml::hrx::BinaryKind::SwiGLU, 128, 3, false);
+    }
+
+    {
+        ggml_tensor * packed = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 3);
+        REQUIRE(packed != nullptr);
+        ggml_tensor * output = ggml_glu(ctx, packed, GGML_GLU_OP_GEGLU, true);
+        REQUIRE(output != nullptr);
+        schedule_packed_glu_command(ctx, output, ggml::hrx::BinaryKind::GeGLU, 128, 3, true);
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 256, 256);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 2);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * packed = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(packed != nullptr);
+        ggml_tensor * output = ggml_glu(ctx, packed, GGML_GLU_OP_SWIGLU, false);
+        REQUIRE(output != nullptr);
+        schedule_packed_matmul_glu_command(ctx, output, GGML_TYPE_Q4_K, 2, 256, 128,
+                                           ggml::hrx::BinaryKind::SwiGLU, false);
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 256, 256);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 2);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * packed = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(packed != nullptr);
+        ggml_tensor * output = ggml_glu(ctx, packed, GGML_GLU_OP_SWIGLU, true);
+        REQUIRE(output != nullptr);
+        schedule_packed_matmul_glu_command(ctx, output, GGML_TYPE_Q4_K, 2, 256, 128,
+                                           ggml::hrx::BinaryKind::SwiGLU, true);
     }
 
     {

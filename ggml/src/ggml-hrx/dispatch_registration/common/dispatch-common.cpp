@@ -7,6 +7,7 @@
 #include "dispatch-gated-mul-mat.h"
 #include "dispatch-gather-add.h"
 #include "dispatch-get-rows.h"
+#include "dispatch-glu.h"
 #include "dispatch-mul-mat-id.h"
 #include "dispatch-mul-mat.h"
 #include "dispatch-rmsnorm.h"
@@ -24,6 +25,7 @@ void register_common_dispatches(DispatchRegistryBuilder & registry) {
     register_gated_mul_mat_dispatches(registry);
     register_gather_add_dispatch(registry);
     register_get_rows_dispatches(registry);
+    register_glu_dispatches(registry);
     register_mul_mat_id_dispatches(registry);
     register_mul_mat_dispatches(registry);
     register_rope_set_rows_dispatches(registry);
