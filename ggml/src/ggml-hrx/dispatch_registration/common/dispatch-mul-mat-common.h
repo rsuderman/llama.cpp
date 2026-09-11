@@ -76,7 +76,7 @@ inline size_t common_symmetric_shared4_row_group_size(int64_t input_size, int64_
 
 inline size_t common_symmetric_shared4_weight_byte_count(int64_t input_size, int64_t output_size, int64_t quant_bits) {
     const size_t logical_output_size    = static_cast<size_t>(output_size);
-    const size_t row_group_size = common_symmetric_shared4_row_group_size(input_size, output_size, quant_bits);
+    const size_t row_group_size         = common_symmetric_shared4_row_group_size(input_size, output_size, quant_bits);
     const size_t padded_output_size     = (logical_output_size + row_group_size - 1) / row_group_size * row_group_size;
     const size_t materialized_row_bytes = 4 + 8 * 32 * static_cast<size_t>(quant_bits) / 8;
     return padded_output_size * static_cast<size_t>(input_size / 256) * materialized_row_bytes;
@@ -125,12 +125,18 @@ inline bool common_is_supported_dense_input_size(int64_t input_size) {
     return input_size >= 256 && input_size <= 32768 && input_size % 256 == 0;
 }
 
+inline bool common_is_supported_dense_input_size(CommonMulMatWeightFormat format, int64_t input_size) {
+    return common_mul_mat_supported_dense_input_size(format, input_size);
+}
+
 inline bool common_is_supported_dense_output_size(int64_t output_size) {
     return output_size >= 1 && output_size <= 262144;
 }
 
 inline ggml_type common_mul_mat_format_type(CommonMulMatWeightFormat format) {
     switch (format) {
+        case CommonMulMatWeightFormat::Q1_0:
+            return GGML_TYPE_Q1_0;
         case CommonMulMatWeightFormat::Q3K:
             return GGML_TYPE_Q3_K;
         case CommonMulMatWeightFormat::Q4K:
@@ -147,6 +153,8 @@ inline ggml_type common_mul_mat_format_type(CommonMulMatWeightFormat format) {
             return GGML_TYPE_Q5_0;
         case CommonMulMatWeightFormat::Q5_1:
             return GGML_TYPE_Q5_1;
+        case CommonMulMatWeightFormat::IQ2_S:
+            return GGML_TYPE_IQ2_S;
         case CommonMulMatWeightFormat::IQ3_S:
             return GGML_TYPE_IQ3_S;
         case CommonMulMatWeightFormat::IQ4_NL:
@@ -405,7 +413,7 @@ inline CommonMulMatMatch common_match_mul_mat_any_format(const Graph &     graph
     const bool    token_count_supported = decode ? common_is_supported_decode_token_count(token_count) :
                                                    common_is_supported_prefill_token_count(token_count);
     if (input->ne[0] != input_size || output->ne[0] != output_size || output->ne[1] != token_count ||
-        !token_count_supported || !common_is_supported_dense_input_size(input_size) ||
+        !token_count_supported || !common_is_supported_dense_input_size(format, input_size) ||
         !(decode ? common_is_supported_dense_decode_output_size(format, input_size, output_size) :
                    common_is_supported_dense_output_size(output_size))) {
         return {};

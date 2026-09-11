@@ -9,7 +9,7 @@ template.decl @ggml.mul_mat_swiglu.launch(%token_capacity: index, %output_size: 
 
 amdgpu.target<gfx11-generic> @ggml_mul_mat_swiglu_gfx11_wave64 {subgroup_size = 64}
 
-config.decl @ggml.mul_mat_swiglu.input_size : %value: index where [range(%value, 256, 32768), mul(%value, 256)]
+config.decl @ggml.mul_mat_swiglu.input_size : %value: index where [range(%value, 256, 32768), mul(%value, 32)]
 
 config.decl @ggml.mul_mat_swiglu.output_size : %value: index where [range(%value, 1, 262144)]
 
@@ -21,7 +21,7 @@ config.decl @ggml.mul_mat_swiglu.op : %value: index where [range(%value, 0, 8)]
 
 config.decl @ggml.workload.token_capacity : %value: index where [range(%value, 2, 2048)]
 
-func.decl @ggml_dequant_weight_tile_bytes(%weight_format: index) -> (offset)
+func.decl @ggml_dequant_weight_row_bytes(%weight_format: index, %hidden_size: index) -> (offset)
 
 func.decl @ggml_iq4nl_table_i8() -> (vector<16xi8>)
 
@@ -111,7 +111,7 @@ template.def<@ggml.mul_mat_swiglu.apply_vector4> device @ggml_mul_mat_swiglu_app
 
 template.def<@ggml.mul_mat_swiglu.body> device @ggml_mul_mat_swiglu_f32_f32_wmma_body(%op: index, %gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size0: index, %output_size0: index, %channel_tile: index, %token_tile: index, %input: buffer, %gate_weight: buffer, %up_weight: buffer, %output: buffer) {
   %bounded_token_count = index.assume %token_count [range(%token_count, 2, 2048)] : index
-  %bounded_input_size = index.assume %input_size0 [range(%input_size0, 256, 32768), mul(%input_size0, 256)] : index
+  %bounded_input_size = index.assume %input_size0 [range(%input_size0, 256, 32768), mul(%input_size0, 32)] : index
   %bounded_output_size = index.assume %output_size0 [range(%output_size0, 1, 262144)] : index
   %workitem = kernel.workitem.id<x> : index
   %subgroup0 = kernel.subgroup.id : index
@@ -125,6 +125,7 @@ template.def<@ggml.mul_mat_swiglu.body> device @ggml_mul_mat_swiglu_f32_f32_wmma
   %c32 = index.constant 32 : index
   %c40 = index.constant 40 : index
   %c64 = index.constant 64 : index
+  %c255 = index.constant 255 : index
   %c256 = index.constant 256 : index
   %c0_offset = index.constant 0 : offset
   %weight_stage_bytes = index.constant 5120 : offset
@@ -137,11 +138,10 @@ template.def<@ggml.mul_mat_swiglu.body> device @ggml_mul_mat_swiglu_f32_f32_wmma
   %m = index.constant 16 : index
   %n = index.constant 16 : index
   %k = index.constant 16 : index
-  %gate_weight_block_bytes = func.call @ggml_dequant_weight_tile_bytes(%gate_weight_format) : (index) -> (offset)
-  %up_weight_block_bytes = func.call @ggml_dequant_weight_tile_bytes(%up_weight_format) : (index) -> (offset)
-  %quant_block_count = index.div %bounded_input_size, %c256 : index
-  %gate_weight_row_bytes = index.scale %quant_block_count, %gate_weight_block_bytes : index, offset -> offset
-  %up_weight_row_bytes = index.scale %quant_block_count, %up_weight_block_bytes : index, offset -> offset
+  %padded_input_size = index.add %bounded_input_size, %c255 : index
+  %quant_block_count = index.div %padded_input_size, %c256 : index
+  %gate_weight_row_bytes = func.call @ggml_dequant_weight_row_bytes(%gate_weight_format, %bounded_input_size) : (index, index) -> (offset)
+  %up_weight_row_bytes = func.call @ggml_dequant_weight_row_bytes(%up_weight_format, %bounded_input_size) : (index, index) -> (offset)
   %input_noalias, %gate_weight_noalias, %up_weight_noalias, %output_noalias = buffer.assume.noalias %input, %gate_weight, %up_weight, %output : buffer, buffer, buffer, buffer
   %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x[%bounded_input_size]xf32>
   %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x[%bounded_output_size]xf32>
@@ -185,17 +185,18 @@ template.def<@ggml.mul_mat_swiglu.body> device @ggml_mul_mat_swiglu_f32_f32_wmma
         %local_row = index.assume %local_row0 [range(%local_row0, 0, 63)] : index
         %channel = index.add %channel_tile_base, %local_row : index
         %valid_channel = index.cmp ult, %channel, %bounded_output_size : index
-        %gate_weight_values = scf.if %valid_channel -> (vector<4xf16>) {
+        %weight_k = index.add %k_origin, %load_k : index
+        %valid_k = index.cmp ult, %weight_k, %bounded_input_size : index
+        %valid_weight = scalar.andi %valid_channel, %valid_k : i1
+        %gate_weight_values = scf.if %valid_weight -> (vector<4xf16>) {
           %row_byte_base = index.scale %channel, %gate_weight_row_bytes : index, offset -> offset
-          %weight_k = index.add %k_origin, %load_k : index
           %decoded = func.call @ggml_dequant_f16_vector4(%iq4nl_table, %iq3s_grid_low0, %iq3s_grid_low1, %iq3s_grid_low2, %iq3s_grid_low3, %iq3s_grid_low4, %iq3s_grid_low5, %iq3s_grid_low6, %iq3s_grid_low7, %iq3s_grid_low8, %iq3s_grid_low9, %iq3s_grid_low10, %iq3s_grid_low11, %iq3s_grid_low12, %iq3s_grid_low13, %iq3s_grid_low14, %iq3s_grid_low15, %iq3s_grid_high0, %iq3s_grid_high1, %iq3s_grid_high2, %iq3s_grid_high3, %iq3s_grid_high4, %iq3s_grid_high5, %iq3s_grid_high6, %iq3s_grid_high7, %iq3s_grid_high8, %iq3s_grid_high9, %iq3s_grid_high10, %iq3s_grid_high11, %iq3s_grid_high12, %iq3s_grid_high13, %iq3s_grid_high14, %iq3s_grid_high15, %gate_weight_format, %gate_weight_noalias, %row_byte_base, %bounded_input_size, %quant_block, %quant_group, %load_packet, %weight_k) : (vector<16xi8>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, index, buffer, offset, index, index, index, index, index) -> (vector<4xf16>)
           scf.yield %decoded : vector<4xf16>
         } else {
           scf.yield %c0_f16x4 : vector<4xf16>
         }
-        %up_weight_values = scf.if %valid_channel -> (vector<4xf16>) {
+        %up_weight_values = scf.if %valid_weight -> (vector<4xf16>) {
           %row_byte_base = index.scale %channel, %up_weight_row_bytes : index, offset -> offset
-          %weight_k = index.add %k_origin, %load_k : index
           %decoded = func.call @ggml_dequant_f16_vector4(%iq4nl_table, %iq3s_grid_low0, %iq3s_grid_low1, %iq3s_grid_low2, %iq3s_grid_low3, %iq3s_grid_low4, %iq3s_grid_low5, %iq3s_grid_low6, %iq3s_grid_low7, %iq3s_grid_low8, %iq3s_grid_low9, %iq3s_grid_low10, %iq3s_grid_low11, %iq3s_grid_low12, %iq3s_grid_low13, %iq3s_grid_low14, %iq3s_grid_low15, %iq3s_grid_high0, %iq3s_grid_high1, %iq3s_grid_high2, %iq3s_grid_high3, %iq3s_grid_high4, %iq3s_grid_high5, %iq3s_grid_high6, %iq3s_grid_high7, %iq3s_grid_high8, %iq3s_grid_high9, %iq3s_grid_high10, %iq3s_grid_high11, %iq3s_grid_high12, %iq3s_grid_high13, %iq3s_grid_high14, %iq3s_grid_high15, %up_weight_format, %up_weight_noalias, %row_byte_base, %bounded_input_size, %quant_block, %quant_group, %load_packet, %weight_k) : (vector<16xi8>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, index, buffer, offset, index, index, index, index, index) -> (vector<4xf16>)
           scf.yield %decoded : vector<4xf16>
         } else {
@@ -208,10 +209,13 @@ template.def<@ggml.mul_mat_swiglu.body> device @ggml_mul_mat_swiglu_f32_f32_wmma
           %activation_row = index.assume %local_row [range(%local_row, 0, 31)] : index
           %token = index.add %token_tile_base, %activation_row : index
           %valid_token = index.cmp ult, %token, %bounded_token_count : index
-          %activation_values = scf.if %valid_token -> (vector<4xf16>) {
+          %input_k = index.add %k_origin, %load_k : index
+          %valid_input = index.cmp ult, %input_k, %bounded_input_size : index
+          %valid_activation = scalar.andi %valid_token, %valid_input : i1
+          %activation_values = scf.if %valid_activation -> (vector<4xf16>) {
             %bounded_token, %input_token_count = index.assume %token, %bounded_token_count [lt(%token, %bounded_token_count)] : index, index
-            %input_k = index.add %k_origin, %load_k : index
-            %loaded = vector.load %input_view[%bounded_token, %input_k] : view<[%bounded_token_count]x[%bounded_input_size]xf32> -> vector<4xf32>
+            %mask = vector.mask.range [%input_k to %bounded_input_size step %c1] : index -> vector<4xi1>
+            %loaded = vector.load.mask %input_view[%bounded_token, %input_k], %mask, %c0_f32x4 : view<[%bounded_token_count]x[%bounded_input_size]xf32>, vector<4xi1>, vector<4xf32>
             %converted = vector.fptrunc %loaded : vector<4xf32> to vector<4xf16>
             scf.yield %converted : vector<4xf16>
           } else {

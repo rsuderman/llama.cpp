@@ -7,6 +7,7 @@
 namespace ggml::hrx {
 
 enum class CommonMulMatWeightFormat {
+    Q1_0,
     Q3K,
     Q4K,
     Q5K,
@@ -15,6 +16,7 @@ enum class CommonMulMatWeightFormat {
     Q4_1,
     Q5_0,
     Q5_1,
+    IQ2_S,
     IQ3_S,
     IQ4_NL,
     IQ4_XS,
@@ -27,6 +29,9 @@ enum class CommonMulMatWeightFormat {
 
 inline bool common_mul_mat_format_for_type(ggml_type type, CommonMulMatWeightFormat & format) {
     switch (type) {
+        case GGML_TYPE_Q1_0:
+            format = CommonMulMatWeightFormat::Q1_0;
+            return true;
         case GGML_TYPE_Q3_K:
             format = CommonMulMatWeightFormat::Q3K;
             return true;
@@ -50,6 +55,9 @@ inline bool common_mul_mat_format_for_type(ggml_type type, CommonMulMatWeightFor
             return true;
         case GGML_TYPE_Q5_1:
             format = CommonMulMatWeightFormat::Q5_1;
+            return true;
+        case GGML_TYPE_IQ2_S:
+            format = CommonMulMatWeightFormat::IQ2_S;
             return true;
         case GGML_TYPE_IQ3_S:
             format = CommonMulMatWeightFormat::IQ3_S;
@@ -82,6 +90,8 @@ inline bool common_mul_mat_format_for_type(ggml_type type, CommonMulMatWeightFor
 
 inline int64_t common_mul_mat_format_config_value(CommonMulMatWeightFormat format) {
     switch (format) {
+        case CommonMulMatWeightFormat::Q1_0:
+            return 10;
         case CommonMulMatWeightFormat::Q3K:
             return 11;
         case CommonMulMatWeightFormat::Q4K:
@@ -98,6 +108,8 @@ inline int64_t common_mul_mat_format_config_value(CommonMulMatWeightFormat forma
             return 50;
         case CommonMulMatWeightFormat::Q5_1:
             return 51;
+        case CommonMulMatWeightFormat::IQ2_S:
+            return 22;
         case CommonMulMatWeightFormat::IQ3_S:
             return 21;
         case CommonMulMatWeightFormat::IQ4_NL:
@@ -121,6 +133,23 @@ inline int64_t common_mul_mat_format_config_value(CommonMulMatWeightFormat forma
 inline bool common_mul_mat_dense_float_format(CommonMulMatWeightFormat format) {
     return format == CommonMulMatWeightFormat::F16 || format == CommonMulMatWeightFormat::BF16 ||
            format == CommonMulMatWeightFormat::F32;
+}
+
+inline bool common_mul_mat_supported_dense_input_size(CommonMulMatWeightFormat format, int64_t input_size) {
+    switch (format) {
+        case CommonMulMatWeightFormat::Q1_0:
+            return input_size >= 256 && input_size <= 32768 && input_size % 128 == 0;
+        case CommonMulMatWeightFormat::Q4_0:
+        case CommonMulMatWeightFormat::Q4_1:
+        case CommonMulMatWeightFormat::Q5_0:
+        case CommonMulMatWeightFormat::Q5_1:
+        case CommonMulMatWeightFormat::IQ4_NL:
+        case CommonMulMatWeightFormat::Q8_0:
+        case CommonMulMatWeightFormat::Q8_1:
+            return input_size >= 256 && input_size <= 32768 && input_size % 32 == 0;
+        default:
+            return input_size >= 256 && input_size <= 32768 && input_size % 256 == 0;
+    }
 }
 
 inline bool common_mul_mat_alternate_format_for_type(ggml_type type, CommonMulMatWeightFormat & format) {
