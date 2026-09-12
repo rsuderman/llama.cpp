@@ -17,6 +17,8 @@ static constexpr KernelCatalogRef kMulMatF32F32WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_f32_f32_wmma");
 static constexpr KernelCatalogRef kMulMatF32F32DecodeWave64Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_f32_f32_decode_wave64");
+static constexpr KernelCatalogRef kMulMatAddF32F32DecodeWave64Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_add_f32_f32_decode_wave64");
 static constexpr KernelCatalogRef kMulMatBiasF32F32WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_bias_f32_f32_wmma");
 static constexpr KernelCatalogRef kMulMatAddF32F32WmmaKernel =
@@ -48,7 +50,7 @@ static constexpr KernelCatalogRef kMulMatQ5KIQ4XSQ8_1X4WmmaToken256Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_q5_k_iq4_xs_q8_1_x4_wmma_token256");
 static constexpr KernelCatalogRef kMulMatQ6KPackedToken1F16WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_q6_k_packed_token1_f16_wmma");
-static constexpr int64_t kMulMatQ6KPackedMaxOutputSize = 262144;
+static constexpr int64_t          kMulMatQ6KPackedMaxOutputSize = 262144;
 static constexpr KernelCatalogRef kMulMatQ6KI8PrepackedF16WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_q6_k_i8_prepacked_f16_wmma");
 static constexpr KernelCatalogRef kSelectSymmetricI4K32GroupsKernel =
@@ -84,6 +86,17 @@ struct MulMatPostOpsMatch {
     bool matched() const {
         return input != nullptr && weight != nullptr && projection_output != nullptr && residual_output != nullptr &&
                kernel.id != kUncatalogedKernelId && (has_bias || has_residual);
+    }
+};
+
+struct DecodeMulMatAddMatch {
+    CommonMulMatMatch root;
+    const Value *     residual_input  = nullptr;
+    const Value *     residual_output = nullptr;
+    const GraphNode * add_node        = nullptr;
+
+    bool matched() const {
+        return root.matched() && residual_input != nullptr && residual_output != nullptr && add_node != nullptr;
     }
 };
 
@@ -324,8 +337,8 @@ static bool match_symmetric_i4_low_row_dispatch(const DispatchMatchContext & con
                                                   common_to_config_value(match.token_count));
     contraction.kernel.compile_parameters.emplace(
         "ggml.mul_mat.symmetric_i4.lowrow.row_group_size",
-        common_to_config_value(static_cast<int64_t>(
-            common_symmetric_shared4_row_group_size(match.input_size, match.output_size, 4))));
+        common_to_config_value(
+            static_cast<int64_t>(common_symmetric_shared4_row_group_size(match.input_size, match.output_size, 4))));
     contraction.bindings.push_back(
         match.weight->type == GGML_TYPE_Q5_K && match.token_count == 1 ?
             common_symmetric_i4_shared4_multistart_weight_binding(*match.weight, match.input_size, match.output_size) :
@@ -445,8 +458,7 @@ static bool match_q6_k_token1_shortlist_dispatch(const DispatchMatchContext & co
     scan.bindings.push_back({ match.output->id, 0, match.output->byte_count });
     scan.bindings.push_back({ activation, 0, activation_layout.payload_bytes });
     scan.bindings.push_back({ activation, activation_layout.scales_offset, activation_layout.metadata_bytes });
-    scan.bindings.push_back(
-        { selected_groups, 0, static_cast<size_t>(selected_group_count) * sizeof(int32_t) });
+    scan.bindings.push_back({ selected_groups, 0, static_cast<size_t>(selected_group_count) * sizeof(int32_t) });
     dispatch_match.dispatches.push_back(std::move(scan));
 
     Dispatch partition_top_k;
@@ -932,6 +944,83 @@ static bool match_mul_mat_postops_dispatch(const DispatchMatchContext & context,
     return true;
 }
 
+static DecodeMulMatAddMatch match_decode_mul_mat_add(const DispatchMatchContext & context) {
+    DecodeMulMatAddMatch match;
+    CommonMulMatMatch    root =
+        common_match_mul_mat_any_format(context.graph, context.root_node, kMulMatAddF32F32DecodeWave64Kernel, true);
+    if (!root.matched() || !context.graph.has_index() || root.token_count != 1) {
+        return match;
+    }
+
+    const GraphNode * add_node = common_find_only_consumer_with_op(context.graph, root.output->id, GGML_OP_ADD);
+    if (add_node == nullptr || !common_binary_node_is_add(*add_node)) {
+        return match;
+    }
+
+    const bool root_is_lhs = add_node->inputs[0] == root.output->id;
+    const bool root_is_rhs = add_node->inputs[1] == root.output->id;
+    if (!root_is_lhs && !root_is_rhs) {
+        return match;
+    }
+
+    const ValueId residual_id = root_is_lhs ? add_node->inputs[1] : add_node->inputs[0];
+    const Value * residual    = common_graph_value(context.graph, residual_id);
+    const Value * output      = common_graph_value(context.graph, add_node->output);
+    if (residual == nullptr || output == nullptr || residual->type != GGML_TYPE_F32 || output->type != GGML_TYPE_F32 ||
+        !residual->contiguous || !output->contiguous || !common_same_shape(*root.output, *residual) ||
+        !common_same_shape(*root.output, *output)) {
+        return match;
+    }
+
+    size_t add_index = 0;
+    if (!context.graph.index().node_index(add_node, add_index) || add_index >= context.covered_nodes.size() ||
+        context.covered_nodes[add_index]) {
+        return match;
+    }
+
+    // Keep ADD -> RMS_NORM available for the stronger next-rmsnorm fusion.
+    if (common_find_single_consumer_with_op(context.graph, output->id, GGML_OP_RMS_NORM) != nullptr) {
+        return match;
+    }
+
+    root.output           = output;
+    match.root            = root;
+    match.residual_input  = residual;
+    match.residual_output = output;
+    match.add_node        = add_node;
+    return match;
+}
+
+static bool build_decode_mul_mat_add_dispatch(const DecodeMulMatAddMatch & match,
+                                              const DispatchMatchContext & context,
+                                              DispatchMatch &              dispatch_match) {
+    Dispatch dispatch;
+    dispatch.kernel = make_kernel_specialization(kMulMatAddF32F32DecodeWave64Kernel);
+    dispatch.kernel.integer_parameters.emplace("token_count", match.root.token_count);
+    dispatch.kernel.integer_parameters.emplace("input_size", match.root.input_size);
+    dispatch.kernel.integer_parameters.emplace("output_size", match.root.output_size);
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_f32_f32_decode.token_capacity",
+                                               common_to_config_value(match.root.token_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_f32_f32_decode.output_capacity",
+                                               common_to_config_value(match.root.output_size));
+    dispatch.kernel.compile_parameters.emplace(
+        "ggml.mul_mat_f32_f32_decode.weight_format",
+        common_to_config_value(common_mul_mat_format_config_value(match.root.weight_format)));
+    dispatch.bindings.push_back({ match.root.input->id, 0, match.root.input->byte_count });
+    dispatch.bindings.push_back({ match.root.weight->id, 0, match.root.weight->byte_count });
+    dispatch.bindings.push_back({ match.residual_input->id, 0, match.residual_input->byte_count });
+    dispatch.bindings.push_back({ match.residual_output->id, 0, match.residual_output->byte_count });
+
+    if (!append_covered_node_index_once(context.graph, context.covered_nodes, context.root_node,
+                                        dispatch_match.covered_nodes) ||
+        !append_covered_node_index_once(context.graph, context.covered_nodes, match.add_node,
+                                        dispatch_match.covered_nodes)) {
+        return false;
+    }
+    dispatch_match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
+
 static void build_decode_mul_mat_dispatch(const CommonMulMatMatch & match,
                                           DispatchMatch &           dispatch_match,
                                           size_t                    root_index) {
@@ -984,6 +1073,14 @@ static bool match_decode_mul_mat_dispatch(const DispatchMatchContext & context, 
     }
     build_decode_mul_mat_dispatch(match, dispatch_match, context.root_index);
     return true;
+}
+
+static bool match_decode_mul_mat_add_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
+    const DecodeMulMatAddMatch match = match_decode_mul_mat_add(context);
+    if (!match.matched()) {
+        return false;
+    }
+    return build_decode_mul_mat_add_dispatch(match, context, dispatch_match);
 }
 
 void register_mul_mat_dispatches(DispatchRegistryBuilder & registry) {
@@ -1066,6 +1163,14 @@ void register_mul_mat_dispatches(DispatchRegistryBuilder & registry) {
         80,
         DispatchSource::Common,
         match_mul_mat_dispatch,
+    });
+    registry.add({
+        "common.mul_mat_add.f32_f32_decode",
+        GGML_OP_MUL_MAT,
+        DispatchMatchKind::Fused,
+        70,
+        DispatchSource::Common,
+        match_decode_mul_mat_add_dispatch,
     });
     registry.add({
         "common.mul_mat.f32_f32_decode",

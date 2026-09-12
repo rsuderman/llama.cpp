@@ -17,6 +17,8 @@ static constexpr KernelCatalogRef kMulMatF32F32WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_f32_f32_wmma");
 static constexpr KernelCatalogRef kMulMatSwiGLUF32F32WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_f32_f32_wmma");
+static constexpr KernelCatalogRef kMulMatSwiGLUF32F32DecodeWave64Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_f32_f32_decode_wave64");
 static constexpr KernelCatalogRef kQuantizeF32SymmetricI4K32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_quantize_f32_symmetric_i4_k32");
 static constexpr KernelCatalogRef kMulMatSymmetricI4LowRowAdjacentDualWmmaKernel =
@@ -57,6 +59,8 @@ struct MulMatSwiGLUMatch {
     }
 
     bool matched() const { return topology_matched() && token_count > 1; }
+
+    bool decode_matched() const { return topology_matched() && token_count == 1; }
 };
 
 struct MulMatSwiGLUProjectionMatch {
@@ -380,8 +384,8 @@ static bool match_mul_mat_swiglu_symmetric_i4_lowrow_dispatch(const DispatchMatc
         }
     }
 
-    const bool use_direct_dot = match.token_count <= 5 && match.input_size % 256 == 0 &&
-                                match.output_size >= 2 * match.input_size;
+    const bool use_direct_dot =
+        match.token_count <= 5 && match.input_size % 256 == 0 && match.output_size >= 2 * match.input_size;
 
     Dispatch gate_up;
     gate_up.kernel = make_kernel_specialization(
@@ -395,8 +399,8 @@ static bool match_mul_mat_swiglu_symmetric_i4_lowrow_dispatch(const DispatchMatc
                                               common_to_config_value(match.token_count));
     gate_up.kernel.compile_parameters.emplace(
         "ggml.mul_mat.symmetric_i4.lowrow.row_group_size",
-        common_to_config_value(static_cast<int64_t>(
-            common_symmetric_shared4_row_group_size(match.input_size, match.output_size, 4))));
+        common_to_config_value(
+            static_cast<int64_t>(common_symmetric_shared4_row_group_size(match.input_size, match.output_size, 4))));
     gate_up.bindings.push_back(
         match.gate_weight->type == GGML_TYPE_Q5_K && match.token_count == 1 ?
             common_symmetric_i4_shared4_multistart_weight_binding(*match.gate_weight, match.input_size,
@@ -571,8 +575,48 @@ static bool match_mul_mat_swiglu_dispatch(const DispatchMatchContext & context, 
     dispatch.kernel.compile_parameters.emplace(
         "ggml.mul_mat_swiglu.up_weight_format",
         common_to_config_value(common_mul_mat_format_config_value(match.up_format)));
-    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_swiglu.op",
-                                               common_to_config_value(static_cast<int64_t>(binary_kind_config_value(match.op))));
+    dispatch.kernel.compile_parameters.emplace(
+        "ggml.mul_mat_swiglu.op", common_to_config_value(static_cast<int64_t>(binary_kind_config_value(match.op))));
+    dispatch.bindings.push_back({ match.input->id, 0, match.input->byte_count });
+    dispatch.bindings.push_back({ match.gate_weight->id, 0, match.gate_weight->byte_count });
+    dispatch.bindings.push_back({ match.up_weight->id, 0, match.up_weight->byte_count });
+    dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
+
+    if (!append_covered_node_index_once(context.graph, context.covered_nodes, match.gate_node,
+                                        dispatch_match.covered_nodes) ||
+        !append_covered_node_index_once(context.graph, context.covered_nodes, match.up_node,
+                                        dispatch_match.covered_nodes) ||
+        !append_covered_node_index_once(context.graph, context.covered_nodes, match.glu_node,
+                                        dispatch_match.covered_nodes)) {
+        return false;
+    }
+    dispatch_match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
+
+static bool match_decode_mul_mat_swiglu_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
+    const MulMatSwiGLUMatch match = match_mul_mat_swiglu(context);
+    if (!match.decode_matched()) {
+        return false;
+    }
+
+    Dispatch dispatch;
+    dispatch.kernel = make_kernel_specialization(kMulMatSwiGLUF32F32DecodeWave64Kernel);
+    dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
+    dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
+                                               common_to_config_value(match.token_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_swiglu.input_size",
+                                               common_to_config_value(match.input_size));
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_swiglu.output_size",
+                                               common_to_config_value(match.output_size));
+    dispatch.kernel.compile_parameters.emplace(
+        "ggml.mul_mat_swiglu.gate_weight_format",
+        common_to_config_value(common_mul_mat_format_config_value(match.gate_format)));
+    dispatch.kernel.compile_parameters.emplace(
+        "ggml.mul_mat_swiglu.up_weight_format",
+        common_to_config_value(common_mul_mat_format_config_value(match.up_format)));
+    dispatch.kernel.compile_parameters.emplace(
+        "ggml.mul_mat_swiglu.op", common_to_config_value(static_cast<int64_t>(binary_kind_config_value(match.op))));
     dispatch.bindings.push_back({ match.input->id, 0, match.input->byte_count });
     dispatch.bindings.push_back({ match.gate_weight->id, 0, match.gate_weight->byte_count });
     dispatch.bindings.push_back({ match.up_weight->id, 0, match.up_weight->byte_count });
@@ -608,6 +652,14 @@ void register_gated_mul_mat_dispatches(DispatchRegistryBuilder & registry) {
         300,
         DispatchSource::Common,
         match_mul_mat_swiglu_q5_projection_dispatch,
+    });
+    registry.add({
+        "common.mul_mat_swiglu.f32_f32_decode",
+        GGML_OP_MUL_MAT,
+        DispatchMatchKind::Fused,
+        295,
+        DispatchSource::Common,
+        match_decode_mul_mat_swiglu_dispatch,
     });
     registry.add({
         "common.mul_mat_swiglu.f32_f32_wmma",

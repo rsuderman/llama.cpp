@@ -96,6 +96,12 @@
       "path": "ops/mul_mat_swiglu_f32_f32_wmma.loom"
     },
     {
+      "path": "ops/mul_mat_swiglu_f32_f32_decode.loom"
+    },
+    {
+      "path": "ops/mul_mat_add_f32_f32_decode.loom"
+    },
+    {
       "path": "ops/mul_mat_swiglu_symmetric_i4_wmma.loom"
     },
     {
@@ -2284,6 +2290,81 @@
       ]
     },
     {
+      "name": "ggml_mul_mat_add_f32_f32_decode_wave64",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_add_f32_f32_decode_wave64",
+      "source": "ops/mul_mat_add_f32_f32_decode.loom",
+      "workload_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        },
+        {
+          "name": "input_size",
+          "type": "index"
+        },
+        {
+          "name": "output_size",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        },
+        {
+          "name": "input_size",
+          "type": "index"
+        },
+        {
+          "name": "output_size",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "input",
+        "weight",
+        "residual_input",
+        "residual_output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/mul_mat_add_f32_f32_decode.loom"
+        ],
+        "library_sources": [
+          "ops/mul_mat_f32_f32_decode.loom",
+          "motifs/dequant.loom",
+          "motifs/q4_k_f16.loom",
+          "motifs/q6_k_f16.loom",
+          "motifs/q8_0_f16.loom",
+          "motifs/q8_1_f16.loom",
+          "motifs/f16_f16.loom",
+          "motifs/bf16_f16.loom",
+          "motifs/f32_f16.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ops/mul_mat_f32_f32_decode.loom",
+        "motifs/dequant.loom",
+        "motifs/q4_k_f16.loom",
+        "motifs/q6_k_f16.loom",
+        "motifs/q8_0_f16.loom",
+        "motifs/q8_1_f16.loom",
+        "motifs/f16_f16.loom",
+        "motifs/bf16_f16.loom",
+        "motifs/f32_f16.loom"
+      ]
+    },
+    {
       "name": "ggml_mul_mat_swiglu_f32_f32_wmma",
       "family": "loom_libs",
       "symbol": "ggml_mul_mat_swiglu_f32_f32_wmma",
@@ -2333,6 +2414,65 @@
       "compile_dependencies": [
         "motifs/dequant.loom",
         "motifs/unary_f32_apply.loom",
+        "motifs/q4_k_f16.loom",
+        "motifs/q6_k_f16.loom",
+        "motifs/q8_0_f16.loom",
+        "motifs/q8_1_f16.loom",
+        "motifs/f16_f16.loom",
+        "motifs/bf16_f16.loom",
+        "motifs/f32_f16.loom"
+      ]
+    },
+    {
+      "name": "ggml_mul_mat_swiglu_f32_f32_decode_wave64",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_swiglu_f32_f32_decode_wave64",
+      "source": "ops/mul_mat_swiglu_f32_f32_decode.loom",
+      "workload_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "input",
+        "gate_weight",
+        "up_weight",
+        "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/mul_mat_swiglu_f32_f32_decode.loom"
+        ],
+        "library_sources": [
+          "motifs/dequant.loom",
+          "motifs/binary_f32_apply.loom",
+          "motifs/q4_k_f16.loom",
+          "motifs/q6_k_f16.loom",
+          "motifs/q8_0_f16.loom",
+          "motifs/q8_1_f16.loom",
+          "motifs/f16_f16.loom",
+          "motifs/bf16_f16.loom",
+          "motifs/f32_f16.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "motifs/dequant.loom",
+        "motifs/binary_f32_apply.loom",
         "motifs/q4_k_f16.loom",
         "motifs/q6_k_f16.loom",
         "motifs/q8_0_f16.loom",

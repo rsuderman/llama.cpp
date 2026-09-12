@@ -56,6 +56,23 @@ GGML_HRX_DUMP_COMMAND_PROGRAM_DIR=/tmp/hrx-llama32-tg8-dumps \
   --n-depth 0
 ```
 
+For the Llama 3.2 1B Q4_K_XL decode benchmark, dump the tg32 command program with:
+
+```sh
+GGML_HRX_DUMP_COMMAND_PROGRAM_DIR=/tmp/hrx-llama32-1b-tg32-dumps \
+<build-dir>/bin/llama-bench \
+  --model /home/rsuderman/Downloads/gguf/lemonade/llamacpp-gguf-models/unsloth_Llama-3.2-1B-Instruct-GGUF/Llama-3.2-1B-Instruct-UD-Q4_K_XL.gguf \
+  --device HRX0 \
+  --n-gpu-layers -1 \
+  --batch-size 512 \
+  --ubatch-size 512 \
+  --repetitions 1 \
+  --output jsonl \
+  --n-prompt 0 \
+  --n-gen 32 \
+  --n-depth 0
+```
+
 Then generate the shared model benchmark file and per-scenario sidecars:
 
 ```sh
@@ -64,6 +81,11 @@ ggml/src/ggml-hrx/tools/benchmarks/generate-model-benchmarks.py \
   --scenario-dump pp256=/tmp/hrx-llama32-pp256-dumps \
   --scenario-dump pp512=/tmp/hrx-llama32-pp512-dumps \
   --scenario-dump tg8=/tmp/hrx-llama32-tg8-dumps
+
+ggml/src/ggml-hrx/tools/benchmarks/generate-model-benchmarks.py \
+  --model llama32_1b_q4_k_xl \
+  --scenario tg32 \
+  --dump-dir /tmp/hrx-llama32-1b-tg32-dumps
 ```
 
 Review the generated invoked-kernel set with:

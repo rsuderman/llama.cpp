@@ -198,6 +198,35 @@ def case_mul_mat(symbol: str, command: dict[str, Any], kernel: str) -> str | Non
     )
 
 
+def case_mul_mat_add_decode(symbol: str, command: dict[str, Any], kernel: str) -> str | None:
+    token_count = int_param(command, "token_count")
+    input_size = int_param(command, "input_size")
+    output_size = int_param(command, "output_size")
+    weight_format = config_int(command, "ggml.mul_mat_f32_f32_decode.weight_format")
+    weight_type = tensor_type_for_format(weight_format)
+    if weight_type is None:
+        return None
+
+    shape_in = f"{token_count}x{input_size}"
+    shape_weight = f"{output_size}x{input_size}"
+    shape_out = f"{token_count}x{output_size}"
+    return "\n".join(
+        [
+            f"check.case public @{symbol}_case {{",
+            f"  %token_count = check.literal value({token_count}) : index",
+            f"  %input_size = check.literal value({input_size}) : index",
+            f"  %output_size = check.literal value({output_size}) : index",
+            fill_tensor("input", "1.0", shape_in, "f32"),
+            fill_tensor("weight", "1.0", shape_weight, weight_type),
+            fill_tensor("residual_input", "0.25", shape_out, "f32"),
+            fill_tensor("residual_output", "0.0", shape_out, "f32"),
+            f"  kernel.launch @{kernel}[%token_count, %input_size, %output_size](%token_count, %input_size, %output_size, %input, %weight, %residual_input, %residual_output) : [index, index, index](index, index, index, tensor<{shape_in}xf32>, tensor<{shape_weight}x{weight_type}>, tensor<{shape_out}xf32>, tensor<{shape_out}xf32>)",
+            "  check.return",
+            "}",
+        ]
+    )
+
+
 def case_mul_mat_postops(symbol: str, command: dict[str, Any], kernel: str) -> str | None:
     token_count = int_param(command, "token_count")
     input_size = config_int(command, "ggml.mul_mat_postops.input_size")
@@ -255,7 +284,7 @@ def case_mul_mat_postops(symbol: str, command: dict[str, Any], kernel: str) -> s
     )
 
 
-def case_swiglu(symbol: str, command: dict[str, Any]) -> str | None:
+def case_swiglu(symbol: str, command: dict[str, Any], kernel: str) -> str | None:
     token_count = int_param(command, "token_count")
     input_size = config_int(command, "ggml.mul_mat_swiglu.input_size")
     output_size = config_int(command, "ggml.mul_mat_swiglu.output_size")
@@ -276,7 +305,7 @@ def case_swiglu(symbol: str, command: dict[str, Any]) -> str | None:
             fill_tensor("gate_weight", "1.0", shape_weight, gate_type),
             fill_tensor("up_weight", "1.0", shape_weight, up_type),
             fill_tensor("output", "1.0", shape_out, "f32"),
-            f"  kernel.launch @ggml_mul_mat_swiglu_f32_f32_wmma[%token_count](%token_count, %input, %gate_weight, %up_weight, %output) : [index](index, tensor<{shape_in}xf32>, tensor<{shape_weight}x{gate_type}>, tensor<{shape_weight}x{up_type}>, tensor<{shape_out}xf32>)",
+            f"  kernel.launch @{kernel}[%token_count](%token_count, %input, %gate_weight, %up_weight, %output) : [index](index, tensor<{shape_in}xf32>, tensor<{shape_weight}x{gate_type}>, tensor<{shape_weight}x{up_type}>, tensor<{shape_out}xf32>)",
             "  check.return",
             "}",
         ]
@@ -683,6 +712,8 @@ def render_case(symbol: str, command: dict[str, Any], export: dict[str, Any]) ->
         case = case_rmsnorm_binary(symbol, command)
     elif kernel in ("ggml_mul_mat_f32_f32_wmma", "ggml_mul_mat_f32_f32_decode_wave64"):
         case = case_mul_mat(symbol, command, kernel)
+    elif kernel == "ggml_mul_mat_add_f32_f32_decode_wave64":
+        case = case_mul_mat_add_decode(symbol, command, kernel)
     elif kernel in (
         "ggml_mul_mat_bias_f32_f32_wmma",
         "ggml_mul_mat_add_f32_f32_wmma",
@@ -691,8 +722,8 @@ def render_case(symbol: str, command: dict[str, Any], export: dict[str, Any]) ->
         "ggml_mul_mat_bias_add_next_rmsnorm_f32_f32_wmma",
     ):
         case = case_mul_mat_postops(symbol, command, kernel)
-    elif kernel == "ggml_mul_mat_swiglu_f32_f32_wmma":
-        case = case_swiglu(symbol, command)
+    elif kernel in ("ggml_mul_mat_swiglu_f32_f32_wmma", "ggml_mul_mat_swiglu_f32_f32_decode_wave64"):
+        case = case_swiglu(symbol, command, kernel)
     elif kernel in ("llm_attention_q_matmul_rope_f32_f32_wmma", "llm_attention_q_matmul_rope_decode_f32_f32"):
         case = case_llm_attention_q_matmul_rope(symbol, command, kernel)
     elif kernel in (
