@@ -7,9 +7,9 @@ template.decl @ggml.rmsnorm_f32.row_scale(%arg0: index, %arg1: index, %arg2: ind
 
 amdgpu.target<gfx11-generic> @ggml_rmsnorm_gfx11_wave32 {subgroup_size = 32}
 
-config.decl @ggml.rmsnorm_f32.hidden_size : %value: index where [range(%value, 128, 32768), mul(%value, 128)]
+config.decl @ggml.rmsnorm_f32.hidden_size : %value: index where [range(%value, 64, 32768), mul(%value, 64)]
 
-config.decl @ggml.rmsnorm_f32.input_stride : %value: index where [range(%value, 128, 1048576)]
+config.decl @ggml.rmsnorm_f32.input_stride : %value: index where [range(%value, 64, 1048576)]
 
 config.decl @ggml.rmsnorm_f32.rms_epsilon : f32
 
@@ -21,8 +21,8 @@ kernel.def target(@ggml_rmsnorm_gfx11_wave32) export("ggml_rmsnorm_f32") @ggml_r
   %hidden_size0 = config.get @ggml.rmsnorm_f32.hidden_size : index
   %input_stride0 = config.get @ggml.rmsnorm_f32.input_stride : index
   %epsilon = config.get @ggml.rmsnorm_f32.rms_epsilon : f32
-  %hidden_size1 = index.assume %hidden_size0 [range(%hidden_size0, 128, 32768), mul(%hidden_size0, 128)] : index
-  %input_stride1 = index.assume %input_stride0 [range(%input_stride0, 128, 1048576)] : index
+  %hidden_size1 = index.assume %hidden_size0 [range(%hidden_size0, 64, 32768), mul(%hidden_size0, 64)] : index
+  %input_stride1 = index.assume %input_stride0 [range(%input_stride0, 64, 1048576)] : index
   %hidden_size, %input_stride = index.assume %hidden_size1, %input_stride1 [le(%hidden_size1, %input_stride1)] : index, index
   %token0 = kernel.workgroup.id<x> : index
   %workitem = kernel.workitem.id<x> : index

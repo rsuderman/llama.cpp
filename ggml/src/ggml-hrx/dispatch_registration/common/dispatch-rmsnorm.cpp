@@ -43,7 +43,15 @@ static bool same_shape(const Value & lhs, const Value & rhs) {
     return true;
 }
 
-static bool is_supported_hidden_size(int64_t hidden_size) {
+static bool is_supported_f32_hidden_size(int64_t hidden_size) {
+    return hidden_size >= 64 && hidden_size <= 32768 && hidden_size % 64 == 0;
+}
+
+static bool is_supported_binary_f32_hidden_size(int64_t hidden_size) {
+    return hidden_size >= 128 && hidden_size <= 32768 && hidden_size % 128 == 0;
+}
+
+static bool is_supported_symmetric_i4_hidden_size(int64_t hidden_size) {
     return hidden_size >= 128 && hidden_size <= 32768 && hidden_size % 128 == 0;
 }
 
@@ -56,19 +64,23 @@ static bool supported_rmsnorm_input_layout(const Value & input,
                                            int64_t       token_count,
                                            int64_t &     input_stride,
                                            size_t &      input_span_bytes) {
-    if (input.type != GGML_TYPE_F32 || input.ne[0] != hidden_size || input.ne[1] != token_count || input.ne[2] != 1 ||
-        input.ne[3] != 1 || input.nb[0] != sizeof(float) || input.nb[1] % sizeof(float) != 0) {
-        return false;
-    }
-
-    input_stride = static_cast<int64_t>(input.nb[1] / sizeof(float));
-    if (input_stride < hidden_size || input_stride > 1048576) {
+    if (input.type != GGML_TYPE_F32 || input.ne[0] != hidden_size || input.nb[0] != sizeof(float)) {
         return false;
     }
 
     if (input.contiguous) {
+        input_stride     = hidden_size;
         input_span_bytes = input.byte_count;
         return true;
+    }
+
+    if (input.ne[1] != token_count || input.ne[2] != 1 || input.ne[3] != 1 ||
+        input.nb[1] % sizeof(float) != 0) {
+        return false;
+    }
+    input_stride = static_cast<int64_t>(input.nb[1] / sizeof(float));
+    if (input_stride < hidden_size || input_stride > 1048576) {
+        return false;
     }
 
     return strided_f32_storage_span_bytes(input, input_span_bytes);
@@ -325,9 +337,12 @@ static RmsNormMatch match_rmsnorm_f32(const Graph & graph, const GraphNode * nod
         !same_shape(*input, *output)) {
         return {};
     }
+    if (input->storage_root == output->storage_root) {
+        return {};
+    }
 
     const int64_t hidden_size = output->ne[0];
-    if (!is_supported_hidden_size(hidden_size)) {
+    if (!is_supported_f32_hidden_size(hidden_size)) {
         return {};
     }
     if (hidden_size == 0 || output->element_count <= 0 || output->element_count % hidden_size != 0) {
@@ -409,7 +424,7 @@ static RmsNormBinaryMatch match_rmsnorm_binary_f32(const Graph & graph, const Gr
     }
 
     const int64_t hidden_size = output->ne[0];
-    if (!is_supported_hidden_size(hidden_size) || !is_weight_shape(*rhs, hidden_size)) {
+    if (!is_supported_binary_f32_hidden_size(hidden_size) || !is_weight_shape(*rhs, hidden_size)) {
         return {};
     }
     if (hidden_size == 0 || output->element_count <= 0 || output->element_count % hidden_size != 0) {
@@ -468,6 +483,7 @@ static AddRmsNormBinarySymmetricI4Match match_add_rmsnorm_binary_symmetric_i4(co
 
     RmsNormBinaryMatch rms_binary = match_rmsnorm_binary_f32(graph, rms_node, rms_node_index);
     if (!rms_binary.matched() || rms_binary.input->id != residual->id || rms_binary.op != BinaryKind::Mul ||
+        !is_supported_symmetric_i4_hidden_size(rms_binary.hidden_size) ||
         !common_has_symmetric_i4_lowrow_consumer(graph, *rms_binary.output) ||
         !pairwise_distinct_storage_roots(
             std::array<const Value *, 5>{ lhs, rhs, residual, rms_binary.rhs, rms_binary.output })) {
@@ -488,7 +504,8 @@ static RmsNormGateSiluMulSymmetricI4Match match_rmsnorm_gate_silu_mul_symmetric_
                                                                                    size_t            node_index) {
     RmsNormGateSiluMulSymmetricI4Match match;
     const RmsNormBinaryMatch           rms_binary = match_rmsnorm_binary_f32(graph, node, node_index);
-    if (!rms_binary.matched() || rms_binary.op != BinaryKind::Mul || rms_binary.hidden_size % 64 != 0) {
+    if (!rms_binary.matched() || rms_binary.op != BinaryKind::Mul ||
+        !is_supported_symmetric_i4_hidden_size(rms_binary.hidden_size)) {
         return match;
     }
 
@@ -668,7 +685,8 @@ static bool match_rmsnorm_binary_symmetric_i4_dispatch(const DispatchMatchContex
     }
     const RmsNormBinaryMatch fused =
         match_rmsnorm_binary_f32(context.graph, &nodes[context.root_index], context.root_index);
-    if (!fused.matched() || fused.op != BinaryKind::Mul || fused.hidden_size % 64 != 0 || fused.token_count > 16 ||
+    if (!fused.matched() || fused.op != BinaryKind::Mul ||
+        !is_supported_symmetric_i4_hidden_size(fused.hidden_size) || fused.token_count > 16 ||
         fused.rms_node_index >= context.covered_nodes.size() ||
         fused.binary_node_index >= context.covered_nodes.size() || context.covered_nodes[fused.rms_node_index] ||
         context.covered_nodes[fused.binary_node_index] ||

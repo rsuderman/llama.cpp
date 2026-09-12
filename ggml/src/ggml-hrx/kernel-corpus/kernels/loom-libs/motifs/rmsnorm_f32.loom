@@ -9,8 +9,8 @@ template.decl @ggml.rmsnorm_f32.row_scale(%token_count0: index, %token0: index, 
 
 template.def<@ggml.rmsnorm_f32.row_scale> device @ggml_rmsnorm_f32_row_scale(%token_count0: index, %token0: index, %hidden_size0: index, %input_stride0: index, %epsilon: f32, %input: buffer) -> (f32, index, index, i1) {
   %token_count = index.assume %token_count0 [range(%token_count0, 1, 1048576)] : index
-  %hidden_size1 = index.assume %hidden_size0 [range(%hidden_size0, 128, 32768), mul(%hidden_size0, 128)] : index
-  %input_stride1 = index.assume %input_stride0 [range(%input_stride0, 128, 1048576)] : index
+  %hidden_size1 = index.assume %hidden_size0 [range(%hidden_size0, 64, 32768), mul(%hidden_size0, 64)] : index
+  %input_stride1 = index.assume %input_stride0 [range(%input_stride0, 64, 1048576)] : index
   %hidden_size, %input_stride = index.assume %hidden_size1, %input_stride1 [le(%hidden_size1, %input_stride1)] : index, index
   %workitem = kernel.workitem.id<x> : index
   %subgroup0 = kernel.subgroup.id : index
