@@ -21,6 +21,9 @@ static constexpr KernelCatalogRef kSsmConvDecodeKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_ssm_conv_dconv4_silu_decode_f32");
 static constexpr KernelCatalogRef kSsmConvRollbackKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_ssm_conv_dconv4_silu_rollback_f32");
+static constexpr KernelCatalogRef kSsmConvGenericKernel = GGML_HRX_KERNEL_REF("loom_libs", "llm_ssm_conv_f32");
+static constexpr KernelCatalogRef kSsmConvGenericBinaryKernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "llm_ssm_conv_binary_f32");
 
 static const Value * graph_value(const Graph & graph, ValueId id) {
     return graph.values().find(id);
@@ -32,6 +35,26 @@ static bool is_f32(const Value * value) {
 
 static bool is_shape(const Value & value, int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3) {
     return value.ne[0] == ne0 && value.ne[1] == ne1 && value.ne[2] == ne2 && value.ne[3] == ne3;
+}
+
+static bool same_shape(const Value & lhs, const Value & rhs) {
+    for (int dim = 0; dim < GGML_MAX_DIMS; ++dim) {
+        if (lhs.ne[dim] != rhs.ne[dim]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool packed_f32_layout(const Value & value) {
+    size_t expected_stride = sizeof(float);
+    for (int dim = 0; dim < GGML_MAX_DIMS; ++dim) {
+        if (value.ne[dim] <= 0 || value.nb[dim] != expected_stride) {
+            return false;
+        }
+        expected_stride *= static_cast<size_t>(value.ne[dim]);
+    }
+    return true;
 }
 
 static bool supported_hidden_size(int64_t hidden_size) {
@@ -94,6 +117,32 @@ struct SsmConvPrefillMatch {
         return concat != nullptr && ssm != nullptr && silu != nullptr && state != nullptr && x != nullptr &&
                filter != nullptr && output != nullptr && !cache_updates.empty();
     }
+};
+
+struct SsmConvCoreMatch {
+    const GraphNode * ssm            = nullptr;
+    const Value *     window         = nullptr;
+    const Value *     filter         = nullptr;
+    const Value *     conv_output    = nullptr;
+    const GraphNode * unary          = nullptr;
+    const GraphNode * binary         = nullptr;
+    const Value *     binary_operand = nullptr;
+    const Value *     output         = nullptr;
+    int64_t           d_conv         = 0;
+    int64_t           d_inner        = 0;
+    int64_t           token_count    = 0;
+    int64_t           sequence_count = 0;
+    UnaryKind         unary_op       = UnaryKind::Identity;
+    BinaryKind        binary_op      = BinaryKind::Mul;
+    bool              binary_lhs     = true;
+
+    bool matched() const {
+        return ssm != nullptr && window != nullptr && filter != nullptr && conv_output != nullptr && output != nullptr;
+    }
+
+    bool has_unary_fusion() const { return unary != nullptr; }
+
+    bool has_binary_fusion() const { return binary != nullptr; }
 };
 
 static SsmConvPrefillMatch match_ssm_conv_prefill(const Graph & graph, const GraphNode * node) {
@@ -262,6 +311,115 @@ static SsmConvPrefillMatch match_ssm_conv_prefill(const Graph & graph, const Gra
     return match;
 }
 
+static SsmConvCoreMatch match_ssm_conv_core(const Graph & graph, const GraphNode * node) {
+    SsmConvCoreMatch match;
+    if (node == nullptr || node->op != GGML_OP_SSM_CONV || node->inputs.size() != 2) {
+        return match;
+    }
+
+    const Value * window      = graph_value(graph, node->inputs[0]);
+    const Value * filter      = graph_value(graph, node->inputs[1]);
+    const Value * conv_output = graph_value(graph, node->output);
+    if (!is_f32(window) || !is_f32(filter) || !is_f32(conv_output) || !packed_f32_layout(*window) ||
+        !packed_f32_layout(*filter) || !packed_f32_layout(*conv_output)) {
+        return {};
+    }
+
+    const int64_t d_conv         = filter->ne[0];
+    const int64_t d_inner        = filter->ne[1];
+    const int64_t token_count    = window->ne[0] - d_conv + 1;
+    const int64_t sequence_count = window->ne[2];
+    if (d_conv < 1 || d_conv > 16 || !supported_hidden_size(d_inner) || token_count < 1 || token_count > 512 ||
+        sequence_count < 1 || sequence_count > 4 || window->ne[1] != d_inner || window->ne[3] != 1 ||
+        filter->ne[2] != 1 || filter->ne[3] != 1 || !is_shape(*conv_output, d_inner, token_count, sequence_count, 1) ||
+        ranges_overlap(*window, *conv_output) || ranges_overlap(*filter, *conv_output)) {
+        return {};
+    }
+
+    match.ssm            = node;
+    match.window         = window;
+    match.filter         = filter;
+    match.conv_output    = conv_output;
+    match.output         = conv_output;
+    match.d_conv         = d_conv;
+    match.d_inner        = d_inner;
+    match.token_count    = token_count;
+    match.sequence_count = sequence_count;
+    return match;
+}
+
+static bool try_match_unary_fusion(const Graph & graph, SsmConvCoreMatch & match) {
+    if (!graph.has_index()) {
+        return false;
+    }
+    const std::vector<const GraphNode *> & consumers = graph.index().consumers(match.conv_output->id);
+    if (consumers.size() != 1 || consumers.front() == nullptr || consumers.front()->op != GGML_OP_UNARY ||
+        consumers.front()->inputs.size() != 1) {
+        return false;
+    }
+
+    const GraphNode *   unary  = consumers.front();
+    const UnaryParams * params = op_params_as<UnaryParams>(unary->params);
+    const Value *       output = graph_value(graph, unary->output);
+    if (params == nullptr || !unary_kind_supported(params->op) || output == nullptr || output->type != GGML_TYPE_F32 ||
+        !packed_f32_layout(*output) || !same_shape(*output, *match.conv_output) ||
+        ranges_overlap(*match.window, *output) || ranges_overlap(*match.filter, *output)) {
+        return false;
+    }
+
+    match.unary    = unary;
+    match.output   = output;
+    match.unary_op = params->op;
+    return true;
+}
+
+static bool try_match_binary_fusion(const Graph & graph, SsmConvCoreMatch & match) {
+    if (!graph.has_index()) {
+        return false;
+    }
+    const std::vector<const GraphNode *> & consumers = graph.index().consumers(match.conv_output->id);
+    if (consumers.size() != 1 || consumers.front() == nullptr || consumers.front()->inputs.size() != 2) {
+        return false;
+    }
+
+    const GraphNode *    binary = consumers.front();
+    const BinaryParams * params = op_params_as<BinaryParams>(binary->params);
+    if (params == nullptr || params->op != BinaryKind::Mul) {
+        return false;
+    }
+
+    const bool conv_is_lhs = binary->inputs[0] == match.conv_output->id;
+    const bool conv_is_rhs = binary->inputs[1] == match.conv_output->id;
+    if (conv_is_lhs == conv_is_rhs) {
+        return false;
+    }
+
+    const Value * operand = graph_value(graph, conv_is_lhs ? binary->inputs[1] : binary->inputs[0]);
+    const Value * output  = graph_value(graph, binary->output);
+    if (!is_f32(operand) || output == nullptr || output->type != GGML_TYPE_F32 || !packed_f32_layout(*operand) ||
+        !packed_f32_layout(*output) || !same_shape(*operand, *match.conv_output) ||
+        !same_shape(*output, *match.conv_output) || ranges_overlap(*match.window, *output) ||
+        ranges_overlap(*match.filter, *output) || ranges_overlap(*operand, *output)) {
+        return false;
+    }
+
+    match.binary         = binary;
+    match.binary_operand = operand;
+    match.output         = output;
+    match.binary_op      = params->op;
+    match.binary_lhs     = conv_is_lhs;
+    return true;
+}
+
+static void set_generic_ssm_conv_parameters(KernelSpecialization & kernel, const SsmConvCoreMatch & match) {
+    set_compile_parameter(kernel, "llm.ssm_conv.generic.d_conv", match.d_conv);
+    set_compile_parameter(kernel, "llm.ssm_conv.generic.d_inner", match.d_inner);
+    set_compile_parameter(kernel, "llm.ssm_conv.generic.n_t", match.token_count);
+    set_compile_parameter(kernel, "llm.ssm_conv.generic.n_s", match.sequence_count);
+    set_compile_parameter(kernel, "llm.ssm_conv.generic.unary_op", unary_kind_config_value(match.unary_op));
+    set_compile_parameter(kernel, "llm.ssm_conv.generic.workgroup_size", 256);
+}
+
 static bool match_ssm_conv_prefill_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
     const SsmConvPrefillMatch match = match_ssm_conv_prefill(context.graph, context.root_node);
     if (!match.matched()) {
@@ -356,6 +514,41 @@ static bool match_ssm_conv_prefill_dispatch(const DispatchMatchContext & context
     return true;
 }
 
+static bool match_ssm_conv_generic_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
+    SsmConvCoreMatch match = match_ssm_conv_core(context.graph, context.root_node);
+    if (!match.matched()) {
+        return false;
+    }
+
+    try_match_binary_fusion(context.graph, match) || try_match_unary_fusion(context.graph, match);
+
+    if (!append_covered_node(context, match.ssm, dispatch_match)) {
+        return false;
+    }
+    if (match.has_binary_fusion() && !append_covered_node(context, match.binary, dispatch_match)) {
+        return false;
+    }
+    if (match.has_unary_fusion() && !append_covered_node(context, match.unary, dispatch_match)) {
+        return false;
+    }
+
+    Dispatch dispatch;
+    dispatch.kernel =
+        make_kernel_specialization(match.has_binary_fusion() ? kSsmConvGenericBinaryKernel : kSsmConvGenericKernel);
+    set_generic_ssm_conv_parameters(dispatch.kernel, match);
+    dispatch.bindings.push_back({ match.window->id, 0, match.window->byte_count });
+    dispatch.bindings.push_back({ match.filter->id, 0, match.filter->byte_count });
+    if (match.has_binary_fusion()) {
+        dispatch.kernel.compile_parameters.emplace("llm.ssm_conv.generic.binary_op",
+                                                   std::to_string(binary_kind_config_value(match.binary_op)));
+        dispatch.kernel.compile_parameters.emplace("llm.ssm_conv.generic.binary_lhs", match.binary_lhs ? "1" : "0");
+        dispatch.bindings.push_back({ match.binary_operand->id, 0, match.binary_operand->byte_count });
+    }
+    dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
+    dispatch_match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
+
 }  // namespace
 
 void register_llm_ssm_conv_dispatch(DispatchRegistryBuilder & registry) {
@@ -366,6 +559,14 @@ void register_llm_ssm_conv_dispatch(DispatchRegistryBuilder & registry) {
         200,
         DispatchSource::Llm,
         match_ssm_conv_prefill_dispatch,
+    });
+    registry.add({
+        "llm.ssm_conv.generic_f32",
+        GGML_OP_SSM_CONV,
+        DispatchMatchKind::Fused,
+        50,
+        DispatchSource::Llm,
+        match_ssm_conv_generic_dispatch,
     });
 }
 

@@ -114,6 +114,9 @@
       "path": "ops/ssm_conv_f32.loom"
     },
     {
+      "path": "ops/ssm_conv_generic_f32.loom"
+    },
+    {
       "path": "ops/rope_f32.loom"
     },
     {
@@ -3583,6 +3586,74 @@
       },
       "compile_dependencies": [
         "motifs/rope_f32.loom"
+      ]
+    },
+    {
+      "name": "llm_ssm_conv_f32",
+      "family": "loom_libs",
+      "symbol": "llm_ssm_conv_f32",
+      "source": "ops/ssm_conv_generic_f32.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "window",
+        "filter",
+        "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/ssm_conv_generic_f32.loom"
+        ],
+        "library_sources": [
+          "motifs/unary_f32_apply.loom",
+          "motifs/binary_f32_apply.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "motifs/unary_f32_apply.loom",
+        "motifs/binary_f32_apply.loom"
+      ]
+    },
+    {
+      "name": "llm_ssm_conv_binary_f32",
+      "family": "loom_libs",
+      "symbol": "llm_ssm_conv_binary_f32",
+      "source": "ops/ssm_conv_generic_f32.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "window",
+        "filter",
+        "operand",
+        "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/ssm_conv_generic_f32.loom"
+        ],
+        "library_sources": [
+          "motifs/unary_f32_apply.loom",
+          "motifs/binary_f32_apply.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "motifs/unary_f32_apply.loom",
+        "motifs/binary_f32_apply.loom"
       ]
     },
     {

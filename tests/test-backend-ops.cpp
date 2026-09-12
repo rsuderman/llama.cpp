@@ -3943,6 +3943,24 @@ struct test_ssm_conv : public test_case {
     }
 };
 
+// GGML_OP_SSM_CONV + GGML_OP_MUL
+struct test_ssm_conv_mul : public test_ssm_conv {
+    using test_ssm_conv::test_ssm_conv;
+
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return "SSM_CONV_MUL";
+    }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * a   = ggml_new_tensor(ctx, type, 4, ne_a.data());
+        ggml_tensor * b   = ggml_new_tensor(ctx, type, 4, ne_b.data());
+        ggml_tensor * out = ggml_ssm_conv(ctx, a, b);
+        ggml_tensor * rhs = ggml_new_tensor_3d(ctx, type, out->ne[0], out->ne[1], out->ne[2]);
+        return ggml_mul(ctx, out, rhs);
+    }
+};
+
 // GGML_OP_SSM_CONV + GGML_OP_ADD (channel-wise bias, optional) + GGML_OP_UNARY(SILU) (fused operation)
 struct test_ssm_conv_bias_silu : public test_case {
     const ggml_type type;
@@ -8766,6 +8784,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_ssm_conv(GGML_TYPE_F32, {d_conv - 1 + 64, d_inner, 4, 1}, {d_conv, d_inner, 1, 1}));
         }
     }
+    test_cases.emplace_back(new test_ssm_conv(GGML_TYPE_F32, {4, 2048, 1, 1}, {3, 2048, 1, 1}));
+    test_cases.emplace_back(new test_ssm_conv(GGML_TYPE_F32, {24, 2048, 1, 1}, {3, 2048, 1, 1}));
+    test_cases.emplace_back(new test_ssm_conv_mul(GGML_TYPE_F32, {4, 2048, 1, 1}, {3, 2048, 1, 1}));
+    test_cases.emplace_back(new test_ssm_conv_mul(GGML_TYPE_F32, {24, 2048, 1, 1}, {3, 2048, 1, 1}));
 
     // fused ssm_conv + (optional) bias_add + silu. The bias-only graph (no silu) is intentionally
     // not tested since there's no fusion for that pattern in ggml_cuda_can_fuse.
