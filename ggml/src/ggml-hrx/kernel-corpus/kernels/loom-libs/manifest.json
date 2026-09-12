@@ -2459,6 +2459,7 @@
           "ops/mul_mat_swiglu_f32_f32_decode.loom"
         ],
         "library_sources": [
+          "ops/mul_mat_f32_f32_decode.loom",
           "motifs/dequant.loom",
           "motifs/binary_f32_apply.loom",
           "motifs/q4_k_f16.loom",
@@ -2471,6 +2472,7 @@
         ]
       },
       "compile_dependencies": [
+        "ops/mul_mat_f32_f32_decode.loom",
         "motifs/dequant.loom",
         "motifs/binary_f32_apply.loom",
         "motifs/q4_k_f16.loom",
