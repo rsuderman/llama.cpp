@@ -21,6 +21,12 @@ static constexpr KernelCatalogRef kAttentionKMatMulRopeSetRowsF32F32WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_attention_k_matmul_rope_set_rows_f32_f32_wmma");
 static constexpr KernelCatalogRef kAttentionVMatMulSetRowsF32F32WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_attention_v_matmul_set_rows_f32_f32_wmma");
+static constexpr KernelCatalogRef kAttentionQMatMulRopeF32F32DecodeKernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "llm_attention_q_matmul_rope_decode_f32_f32");
+static constexpr KernelCatalogRef kAttentionKMatMulRopeSetRowsF32F32DecodeKernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "llm_attention_k_matmul_rope_set_rows_decode_f32_f32");
+static constexpr KernelCatalogRef kAttentionVMatMulSetRowsF32F32DecodeKernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "llm_attention_v_matmul_set_rows_decode_f32_f32");
 
 static const Value * graph_value(const Graph & graph, ValueId id) {
     return graph.values().find(id);
@@ -47,12 +53,38 @@ static bool is_supported_dense_input_size(int64_t input_size) {
     return input_size >= 256 && input_size <= 32768 && input_size % 256 == 0;
 }
 
+static bool is_supported_decode_input_size(int64_t input_size) {
+    return input_size >= 256 && input_size <= 32768 && input_size % 32 == 0;
+}
+
 static bool is_supported_dense_output_size(int64_t output_size) {
     return output_size >= 1 && output_size <= 262144;
 }
 
+static bool is_supported_decode_output_size(int64_t output_size) {
+    return output_size >= 1 && output_size <= 32768;
+}
+
 static bool is_supported_prefill_token_count(int64_t token_count) {
     return token_count > 1 && token_count <= 2048;
+}
+
+static bool is_supported_decode_token_count(int64_t token_count) {
+    return token_count == 1;
+}
+
+static bool is_supported_attention_token_count(int64_t token_count) {
+    return is_supported_decode_token_count(token_count) || is_supported_prefill_token_count(token_count);
+}
+
+static bool is_supported_attention_input_size(int64_t input_size, int64_t token_count) {
+    return is_supported_decode_token_count(token_count) ? is_supported_decode_input_size(input_size) :
+                                                          is_supported_dense_input_size(input_size);
+}
+
+static bool is_supported_attention_output_size(int64_t output_size, int64_t token_count) {
+    return is_supported_decode_token_count(token_count) ? is_supported_decode_output_size(output_size) :
+                                                          is_supported_dense_output_size(output_size);
 }
 
 static bool is_supported_attention_cache_row_count(int64_t row_count) {
@@ -249,8 +281,9 @@ static AttentionMatMulMatch match_attention_matmul_any_format(const Graph & grap
     const int64_t output_size = weight->ne[1];
     const int64_t token_count = input->ne[1];
     if (input->ne[0] != input_size || output->ne[0] != output_size || output->ne[1] != token_count ||
-        !is_supported_prefill_token_count(token_count) || !is_supported_dense_input_size(input_size) ||
-        !is_supported_dense_output_size(output_size)) {
+        !is_supported_attention_token_count(token_count) ||
+        !is_supported_attention_input_size(input_size, token_count) ||
+        !is_supported_attention_output_size(output_size, token_count)) {
         return {};
     }
 
@@ -354,8 +387,9 @@ static AttentionSetRowsMatch match_attention_set_rows(const Graph &     graph,
     const int64_t token_count     = rows->ne[1];
     const int64_t cache_row_count = cache->ne[1];
     if (!is_2d_shape(*rows, output_size, token_count) || !is_1d_shape(*indices, token_count) ||
-        !is_2d_shape(*cache, output_size, cache_row_count) || !is_supported_dense_output_size(output_size) ||
-        !is_supported_prefill_token_count(token_count) || !is_supported_attention_cache_row_count(cache_row_count)) {
+        !is_2d_shape(*cache, output_size, cache_row_count) ||
+        !is_supported_attention_output_size(output_size, token_count) ||
+        !is_supported_attention_token_count(token_count) || !is_supported_attention_cache_row_count(cache_row_count)) {
         return {};
     }
 
@@ -403,19 +437,23 @@ static AttentionQkvMatch match_attention_qkv_projection(const DispatchMatchConte
             }
             match.layout_nodes.insert(match.layout_nodes.end(), set_rows_layouts.begin(), set_rows_layouts.end());
             match.root   = root;
-            match.kernel = kAttentionKMatMulRopeSetRowsF32F32WmmaKernel;
+            match.kernel = is_supported_decode_token_count(root.token_count) ?
+                               kAttentionKMatMulRopeSetRowsF32F32DecodeKernel :
+                               kAttentionKMatMulRopeSetRowsF32F32WmmaKernel;
             match.kind   = AttentionQkvProjectionKind::Key;
             return match;
         }
 
         match.root   = root;
-        match.kernel = kAttentionQMatMulRopeF32F32WmmaKernel;
+        match.kernel = is_supported_decode_token_count(root.token_count) ? kAttentionQMatMulRopeF32F32DecodeKernel :
+                                                                           kAttentionQMatMulRopeF32F32WmmaKernel;
         match.kind   = AttentionQkvProjectionKind::Query;
         return match;
     }
 
     if (consumer->op == GGML_OP_SET_ROWS) {
-        if (!common_mul_mat_dense_float_format(root.weight_format)) {
+        if (!is_supported_decode_token_count(root.token_count) &&
+            !common_mul_mat_dense_float_format(root.weight_format)) {
             return {};
         }
         match.set_rows = match_attention_set_rows(context.graph, consumer, after_projection);
@@ -424,7 +462,8 @@ static AttentionQkvMatch match_attention_qkv_projection(const DispatchMatchConte
             return {};
         }
         match.root   = root;
-        match.kernel = kAttentionVMatMulSetRowsF32F32WmmaKernel;
+        match.kernel = is_supported_decode_token_count(root.token_count) ? kAttentionVMatMulSetRowsF32F32DecodeKernel :
+                                                                           kAttentionVMatMulSetRowsF32F32WmmaKernel;
         match.kind   = AttentionQkvProjectionKind::Value;
         return match;
     }
@@ -467,6 +506,12 @@ static void add_attention_qkv_compile_parameters(Dispatch & dispatch, const Atte
     dispatch.kernel.compile_parameters.emplace("llm.attention_qkv.input_size", to_config_value(match.root.input_size));
     dispatch.kernel.compile_parameters.emplace("llm.attention_qkv.output_size",
                                                to_config_value(match.root.output_size));
+    if (is_supported_decode_token_count(match.root.token_count)) {
+        dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_f32_f32_decode.token_capacity",
+                                                   to_config_value(match.root.token_count));
+        dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_f32_f32_decode.output_capacity",
+                                                   to_config_value(match.root.output_size));
+    }
     dispatch.kernel.compile_parameters.emplace(
         "llm.attention_qkv.weight_format",
         to_config_value(common_mul_mat_format_config_value(match.root.weight_format)));

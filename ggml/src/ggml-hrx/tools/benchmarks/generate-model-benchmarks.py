@@ -283,7 +283,7 @@ def case_swiglu(symbol: str, command: dict[str, Any]) -> str | None:
     )
 
 
-def case_llm_attention_q_matmul_rope(symbol: str, command: dict[str, Any]) -> str | None:
+def case_llm_attention_q_matmul_rope(symbol: str, command: dict[str, Any], kernel: str) -> str | None:
     token_count = int_param(command, "token_count")
     input_size = config_int(command, "llm.attention_qkv.input_size")
     output_size = config_int(command, "llm.attention_qkv.output_size")
@@ -307,14 +307,14 @@ def case_llm_attention_q_matmul_rope(symbol: str, command: dict[str, Any]) -> st
             fill_tensor("theta", "0.0", f"{half_head_size}", "f32"),
             fill_tensor("freq_factors", "0.0", f"{half_head_size}", "f32"),
             fill_tensor("output", "0.0", shape_out, "f32"),
-            f"  kernel.launch @llm_attention_q_matmul_rope_f32_f32_wmma[%token_count](%token_count, %input, %weight, %positions, %theta, %freq_factors, %output) : [index](index, tensor<{shape_in}xf32>, tensor<{shape_weight}x{weight_type}>, tensor<{token_count}xi32>, tensor<{half_head_size}xf32>, tensor<{half_head_size}xf32>, tensor<{shape_out}xf32>)",
+            f"  kernel.launch @{kernel}[%token_count](%token_count, %input, %weight, %positions, %theta, %freq_factors, %output) : [index](index, tensor<{shape_in}xf32>, tensor<{shape_weight}x{weight_type}>, tensor<{token_count}xi32>, tensor<{half_head_size}xf32>, tensor<{half_head_size}xf32>, tensor<{shape_out}xf32>)",
             "  check.return",
             "}",
         ]
     )
 
 
-def case_llm_attention_k_matmul_rope_set_rows(symbol: str, command: dict[str, Any]) -> str | None:
+def case_llm_attention_k_matmul_rope_set_rows(symbol: str, command: dict[str, Any], kernel: str) -> str | None:
     token_count = int_param(command, "token_count")
     input_size = config_int(command, "llm.attention_qkv.input_size")
     output_size = config_int(command, "llm.attention_qkv.output_size")
@@ -342,14 +342,14 @@ def case_llm_attention_k_matmul_rope_set_rows(symbol: str, command: dict[str, An
             fill_tensor("theta", "0.0", f"{half_head_size}", "f32"),
             fill_tensor("freq_factors", "0.0", f"{half_head_size}", "f32"),
             fill_tensor("cache", "0.0", cache_shape, cache_type),
-            f"  kernel.launch @llm_attention_k_matmul_rope_set_rows_f32_f32_wmma[%token_count](%token_count, %input, %weight, %positions, %indices, %theta, %freq_factors, %cache) : [index](index, tensor<{shape_in}xf32>, tensor<{shape_weight}x{weight_type}>, tensor<{token_count}xi32>, tensor<{token_count}xi64>, tensor<{half_head_size}xf32>, tensor<{half_head_size}xf32>, tensor<{cache_shape}x{cache_type}>)",
+            f"  kernel.launch @{kernel}[%token_count](%token_count, %input, %weight, %positions, %indices, %theta, %freq_factors, %cache) : [index](index, tensor<{shape_in}xf32>, tensor<{shape_weight}x{weight_type}>, tensor<{token_count}xi32>, tensor<{token_count}xi64>, tensor<{half_head_size}xf32>, tensor<{half_head_size}xf32>, tensor<{cache_shape}x{cache_type}>)",
             "  check.return",
             "}",
         ]
     )
 
 
-def case_llm_attention_v_matmul_set_rows(symbol: str, command: dict[str, Any]) -> str | None:
+def case_llm_attention_v_matmul_set_rows(symbol: str, command: dict[str, Any], kernel: str) -> str | None:
     token_count = int_param(command, "token_count")
     input_size = config_int(command, "llm.attention_qkv.input_size")
     output_size = config_int(command, "llm.attention_qkv.output_size")
@@ -371,7 +371,7 @@ def case_llm_attention_v_matmul_set_rows(symbol: str, command: dict[str, Any]) -
             fill_tensor("weight", "1.0", shape_weight, weight_type),
             iota_tensor("indices", "0", "1", f"{token_count}", "i64", period=cache_rows),
             fill_tensor("cache", "0.0", cache_shape, cache_type),
-            f"  kernel.launch @llm_attention_v_matmul_set_rows_f32_f32_wmma[%token_count](%token_count, %input, %weight, %indices, %cache) : [index](index, tensor<{shape_in}xf32>, tensor<{shape_weight}x{weight_type}>, tensor<{token_count}xi64>, tensor<{cache_shape}x{cache_type}>)",
+            f"  kernel.launch @{kernel}[%token_count](%token_count, %input, %weight, %indices, %cache) : [index](index, tensor<{shape_in}xf32>, tensor<{shape_weight}x{weight_type}>, tensor<{token_count}xi64>, tensor<{cache_shape}x{cache_type}>)",
             "  check.return",
             "}",
         ]
@@ -693,12 +693,15 @@ def render_case(symbol: str, command: dict[str, Any], export: dict[str, Any]) ->
         case = case_mul_mat_postops(symbol, command, kernel)
     elif kernel == "ggml_mul_mat_swiglu_f32_f32_wmma":
         case = case_swiglu(symbol, command)
-    elif kernel == "llm_attention_q_matmul_rope_f32_f32_wmma":
-        case = case_llm_attention_q_matmul_rope(symbol, command)
-    elif kernel == "llm_attention_k_matmul_rope_set_rows_f32_f32_wmma":
-        case = case_llm_attention_k_matmul_rope_set_rows(symbol, command)
-    elif kernel == "llm_attention_v_matmul_set_rows_f32_f32_wmma":
-        case = case_llm_attention_v_matmul_set_rows(symbol, command)
+    elif kernel in ("llm_attention_q_matmul_rope_f32_f32_wmma", "llm_attention_q_matmul_rope_decode_f32_f32"):
+        case = case_llm_attention_q_matmul_rope(symbol, command, kernel)
+    elif kernel in (
+        "llm_attention_k_matmul_rope_set_rows_f32_f32_wmma",
+        "llm_attention_k_matmul_rope_set_rows_decode_f32_f32",
+    ):
+        case = case_llm_attention_k_matmul_rope_set_rows(symbol, command, kernel)
+    elif kernel in ("llm_attention_v_matmul_set_rows_f32_f32_wmma", "llm_attention_v_matmul_set_rows_decode_f32_f32"):
+        case = case_llm_attention_v_matmul_set_rows(symbol, command, kernel)
     elif kernel == "qwen3_moe_flash_attention_f32_f16_wmma":
         case = case_flash_attention(symbol, command, kernel, "qwen3_moe")
     elif kernel == "ggml_flash_attention_f32_f16_wmma":

@@ -10,11 +10,13 @@
 // each lane contracts four packets from the 0, 32, 64, and 96 element
 // quarters of its block. Storage-format-specific weight decoding stays in
 // dequant.loom, so decode scheduling remains format-agnostic.
-template.decl @ggml.mul_mat_f32_f32_decode.body(%weight_format: index, %publish_output: i1, %token_count: index, %token0: index, %pair: index, %input_size: index, %output_size: index, %input: buffer, %weight: buffer, %output: buffer)
+template.decl @ggml.mul_mat_f32_f32_decode.body(%weight_format: index, %publish_output: i1, %token_count: index, %token0: index, %pair: index, %input_size: index, %output_size: index, %input: buffer, %weight: buffer, %output: buffer, %aux0: buffer, %aux1: buffer, %aux2: buffer, %aux3: buffer)
 
-template.decl @ggml.mul_mat_f32_f32_decode.dispatch(%weight_format: index, %token_count: index, %input_size: index, %output_size: index, %input: buffer, %weight: buffer, %output: buffer)
+template.decl @ggml.mul_mat_f32_f32_decode.dispatch(%weight_format: index, %token_count: index, %input_size: index, %output_size: index, %input: buffer, %weight: buffer, %output: buffer, %aux0: buffer, %aux1: buffer, %aux2: buffer, %aux3: buffer)
 
 template.decl @ggml.mul_mat_f32_f32_decode.launch(%token_capacity: index, %output_capacity: index) -> (index, index, index, index)
+
+template.decl @ggml.mul_mat_f32_f32_decode.publish_pair2(%publish_pair: i1, %token0: index, %channel: index, %token_count0: index, %output_size0: index, %row1_valid: i1, %value0: f32, %value1: f32, %output: buffer, %aux0: buffer, %aux1: buffer, %aux2: buffer, %aux3: buffer)
 
 amdgpu.target<gfx11-generic> @ggml_mul_mat_f32_f32_decode_gfx11_wave64 {subgroup_size = 64}
 
@@ -183,7 +185,27 @@ func.def inline @ggml_mul_mat_decode_f32_block_row(%iq4nl_table: vector<16xi8>, 
   func.return %contribution : f32
 }
 
-template.def<@ggml.mul_mat_f32_f32_decode.body> device @ggml_mul_mat_f32_f32_decode_body(%weight_format: index, %publish_output: i1, %token_count: index, %token0: index, %pair: index, %input_size: index, %output_size: index, %input: buffer, %weight: buffer, %output: buffer) {
+template.def<@ggml.mul_mat_f32_f32_decode.publish_pair2> device priority(1) @ggml_mul_mat_f32_f32_decode_publish_pair2(%publish_pair: i1, %token0: index, %channel: index, %token_count0: index, %output_size0: index, %row1_valid: i1, %value0: f32, %value1: f32, %output: buffer, %aux0: buffer, %aux1: buffer, %aux2: buffer, %aux3: buffer) {
+  %token_count = index.assume %token_count0 [range(%token_count0, 1, 2048)] : index
+  %output_size = index.assume %output_size0 [range(%output_size0, 1, 1048576)] : index
+  %c1 = index.constant 1 : index
+  %c0_offset = index.constant 0 : offset
+  %token, %launch_token_count = index.assume %token0, %token_count [lt(%token0, %token_count)] : index, index
+  %output_noalias = buffer.assume.noalias %output : buffer
+  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%output_size]xf32>
+  scf.if %publish_pair {
+    view.store %value0, %output_view[%token, %channel] : f32, view<[%launch_token_count]x[%output_size]xf32>
+  }
+  scf.if %row1_valid {
+    scf.if %publish_pair {
+      %row1 = index.add %channel, %c1 : index
+      view.store %value1, %output_view[%token, %row1] : f32, view<[%launch_token_count]x[%output_size]xf32>
+    }
+  }
+  template.return
+}
+
+template.def<@ggml.mul_mat_f32_f32_decode.body> device @ggml_mul_mat_f32_f32_decode_body(%weight_format: index, %publish_output: i1, %token_count: index, %token0: index, %pair: index, %input_size: index, %output_size: index, %input: buffer, %weight: buffer, %output: buffer, %aux0: buffer, %aux1: buffer, %aux2: buffer, %aux3: buffer) {
   %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048)] : index
   %bounded_input_size = index.assume %input_size [range(%input_size, 256, 32768), mul(%input_size, 32)] : index
   %bounded_output_size = index.assume %output_size [range(%output_size, 1, 1048576)] : index
@@ -227,15 +249,8 @@ template.def<@ggml.mul_mat_f32_f32_decode.body> device @ggml_mul_mat_f32_f32_dec
     %sum0 = kernel.workgroup.reduce<addf> %acc0 : f32
     %sum1 = kernel.workgroup.reduce<addf> %acc1 : f32
     %is_lane_zero = index.cmp eq, %lane, %c0 : index
-    %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%launch_output_size]xf32>
-    scf.if %is_lane_zero {
-      view.store %sum0, %output_view[%token, %row0] : f32, view<[%launch_token_count]x[%launch_output_size]xf32>
-    }
-    scf.if %row1_valid {
-      scf.if %is_lane_zero {
-        view.store %sum1, %output_view[%token, %row1] : f32, view<[%launch_token_count]x[%launch_output_size]xf32>
-      }
-    }
+    %publish_pair = scalar.andi %publish_output, %is_lane_zero : i1
+    template.apply<@ggml.mul_mat_f32_f32_decode.publish_pair2>(%publish_pair, %token, %row0, %launch_token_count, %launch_output_size, %row1_valid, %sum0, %sum1, %output_noalias, %aux0, %aux1, %aux2, %aux3) : (i1, index, index, index, index, i1, f32, f32, buffer, buffer, buffer, buffer, buffer)
   }
   template.return
 }
@@ -249,7 +264,7 @@ template.def<@ggml.mul_mat_f32_f32_decode.launch> @ggml_mul_mat_f32_f32_decode_l
   template.return %output_pairs, %token_capacity, %c1, %c64 : index, index, index, index
 }
 
-template.def<@ggml.mul_mat_f32_f32_decode.dispatch> device @ggml_mul_mat_f32_f32_decode_dispatch(%weight_format: index, %token_count: index, %input_size: index, %output_size: index, %input: buffer, %weight: buffer, %output: buffer) {
+template.def<@ggml.mul_mat_f32_f32_decode.dispatch> device @ggml_mul_mat_f32_f32_decode_dispatch(%weight_format: index, %token_count: index, %input_size: index, %output_size: index, %input: buffer, %weight: buffer, %output: buffer, %aux0: buffer, %aux1: buffer, %aux2: buffer, %aux3: buffer) {
   %token_capacity = config.get @ggml.mul_mat_f32_f32_decode.token_capacity : index
   %output_capacity = config.get @ggml.mul_mat_f32_f32_decode.output_capacity : index
   %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048), le(%token_count, %token_capacity)] : index
@@ -264,7 +279,7 @@ template.def<@ggml.mul_mat_f32_f32_decode.dispatch> device @ggml_mul_mat_f32_f32
   %publish_output = scalar.andi %valid_token, %valid_row : i1
   %safe_token = scf.select %valid_token, %token, %c0 : index
   %safe_pair = scf.select %valid_row, %pair, %c0 : index
-  template.apply<@ggml.mul_mat_f32_f32_decode.body>(%weight_format, %publish_output, %bounded_token_count, %safe_token, %safe_pair, %input_size, %bounded_output_size, %input, %weight, %output) : (index, i1, index, index, index, index, index, buffer, buffer, buffer)
+  template.apply<@ggml.mul_mat_f32_f32_decode.body>(%weight_format, %publish_output, %bounded_token_count, %safe_token, %safe_pair, %input_size, %bounded_output_size, %input, %weight, %output, %aux0, %aux1, %aux2, %aux3) : (index, i1, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
   template.return
 }
 
@@ -282,6 +297,6 @@ kernel.def target(@ggml_mul_mat_f32_f32_decode_gfx11_wave64) @ggml_mul_mat_f32_f
   kernel.launch.config workgroups(%output_pairs, %launch_tokens, %c1) workgroup_size(%c64, %c1, %c1) : index
 } launch(%token_count: index, %input_size: index, %output_size: index, %input: buffer, %weight: buffer, %output: buffer) {
   %weight_format = config.get @ggml.mul_mat_f32_f32_decode.weight_format : index
-  template.apply<@ggml.mul_mat_f32_f32_decode.dispatch>(%weight_format, %token_count, %input_size, %output_size, %input, %weight, %output) : (index, index, index, index, buffer, buffer, buffer)
+  template.apply<@ggml.mul_mat_f32_f32_decode.dispatch>(%weight_format, %token_count, %input_size, %output_size, %input, %weight, %output, %output, %output, %output, %output) : (index, index, index, index, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
   kernel.return
 }

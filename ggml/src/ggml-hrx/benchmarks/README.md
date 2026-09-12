@@ -105,6 +105,19 @@ ggml/src/ggml-hrx/tools/benchmarks/summarize-model-benchmarks.py \
 
 The summary uses `operation_timing_ns.p50 * count` by default and writes `summary.json` plus `summary.md` next to the runner results.
 
+To map likely fusion opportunities from a command-program dump and the weighted benchmark summary:
+
+```sh
+ggml/src/ggml-hrx/tools/benchmarks/analyze-model-fusion-adjacency.py \
+  --dump-dir /tmp/hrx-llama32-tg8-dumps \
+  --scenario-manifest ggml/src/ggml-hrx/benchmarks/loom/llama32_3b_f16.tg8.json \
+  --summary-json /home/rsuderman/codex/project-workspaces/llama.cpp/gates/hrx-loom-benchmarks/llama32-tg8/summary.json \
+  --output-json /home/rsuderman/codex/project-workspaces/llama.cpp/gates/hrx-loom-benchmarks/llama32-tg8/fusion-adjacency.json \
+  --output-md /home/rsuderman/codex/project-workspaces/llama.cpp/gates/hrx-loom-benchmarks/llama32-tg8/fusion-adjacency.md
+```
+
+The adjacency report uses transient value producer-consumer edges for true data dependencies and sequential cache-update windows for side-effect patterns such as RoPE, SET_ROWS, and decode flash attention.
+
 ## Generating Qwen 30B Benchmarks
 
 Dump the HRX command programs with the Qwen 30B shard and the same pp256, pp512, and tg8 shapes used for model benchmarking:
