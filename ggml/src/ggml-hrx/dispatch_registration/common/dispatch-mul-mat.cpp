@@ -237,6 +237,11 @@ static bool has_embedded_external_concat_projection_ancestor(const Graph & graph
 }
 
 static bool match_symmetric_i4_low_row_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
+    // Disabled: this symmetric matmul route causes a substantial numeric performance regression.
+    (void) context;
+    (void) dispatch_match;
+    return false;
+
     CommonMulMatMatch match =
         common_match_mul_mat_any_format(context.graph, context.root_node, kMulMatSymmetricI4LowRowWmmaKernel, false);
     if (!match.matched()) {
@@ -571,6 +576,11 @@ static bool match_q6_k_i8_prepacked_dispatch(const DispatchMatchContext & contex
 }
 
 static bool match_symmetric_i4_prefill_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
+    // Disabled: this symmetric matmul route causes a substantial numeric performance regression.
+    (void) context;
+    (void) dispatch_match;
+    return false;
+
     const CommonMulMatMatch match =
         common_match_mul_mat_any_format(context.graph, context.root_node, kMulMatSymmetricI4WmmaKernel, false);
     if (!match.matched() || !context.graph.has_index() || match.weight->type != GGML_TYPE_Q5_K ||
@@ -633,6 +643,11 @@ static bool match_symmetric_i4_prefill_dispatch(const DispatchMatchContext & con
 
 static bool match_q5_k_symmetric_i8_prefill_dispatch(const DispatchMatchContext & context,
                                                      DispatchMatch &              dispatch_match) {
+    // Disabled: this symmetric matmul route causes a substantial numeric performance regression.
+    (void) context;
+    (void) dispatch_match;
+    return false;
+
     const CommonMulMatMatch match =
         common_match_mul_mat_any_format(context.graph, context.root_node, kMulMatQ5KSymmetricI8WmmaKernel, false);
     if (!match.matched() || !context.graph.has_index() || match.weight->type != GGML_TYPE_Q5_K ||
