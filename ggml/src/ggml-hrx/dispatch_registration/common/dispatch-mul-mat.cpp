@@ -512,7 +512,7 @@ static bool match_q6_k_token1_shortlist_dispatch(const DispatchMatchContext & co
     return dispatch_match.status.success();
 }
 
-static bool build_q6_k_packed_low_row_dispatch(const CommonMulMatMatch & match,
+static bool build_q6_k_aligned_skinny_dispatch(const CommonMulMatMatch & match,
                                                size_t                    root_index,
                                                KernelCatalogRef          kernel,
                                                DispatchMatch &           dispatch_match) {
@@ -534,7 +534,7 @@ static bool build_q6_k_packed_low_row_dispatch(const CommonMulMatMatch & match,
     return true;
 }
 
-static bool match_q6_k_packed_low_row_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
+static bool match_q6_k_aligned_skinny_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
     CommonMulMatMatch match =
         common_match_mul_mat_any_format(context.graph, context.root_node, kMulMatQ6KPackedToken1F16WmmaKernel, false);
     if (!match.matched()) {
@@ -544,12 +544,11 @@ static bool match_q6_k_packed_low_row_dispatch(const DispatchMatchContext & cont
     if (!match.matched() || !context.graph.has_index() || match.weight->type != GGML_TYPE_Q6_K ||
         match.weight->alias_source.value >= 0 || match.token_count > 16 || match.input_size % 256 != 0 ||
         match.output_size % 64 != 0 || match.output_size > kMulMatQ6KPackedMaxOutputSize ||
-        (match.token_count > 1 && match.output_size < 8 * match.input_size) ||
-        !context.graph.index().consumers(match.output->id).empty()) {
+        match.output_size < 8 * match.input_size) {
         return false;
     }
 
-    return build_q6_k_packed_low_row_dispatch(match, context.root_index, kMulMatQ6KPackedToken1F16WmmaKernel,
+    return build_q6_k_aligned_skinny_dispatch(match, context.root_index, kMulMatQ6KPackedToken1F16WmmaKernel,
                                               dispatch_match);
 }
 
@@ -1093,12 +1092,12 @@ void register_mul_mat_dispatches(DispatchRegistryBuilder & registry) {
         match_q6_k_token1_shortlist_dispatch,
     });
     registry.add({
-        "common.mul_mat.q6_k_packed_low_row",
+        "common.mul_mat.q6_k_aligned_skinny",
         GGML_OP_MUL_MAT,
         DispatchMatchKind::Fused,
         300,
         DispatchSource::Common,
-        match_q6_k_packed_low_row_dispatch,
+        match_q6_k_aligned_skinny_dispatch,
     });
     registry.add({
         "common.mul_mat.q5_k_iq4_xs_symmetric_i4_lowrow",
