@@ -436,9 +436,11 @@ PreparedCommandProgramCacheExecutionResult GraphProgram::execute_with_result(
         ++prepared_stats_.hits;
     }
 
-    if (environment_flag_enabled("GGML_HRX_DISABLE_GRAPH_REPLAY")) {
+    if (environment_flag_enabled("GGML_HRX_DISABLE_GRAPH_REPLAY") || debug_serial_command_execution_enabled()) {
         result.graph_replay_event             = HrxGraphReplayEvent::Disabled;
-        result.graph_replay_ineligible_reason = "disabled_by_environment";
+        result.graph_replay_ineligible_reason = debug_serial_command_execution_enabled() ?
+                                                    "debug_serial_execution" :
+                                                    "disabled_by_environment";
         result.success = bind_and_execute_prepared_command_program(context, *commands_, bindings, prepared_);
         if (!result.success) {
             result.status.log("execute cached HRX command program failed");

@@ -8,6 +8,7 @@
 #include "runtime/transient-arena.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <map>
@@ -105,6 +106,150 @@ namespace {
 static const char * status_first_error(const Status & status) {
     return status.errors().empty() ? "" : status.errors().front().c_str();
 }
+
+static bool environment_flag_enabled(const char * name) {
+    const char * value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && !(value[0] == '0' && value[1] == '\0');
+}
+
+static size_t environment_size_value(const char * name, size_t fallback) {
+    const char * value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return fallback;
+    }
+    return static_cast<size_t>(std::strtoull(value, nullptr, 0));
+}
+
+static void debug_serial_log(const char * event, const char * phase, const std::string & detail) {
+    std::fprintf(stderr, "hrx debug serial: %s phase=%s", event, phase);
+    if (!detail.empty()) {
+        std::fprintf(stderr, " %s", detail.c_str());
+    }
+    std::fprintf(stderr, "\n");
+    std::fflush(stderr);
+}
+
+class DebugSerialExecutionTrace {
+  public:
+    explicit DebugSerialExecutionTrace(const CommandProgramExecutionContext & context) :
+        context_(context),
+        enabled_(debug_serial_command_execution_enabled()) {}
+
+    DebugSerialExecutionTrace(const CommandProgramExecutionContext & context, const CommandProgram & commands) :
+        DebugSerialExecutionTrace(context) {
+        if (enabled_) {
+            std::ostringstream out;
+            out << "main_commands=" << commands.commands.size()
+                << " init_commands=" << commands.initialization_commands.size()
+                << " transient_arena=" << commands.transients.arena_size;
+            program_detail_ = out.str();
+        }
+    }
+
+    DebugSerialExecutionTrace(const CommandProgramExecutionContext & context,
+                              const PreparedCommandProgram &         commands) :
+        DebugSerialExecutionTrace(context) {
+        if (enabled_) {
+            std::ostringstream out;
+            out << "main_commands=" << commands.commands.size()
+                << " init_commands=" << commands.initialization_commands.size();
+            program_detail_ = out.str();
+        }
+    }
+
+    bool enabled() const {
+        return enabled_;
+    }
+
+    void log_program_begin() const {
+        log("begin", "command-program", program_detail_);
+    }
+
+    void log_program_end(bool success) const {
+        log(success ? "end" : "failed", "command-program", program_detail_);
+    }
+
+    bool sync_program_phase(const char * phase) const {
+        return sync(phase, program_detail_);
+    }
+
+    bool sync(const char * phase, const std::string & detail = {}) const {
+        if (!enabled_) {
+            return true;
+        }
+        log("sync-begin", phase, detail);
+        if (ErrorResult error = take_status(hrx_stream_synchronize(context_.stream))) {
+            GGML_LOG_ERROR("HRX debug serial sync failed phase=%s %s: %s\n", phase, detail.c_str(), error->c_str());
+            return false;
+        }
+        log("sync-end", phase, detail);
+        return true;
+    }
+
+    bool should_trace_program(size_t command_count) const {
+        const char * value = std::getenv("GGML_HRX_DEBUG_SERIAL_PROGRAM_COMMANDS");
+        return value == nullptr || value[0] == '\0' || command_count == std::strtoull(value, nullptr, 0);
+    }
+
+    bool should_trace_command(size_t program_command_count, size_t index) const {
+        if (!should_trace_program(program_command_count)) {
+            return false;
+        }
+        const size_t start = environment_size_value("GGML_HRX_DEBUG_SERIAL_START_COMMAND", 0);
+        const size_t end   = environment_size_value("GGML_HRX_DEBUG_SERIAL_END_COMMAND",
+                                                    std::numeric_limits<size_t>::max());
+        return index >= start && index <= end;
+    }
+
+    void log(const char * event, const char * phase, const std::string & detail = {}) const {
+        if (enabled_) {
+            debug_serial_log(event, phase, detail);
+        }
+    }
+
+    static std::string command_detail(const char *           list_kind,
+                                      size_t                 list_size,
+                                      size_t                 index,
+                                      const PreparedCommand & command) {
+        std::ostringstream out;
+        out << "list=" << list_kind
+            << " index=" << index
+            << " list_commands=" << list_size
+            << " ordinal=" << command.ordinal
+            << " kind=" << command_kind_name(command.kind);
+        if (command.kind == CommandKind::Kernel) {
+            out << " kernel_id=" << command.kernel.specialization.kernel_id
+                << " bindings=" << command.kernel.bindings.size();
+        }
+        return out.str();
+    }
+
+    static std::string list_detail(const char * list_kind, size_t list_size, size_t program_command_count) {
+        std::ostringstream out;
+        out << "list=" << list_kind
+            << " list_commands=" << list_size
+            << " main_commands=" << program_command_count;
+        return out.str();
+    }
+
+    static std::string host_staging_detail(const HostStagingBuffer & staging) {
+        std::ostringstream out;
+        out << "value=" << staging.value << " length=" << staging.length;
+        return out.str();
+    }
+
+  private:
+    const CommandProgramExecutionContext & context_;
+    bool                                   enabled_ = false;
+    std::string                            program_detail_;
+};
+
+#define HRX_DEBUG_SERIAL_SYNC(trace, phase) \
+    do {                                    \
+        if (!(trace).sync_program_phase(phase)) { \
+            return false;                   \
+        }                                   \
+    } while (0)
 
 static bool resource_access_writes(ResourceAccess access) {
     return access == ResourceAccess::Write || access == ResourceAccess::ReadWrite;
@@ -682,9 +827,16 @@ static Status upload_prepared_host_staging(const CommandProgramExecutionContext 
         status.log("missing HRX host transfer manager");
         return status;
     }
+    const DebugSerialExecutionTrace debug(context);
     for (const HostStagingBuffer & staging : prepared.host_staging) {
         if (!staging.upload) {
             continue;
+        }
+        const std::string detail = debug.enabled() ? DebugSerialExecutionTrace::host_staging_detail(staging) :
+                                                     std::string();
+        if (!debug.sync("host-staging-upload-buffer-pre", detail)) {
+            status.log("debug serial sync before host-staging upload failed for value %d", staging.value);
+            return status;
         }
         Status upload_status;
         if (staging.source_host_buffer.valid()) {
@@ -698,6 +850,10 @@ static Status upload_prepared_host_staging(const CommandProgramExecutionContext 
                 context.host_transfers->upload_async(context.stream, staging.host_data, staging.buffer, 0, staging.length);
         }
         status.append(upload_status);
+        if (!debug.sync("host-staging-upload-buffer-post", detail)) {
+            status.log("debug serial sync after host-staging upload failed for value %d", staging.value);
+            return status;
+        }
     }
     return status;
 }
@@ -869,14 +1025,49 @@ static bool bind_prepared_command_list_transients(const CommandProgram &        
     return true;
 }
 
-static bool execute_prepared_command_list(const CommandProgramExecutionContext & context,
-                                          const std::vector<PreparedCommand> &   commands) {
-    for (const PreparedCommand & command : commands) {
+static bool execute_prepared_command_list_serial(const CommandProgramExecutionContext & context,
+                                                 const std::vector<PreparedCommand> &   commands,
+                                                 const char *                           list_kind,
+                                                 size_t                                 program_command_count) {
+    const DebugSerialExecutionTrace debug(context);
+    const bool trace_list = debug.enabled() && debug.should_trace_program(program_command_count);
+    if (trace_list) {
+        debug.log("begin", "command-list",
+                  DebugSerialExecutionTrace::list_detail(list_kind, commands.size(), program_command_count));
+    }
+    for (size_t i = 0; i < commands.size(); ++i) {
+        const PreparedCommand & command         = commands[i];
+        const bool        trace_command  = debug.enabled() && debug.should_trace_command(program_command_count, i);
+        const std::string command_detail = trace_command ?
+                                               DebugSerialExecutionTrace::command_detail(list_kind, commands.size(), i,
+                                                                                        command) :
+                                               std::string();
+        if (!debug.sync("command-pre-dispatch", command_detail)) {
+            return false;
+        }
+        if (trace_command) {
+            debug.log("begin", "command-dispatch", command_detail);
+        }
         if (!execute_prepared_kernel_command(context, command)) {
             return false;
         }
+        if (trace_command) {
+            debug.log("end", "command-dispatch", command_detail);
+        }
+        if (!debug.sync("command-post-dispatch", command_detail)) {
+            return false;
+        }
+    }
+    if (trace_list) {
+        debug.log("end", "command-list",
+                  DebugSerialExecutionTrace::list_detail(list_kind, commands.size(), program_command_count));
     }
     return true;
+}
+
+static bool execute_prepared_command_list(const CommandProgramExecutionContext & context,
+                                          const std::vector<PreparedCommand> &   commands) {
+    return execute_prepared_command_list_serial(context, commands, "main", commands.size());
 }
 
 struct GraphResourceState {
@@ -1265,6 +1456,10 @@ static bool execute_prepared_command_prefix_via_graph(const CommandProgramExecut
 
 }  // namespace
 
+bool debug_serial_command_execution_enabled() {
+    return environment_flag_enabled("GGML_HRX_DEBUG_SERIAL_EXECUTION");
+}
+
 PreparedCommandProgram prepare_command_program(const CommandProgramExecutionContext & context,
                                                const CommandProgram &                 commands,
                                                const CommandProgramBindings &         bindings) {
@@ -1358,24 +1553,38 @@ bool bind_and_execute_prepared_command_program(const CommandProgramExecutionCont
     if (!prepared.valid()) {
         return execute_prepared_command_program(context, prepared);
     }
+    const DebugSerialExecutionTrace debug(context, commands);
+    debug.log_program_begin();
+    HRX_DEBUG_SERIAL_SYNC(debug, "host-staging-rebind-pre");
     Status rebind_status = rebind_prepared_host_staging(context, bindings, prepared);
     if (!rebind_status.success()) {
         GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(rebind_status));
         return false;
     }
+    HRX_DEBUG_SERIAL_SYNC(debug, "host-staging-rebind-post");
     if (commands.transients.arena_size == 0) {
+        HRX_DEBUG_SERIAL_SYNC(debug, "constant-initialization-pre");
         Status status = initialize_command_program_constants(context, commands, {}, prepared);
         if (!status.success()) {
             GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
             return false;
         }
+        HRX_DEBUG_SERIAL_SYNC(debug, "constant-initialization-post");
+        HRX_DEBUG_SERIAL_SYNC(debug, "completion-counter-initialization-pre");
         status = initialize_command_program_completion_counters(context, commands, {});
         if (!status.success()) {
             GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
             return false;
         }
-        return bind_prepared_command_program_transients(commands, {}, prepared) &&
-               execute_prepared_command_program(context, prepared);
+        HRX_DEBUG_SERIAL_SYNC(debug, "completion-counter-initialization-post");
+        HRX_DEBUG_SERIAL_SYNC(debug, "transient-bind-pre");
+        if (!bind_prepared_command_program_transients(commands, {}, prepared)) {
+            return false;
+        }
+        HRX_DEBUG_SERIAL_SYNC(debug, "transient-bind-post");
+        const bool success = execute_prepared_command_program(context, prepared);
+        debug.log_program_end(success);
+        return success;
     }
 
     Status status = command_program_transient_context_valid(context, commands);
@@ -1384,26 +1593,36 @@ bool bind_and_execute_prepared_command_program(const CommandProgramExecutionCont
         return false;
     }
 
+    HRX_DEBUG_SERIAL_SYNC(debug, "transient-arena-acquire-pre");
     TransientArena::AllocationLease lease = context.transient_arena->acquire_allocation_lease();
     status = lease.ensure_capacity(context.device, context.stream, commands.transients.arena_size);
     if (!status.success()) {
         GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
         return false;
     }
+    HRX_DEBUG_SERIAL_SYNC(debug, "transient-arena-acquire-post");
+    HRX_DEBUG_SERIAL_SYNC(debug, "transient-bind-pre");
     if (!bind_prepared_command_program_transients(commands, lease.current_allocation(), prepared)) {
         return false;
     }
+    HRX_DEBUG_SERIAL_SYNC(debug, "transient-bind-post");
+    HRX_DEBUG_SERIAL_SYNC(debug, "constant-initialization-pre");
     status = initialize_command_program_constants(context, commands, lease.current_allocation(), prepared);
     if (!status.success()) {
         GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
         return false;
     }
+    HRX_DEBUG_SERIAL_SYNC(debug, "constant-initialization-post");
+    HRX_DEBUG_SERIAL_SYNC(debug, "completion-counter-initialization-pre");
     status = initialize_command_program_completion_counters(context, commands, lease.current_allocation());
     if (!status.success()) {
         GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
         return false;
     }
-    return execute_prepared_command_program(context, prepared);
+    HRX_DEBUG_SERIAL_SYNC(debug, "completion-counter-initialization-post");
+    const bool success = execute_prepared_command_program(context, prepared);
+    debug.log_program_end(success);
+    return success;
 }
 
 RecordedCommandGraphExecutionResult bind_and_launch_recorded_command_graph(
@@ -1600,20 +1819,25 @@ bool execute_prepared_command_program(const CommandProgramExecutionContext & con
     if (!prepared_execution_context_valid(context)) {
         return false;
     }
+    const DebugSerialExecutionTrace debug(context, commands);
+    HRX_DEBUG_SERIAL_SYNC(debug, "host-staging-upload-pre");
     Status upload_status = upload_prepared_host_staging(context, commands);
     if (!upload_status.success()) {
         GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(upload_status));
         return false;
     }
-    if (!execute_prepared_command_list(context, commands.initialization_commands) ||
-        !execute_prepared_command_list(context, commands.commands)) {
+    HRX_DEBUG_SERIAL_SYNC(debug, "host-staging-upload-post");
+    if (!execute_prepared_command_list_serial(context, commands.initialization_commands, "init", commands.commands.size()) ||
+        !execute_prepared_command_list_serial(context, commands.commands, "main", commands.commands.size())) {
         return false;
     }
+    HRX_DEBUG_SERIAL_SYNC(debug, "host-staging-download-pre");
     Status download_status = download_prepared_host_staging(context, commands);
     if (!download_status.success()) {
         GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(download_status));
         return false;
     }
+    HRX_DEBUG_SERIAL_SYNC(debug, "host-staging-download-post");
     return true;
 }
 

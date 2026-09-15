@@ -119,6 +119,15 @@ PreparedCommandProgramCacheExecutionResult PreparedCommandProgramCache::execute_
     std::lock_guard<std::mutex> entry_lock(entry->mutex);
     if (entry->has_program && entry->program.valid()) {
         record_hit();
+        if (debug_serial_command_execution_enabled()) {
+            result.graph_replay_event             = HrxGraphReplayEvent::Disabled;
+            result.graph_replay_ineligible_reason = "debug_serial_execution";
+            result.success = bind_and_execute_prepared_command_program(context, commands, bindings, entry->program);
+            if (!result.success) {
+                result.status.log("execute cached HRX command program failed");
+            }
+            return result;
+        }
         const RecordedCommandGraphExecutionResult replay =
             bind_and_launch_recorded_command_graph(context, commands, bindings, entry->program, entry->recorded);
         apply_graph_replay_result(result, replay);
@@ -155,6 +164,16 @@ PreparedCommandProgramCacheExecutionResult PreparedCommandProgramCache::execute_
     entry->program     = std::move(prepared);
     entry->has_program = true;
     record_build();
+
+    if (debug_serial_command_execution_enabled()) {
+        result.graph_replay_event             = HrxGraphReplayEvent::Disabled;
+        result.graph_replay_ineligible_reason = "debug_serial_execution";
+        result.success = bind_and_execute_prepared_command_program(context, commands, bindings, entry->program);
+        if (!result.success) {
+            result.status.log("execute prepared HRX command program failed");
+        }
+        return result;
+    }
 
     const RecordedCommandGraphExecutionResult replay =
         bind_and_launch_recorded_command_graph(context, commands, bindings, entry->program, entry->recorded);

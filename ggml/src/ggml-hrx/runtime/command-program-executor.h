@@ -142,6 +142,8 @@ RecordedCommandGraphExecutionResult bind_and_launch_recorded_command_graph(
     PreparedCommandProgram &               prepared,
     RecordedCommandGraph &                 recorded);
 
+bool debug_serial_command_execution_enabled();
+
 bool execute_command_program(const CommandProgramExecutionContext & context,
                              const CommandProgram &                 commands,
                              const CommandProgramBindings &         bindings);
