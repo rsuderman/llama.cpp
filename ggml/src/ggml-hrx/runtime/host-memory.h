@@ -2,6 +2,7 @@
 
 #include "dispatch/dispatch.h"
 #include "ggml.h"
+#include "runtime/host-buffer-registry.h"
 #include "status.h"
 
 #include <cstddef>
@@ -154,6 +155,7 @@ struct HostStagingBuffer {
 
     hrx_buffer_t buffer    = nullptr;
     void *       host_data = nullptr;
+    HostBufferRef source_host_buffer;
     int32_t      value     = -1;
     size_t       length    = 0;
     bool         upload    = false;

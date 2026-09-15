@@ -19,6 +19,7 @@ namespace ggml::hrx {
 namespace {
 
 static constexpr size_t kMaxInlineUploadBytes = 63 * 1024;
+static constexpr size_t kLargeHostUploadBytes = 1024 * 1024;
 
 struct SymmetricI4Block {
     std::array<ggml_fp16_t, 8>             scales   = {};
@@ -1204,6 +1205,12 @@ Status HostTransferManager::upload_async(hrx_stream_t stream,
         return status;
     }
 
+    // Inline stream updates are intended for small payloads. Use bulk H2D for
+    // large host-staged tensors to avoid hundreds of update commands.
+    if (size >= kLargeHostUploadBytes) {
+        return upload_synchronous(stream, host_source, destination, offset, size);
+    }
+
     const uint8_t * host_bytes = static_cast<const uint8_t *>(host_source);
     size_t          uploaded   = 0;
     while (uploaded < size) {
@@ -1448,6 +1455,7 @@ HostStagingBuffer & HostStagingBuffer::operator=(HostStagingBuffer && other) noe
     clear();
     buffer          = other.buffer;
     host_data       = other.host_data;
+    source_host_buffer = std::move(other.source_host_buffer);
     value           = other.value;
     length          = other.length;
     upload          = other.upload;
@@ -1467,6 +1475,7 @@ void HostStagingBuffer::clear() {
         buffer = nullptr;
     }
     host_data = nullptr;
+    source_host_buffer = HostBufferRef{};
     value     = -1;
     length    = 0;
     upload    = false;
