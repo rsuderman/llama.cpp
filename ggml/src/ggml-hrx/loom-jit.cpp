@@ -361,15 +361,40 @@ void * ggml_hrx_loom_jit_malloc_copy(const void * data, size_t size, bool nul_te
     return result;
 }
 
-const loomc_artifact_t * ggml_hrx_loom_jit_find_artifact(const loomc_result_t * result,
-                                                         loomc_string_view_t    role,
-                                                         loomc_string_view_t    format) {
+#if defined(LOOMC_ARTIFACT_ROLE_COMPILE_REPORT)
+using ggml_hrx_loom_jit_artifact_selector_t = loomc_string_view_t;
+#define GGML_HRX_LOOM_ARTIFACT_COMPILE_REPORT loomc_make_cstring_view(LOOMC_ARTIFACT_ROLE_COMPILE_REPORT)
+#define GGML_HRX_LOOM_ARTIFACT_MODULE loomc_make_cstring_view(LOOMC_ARTIFACT_ROLE_MODULE)
+#define GGML_HRX_LOOM_ARTIFACT_LAUNCH_CONFIG loomc_make_cstring_view(LOOMC_ARTIFACT_ROLE_LAUNCH_CONFIG)
+#define GGML_HRX_LOOM_ARTIFACT_KERNEL loomc_make_cstring_view(LOOMC_ARTIFACT_ROLE_KERNEL)
+#define GGML_HRX_LOOM_ARTIFACT_MANIFEST loomc_make_cstring_view(LOOMC_ARTIFACT_ROLE_ARTIFACT_MANIFEST)
+static bool ggml_hrx_loom_jit_artifact_matches(const loomc_artifact_t *              artifact,
+                                               ggml_hrx_loom_jit_artifact_selector_t selector) {
+    return loomc_string_view_equal(artifact->role, selector);
+}
+#else
+using ggml_hrx_loom_jit_artifact_selector_t = loomc_artifact_kind_t;
+#define GGML_HRX_LOOM_ARTIFACT_COMPILE_REPORT LOOMC_ARTIFACT_KIND_REPORT
+#define GGML_HRX_LOOM_ARTIFACT_MODULE LOOMC_ARTIFACT_KIND_MODULE
+#define GGML_HRX_LOOM_ARTIFACT_LAUNCH_CONFIG LOOMC_ARTIFACT_KIND_LAUNCH_CONFIG
+#define GGML_HRX_LOOM_ARTIFACT_KERNEL LOOMC_ARTIFACT_KIND_EXECUTABLE
+#define GGML_HRX_LOOM_ARTIFACT_MANIFEST LOOMC_ARTIFACT_KIND_REPORT
+static bool ggml_hrx_loom_jit_artifact_matches(const loomc_artifact_t *              artifact,
+                                               ggml_hrx_loom_jit_artifact_selector_t selector) {
+    return artifact->kind == selector;
+}
+#endif
+
+const loomc_artifact_t * ggml_hrx_loom_jit_find_artifact(const loomc_result_t *              result,
+                                                         ggml_hrx_loom_jit_artifact_selector_t selector,
+                                                         loomc_string_view_t                   format) {
     for (loomc_host_size_t i = 0; i < loomc_result_artifact_count(result); ++i) {
         const loomc_artifact_t * artifact = loomc_result_artifact_at(result, i);
         if (!artifact) {
             continue;
         }
-        if (loomc_string_view_equal(artifact->role, role) && loomc_string_view_equal(artifact->format, format)) {
+        if (ggml_hrx_loom_jit_artifact_matches(artifact, selector) &&
+            loomc_string_view_equal(artifact->format, format)) {
             return artifact;
         }
     }
@@ -931,7 +956,7 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu *        
 
     hrx_status_t             hrx_status     = hrx_ok_status();
     const loomc_artifact_t * compile_report =
-        ggml_hrx_loom_jit_find_artifact(result.get(), loomc_make_cstring_view(LOOMC_ARTIFACT_ROLE_COMPILE_REPORT),
+        ggml_hrx_loom_jit_find_artifact(result.get(), GGML_HRX_LOOM_ARTIFACT_COMPILE_REPORT,
                                         loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_JSON));
     hrx_status = ggml_hrx_loom_jit_copy_artifact_bytes(compile_report,
                                                        reinterpret_cast<void **>(&out_result->compile_report_json),
@@ -940,7 +965,7 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu *        
         return hrx_status;
     }
     const loomc_artifact_t * final_module =
-        ggml_hrx_loom_jit_find_artifact(result.get(), loomc_make_cstring_view(LOOMC_ARTIFACT_ROLE_MODULE),
+        ggml_hrx_loom_jit_find_artifact(result.get(), GGML_HRX_LOOM_ARTIFACT_MODULE,
                                         loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_LOOM_TEXT));
     hrx_status =
         ggml_hrx_loom_jit_copy_artifact_bytes(final_module, reinterpret_cast<void **>(&out_result->final_module_text),
@@ -954,7 +979,7 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu *        
             launch_config_symbol = options->root_symbol;
         }
         const loomc_artifact_t * launch_config =
-            ggml_hrx_loom_jit_find_artifact(result.get(), loomc_make_cstring_view(LOOMC_ARTIFACT_ROLE_LAUNCH_CONFIG),
+            ggml_hrx_loom_jit_find_artifact(result.get(), GGML_HRX_LOOM_ARTIFACT_LAUNCH_CONFIG,
                                             loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE));
         hrx_status = ggml_hrx_loom_jit_evaluate_launch_config(
             launch_config, launch_config_symbol,
@@ -1013,7 +1038,7 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu *        
     }
 
     const loomc_artifact_t * hsaco =
-        ggml_hrx_loom_jit_find_artifact(result.get(), loomc_make_cstring_view(LOOMC_ARTIFACT_ROLE_KERNEL),
+        ggml_hrx_loom_jit_find_artifact(result.get(), GGML_HRX_LOOM_ARTIFACT_KERNEL,
                                         loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_AMDGPU_HSACO));
     if (!hsaco) {
         out_result->reset();
@@ -1022,7 +1047,7 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu *        
     hrx_status = ggml_hrx_loom_jit_copy_artifact_bytes(hsaco, &out_result->hsaco_data, &out_result->hsaco_size, false);
     if (hrx_status_is_ok(hrx_status)) {
         const loomc_artifact_t * report =
-            ggml_hrx_loom_jit_find_artifact(result.get(), loomc_make_cstring_view(LOOMC_ARTIFACT_ROLE_COMPILE_REPORT),
+            ggml_hrx_loom_jit_find_artifact(result.get(), GGML_HRX_LOOM_ARTIFACT_COMPILE_REPORT,
                                             loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_COMPILE_REPORT_JSON));
         hrx_status =
             ggml_hrx_loom_jit_copy_artifact_bytes(report, reinterpret_cast<void **>(&out_result->compile_report_json),
@@ -1030,7 +1055,7 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu *        
     }
     if (hrx_status_is_ok(hrx_status)) {
         const loomc_artifact_t * manifest = ggml_hrx_loom_jit_find_artifact(
-            result.get(), loomc_make_cstring_view(LOOMC_ARTIFACT_ROLE_ARTIFACT_MANIFEST),
+            result.get(), GGML_HRX_LOOM_ARTIFACT_MANIFEST,
             loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_ARTIFACT_MANIFEST_JSON));
         hrx_status = ggml_hrx_loom_jit_copy_artifact_bytes(
             manifest, reinterpret_cast<void **>(&out_result->manifest_json), &out_result->manifest_json_size, true);
