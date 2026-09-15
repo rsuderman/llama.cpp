@@ -99,3 +99,43 @@ template.def<@ggml.binary_f32.apply> device priority(1) @ggml_binary_f32_apply(%
   %result = scf.select %is_geglu_quick, %geglu_quick, %geglu_erf_selected : f32
   template.return %result : f32
 }
+
+template.decl @ggml.binary_f32.apply_vector8(%op: index, %lhs: vector<8xf32>, %rhs: vector<8xf32>) -> (vector<8xf32>)
+
+template.def<@ggml.binary_f32.apply_vector8> device @ggml_binary_f32_apply_vector8(%op: index, %lhs: vector<8xf32>, %rhs: vector<8xf32>) -> (vector<8xf32>) {
+  %op_swiglu = index.constant 4 : index
+  %is_swiglu = index.cmp eq, %op, %op_swiglu : index
+  %result = scf.if %is_swiglu -> (vector<8xf32>) {
+    %silu = vector.siluf %lhs : vector<8xf32>
+    %value = vector.mulf %silu, %rhs : vector<8xf32>
+    scf.yield %value : vector<8xf32>
+  } else {
+    %lhs0 = vector.extract %lhs[0] : vector<8xf32> -> f32
+    %rhs0 = vector.extract %rhs[0] : vector<8xf32> -> f32
+    %value0 = template.apply<@ggml.binary_f32.apply>(%op, %lhs0, %rhs0) : (index, f32, f32) -> (f32)
+    %lhs1 = vector.extract %lhs[1] : vector<8xf32> -> f32
+    %rhs1 = vector.extract %rhs[1] : vector<8xf32> -> f32
+    %value1 = template.apply<@ggml.binary_f32.apply>(%op, %lhs1, %rhs1) : (index, f32, f32) -> (f32)
+    %lhs2 = vector.extract %lhs[2] : vector<8xf32> -> f32
+    %rhs2 = vector.extract %rhs[2] : vector<8xf32> -> f32
+    %value2 = template.apply<@ggml.binary_f32.apply>(%op, %lhs2, %rhs2) : (index, f32, f32) -> (f32)
+    %lhs3 = vector.extract %lhs[3] : vector<8xf32> -> f32
+    %rhs3 = vector.extract %rhs[3] : vector<8xf32> -> f32
+    %value3 = template.apply<@ggml.binary_f32.apply>(%op, %lhs3, %rhs3) : (index, f32, f32) -> (f32)
+    %lhs4 = vector.extract %lhs[4] : vector<8xf32> -> f32
+    %rhs4 = vector.extract %rhs[4] : vector<8xf32> -> f32
+    %value4 = template.apply<@ggml.binary_f32.apply>(%op, %lhs4, %rhs4) : (index, f32, f32) -> (f32)
+    %lhs5 = vector.extract %lhs[5] : vector<8xf32> -> f32
+    %rhs5 = vector.extract %rhs[5] : vector<8xf32> -> f32
+    %value5 = template.apply<@ggml.binary_f32.apply>(%op, %lhs5, %rhs5) : (index, f32, f32) -> (f32)
+    %lhs6 = vector.extract %lhs[6] : vector<8xf32> -> f32
+    %rhs6 = vector.extract %rhs[6] : vector<8xf32> -> f32
+    %value6 = template.apply<@ggml.binary_f32.apply>(%op, %lhs6, %rhs6) : (index, f32, f32) -> (f32)
+    %lhs7 = vector.extract %lhs[7] : vector<8xf32> -> f32
+    %rhs7 = vector.extract %rhs[7] : vector<8xf32> -> f32
+    %value7 = template.apply<@ggml.binary_f32.apply>(%op, %lhs7, %rhs7) : (index, f32, f32) -> (f32)
+    %value = vector.from_elements %value0, %value1, %value2, %value3, %value4, %value5, %value6, %value7 : vector<8xf32>
+    scf.yield %value : vector<8xf32>
+  }
+  template.return %result : vector<8xf32>
+}

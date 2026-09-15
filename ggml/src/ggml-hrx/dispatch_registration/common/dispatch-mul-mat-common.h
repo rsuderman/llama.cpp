@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ggml::hrx {
@@ -133,6 +134,28 @@ inline bool common_is_supported_dense_output_size(int64_t output_size) {
     return output_size >= 1 && output_size <= 262144;
 }
 
+// Select the packed prefill schedule. Long Q4 contractions only benefit when
+// their producer supplies the layout without a separate conversion pass.
+inline bool common_mul_mat_uses_k16_major_f16(CommonMulMatWeightFormat format,
+                                               int64_t input_size,
+                                               int64_t output_size,
+                                               int64_t token_count,
+                                               bool packed_producer = false) {
+    if (token_count < 512 || token_count > 2048 || token_count % 512 != 0 ||
+        input_size % 256 != 0 || output_size % 64 != 0) {
+        return false;
+    }
+    if (format == CommonMulMatWeightFormat::Q4K) {
+        return token_count == 512 && output_size / 64 >= 64 &&
+               (input_size <= 2 * output_size || (packed_producer && input_size <= 4 * output_size));
+    }
+    if (format == CommonMulMatWeightFormat::Q6K) {
+        const int64_t tile = input_size > output_size ? 64 : 128;
+        return output_size % tile == 0 && (token_count / 512) * (output_size / tile) >= 32;
+    }
+    return false;
+}
+
 inline ggml_type common_mul_mat_format_type(CommonMulMatWeightFormat format) {
     switch (format) {
         case CommonMulMatWeightFormat::Q1_0:
@@ -140,10 +163,12 @@ inline ggml_type common_mul_mat_format_type(CommonMulMatWeightFormat format) {
         case CommonMulMatWeightFormat::Q3K:
             return GGML_TYPE_Q3_K;
         case CommonMulMatWeightFormat::Q4K:
+        case CommonMulMatWeightFormat::Q4KRow64:
             return GGML_TYPE_Q4_K;
         case CommonMulMatWeightFormat::Q5K:
             return GGML_TYPE_Q5_K;
         case CommonMulMatWeightFormat::Q6K:
+        case CommonMulMatWeightFormat::Q6KRow64:
             return GGML_TYPE_Q6_K;
         case CommonMulMatWeightFormat::Q4_0:
             return GGML_TYPE_Q4_0;
@@ -428,6 +453,122 @@ inline CommonMulMatMatch common_match_mul_mat_any_format(const Graph &     graph
     match.token_count   = token_count;
     match.weight_format = format;
     return match;
+}
+
+// Share the conversion used by F16-operand matmuls.
+inline bool common_prepare_f16_input(const DispatchMatchContext & context,
+                                    const Value &                input,
+                                    int64_t                      input_size,
+                                    int64_t                      token_count,
+                                    DispatchMatch &              match,
+                                    DispatchBinding &            binding) {
+    const size_t bytes = static_cast<size_t>(token_count * input_size) * sizeof(ggml_fp16_t);
+    const CommandPlanAlternateValue * alternate =
+        find_alternate_value(context.graph, context.plan, input.id, GGML_TYPE_F16, bytes);
+    if (alternate != nullptr) {
+        binding = { alternate->alternate_value, 0, bytes };
+        return true;
+    }
+
+    constexpr KernelCatalogRef kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_copy_f32_f16");
+    constexpr const char * name = "common.mul_mat.f16";
+    const ValueId activation = context.next_plan_value;
+    match.transients.push_back({ activation, name, bytes, 256 });
+    Dispatch convert;
+    convert.kernel = make_kernel_specialization(kernel);
+    convert.kernel.integer_parameters.emplace("element_count", token_count * input_size);
+    convert.bindings.push_back({ input.id, 0, input.byte_count });
+    convert.bindings.push_back({ activation, 0, bytes });
+    match.dispatches.push_back(std::move(convert));
+    Status status;
+    if (!match.metadata.append_alternate_value({ input.id, activation, GGML_TYPE_F16, bytes, name }, status)) {
+        match.status.append(status);
+        return false;
+    }
+    binding = { activation, 0, bytes };
+    return true;
+}
+
+// Private K16-major copy; it is not published as an ordinary F16 alternate.
+inline bool common_prepare_k16_major_f16_input(const DispatchMatchContext & context,
+                                               const Value &                input,
+                                               int64_t                      input_size,
+                                               int64_t                      token_count,
+                                               DispatchMatch &              match,
+                                               DispatchBinding &            binding) {
+    constexpr KernelCatalogRef kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_copy_f16_k16_major");
+    constexpr const char * name = "common.mul_mat.k16_major_f16";
+    const size_t bytes = static_cast<size_t>(token_count * input_size) * sizeof(ggml_fp16_t);
+    const CommandPlanGeneratedResource * generated =
+        context.plan.metadata.find_generated_resource(input.id, GeneratedResourceRole::F16K16Major);
+    if (generated != nullptr && generated->byte_count == bytes) {
+        binding = { generated->generated_value, 0, bytes };
+        return true;
+    }
+    const CommandPlanAlternateValue * alternate =
+        find_alternate_value(context.graph, context.plan, input.id, GGML_TYPE_F16, bytes);
+    const ValueId packed(context.next_plan_value.value + static_cast<int32_t>(match.transients.size()));
+    match.transients.push_back({ packed, name, bytes, 256 });
+    Dispatch copy;
+    copy.kernel = make_kernel_specialization(kernel);
+    copy.kernel.integer_parameters.emplace("token_count", token_count);
+    copy.kernel.compile_parameters.emplace("ggml.copy_f16_k16_major.input_size", common_to_config_value(input_size));
+    copy.kernel.compile_parameters.emplace("ggml.copy_f16_k16_major.token_count", common_to_config_value(token_count));
+    copy.kernel.compile_parameters.emplace("ggml.copy_f16_k16_major.input_is_f16", alternate != nullptr ? "1" : "0");
+    copy.bindings.push_back(alternate != nullptr ? DispatchBinding{ alternate->alternate_value, 0, bytes } :
+                                                  DispatchBinding{ input.id, 0, input.byte_count });
+    copy.bindings.push_back({ packed, 0, bytes });
+    match.dispatches.push_back(std::move(copy));
+    Status status;
+    if (!match.metadata.append_generated_resource(
+            { input.id, GeneratedResourceRole::F16K16Major, packed, bytes, {} }, status)) {
+        match.status.append(status);
+        return false;
+    }
+    binding = { packed, 0, bytes };
+    return true;
+}
+
+// Share one activation producer between ordinary and fused matmuls.
+inline bool common_prepare_q8_1_x4_input(const DispatchMatchContext & context,
+                                         const Value &                input,
+                                         int64_t                      input_size,
+                                         int64_t                      token_count,
+                                         DispatchMatch &              match,
+                                         DispatchBinding &            binding,
+                                         bool                         allow_create = true) {
+    const size_t bytes = static_cast<size_t>(token_count) * ggml_row_size(GGML_TYPE_Q8_1, input_size);
+    const CommandPlanAlternateValue * alternate =
+        find_alternate_value(context.graph, context.plan, input.id, GGML_TYPE_Q8_1, bytes);
+    if (alternate != nullptr) {
+        binding = { alternate->alternate_value, 0, bytes };
+        return true;
+    }
+    if (!allow_create) {
+        return false;
+    }
+
+    constexpr KernelCatalogRef kernel = GGML_HRX_KERNEL_REF("qwen3_moe", "ggml_quantize_q8_1_x4_f32");
+    constexpr const char * name = "common.mul_mat.q8_1_x4";
+    const ValueId activation = context.next_plan_value;
+    match.transients.push_back({ activation, name, bytes, 256 });
+    Dispatch quantize;
+    quantize.kernel = make_kernel_specialization(kernel);
+    quantize.kernel.integer_parameters.emplace("token_count", token_count);
+    quantize.kernel.integer_parameters.emplace("input_size", input_size);
+    quantize.kernel.compile_parameters.emplace("ggml.quantize_q8_1_x4.group_capacity",
+                                                common_to_config_value(token_count * input_size / 128));
+    quantize.bindings.push_back({ input.id, 0, input.byte_count });
+    quantize.bindings.push_back({ activation, 0, bytes });
+    match.dispatches.push_back(std::move(quantize));
+
+    Status status;
+    if (!match.metadata.append_alternate_value({ input.id, activation, GGML_TYPE_Q8_1, bytes, name }, status)) {
+        match.status.append(status);
+        return false;
+    }
+    binding = { activation, 0, bytes };
+    return true;
 }
 
 }  // namespace ggml::hrx

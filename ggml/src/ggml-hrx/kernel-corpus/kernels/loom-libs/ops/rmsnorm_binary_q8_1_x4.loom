@@ -22,13 +22,22 @@ kernel.decl @ggml_quantize_q8_1_x4_f32(%token_count$28: index, %input_size$29: i
 kernel.def target(@ggml_rmsnorm_binary_q8_1_x4_gfx11_wave32) export("ggml_rmsnorm_binary_q8_1_x4") @ggml_rmsnorm_binary_q8_1_x4(%token_count: index) {
   %c1 = index.constant 1 : index
   %c256 = index.constant 256 : index
-  kernel.launch.config workgroups(%token_count, %c1, %c1) workgroup_size(%c256, %c1, %c1) : index
+  %hidden = config.get @ggml.rmsnorm_binary_q8_1_x4.hidden_size : index
+  %tile_width = index.constant 1024 : index
+  %tile_round = index.constant 1023 : index
+  %decode_limit = index.constant 6 : index
+  %rounded_hidden = index.add %hidden, %tile_round : index
+  %stripe_count = index.div %rounded_hidden, %tile_width : index
+  %is_decode = index.cmp ult, %token_count, %decode_limit : index
+  %groups_per_row = scf.select %is_decode, %stripe_count, %c1 : index
+  %groups = index.mul %token_count, %groups_per_row : index
+  kernel.launch.config workgroups(%groups, %c1, %c1) workgroup_size(%c256, %c1, %c1) : index
 } launch(%token_count: index, %input: buffer, %rhs: buffer, %output: buffer, %q8_output: buffer) where [range(%token_count, 1, 2048)] {
   %hidden_size0 = config.get @ggml.rmsnorm_binary_q8_1_x4.hidden_size : index
   %epsilon = config.get @ggml.rmsnorm_binary_q8_1_x4.rms_epsilon : f32
   %op = config.get @ggml.rmsnorm_binary_q8_1_x4.op : index
   %hidden_size = index.assume %hidden_size0 [range(%hidden_size0, 128, 32768), mul(%hidden_size0, 128)] : index
-  %token0 = kernel.workgroup.id<x> : index
+  %dispatch_group = kernel.workgroup.id<x> : index
   %workitem = kernel.workitem.id<x> : index
   %c0 = index.constant 0 : index
   %c1 = index.constant 1 : index
@@ -36,6 +45,16 @@ kernel.def target(@ggml_rmsnorm_binary_q8_1_x4_gfx11_wave32) export("ggml_rmsnor
   %c128 = index.constant 128 : index
   %c256 = index.constant 256 : index
   %c1024 = index.constant 1024 : index
+  %tile_round = index.constant 1023 : index
+  %decode_limit = index.constant 6 : index
+  %rounded_hidden = index.add %hidden_size, %tile_round : index
+  %stripe_count = index.div %rounded_hidden, %c1024 : index
+  %is_decode = index.cmp ult, %token_count, %decode_limit : index
+  %groups_per_row = scf.select %is_decode, %stripe_count, %c1 : index
+  %token0 = index.div %dispatch_group, %groups_per_row : index
+  %stripe_id = index.rem %dispatch_group, %groups_per_row : index
+  %stripe_start = index.mul %stripe_id, %c1024 : index
+  %stripe_step = index.mul %groups_per_row, %c1024 : index
   %group_bytes = index.constant 144 : offset
   %scratch_d_byte_add = index.constant 1024 : offset
   %scratch_bytes = index.constant 1152 : offset
@@ -53,7 +72,7 @@ kernel.def target(@ggml_rmsnorm_binary_q8_1_x4_gfx11_wave32) export("ggml_rmsnor
   %scratch = buffer.alloca<workgroup> align(16) %scratch_bytes : buffer
   %scratch_values = buffer.view %scratch[%c0_offset] : buffer -> view<256xf32>
   %scratch_d = buffer.view %scratch[%scratch_d_byte_add] : buffer -> view<32xf32>
-  scf.for %stripe_base = [%c0 to %hidden_size step %c1024] {
+  scf.for %stripe_base = [%stripe_start to %hidden_size step %stripe_step] {
     %word_element_add = index.mul %workitem, %c4 : index
     %channel = index.add %stripe_base, %word_element_add : index
     %valid_word0 = index.cmp ult, %channel, %hidden_size : index

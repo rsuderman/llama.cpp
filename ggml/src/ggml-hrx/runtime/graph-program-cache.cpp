@@ -7,8 +7,8 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <optional>
 #include <sstream>
-#include <unordered_set>
 #include <utility>
 
 namespace ggml::hrx {
@@ -145,33 +145,78 @@ static bool graph_replay_should_fallback(HrxGraphReplayEvent event) {
     return event == HrxGraphReplayEvent::Ineligible || event == HrxGraphReplayEvent::BuildFailed;
 }
 
-static void collect_command_graph_values(const std::vector<Command> & commands, std::unordered_set<int32_t> & values) {
+static void collect_command_graph_values(const std::vector<Command> & commands, std::vector<uint8_t> & values) {
     for (const Command & command : commands) {
         for (const CommandBinding & binding : command.bindings) {
-            if (binding.origin == CommandBindingOrigin::GraphValue) {
-                values.insert(binding.value.value);
+            if (binding.origin == CommandBindingOrigin::GraphValue && binding.value.value >= 0 &&
+                static_cast<size_t>(binding.value.value) < values.size()) {
+                values[static_cast<size_t>(binding.value.value)] = 1;
             }
         }
     }
 }
 
-static std::unordered_set<int32_t> collect_command_graph_values(const CommandProgram & commands) {
-    std::unordered_set<int32_t> values;
+static std::vector<uint8_t> collect_command_graph_values(const CommandProgram & commands, size_t value_count) {
+    std::vector<uint8_t> values(value_count, 0);
     collect_command_graph_values(commands.initialization_commands, values);
     collect_command_graph_values(commands.commands, values);
     return values;
 }
 
-static bool can_skip_external_binding(const Value & value, const std::unordered_set<int32_t> & command_graph_values) {
-    return (value.element_count == 0 || value.byte_count == 0) &&
-           command_graph_values.find(value.id.value) == command_graph_values.end();
+static bool can_skip_external_binding(const Value & value,
+                                      const CommandProgram & commands,
+                                      size_t value_count,
+                                      std::optional<std::vector<uint8_t>> & command_graph_values) {
+    if (value.element_count != 0 && value.byte_count != 0) {
+        return false;
+    }
+    if (!command_graph_values.has_value()) {
+        command_graph_values = collect_command_graph_values(commands, value_count);
+    }
+    return (*command_graph_values)[static_cast<size_t>(value.id.value)] == 0;
 }
+
+class TensorValueIndex {
+  public:
+    explicit TensorValueIndex(size_t maximum_size) : maximum_size_(maximum_size) {}
+    ~TensorValueIndex() { ggml_hash_set_free(&tensors_); }
+
+    TensorValueIndex(const TensorValueIndex &) = delete;
+    TensorValueIndex & operator=(const TensorValueIndex &) = delete;
+
+    std::optional<int32_t> find(const ggml_tensor * tensor) const {
+        if (tensors_.size == 0) {
+            return std::nullopt;
+        }
+        const size_t index = ggml_hash_find(&tensors_, tensor);
+        if (index == GGML_HASHSET_FULL || !ggml_bitset_get(tensors_.used, index)) {
+            return std::nullopt;
+        }
+        return values_[index];
+    }
+
+    void emplace(const ggml_tensor * tensor, int32_t value) {
+        if (tensors_.size == 0) {
+            GGML_ASSERT(maximum_size_ <= SIZE_MAX / 2);
+            tensors_ = ggml_hash_set_new(2 * maximum_size_);
+            values_.resize(tensors_.size);
+        }
+        const size_t index = ggml_hash_insert(&tensors_, const_cast<ggml_tensor *>(tensor));
+        GGML_ASSERT(index != GGML_HASHSET_ALREADY_EXISTS);
+        values_[index] = value;
+    }
+
+  private:
+    size_t maximum_size_;
+    ggml_hash_set tensors_ = {};
+    std::vector<int32_t> values_;
+};
 
 static Status bind_current_value(const ValueMap &                                   values,
                                  ValueId                                            expected,
                                  const ggml_tensor *                                tensor,
                                  std::vector<const ggml_tensor *> &                 tensor_by_value,
-                                 std::unordered_map<const ggml_tensor *, int32_t> & value_by_tensor,
+                                 TensorValueIndex &                                  value_by_tensor,
                                  const char *                                       role,
                                  size_t                                             node_index) {
     Status        status;
@@ -191,14 +236,19 @@ static Status bind_current_value(const ValueMap &                               
         return status;
     }
 
+    if (existing_tensor == tensor) {
+        // Both maps are populated together when a value is first seen.
+        return status;
+    }
+
     const auto existing_value = value_by_tensor.find(tensor);
-    if (existing_value != value_by_tensor.end() && existing_value->second != expected.value) {
-        status.log("node %zu %s tensor maps to cached values %d and %d", node_index, role, existing_value->second,
+    if (existing_value.has_value() && *existing_value != expected.value) {
+        status.log("node %zu %s tensor maps to cached values %d and %d", node_index, role, *existing_value,
                    expected.value);
         return status;
     }
 
-    if (existing_tensor == nullptr && existing_value == value_by_tensor.end() &&
+    if (existing_tensor == nullptr && !existing_value.has_value() &&
         !tensor_metadata_matches(values, *value, tensor, tensor_by_value)) {
         status.log("node %zu %s value %d metadata does not match current tensor: cached %s current %s", node_index,
                    role, expected.value, format_value_metadata(*value).c_str(), format_tensor_metadata(tensor).c_str());
@@ -206,7 +256,9 @@ static Status bind_current_value(const ValueMap &                               
     }
 
     tensor_by_value[static_cast<size_t>(expected.value)] = tensor;
-    value_by_tensor.emplace(tensor, expected.value);
+    if (!existing_value.has_value()) {
+        value_by_tensor.emplace(tensor, expected.value);
+    }
     return status;
 }
 
@@ -254,7 +306,8 @@ GraphProgram::GraphProgram(uint64_t                        uid,
     target_(std::move(target)),
     graph_(std::move(graph)),
     commands_(std::move(commands)),
-    command_shape_(std::move(command_shape)) {}
+    command_shape_(std::move(command_shape)),
+    command_shape_hash_(command_program_shape_hash(command_shape_)) {}
 
 const GraphProgramExternalSlot * GraphProgram::find_external_slot(ValueId value) const {
     const auto found = external_slot_by_value_.find(value.value);
@@ -491,7 +544,7 @@ GraphProgramMatch GraphProgram::match_current_graph(const ggml_cgraph & current_
 
     const ValueMap &                                 values = graph_->values();
     std::vector<const ggml_tensor *>                 tensor_by_value(values.size(), nullptr);
-    std::unordered_map<const ggml_tensor *, int32_t> value_by_tensor;
+    TensorValueIndex                                value_by_tensor(values.size());
 
     for (size_t node_index = 0; node_index < graph_->nodes().size(); ++node_index) {
         const GraphNode &   cached_node  = graph_->nodes()[node_index];
@@ -540,8 +593,10 @@ GraphProgramMatch GraphProgram::match_current_graph(const ggml_cgraph & current_
         }
     }
 
-    const std::unordered_set<int32_t> command_graph_values = collect_command_graph_values(*commands_);
-    for (const ValueId id : values.external_value_ids()) {
+    std::optional<std::vector<uint8_t>> command_graph_values;
+    const std::vector<ValueId> external_ids = values.external_value_ids();
+    result.external_bindings.reserve(external_ids.size());
+    for (const ValueId id : external_ids) {
         const Value * value = values.find(id);
         if (value == nullptr) {
             result.status.log("external value %d is missing from the cached graph", id.value);
@@ -552,7 +607,7 @@ GraphProgramMatch GraphProgram::match_current_graph(const ggml_cgraph & current_
             result.status.log("external value %d is missing from the current graph", id.value);
             return result;
         }
-        if (can_skip_external_binding(*value, command_graph_values)) {
+        if (can_skip_external_binding(*value, *commands_, values.size(), command_graph_values)) {
             continue;
         }
         result.external_bindings.push_back({ id, tensor_by_value[static_cast<size_t>(id.value)] });
@@ -617,6 +672,7 @@ GraphProgramLookup GraphProgramCache::build_from_imported(const ggml_cgraph &  g
     GraphProgram * cached_program = program.get();
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        validated_matches_.clear();
         programs_[graph.uid] = std::move(program);
         cached_program       = programs_[graph.uid].get();
         last_program_        = cached_program;
@@ -634,6 +690,7 @@ GraphProgramLookup GraphProgramCache::get_or_build(const ggml_cgraph &  graph,
     if (graph.uid != 0) {
         const bool     disable_fast_path  = environment_flag_enabled("GGML_HRX_DISABLE_GRAPH_UID_FAST_PATH");
         const bool     validate_fast_path = environment_flag_enabled("GGML_HRX_VALIDATE_GRAPH_UID_CACHE");
+        const bool     allow_structural_reuse = std::getenv("GGML_HRX_DUMP_COMMAND_PROGRAM_DIR") == nullptr;
         GraphProgram * cached_program     = nullptr;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -645,6 +702,13 @@ GraphProgramLookup GraphProgramCache::get_or_build(const ggml_cgraph &  graph,
                 if (found != programs_.end() && found->second->target() == target) {
                     cached_program = found->second.get();
                     last_program_  = cached_program;
+                }
+                if (cached_program == nullptr && !disable_fast_path && allow_structural_reuse) {
+                    const auto matched = validated_matches_.find(graph.uid);
+                    if (matched != validated_matches_.end() && matched->second.nodes == graph.nodes &&
+                        matched->second.program->target() == target) {
+                        cached_program = matched->second.program;
+                    }
                 }
             }
         }
@@ -674,10 +738,12 @@ GraphProgramLookup GraphProgramCache::get_or_build(const ggml_cgraph &  graph,
                 result.status.append(match.status);
                 return result;
             }
+            std::lock_guard<std::mutex> lock(mutex_);
+            validated_matches_.erase(graph.uid);
         }
 
         // Physical bindings have a separate prepared-program cache key.
-        if (std::getenv("GGML_HRX_DUMP_COMMAND_PROGRAM_DIR") == nullptr) {
+        if (allow_structural_reuse) {
             std::lock_guard<std::mutex> lock(mutex_);
             for (const auto & entry : programs_) {
                 GraphProgram * candidate = entry.second.get();
@@ -689,6 +755,12 @@ GraphProgramLookup GraphProgramCache::get_or_build(const ggml_cgraph &  graph,
                     continue;
                 }
                 last_program_ = candidate;
+                if (!disable_fast_path) {
+                    if (validated_matches_.size() >= 128) {
+                        validated_matches_.clear();
+                    }
+                    validated_matches_[graph.uid] = { candidate, graph.nodes };
+                }
                 ++stats_.hits;
                 result.program = candidate;
                 result.match   = std::move(match);
@@ -718,6 +790,7 @@ GraphProgramCacheStats GraphProgramCache::stats() const {
 
 void GraphProgramCache::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
+    validated_matches_.clear();
     programs_.clear();
     last_program_ = nullptr;
 }

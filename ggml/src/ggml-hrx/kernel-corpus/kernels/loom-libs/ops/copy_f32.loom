@@ -30,6 +30,134 @@ kernel.def target(@ggml_copy_f32_gfx11_wave64) export("ggml_copy_f32") @ggml_cop
   kernel.return
 }
 
+
+// Exact K16-major F16 layout for native matrix fragments. The ordinary F16
+// alternate remains unchanged; this copy is a private dispatch transient.
+config.decl @ggml.copy_f16_k16_major.input_size : %value: index where [range(%value, 256, 32768), mul(%value, 256)]
+config.decl @ggml.copy_f16_k16_major.token_count : %value: index where [range(%value, 512, 2048), mul(%value, 512)]
+config.decl @ggml.copy_f16_k16_major.input_is_f16 : %value: index where [range(%value, 0, 1)]
+amdgpu.target<gfx11-generic> @ggml_copy_f16_k16_major_target {subgroup_size = 32}
+
+kernel.def target(@ggml_copy_f16_k16_major_target) export("ggml_copy_f16_k16_major") @ggml_copy_f16_k16_major(%token_count: index) {
+  %one = index.constant 1 : index
+  %threads = index.constant 256 : index
+  %tile = index.constant 2048 : index
+  %rounding = index.constant 2047 : index
+  %width = config.get @ggml.copy_f16_k16_major.input_size : index
+  %elements = index.mul %token_count, %width : index
+  %rounded = index.add %elements, %rounding : index
+  %groups = index.div %rounded, %tile : index
+  kernel.launch.config workgroups(%groups, %one, %one) workgroup_size(%threads, %one, %one) : index
+} launch(%token_count: index, %input: buffer, %output: buffer) {
+  %width = config.get @ggml.copy_f16_k16_major.input_size : index
+  %token_count_static = config.get @ggml.copy_f16_k16_major.token_count : index
+  %tokens = index.assume %token_count_static [range(%token_count_static, 16, 2048), mul(%token_count_static, 16)] : index
+  %count = index.mul %tokens, %width : index
+  %c0 = index.constant 0 : offset
+  %c8 = index.constant 8 : index
+  %c16 = index.constant 16 : index
+  %c256 = index.constant 256 : index
+  %thread = kernel.workitem.id<x> : index
+  %group = kernel.workgroup.id<x> : index
+  %packet = index.madd %group, %c256, %thread : index
+  %linear_raw = index.mul %packet, %c8 : index
+  %linear = index.assume %linear_raw [range(%linear_raw, 0, 67110904), mul(%linear_raw, 8)] : index
+  %end = index.add %linear, %c8 : index
+  %valid = index.cmp ule, %end, %count : index
+  scf.if %valid {
+    %tile = index.div %linear, %c256 : index
+    %local = index.rem %linear, %c256 : index
+    %m_tiles_raw = index.div %tokens, %c16 : index
+    %m_tiles = index.assume %m_tiles_raw [range(%m_tiles_raw, 1, 128)] : index
+    %m_tile = index.rem %tile, %m_tiles : index
+    %k_tile = index.div %tile, %m_tiles : index
+    %row_in_tile = index.div %local, %c16 : index
+    %k_in_tile_raw = index.rem %local, %c16 : index
+    %k_in_tile = index.assume %k_in_tile_raw [range(%k_in_tile_raw, 0, 8), mul(%k_in_tile_raw, 8)] : index
+    %row = index.madd %m_tile, %c16, %row_in_tile : index
+    %k = index.madd %k_tile, %c16, %k_in_tile : index
+    %bounded_row, %bounded_tokens = index.assume %row, %tokens [lt(%row, %tokens)] : index, index
+    %input_noalias, %output_noalias = buffer.assume.noalias %input, %output : buffer, buffer
+    %dest = buffer.view %output_noalias[%c0] : buffer -> view<[%count]xf16>
+    %maximum_k = index.sub %width, %c8 : index
+    %bounded_k = index.assume %k [range(%k, 0, %maximum_k), mul(%k, 8)] : index
+    %input_is_f16 = config.get @ggml.copy_f16_k16_major.input_is_f16 : index
+    %one = index.constant 1 : index
+    %use_f16 = index.cmp eq, %input_is_f16, %one : index
+    %values = scf.if %use_f16 -> (vector<8xf16>) {
+      %source = buffer.view %input_noalias[%c0] : buffer -> view<[%tokens]x[%width]xf16>
+      %loaded = vector.load %source[%bounded_row, %bounded_k] : view<[%tokens]x[%width]xf16> -> vector<8xf16>
+      scf.yield %loaded : vector<8xf16>
+    } else {
+      %source = buffer.view %input_noalias[%c0] : buffer -> view<[%tokens]x[%width]xf32>
+      %loaded = vector.load %source[%bounded_row, %bounded_k] : view<[%tokens]x[%width]xf32> -> vector<8xf32>
+      %converted = vector.fptrunc %loaded : vector<8xf32> to vector<8xf16>
+      scf.yield %converted : vector<8xf16>
+    }
+    vector.store %values, %dest[%linear] : vector<8xf16>, view<[%count]xf16>
+  }
+  kernel.return
+}
+
+config.decl @ggml.copy_transpose_f16.row_count : %value: index where [range(%value, 32, 32768), mul(%value, 32)]
+config.decl @ggml.copy_transpose_f16.column_count : %value: index where [range(%value, 32, 32768), mul(%value, 32)]
+kernel.def target(@ggml_copy_f32_gfx11_wave64) export("ggml_copy_transpose_f16") @ggml_copy_transpose_f16() {
+  %rows = config.get @ggml.copy_transpose_f16.row_count : index
+  %columns = config.get @ggml.copy_transpose_f16.column_count : index
+  %tile_size = index.constant 32 : index
+  %one = index.constant 1 : index
+  %x = index.div %columns, %tile_size : index
+  %gy = index.div %rows, %tile_size : index
+  %y = index.constant 256 : index
+  kernel.launch.config workgroups(%x, %gy, %one) workgroup_size(%y, %one, %one) : index
+} launch(%input: buffer, %output: buffer) {
+  %rows = config.get @ggml.copy_transpose_f16.row_count : index
+  %columns = config.get @ggml.copy_transpose_f16.column_count : index
+  %c0 = index.constant 0 : index
+  %c4 = index.constant 4 : index
+  %c8 = index.constant 8 : index
+  %c32 = index.constant 32 : index
+  %zero = index.constant 0 : offset
+  %bytes = index.constant 2560 : offset
+  %wi = kernel.workitem.id<x> : index
+  %gx = kernel.workgroup.id<x> : index
+  %gy = kernel.workgroup.id<y> : index
+  %row_origin = index.mul %gy, %c32 : index
+  %col_origin = index.mul %gx, %c32 : index
+  %row = index.div %wi, %c8 : index
+  %col_word = index.rem %wi, %c8 : index
+  %col = index.mul %col_word, %c4 : index
+  %source_row = index.add %row_origin, %row : index
+  %source_col = index.add %col_origin, %col : index
+  %src, %dst = buffer.assume.noalias %input, %output : buffer, buffer
+  %input_view = buffer.view %src[%zero] : buffer -> view<[%rows]x[%columns]xf16>
+  %output_view = buffer.view %dst[%zero] : buffer -> view<[%columns]x[%rows]xf16>
+  %shared = buffer.alloca<workgroup> align(16) %bytes : buffer
+  %shared_view = buffer.view %shared[%zero] : buffer -> view<32x40xf16>
+  %transposed = encoding.layout.strided [1, 40] : encoding<layout>
+  %shared_transpose_view = buffer.view %shared[%zero] : buffer -> view<32x32xf16, %transposed>
+  %loaded = vector.load %input_view[%source_row, %source_col] : view<[%rows]x[%columns]xf16> -> vector<4xf16>
+  vector.store %loaded, %shared_view[%row, %col] : vector<4xf16>, view<32x40xf16>
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
+  %add0 = index.constant 0 : index
+  %read_col0 = index.add %col, %add0 : index
+  %s0 = view.load %shared_transpose_view[%row, %read_col0] : view<32x32xf16, %transposed> -> f16
+  %add1 = index.constant 1 : index
+  %read_col1 = index.add %col, %add1 : index
+  %s1 = view.load %shared_transpose_view[%row, %read_col1] : view<32x32xf16, %transposed> -> f16
+  %add2 = index.constant 2 : index
+  %read_col2 = index.add %col, %add2 : index
+  %s2 = view.load %shared_transpose_view[%row, %read_col2] : view<32x32xf16, %transposed> -> f16
+  %add3 = index.constant 3 : index
+  %read_col3 = index.add %col, %add3 : index
+  %s3 = view.load %shared_transpose_view[%row, %read_col3] : view<32x32xf16, %transposed> -> f16
+  %swapped = vector.from_elements %s0, %s1, %s2, %s3 : vector<4xf16>
+  %target_row = index.add %col_origin, %row : index
+  %target_col = index.add %row_origin, %col : index
+  vector.store %swapped, %output_view[%target_row, %target_col] : vector<4xf16>, view<[%columns]x[%rows]xf16>
+  kernel.return
+}
+
 check.case public @ggml_copy_f32_small_case {
   %four = check.literal value(4) : index
   %source = check.generate.iota offset(-2.0) step(1.0) : tensor<4xf32>
@@ -41,6 +169,48 @@ check.case public @ggml_copy_f32_small_case {
 }
 
 check.benchmark<@ggml_copy_f32_small_case> @ggml_copy_f32_small
+
+// Aligned tensor conversions used by existing F16-consuming matmul entries.
+kernel.def target(@ggml_copy_f32_gfx11_wave64) export("ggml_copy_f32_f16") @ggml_copy_f32_f16(%element_count: index) {
+  %one = index.constant 1 : index
+  %threads = index.constant 256 : index
+  %tile = index.constant 1024 : index
+  %rounding = index.constant 1023 : index
+  %rounded = index.add %element_count, %rounding : index
+  %groups = index.div %rounded, %tile : index
+  kernel.launch.config workgroups(%groups, %one, %one) workgroup_size(%threads, %one, %one) : index
+} launch(%element_count: index, %source: buffer, %output: buffer) {
+  %count = index.assume %element_count [range(%element_count, 4, 1073741824), mul(%element_count, 4)] : index
+  %group = kernel.workgroup.id<x> : index
+  %thread = kernel.workitem.id<x> : index
+  %threads = index.constant 256 : index
+  %four = index.constant 4 : index
+  %lane = index.madd %group, %threads, %thread : index
+  %linear0 = index.mul %lane, %four : index
+  %linear = index.assume %linear0 [range(%linear0, 0, 1073742844), mul(%linear0, 4)] : index
+  %end = index.add %linear, %four : index
+  %valid = index.cmp ule, %end, %count : index
+  %zero = index.constant 0 : offset
+  %source_noalias, %output_noalias = buffer.assume.noalias %source, %output : buffer, buffer
+  %source_view = buffer.view %source_noalias[%zero] : buffer -> view<[%count]xf32>
+  %output_view = buffer.view %output_noalias[%zero] : buffer -> view<[%count]xf16>
+  scf.if %valid {
+    %values = vector.load %source_view[%linear] : view<[%count]xf32> -> vector<4xf32>
+    %converted = vector.fptrunc %values : vector<4xf32> to vector<4xf16>
+    vector.store %converted, %output_view[%linear] : vector<4xf16>, view<[%count]xf16>
+  }
+  kernel.return
+}
+
+check.case public @ggml_copy_f32_f16_small_case {
+  %count = check.literal value(12) : index
+  %source = check.generate.iota offset(-2.0) step(0.5) : tensor<12xf32>
+  %output = check.generate.fill value(0.0) : tensor<12xf16>
+  %expected = check.generate.iota offset(-2.0) step(0.5) : tensor<12xf16>
+  kernel.launch @ggml_copy_f32_f16[%count](%count, %source, %output) : [index](index, tensor<12xf32>, tensor<12xf16>)
+  check.expect.close actual(%output) expected(%expected) atol(0.0) rtol(0.0) nan(same) : tensor<12xf16>
+  check.return
+}
 
 config.decl @ggml.copy_strided_source_f32.ne0 : %value: index where [range(%value, 1, 1073741824)]
 

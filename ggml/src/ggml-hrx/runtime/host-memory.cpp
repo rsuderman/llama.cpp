@@ -827,6 +827,57 @@ static Status materialize_symmetric_i8_k256_row64(const HostWeightSource & sourc
     return status;
 }
 
+// Transpose native Q4_K records in 16-byte fields. No scale or code is
+// reconstructed: applying the inverse permutation restores every source byte.
+static Status materialize_q4_k_packed_k256_row64(const HostWeightSource & source, std::vector<uint8_t> & output) {
+    Status status;
+    if (source.source_type != GGML_TYPE_Q4_K || source.input_size <= 0 || source.input_size % QK_K != 0 ||
+        source.output_size <= 0 || source.output_size % 64 != 0) {
+        status.log("layout %s requires Q4_K, K divisible by %d, and rows divisible by 64", source.layout.c_str(),
+                   QK_K);
+        return status;
+    }
+
+    constexpr size_t row_group = 64;
+    constexpr size_t field_bytes = 16;
+    constexpr size_t field_count = sizeof(block_q4_K) / field_bytes;
+    static_assert(sizeof(block_q4_K) == 144);
+    const size_t blocks = static_cast<size_t>(source.input_size / QK_K);
+    const size_t rows = static_cast<size_t>(source.output_size);
+    size_t bytes = 0;
+    if (!checked_multiply(ggml_row_size(GGML_TYPE_Q4_K, source.input_size), rows, bytes) ||
+        source.length != bytes || source.materialized_length != bytes) {
+        status.log("layout %s has inconsistent source/materialized lengths", source.layout.c_str());
+        return status;
+    }
+
+    output.resize(bytes);
+    const auto * input = static_cast<const uint8_t *>(source.host_data) + source.offset;
+    const size_t groups = rows / row_group;
+    const size_t thread_count = std::min<size_t>(groups, std::max(1u, std::thread::hardware_concurrency()));
+    if (!run_worker_threads(thread_count, [&](size_t thread) {
+        const size_t begin = groups * thread / thread_count;
+        const size_t end = groups * (thread + 1) / thread_count;
+        for (size_t group = begin; group < end; ++group) {
+            for (size_t block = 0; block < blocks; ++block) {
+                for (size_t field = 0; field < field_count; ++field) {
+                    for (size_t lane = 0; lane < row_group; ++lane) {
+                        const size_t src = (((group * row_group + lane) * blocks + block) * field_count + field) *
+                                           field_bytes;
+                        const size_t dst = (((group * blocks + block) * field_count + field) * row_group + lane) *
+                                           field_bytes;
+                        std::memcpy(output.data() + dst, input + src, field_bytes);
+                    }
+                }
+            }
+        }
+    })) {
+        output.clear();
+        status.log("layout %s host materialization worker failed", source.layout.c_str());
+    }
+    return status;
+}
+
 static Status materialize_q6_k_i8_k32_row64(const HostWeightSource & source, std::vector<uint8_t> & output) {
     Status status;
     if (source.source_type != GGML_TYPE_Q6_K) {
@@ -1100,6 +1151,14 @@ static Status materialize_weight(const HostWeightSource & source,
     }
     if (source.layout == kQ5KSymmetricI8K256Row64Layout) {
         status = materialize_symmetric_i8_k256_row64(source, transformed);
+        if (status.success()) {
+            upload_data = transformed.data();
+            upload_size = transformed.size();
+        }
+        return status;
+    }
+    if (source.layout == kQ4KPackedK256Row64Layout) {
+        status = materialize_q4_k_packed_k256_row64(source, transformed);
         if (status.success()) {
             upload_data = transformed.data();
             upload_size = transformed.size();

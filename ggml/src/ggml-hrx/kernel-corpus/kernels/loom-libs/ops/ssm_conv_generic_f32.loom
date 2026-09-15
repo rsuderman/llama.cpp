@@ -205,3 +205,72 @@ kernel.def export("llm_ssm_conv_binary_f32") @llm_ssm_conv_binary_f32() {
   }
   kernel.return
 }
+
+amdgpu.target<gfx11-generic> @llm_ssm_conv_prefill_finish_wave32 {subgroup_size = 32}
+
+kernel.def target(@llm_ssm_conv_prefill_finish_wave32) @llm_ssm_conv_dconv4_silu_prefill_finish_f32() {
+  %width = config.get @llm.ssm_conv.generic.d_inner : index
+  %one = index.constant 1 : index
+  %threads = index.constant 256 : index
+  %round = index.constant 255 : index
+  %rounded = index.add %width, %round : index
+  %groups = index.div %rounded, %threads : index
+  kernel.launch.config workgroups(%groups, %one, %one) workgroup_size(%threads, %one, %one) : index
+} launch(%state: buffer, %filter: buffer, %edges: buffer, %output: buffer, %cache: buffer) {
+  %width = config.get @llm.ssm_conv.generic.d_inner : index
+  %zero = index.constant 0 : index
+  %one = index.constant 1 : index
+  %two = index.constant 2 : index
+  %three = index.constant 3 : index
+  %four = index.constant 4 : index
+  %five = index.constant 5 : index
+  %threads = index.constant 256 : index
+  %base = index.constant 0 : offset
+  %group = kernel.workgroup.id<x> : index
+  %lane = kernel.workitem.id<x> : index
+  %channel0 = index.madd %group, %threads, %lane : index
+  %valid = index.cmp ult, %channel0, %width : index
+  scf.if %valid {
+    %channel, %bounded_width = index.assume %channel0, %width [lt(%channel0, %width)] : index, index
+    %state_view = buffer.view %state[%base] : buffer -> view<[%bounded_width]x3xf32>
+    %filter_view = buffer.view %filter[%base] : buffer -> view<[%bounded_width]x4xf32>
+    %edge_view = buffer.view %edges[%base] : buffer -> view<[%bounded_width]x6xf32>
+    %output_view = buffer.view %output[%base] : buffer -> view<512x[%bounded_width]xf32>
+    %cache_view = buffer.view %cache[%base] : buffer -> view<[%bounded_width]x3xf32>
+    %s0 = view.load %state_view[%channel, %zero] : view<[%bounded_width]x3xf32> -> f32
+    %s1 = view.load %state_view[%channel, %one] : view<[%bounded_width]x3xf32> -> f32
+    %s2 = view.load %state_view[%channel, %two] : view<[%bounded_width]x3xf32> -> f32
+    %x0 = view.load %edge_view[%channel, %zero] : view<[%bounded_width]x6xf32> -> f32
+    %x1 = view.load %edge_view[%channel, %one] : view<[%bounded_width]x6xf32> -> f32
+    %x2 = view.load %edge_view[%channel, %two] : view<[%bounded_width]x6xf32> -> f32
+    %w0 = view.load %filter_view[%channel, %zero] : view<[%bounded_width]x4xf32> -> f32
+    %w1 = view.load %filter_view[%channel, %one] : view<[%bounded_width]x4xf32> -> f32
+    %w2 = view.load %filter_view[%channel, %two] : view<[%bounded_width]x4xf32> -> f32
+    %w3 = view.load %filter_view[%channel, %three] : view<[%bounded_width]x4xf32> -> f32
+    %a00 = scalar.mulf<nnan|ninf|nsz> %s0, %w0 : f32
+    %a01 = scalar.fmaf<nnan|ninf|nsz> %s1, %w1, %a00 : f32
+    %a02 = scalar.fmaf<nnan|ninf|nsz> %s2, %w2, %a01 : f32
+    %a03 = scalar.fmaf<nnan|ninf|nsz> %x0, %w3, %a02 : f32
+    %y0 = scalar.siluf<afn> %a03 : f32
+    %a10 = scalar.mulf<nnan|ninf|nsz> %s1, %w0 : f32
+    %a11 = scalar.fmaf<nnan|ninf|nsz> %s2, %w1, %a10 : f32
+    %a12 = scalar.fmaf<nnan|ninf|nsz> %x0, %w2, %a11 : f32
+    %a13 = scalar.fmaf<nnan|ninf|nsz> %x1, %w3, %a12 : f32
+    %y1 = scalar.siluf<afn> %a13 : f32
+    %a20 = scalar.mulf<nnan|ninf|nsz> %s2, %w0 : f32
+    %a21 = scalar.fmaf<nnan|ninf|nsz> %x0, %w1, %a20 : f32
+    %a22 = scalar.fmaf<nnan|ninf|nsz> %x1, %w2, %a21 : f32
+    %a23 = scalar.fmaf<nnan|ninf|nsz> %x2, %w3, %a22 : f32
+    %y2 = scalar.siluf<afn> %a23 : f32
+    view.store %y0, %output_view[%zero, %channel] : f32, view<512x[%bounded_width]xf32>
+    view.store %y1, %output_view[%one, %channel] : f32, view<512x[%bounded_width]xf32>
+    view.store %y2, %output_view[%two, %channel] : f32, view<512x[%bounded_width]xf32>
+    %tail0 = view.load %edge_view[%channel, %three] : view<[%bounded_width]x6xf32> -> f32
+    %tail1 = view.load %edge_view[%channel, %four] : view<[%bounded_width]x6xf32> -> f32
+    %tail2 = view.load %edge_view[%channel, %five] : view<[%bounded_width]x6xf32> -> f32
+    view.store %tail0, %cache_view[%channel, %zero] : f32, view<[%bounded_width]x3xf32>
+    view.store %tail1, %cache_view[%channel, %one] : f32, view<[%bounded_width]x3xf32>
+    view.store %tail2, %cache_view[%channel, %two] : f32, view<[%bounded_width]x3xf32>
+  }
+  kernel.return
+}

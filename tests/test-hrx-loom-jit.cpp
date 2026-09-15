@@ -130,12 +130,30 @@ static const ggml::hrx::KernelDefinition * find_targeted_kernel(const char * nam
     return nullptr;
 }
 
+static std::map<std::string, std::string> binary_f32_exact_config(const char * op, int64_t element_count) {
+    const std::string count = std::to_string(element_count);
+    return {
+        { "ggml.binary_f32.op", op },
+        { "ggml.binary_f32.ne0", count },
+        { "ggml.binary_f32.ne1", "1" },
+        { "ggml.binary_f32.ne2", "1" },
+        { "ggml.binary_f32.src0_stride1", count },
+        { "ggml.binary_f32.src0_stride2", count },
+        { "ggml.binary_f32.src0_stride3", count },
+        { "ggml.binary_f32.src1_stride1", count },
+        { "ggml.binary_f32.src1_stride2", count },
+        { "ggml.binary_f32.src1_stride3", count },
+        { "ggml.binary_f32.src0_span", count },
+        { "ggml.binary_f32.src1_span", count },
+    };
+}
+
 static ggml::hrx::Dispatch make_binary_add_dispatch(const ggml::hrx::KernelDefinition & definition,
                                                     int64_t                             element_count) {
     ggml::hrx::Dispatch dispatch;
     dispatch.kernel.kernel_id = definition.id;
     dispatch.kernel.integer_parameters.emplace("element_count", element_count);
-    dispatch.kernel.compile_parameters.emplace("ggml.binary_f32.op", "0");
+    dispatch.kernel.compile_parameters = binary_f32_exact_config("0", element_count);
     dispatch.bindings.reserve(definition.bindings.size());
     for (size_t i = 0; i < definition.bindings.size(); ++i) {
         dispatch.bindings.push_back({
@@ -150,12 +168,6 @@ static ggml::hrx::Dispatch make_binary_add_dispatch(const ggml::hrx::KernelDefin
 static std::map<std::string, int64_t> binary_f32_exact_workload(int64_t element_count) {
     return {
         { "element_count", element_count },
-    };
-}
-
-static std::map<std::string, std::string> binary_f32_exact_config(const char * op) {
-    return {
-        { "ggml.binary_f32.op", op },
     };
 }
 
@@ -215,6 +227,9 @@ static std::map<std::string, std::string> flash_attention_config(const char * qu
         { "ggml.flash_attention.qk_head_size",         head_size            },
         { "ggml.flash_attention.value_head_size",      head_size            },
         { "ggml.flash_attention.attention_scale",      attention_scale      },
+        { "ggml.flash_attention.apply_gate",           "0"                  },
+        { "ggml.flash_attention.gate_stride_head",     "1"                  },
+        { "ggml.flash_attention.gate_stride_token",    "1"                  },
     };
 }
 
@@ -228,6 +243,9 @@ static std::map<std::string, std::string> flash_attention_decode_base_config(con
         { "ggml.flash_attention.qk_head_size",         head_size            },
         { "ggml.flash_attention.value_head_size",      head_size            },
         { "ggml.flash_attention.attention_scale",      attention_scale      },
+        { "ggml.flash_attention.apply_gate",           "0"                  },
+        { "ggml.flash_attention.gate_stride_head",     head_size            },
+        { "ggml.flash_attention.gate_stride_token",    head_size            },
     };
 }
 
@@ -453,7 +471,7 @@ int main() {
 
     const auto                       sync_begin = std::chrono::steady_clock::now();
     ggml::hrx::LoomCompiledKernelRef sync_ref   = compile_kernel(
-        *sync_jit, "sync-binary-add-64", binary, binary_f32_exact_workload(64), binary_f32_exact_config("0"));
+        *sync_jit, "sync-binary-add-64", binary, binary_f32_exact_workload(64), binary_f32_exact_config("0", 64));
     require_compiled_kernel(sync_ref);
     const auto    sync_end        = std::chrono::steady_clock::now();
     const int64_t sync_compile_us = elapsed_us(sync_begin, sync_end);
@@ -469,21 +487,21 @@ int main() {
     refs.reserve(31);
     const auto enqueue_begin = std::chrono::steady_clock::now();
     refs.push_back(compile_kernel(*async_jit, "async-binary-add-64", binary, binary_f32_exact_workload(64),
-                                  binary_f32_exact_config("0")));
+                                  binary_f32_exact_config("0", 64)));
     refs.push_back(compile_kernel(*async_jit, "async-binary-add-128", binary, binary_f32_exact_workload(128),
-                                  binary_f32_exact_config("0")));
+                                  binary_f32_exact_config("0", 128)));
     refs.push_back(compile_kernel(*async_jit, "async-binary-add-256", binary, binary_f32_exact_workload(256),
-                                  binary_f32_exact_config("0")));
+                                  binary_f32_exact_config("0", 256)));
     refs.push_back(compile_kernel(*async_jit, "async-binary-add-512", binary, binary_f32_exact_workload(512),
-                                  binary_f32_exact_config("0")));
+                                  binary_f32_exact_config("0", 512)));
     refs.push_back(compile_kernel(*async_jit, "async-binary-geglu-256", binary, binary_f32_exact_workload(256),
-                                  binary_f32_exact_config("5")));
+                                  binary_f32_exact_config("5", 256)));
     refs.push_back(compile_kernel(*async_jit, "async-binary-reglu-256", binary, binary_f32_exact_workload(256),
-                                  binary_f32_exact_config("6")));
+                                  binary_f32_exact_config("6", 256)));
     refs.push_back(compile_kernel(*async_jit, "async-binary-geglu-erf-256", binary, binary_f32_exact_workload(256),
-                                  binary_f32_exact_config("7")));
+                                  binary_f32_exact_config("7", 256)));
     refs.push_back(compile_kernel(*async_jit, "async-binary-geglu-quick-256", binary, binary_f32_exact_workload(256),
-                                  binary_f32_exact_config("8")));
+                                  binary_f32_exact_config("8", 256)));
     refs.push_back(compile_kernel(*async_jit, "async-binary-bc-mul-48", binary_bc, binary_bc_f32_workload(),
                                   binary_bc_f32_config("2")));
     refs.push_back(compile_kernel(*async_jit, "async-rmsnorm-1", rmsnorm,
@@ -588,6 +606,405 @@ int main() {
     }
 
     std::printf("async Loom JIT compiled %zu kernels\n", refs.size());
+
+    const auto & q6_prefill = find_kernel("ggml_mul_mat_q6_k_f16_wmma_prefill_wave32");
+    const struct {
+        int64_t tokens;
+        int64_t inputs;
+        int64_t outputs;
+        int64_t accumulate;
+        int64_t workgroup_size;
+        int64_t token_tiles;
+        int64_t output_tiles;
+    } q6_launch_cases[] = {
+        { 128,   256,  4096, 0,  256, 1, 32 },
+        { 256,   256,  8192, 0,  512, 1, 64 },
+        { 512,   256,  1024, 0,  512, 2,  8 },
+        { 512,   256,  3840, 0,  512, 2, 30 },
+        { 512,   256,  4096, 0, 1024, 1, 32 },
+        { 512,   256,  4224, 0, 1024, 1, 33 },
+        { 512,   256,  4096, 1,  256, 4, 32 },
+        {1024,   256,  2048, 0, 1024, 2, 16 },
+        { 512, 17408,  5120, 0,  512, 1, 80 },
+        { 512,  5120, 10240, 0, 1024, 1, 80 },
+        { 512,  5120,  1024, 0,  512, 2,  8 },
+        { 512, 17408,  4096, 0,  512, 1, 64 },
+        { 512,  5120,  1984, 0,  256, 4, 16 },
+        { 512,  5120,  2048, 0,  512, 1, 32 },
+        {1024,  5120,  1024, 0,  512, 2, 16 },
+        {2048,  5120,  1024, 0,  512, 4, 16 },
+    };
+    for (const auto & test : q6_launch_cases) {
+        const std::string key = "q6-prefill-" + std::to_string(test.tokens) + "-" +
+                                std::to_string(test.inputs) + "-" + std::to_string(test.outputs) + "-" +
+                                std::to_string(test.accumulate);
+        auto ref = compile_kernel(*sync_jit, key, q6_prefill, token_count_workload(test.tokens), {
+            { "ggml.mul_mat_q6_k_packed.input_size",          std::to_string(test.inputs) },
+            { "ggml.mul_mat_q6_k_packed.output_size",         std::to_string(test.outputs) },
+            { "ggml.mul_mat_q6_k_packed.output_accumulation", std::to_string(test.accumulate) },
+            { "ggml.mul_mat_q6_k_packed.weight_offset",       "0" },
+            { "ggml.mul_mat_q6_k_packed.token_capacity",      std::to_string(test.tokens) },
+        });
+        REQUIRE(ref != nullptr);
+        REQUIRE(resolve_with_timeout(ref, std::chrono::seconds(120)));
+        auto compiled = ref->take_result();
+        REQUIRE(compiled.hsaco_data != nullptr);
+        REQUIRE(compiled.launch_config.workgroup_size[0] == test.workgroup_size);
+        REQUIRE(compiled.launch_config.workgroup_count[0] == test.token_tiles);
+        REQUIRE(compiled.launch_config.workgroup_count[1] == test.output_tiles);
+        compiled.reset();
+    }
+
+    const auto & q4_prefill = find_kernel("ggml_mul_mat_q4_k_f16_wmma_prefill_wave32");
+    const struct {
+        int64_t tokens;
+        int64_t inputs;
+        int64_t outputs;
+        int64_t workgroup_size;
+        int64_t token_tiles;
+        int64_t output_tiles;
+        int64_t input_layout;
+    } q4_launch_cases[] = {
+        { 256,  8192,  8192,  512, 1,  64, 0 },
+        { 512,  8192,  1024,  512, 2,   8, 0 },
+        { 512,  8192,  3840,  512, 2,  30, 0 },
+        { 512,  8192,  4096,  512, 1,  64, 1 },
+        { 512,  8192,  4224,  512, 1,  66, 1 },
+        { 512,  8192, 12288,  512, 1, 192, 1 },
+        { 512,  8192, 16384,  512, 1, 256, 1 },
+        {1024,  8192,  2048, 1024, 4,   8, 0 },
+        { 512, 17408,  5120, 1024, 2,  20, 0 },
+        { 512,  5120,  6144,  512, 1,  96, 1 },
+        { 512,  6144,  5120,  512, 1,  80, 1 },
+        { 512,  5120, 10240,  512, 1, 160, 1 },
+        { 512,  5120,  8192,  512, 1, 128, 1 },
+        {1024,  5120,  4096, 1024, 4,  16, 0 },
+        { 512, 17408,  5120,  512, 1,  80, 1 },
+    };
+    for (const auto & test : q4_launch_cases) {
+        const std::string key = "q4-prefill-" + std::to_string(test.tokens) + "-" +
+                                std::to_string(test.inputs) + "-" + std::to_string(test.outputs) + "-" +
+                                std::to_string(test.input_layout);
+        auto ref = compile_kernel(*sync_jit, key, q4_prefill, token_count_workload(test.tokens), {
+            { "ggml.mul_mat.input_size",      std::to_string(test.inputs) },
+            { "ggml.mul_mat.output_size",     std::to_string(test.outputs) },
+            { "ggml.workload.token_capacity", std::to_string(test.tokens) },
+            { "ggml.mul_mat.f16_input_layout", std::to_string(test.input_layout) },
+        });
+        REQUIRE(ref != nullptr);
+        REQUIRE(resolve_with_timeout(ref, std::chrono::seconds(120)));
+        auto compiled = ref->take_result();
+        REQUIRE(compiled.hsaco_data != nullptr);
+        REQUIRE(compiled.launch_config.workgroup_size[0] == test.workgroup_size);
+        REQUIRE(compiled.launch_config.workgroup_count[0] == test.token_tiles);
+        REQUIRE(compiled.launch_config.workgroup_count[1] == test.output_tiles);
+        compiled.reset();
+    }
+
+    const auto & packed_f16 = find_kernel("ggml_copy_f16_k16_major");
+    for (const auto * input_is_f16 : { "0", "1" }) {
+        auto ref = compile_kernel(*sync_jit, std::string("packed-f16-") + input_is_f16,
+                                  packed_f16, token_count_workload(512), {
+            { "ggml.copy_f16_k16_major.input_size",   "256" },
+            { "ggml.copy_f16_k16_major.token_count",  "512" },
+            { "ggml.copy_f16_k16_major.input_is_f16", input_is_f16 },
+        });
+        require_compiled_kernel(ref);
+    }
+
+    const auto & transpose_f16 = find_kernel("ggml_copy_transpose_f16");
+    auto transpose_ref = compile_kernel(*sync_jit, "transpose-f16-8192x1024", transpose_f16, {}, {
+        { "ggml.copy_transpose_f16.row_count", "8192" },
+        { "ggml.copy_transpose_f16.column_count", "1024" },
+    });
+    require_compiled_kernel(transpose_ref);
+    auto transposed_attention_config = flash_attention_config("24", "4", "256", "0.0625");
+    transposed_attention_config.emplace("ggml.flash_attention.value_layout", "1");
+    auto transposed_attention_ref = compile_kernel(*sync_jit, "flash-transposed-value", flash_prefill,
+                                                   { { "query_token_count", 512 }, { "key_value_token_count", 8192 } },
+                                                   transposed_attention_config);
+    require_compiled_kernel(transposed_attention_ref);
+
+    const auto & paired_q4 = find_kernel("ggml_mul_mat_swiglu_q4_k_f16_wmma_prefill_wave32");
+    const struct {
+        int64_t tokens;
+        int64_t outputs;
+        int64_t threads;
+        int64_t token_tiles;
+    } paired_q4_cases[] = {
+        { 256, 4096,  512, 1 },
+        { 512, 3840,  512, 2 },
+        { 512, 4096,  512, 1 },
+        { 768, 8192,  512, 3 },
+        {1024, 2048,  512, 2 },
+        {2048,17408,  512, 4 },
+    };
+    for (const auto & test : paired_q4_cases) {
+        const std::string key = "paired-q4-" + std::to_string(test.tokens) + "-" + std::to_string(test.outputs);
+        auto ref = compile_kernel(*sync_jit, key, paired_q4, token_count_workload(test.tokens), {
+            { "ggml.mul_mat_swiglu.input_size",  "5120" },
+            { "ggml.mul_mat_swiglu.output_size", std::to_string(test.outputs) },
+            { "ggml.mul_mat_swiglu.op",          "4" },
+            { "ggml.mul_mat_swiglu.f16_output_layout", "0" },
+            { "ggml.workload.token_capacity",   std::to_string(test.tokens) },
+        });
+        REQUIRE(ref != nullptr);
+        REQUIRE(resolve_with_timeout(ref, std::chrono::seconds(120)));
+        auto compiled = ref->take_result();
+        REQUIRE(compiled.hsaco_data != nullptr);
+        REQUIRE(compiled.launch_config.workgroup_size[0] == test.threads);
+        REQUIRE(compiled.launch_config.workgroup_count[0] == test.token_tiles);
+        const bool packed = test.tokens % 512 == 0 && (test.tokens / 512) * (test.outputs / 64) >= 64;
+        REQUIRE(compiled.launch_config.workgroup_count[1] == test.outputs / (packed ? 32 : 64));
+        compiled.reset();
+    }
+
+    for (const int64_t tokens : { 256, 512, 1024, 2048 }) {
+        auto ref = compile_kernel(*sync_jit, "paired-q4-packed-output-" + std::to_string(tokens),
+                                  paired_q4, token_count_workload(tokens), {
+            { "ggml.mul_mat_swiglu.input_size",  "5120" },
+            { "ggml.mul_mat_swiglu.output_size", "17408" },
+            { "ggml.mul_mat_swiglu.op",          "4" },
+            { "ggml.mul_mat_swiglu.f16_output_layout", "1" },
+            { "ggml.workload.token_capacity",   std::to_string(tokens) },
+        });
+        require_compiled_kernel(ref);
+    }
+
+
+    const auto & paired_q4_decode = find_kernel("ggml_mul_mat_swiglu_q4_q8_1_x4_lowtoken_dot");
+    const struct {
+        int64_t tokens;
+        int64_t inputs;
+        int64_t outputs;
+        int64_t threads;
+        int64_t row_tiles;
+    } paired_q4_decode_cases[] = {
+        { 1, 5120, 17408, 128, 2176 },
+        { 1, 4096,  8192, 128, 1024 },
+        { 1, 4096, 16384, 128, 2048 },
+        { 1, 8192,  8192, 128, 1024 },
+        { 1, 5376, 17408, 128, 2176 },
+        { 2, 5120, 17408, 512, 1088 },
+        { 3, 5120, 17408, 512, 1088 },
+        { 4, 5120, 17408, 512, 1088 },
+        { 5, 5120, 17408, 512, 1088 },
+        { 5, 4096,  8192, 512,  256 },
+        { 5, 4096, 16384, 512, 1024 },
+        { 3, 8192,  8192, 512,  512 },
+        { 5, 5632, 12288, 512,  768 },
+        { 5, 5376, 17408, 512,  544 },
+        { 5, 6144, 17408, 128, 2176 },
+        { 5,  256,  4032, 128,  504 },
+        { 5,  256,  4096, 512,  128 },
+        { 5, 5632,  4096, 512,  128 },
+        { 5, 5888,  4096, 128,  512 },
+    };
+    for (const auto & test : paired_q4_decode_cases) {
+        const std::string key = "paired-q4-decode-" + std::to_string(test.tokens) + "-" +
+                                std::to_string(test.inputs) + "-" + std::to_string(test.outputs);
+        auto ref = compile_kernel(*sync_jit, key, paired_q4_decode, token_count_workload(test.tokens), {
+            { "ggml.mul_mat_swiglu.input_size",  std::to_string(test.inputs) },
+            { "ggml.mul_mat_swiglu.output_size", std::to_string(test.outputs) },
+            { "ggml.mul_mat_swiglu.op",          "4" },
+            { "ggml.workload.token_capacity",   std::to_string(test.tokens) },
+        });
+        REQUIRE(ref != nullptr);
+        REQUIRE(resolve_with_timeout(ref, std::chrono::seconds(120)));
+        auto compiled = ref->take_result();
+        REQUIRE(compiled.hsaco_data != nullptr);
+        REQUIRE(compiled.launch_config.workgroup_size[0] == test.threads);
+        REQUIRE(compiled.launch_config.workgroup_count[0] == test.row_tiles);
+        REQUIRE(compiled.launch_config.workgroup_count[1] == 1);
+        compiled.reset();
+    }
+
+
+
+    const auto & quant_decode = find_kernel("ggml_mul_mat_f32_f32_wmma");
+    const struct {
+        int64_t tokens;
+        int64_t inputs;
+        int64_t outputs;
+        int64_t format;
+        int64_t threads;
+        int64_t row_tiles;
+    } quant_decode_cases[] = {
+        { 1,  5120,   48,  4,  256,  12 },
+        { 2,  5120,   48,  4, 1024,  12 },
+        { 3,  5120,   48,  4, 1024,  12 },
+        { 4,  5120,   48,  4, 1024,  12 },
+        { 5,  5120,   48,  4, 1024,  12 },
+        { 5,  5120,   48,  5, 1024,  12 },
+        { 5,  5120,   48,  6, 1024,  12 },
+        { 5,  4096,    1,  4, 1024,   1 },
+        { 5,  4096,   16,  4, 1024,   4 },
+        { 5,  8192,   63,  4, 1024,  16 },
+        { 5, 32768,   48,  4, 1024,  12 },
+        { 5,  3840,   48,  4,  256,  12 },
+        { 5,  4352,   48,  4,  256,  12 },
+        { 5,  4096,   64,  4,  128,   8 },
+        { 6,  5120,   48,  4,  128,   1 },
+        { 1, 17408, 5120, 46, 128, 640 },
+        { 4, 17408, 5120, 46, 128, 640 },
+        { 5, 17408, 5120, 46, 512, 160 },
+        { 5,  8192, 4096, 46, 512, 128 },
+        { 5,  8448, 4160, 46, 512, 130 },
+        { 5,  7936, 4096, 46, 128, 512 },
+        { 5,  8192, 4032, 46, 128, 504 },
+        { 5,  8192, 8256, 46, 128, 1032 },
+        { 1, 17408, 5120, 44,  128, 640 },
+        { 4, 17408, 5120, 44,  128, 640 },
+        { 5, 17408, 5120, 44, 1024,  80 },
+        { 5,  8192, 4096, 44,  128, 1024 },
+        { 1,  6144, 5120, 44,  128,  640 },
+        { 4,  6144, 5120, 44,  128,  640 },
+        { 5,  6144, 5120, 44,  128, 1280 },
+        { 5,  6400, 5120, 44,  128,  640 },
+        { 5,  6656, 5120, 44,  128, 1280 },
+        { 5,  6144, 4096, 44,  128,  512 },
+        { 5,  6144, 6144, 44,  128,  768 },
+        { 5,  5120, 6144, 44,  128,  768 },
+        { 5,  8448, 4160, 44,  128, 520 },
+        { 5,  9216, 9216, 44,  128, 1152 },
+        { 5, 12288, 8192, 44,  128, 1024 },
+        { 5, 16384, 4096, 44,  128, 512 },
+        { 5, 16384, 5056, 44,  128, 632 },
+        { 5, 16384, 5120, 44, 1024,  80 },
+        { 5, 20480, 4096, 44, 1024,  64 },
+        { 5, 20736, 4160, 44, 1024,  65 },
+        { 5,  7936, 4096, 44,  128, 512 },
+        { 5,  8192, 4032, 44,  128, 504 },
+        { 5,  8192, 8256, 44,  128, 1032 },
+    };
+    for (const auto & test : quant_decode_cases) {
+        const std::string key = "quant-decode-" + std::to_string(test.tokens) + "-" +
+                                std::to_string(test.inputs) + "-" + std::to_string(test.outputs) + "-" +
+                                std::to_string(test.format);
+        auto ref = compile_kernel(*sync_jit, key, quant_decode, token_count_workload(test.tokens), {
+            { "ggml.mul_mat.input_size",          std::to_string(test.inputs) },
+            { "ggml.mul_mat.output_size",         std::to_string(test.outputs) },
+            { "ggml.mul_mat.weight_format",       std::to_string(test.format) },
+            { "ggml.mul_mat.activation_format",   test.format == 44 || test.format == 46 ? "9" : "0" },
+            { "ggml.mul_mat.output_accumulation", "0" },
+            { "ggml.mul_mat.output_unary_op",     "23" },
+            { "ggml.workload.token_capacity",     std::to_string(test.tokens) },
+        });
+        REQUIRE(ref != nullptr);
+        REQUIRE(resolve_with_timeout(ref, std::chrono::seconds(120)));
+        auto compiled = ref->take_result();
+        REQUIRE(compiled.hsaco_data != nullptr);
+        REQUIRE(compiled.launch_config.workgroup_size[0] == test.threads);
+        REQUIRE(compiled.launch_config.workgroup_count[0] == test.row_tiles);
+        REQUIRE(compiled.launch_config.workgroup_count[1] == 1);
+        compiled.reset();
+    }
+
+
+    for (const char * name : { "ggml_mul_mat_quantized_f16_wmma_prefill_conv4",
+                              "ggml_mul_mat_quantized_f16_wmma_prefill_conv4_interior" }) {
+        const auto & quantized_conv4 = find_kernel(name);
+        REQUIRE(quantized_conv4.bindings.size() == (std::string(name).find("interior") != std::string::npos ? 5 : 6));
+        for (const int format : {4, 6}) {
+            for (const int64_t channels : {2112, 8192, 10240}) {
+                auto ref = compile_kernel(*sync_jit, std::string(name) + "-" + std::to_string(format) + "-" +
+                                          std::to_string(channels), quantized_conv4, token_count_workload(512), {
+                    {"ggml.mul_mat.input_size", "5120"},
+                    {"ggml.mul_mat.output_size", std::to_string(channels)},
+                    {"ggml.mul_mat.weight_format", std::to_string(format)},
+                });
+                REQUIRE(ref != nullptr);
+                REQUIRE(resolve_with_timeout(ref, std::chrono::seconds(120)));
+                auto compiled = ref->take_result();
+                REQUIRE(compiled.hsaco_data != nullptr);
+                REQUIRE(compiled.launch_config.workgroup_size[0] == 512);
+                REQUIRE(compiled.launch_config.workgroup_count[0] == 1);
+                REQUIRE(compiled.launch_config.workgroup_count[1] == channels / 64);
+                compiled.reset();
+            }
+        }
+    }
+
+    const auto & conv_finish = find_kernel("llm_ssm_conv_dconv4_silu_prefill_finish_f32");
+    REQUIRE(conv_finish.bindings.size() == 5);
+    for (const int64_t channels : { 2112, 8192, 8256, 10240 }) {
+        auto ref = compile_kernel(*sync_jit, "conv-finish-" + std::to_string(channels), conv_finish, {}, {
+            { "llm.ssm_conv.generic.d_inner", std::to_string(channels) },
+        });
+        REQUIRE(ref != nullptr);
+        REQUIRE(resolve_with_timeout(ref, std::chrono::seconds(120)));
+        auto compiled = ref->take_result();
+        REQUIRE(compiled.hsaco_data != nullptr);
+        REQUIRE(compiled.launch_config.workgroup_size[0] == 256);
+        REQUIRE(compiled.launch_config.workgroup_count[0] == (channels + 255) / 256);
+    }
+
+    const auto & ssm_prefill = find_kernel("llm_ssm_conv_dconv4_silu_prefill_512_wg1024");
+    for (const int64_t channels : { 8192, 8224, 8256, 10208, 10240 }) {
+        auto ref = compile_kernel(*sync_jit, "ssm-prefill-" + std::to_string(channels), ssm_prefill, {}, {
+            { "llm.ssm_conv.prefill.d_conv",           "4" },
+            { "llm.ssm_conv.prefill.d_inner",          std::to_string(channels) },
+            { "llm.ssm_conv.prefill.n_t",              "512" },
+            { "llm.ssm_conv.prefill.n_s",              "1" },
+            { "llm.ssm_conv.prefill.state_row_stride", std::to_string(channels) },
+            { "llm.ssm_conv.prefill.x_row_stride",     std::to_string(channels) },
+        });
+        REQUIRE(ref != nullptr);
+        REQUIRE(resolve_with_timeout(ref, std::chrono::seconds(120)));
+        auto compiled = ref->take_result();
+        REQUIRE(compiled.hsaco_data != nullptr);
+        REQUIRE(compiled.launch_config.workgroup_size[0] == 1024);
+        REQUIRE(compiled.launch_config.workgroup_count[0] == channels / (channels % 64 == 0 ? 64 : 32));
+        REQUIRE(compiled.launch_config.workgroup_count[1] == 1);
+        compiled.reset();
+    }
+
+    const struct {
+        const char * name;
+        int64_t tokens;
+        size_t bindings;
+    } gdn_cases[] = {
+        { "llm_gated_delta_net_f32_wmma_head128", 17, 7 },
+        { "llm_gated_delta_net_f32_wmma_head128_rmsnorm_gate", 17, 11 },
+        { "llm_gated_delta_net_f32_wmma_head128_projection_epilogue", 16, 9 },
+        { "llm_gated_delta_net_f32_wmma_head128_inplace", 1, 7 },
+        { "llm_gated_delta_net_f32_wmma_head128_inplace_projection_epilogue", 1, 9 },
+        { "llm_gated_delta_net_f32_wmma_head128_snapshot", 5, 8 },
+        { "llm_gated_delta_net_f32_wmma_head128_snapshot_projection_epilogue", 5, 10 },
+    };
+    for (const auto & test : gdn_cases) {
+        const auto & definition = find_kernel(test.name);
+        REQUIRE(definition.bindings.size() == test.bindings);
+        auto ref = compile_kernel(*sync_jit, test.name, definition, {}, {
+            { "llm.gated_delta_net.head_width", "128" },
+            { "llm.gated_delta_net.head_count", "3" },
+            { "llm.gated_delta_net.token_count", std::to_string(test.tokens) },
+            { "llm.gated_delta_net.sequence_count", "1" },
+            { "llm.gated_delta_net.qk_stride1", "128" },
+            { "llm.gated_delta_net.qk_stride2", "640" },
+            { "llm.gated_delta_net.qk_stride3", std::to_string(test.tokens * 640) },
+            { "llm.gated_delta_net.value_stride1", "128" },
+            { "llm.gated_delta_net.value_stride2", "640" },
+            { "llm.gated_delta_net.value_stride3", std::to_string(test.tokens * 640) },
+            { "llm.gated_delta_net.scalar_stride1", "1" },
+            { "llm.gated_delta_net.scalar_stride2", "3" },
+            { "llm.gated_delta_net.scalar_stride3", std::to_string(test.tokens * 3) },
+            { "llm.gated_delta_net.query_head_count", "1" },
+            { "llm.gated_delta_net.query_sequence_ratio", "1" },
+            { "llm.gated_delta_net.snapshot_stride", "49216" },
+            { "llm.gated_delta_net.l2_epsilon", "0.000001" },
+            { "ggml.rmsnorm_gate_f32.rms_epsilon", "0.000001" },
+            { "ggml.rmsnorm_gate_f32.gate_op", "15" },
+        });
+        REQUIRE(ref != nullptr);
+        REQUIRE(resolve_with_timeout(ref, std::chrono::seconds(120)));
+        auto compiled = ref->take_result();
+        REQUIRE(compiled.hsaco_data != nullptr);
+        REQUIRE(compiled.launch_config.workgroup_size[0] == 256);
+        REQUIRE(compiled.launch_config.workgroup_count[0] == 3);
+        REQUIRE(compiled.launch_config.workgroup_count[1] == 1);
+        compiled.reset();
+    }
 
     HrxTestDevice device;
     if (device.open()) {

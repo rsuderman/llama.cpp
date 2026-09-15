@@ -13,6 +13,7 @@
 namespace ggml::hrx {
 
 inline constexpr const char kNativeWeightLayout[]                     = "ggml-native";
+inline constexpr const char kQ4KPackedK256Row64Layout[]               = "q4k-packed-k256-row64";
 inline constexpr const char kSymmetricI4K32Row64Layout[]              = "symi4-k32-row64";
 inline constexpr const char kSymmetricI2K32EightGroupsShared4Layout[] = "symi2-k32-eightgroups-shared4-payload-first";
 inline constexpr const char kSymmetricI4K32EightGroupsShared4Layout[] = "symi4-k32-eightgroups-shared4-payload-first";

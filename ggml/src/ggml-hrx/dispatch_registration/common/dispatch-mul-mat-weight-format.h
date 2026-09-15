@@ -10,8 +10,10 @@ enum class CommonMulMatWeightFormat {
     Q1_0,
     Q3K,
     Q4K,
+    Q4KRow64,
     Q5K,
     Q6K,
+    Q6KRow64,
     Q4_0,
     Q4_1,
     Q5_0,
@@ -96,10 +98,14 @@ inline int64_t common_mul_mat_format_config_value(CommonMulMatWeightFormat forma
             return 11;
         case CommonMulMatWeightFormat::Q4K:
             return 4;
+        case CommonMulMatWeightFormat::Q4KRow64:
+            return 44;
         case CommonMulMatWeightFormat::Q5K:
             return 5;
         case CommonMulMatWeightFormat::Q6K:
             return 6;
+        case CommonMulMatWeightFormat::Q6KRow64:
+            return 46;
         case CommonMulMatWeightFormat::Q4_0:
             return 40;
         case CommonMulMatWeightFormat::Q4_1:

@@ -1,6 +1,6 @@
 #include "dispatch-attention-qkv.h"
 
-#include "../common/dispatch-mul-mat-weight-format.h"
+#include "../common/dispatch-mul-mat-common.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
@@ -464,6 +464,13 @@ static AttentionQkvMatch match_attention_qkv_projection(const DispatchMatchConte
         match.root   = root;
         match.kernel = is_supported_decode_token_count(root.token_count) ? kAttentionVMatMulSetRowsF32F32DecodeKernel :
                                                                            kAttentionVMatMulSetRowsF32F32WmmaKernel;
+        if (is_supported_decode_token_count(root.token_count) && root.output_size % 64 == 0 &&
+            root.weight->alias_source.value < 0 &&
+            (root.weight_format == CommonMulMatWeightFormat::Q4K || root.weight_format == CommonMulMatWeightFormat::Q6K)) {
+            match.root.weight_format = root.weight_format == CommonMulMatWeightFormat::Q4K ?
+                                           CommonMulMatWeightFormat::Q4KRow64 : CommonMulMatWeightFormat::Q6KRow64;
+            match.kernel = kAttentionVMatMulSetRowsF32F32WmmaKernel;
+        }
         match.kind   = AttentionQkvProjectionKind::Value;
         return match;
     }
@@ -565,8 +572,25 @@ static bool match_attention_qkv_dispatch(const DispatchMatchContext & context, D
     dispatch.kernel = make_kernel_specialization(match.kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", match.root.token_count);
     add_attention_qkv_compile_parameters(dispatch, match);
-    dispatch.bindings.push_back({ match.root.input->id, 0, match.root.input->byte_count });
-    dispatch.bindings.push_back({ match.root.weight->id, 0, match.root.weight->byte_count });
+    const bool pack_q4 = match.root.weight_format == CommonMulMatWeightFormat::Q4KRow64;
+    const bool pack_q6 = match.root.weight_format == CommonMulMatWeightFormat::Q6KRow64;
+    DispatchBinding activation = { match.root.input->id, 0, match.root.input->byte_count };
+    if (pack_q4 || pack_q6) {
+        if (!common_prepare_q8_1_x4_input(context, *match.root.input, match.root.input_size, match.root.token_count,
+                                         dispatch_match, activation)) {
+            return false;
+        }
+        dispatch.kernel.compile_parameters.emplace("ggml.mul_mat.activation_format", std::to_string(GGML_TYPE_Q8_1));
+    }
+    dispatch.bindings.push_back(activation);
+    if (pack_q4 || pack_q6) {
+        const char * layout = pack_q4 ? kQ4KPackedK256Row64Layout : kQ6KPackedK256Row64ScaleRowLayout;
+        dispatch.bindings.push_back({ match.root.weight->id, 0, match.root.weight->byte_count, layout,
+                                      match.root.weight->type, match.root.input_size, match.root.output_size,
+                                      match.root.weight->byte_count });
+    } else {
+        dispatch.bindings.push_back({ match.root.weight->id, 0, match.root.weight->byte_count });
+    }
 
     if (match.kind == AttentionQkvProjectionKind::Query) {
         const auto [theta, freq_factors] = add_attention_rope_frequency_bindings(context, match.rope, dispatch_match);

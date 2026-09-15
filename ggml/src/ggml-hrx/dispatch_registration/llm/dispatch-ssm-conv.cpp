@@ -1,5 +1,7 @@
 #include "dispatch-ssm-conv.h"
 
+#include "../common/dispatch-mul-mat-common.h"
+
 #include "ggml.h"
 #include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
@@ -13,6 +15,12 @@
 namespace ggml::hrx {
 namespace {
 
+static constexpr KernelCatalogRef kMulMatConv4Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_quantized_f16_wmma_prefill_conv4");
+static constexpr KernelCatalogRef kMulMatConv4InteriorKernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_quantized_f16_wmma_prefill_conv4_interior");
+static constexpr KernelCatalogRef kSsmConvFinishKernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "llm_ssm_conv_dconv4_silu_prefill_finish_f32");
 static constexpr KernelCatalogRef kSsmConvSnapshotKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_ssm_conv_snapshot_window_tail_f32");
 static constexpr KernelCatalogRef kSsmConvPrefillKernel =
@@ -420,12 +428,9 @@ static void set_generic_ssm_conv_parameters(KernelSpecialization & kernel, const
     set_compile_parameter(kernel, "llm.ssm_conv.generic.workgroup_size", 256);
 }
 
-static bool match_ssm_conv_prefill_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
-    const SsmConvPrefillMatch match = match_ssm_conv_prefill(context.graph, context.root_node);
-    if (!match.matched()) {
-        return false;
-    }
-
+static bool append_ssm_conv_covered_nodes(const DispatchMatchContext & context,
+                                          const SsmConvPrefillMatch & match,
+                                          DispatchMatch & dispatch_match) {
     if (!append_covered_node(context, match.concat, dispatch_match) ||
         !append_covered_node(context, match.ssm, dispatch_match) ||
         !append_covered_node(context, match.silu, dispatch_match)) {
@@ -438,9 +443,38 @@ static bool match_ssm_conv_prefill_dispatch(const DispatchMatchContext & context
             return false;
         }
     }
+    return true;
+}
+
+static bool match_ssm_conv_prefill_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
+    const SsmConvPrefillMatch match = match_ssm_conv_prefill(context.graph, context.root_node);
+    if (!match.matched()) {
+        return false;
+    }
+
+    if (!append_ssm_conv_covered_nodes(context, match, dispatch_match)) {
+        return false;
+    }
+
+    const CommandPlanGeneratedResource * edges =
+        context.plan.metadata.find_generated_resource(match.x->id, GeneratedResourceRole::Conv4Edges);
+    if (edges != nullptr) {
+        Dispatch finish;
+        finish.kernel = make_kernel_specialization(kSsmConvFinishKernel);
+        set_compile_parameter(finish.kernel, "llm.ssm_conv.generic.d_inner", match.hidden_size);
+        finish.bindings.push_back({ match.state->id, 0, match.state->byte_count });
+        finish.bindings.push_back({ match.filter->id, 0, match.filter->byte_count });
+        finish.bindings.push_back({ edges->generated_value, 0, edges->byte_count });
+        finish.bindings.push_back({ match.output->id, 0, match.output->byte_count });
+        const Value * cache = match.cache_updates.front().cache;
+        finish.bindings.push_back({ cache->id, 0, cache->byte_count });
+        dispatch_match.dispatches.push_back(std::move(finish));
+        return true;
+    }
 
     const bool optimized_prefill =
-        match.token_count == 512 && match.sequence_count == 1 && match.cache_updates.size() == 1;
+        match.token_count == 512 && match.sequence_count == 1 && match.cache_updates.size() == 1 &&
+        match.hidden_size >= 8192 && match.hidden_size <= 10240;
     if (!optimized_prefill) {
         Dispatch   ssm_dispatch;
         const bool decode = match.token_count == 1 && match.sequence_count == 1 && match.cache_updates.size() == 1;
@@ -549,9 +583,128 @@ static bool match_ssm_conv_generic_dispatch(const DispatchMatchContext & context
     return true;
 }
 
+static bool match_mul_mat_conv4_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
+    const CommonMulMatMatch mat = common_match_mul_mat_any_format(
+        context.graph, context.root_node, kMulMatConv4Kernel, false);
+    if (!mat.matched() || !context.graph.has_index() || mat.token_count != 512 ||
+        (mat.weight->type != GGML_TYPE_Q4_K && mat.weight->type != GGML_TYPE_Q6_K) ||
+        mat.weight->alias_source.value >= 0 || mat.input_size % 256 != 0 ||
+        mat.output_size % 64 != 0 || mat.output_size / 64 < 32 ||
+        !common_mul_mat_uses_k16_major_f16(mat.weight_format, mat.input_size, mat.output_size, mat.token_count)) {
+        return false;
+    }
+
+    const Value * value = mat.output;
+    std::vector<const GraphNode *> layouts;
+    const GraphNode * concat = nullptr;
+    while (value != nullptr && value->kind == ValueKind::Transient) {
+        const auto & consumers = context.graph.index().consumers(value->id);
+        if (consumers.size() != 1 || consumers.front() == nullptr) {
+            return false;
+        }
+        const GraphNode * consumer = consumers.front();
+        if (consumer->op == GGML_OP_CONCAT) {
+            concat = consumer;
+            break;
+        }
+        if (!is_layout_alias_node(context.graph, *consumer)) {
+            return false;
+        }
+        layouts.push_back(consumer);
+        value = graph_value(context.graph, consumer->output);
+    }
+    const SsmConvPrefillMatch conv = match_ssm_conv_prefill(context.graph, concat);
+    if (!conv.matched() || conv.x->id != mat.output->id || conv.sequence_count != 1 ||
+        conv.token_count != 512 || conv.cache_updates.size() != 1) {
+        return false;
+    }
+    const Value * window = graph_value(context.graph, conv.concat->output);
+    const Value * intermediate = graph_value(context.graph, conv.ssm->output);
+    if (window->kind != ValueKind::Transient || intermediate->kind != ValueKind::Transient) {
+        return false;
+    }
+    bool deferred_state = false;
+    for (const Value * input : {conv.state, conv.filter}) {
+        const GraphNode * producer = context.graph.index().producer(input->id);
+        size_t index = 0;
+        if (producer != nullptr && (!context.graph.index().node_index(producer, index) || !context.covered_nodes[index])) {
+            if (input == conv.filter) {
+                return false;
+            }
+            deferred_state = true;
+        }
+    }
+    if (deferred_state && (conv.hidden_size < 8192 || conv.hidden_size > 10240)) {
+        return false;
+    }
+    const Value * cache = conv.cache_updates.front().cache;
+    for (const Value * output : {conv.output, cache}) {
+        if (!distinct_storage(*output, *mat.input) || !distinct_storage(*output, *mat.weight)) {
+            return false;
+        }
+    }
+    if (!append_covered_node(context, context.root_node, dispatch_match) ||
+        (!deferred_state && !append_ssm_conv_covered_nodes(context, conv, dispatch_match))) {
+        return false;
+    }
+    for (const GraphNode * layout : layouts) {
+        if (!append_covered_node(context, layout, dispatch_match)) {
+            return false;
+        }
+    }
+
+    DispatchBinding activation;
+    if (!common_prepare_k16_major_f16_input(context, *mat.input, mat.input_size, mat.token_count,
+                                             dispatch_match, activation)) {
+        return false;
+    }
+    Dispatch dispatch;
+    dispatch.kernel = make_kernel_specialization(deferred_state ? kMulMatConv4InteriorKernel : kMulMatConv4Kernel);
+    dispatch.kernel.integer_parameters.emplace("token_count", mat.token_count);
+    set_compile_parameter(dispatch.kernel, "ggml.mul_mat.input_size", mat.input_size);
+    set_compile_parameter(dispatch.kernel, "ggml.mul_mat.output_size", mat.output_size);
+    set_compile_parameter(dispatch.kernel, "ggml.mul_mat.weight_format", mat.weight->type == GGML_TYPE_Q4_K ? 4 : 6);
+    dispatch.bindings.push_back(activation);
+    if (mat.weight->type == GGML_TYPE_Q4_K) {
+        dispatch.bindings.push_back({mat.weight->id, 0, mat.weight->byte_count, kQ4KPackedK256Row64Layout,
+                                     mat.weight->type, mat.input_size, mat.output_size, mat.weight->byte_count});
+    } else {
+        dispatch.bindings.push_back({mat.weight->id, 0, mat.weight->byte_count});
+    }
+    if (!deferred_state) {
+        dispatch.bindings.push_back({conv.state->id, 0, conv.state->byte_count});
+    }
+    dispatch.bindings.push_back({conv.filter->id, 0, conv.filter->byte_count});
+    dispatch.bindings.push_back({conv.output->id, 0, conv.output->byte_count});
+    if (deferred_state) {
+        const size_t edge_bytes = static_cast<size_t>(6 * conv.hidden_size) * sizeof(float);
+        const ValueId edges(context.next_plan_value.value + static_cast<int32_t>(dispatch_match.transients.size()));
+        dispatch_match.transients.push_back({ edges, "llm.ssm_conv.projection_edges", edge_bytes, 256 });
+        Status status;
+        if (!dispatch_match.metadata.append_generated_resource(
+                { mat.output->id, GeneratedResourceRole::Conv4Edges, edges, edge_bytes, {} }, status)) {
+            dispatch_match.status.append(status);
+            return false;
+        }
+        dispatch.bindings.push_back({ edges, 0, edge_bytes });
+    } else {
+        dispatch.bindings.push_back({cache->id, 0, cache->byte_count});
+    }
+    dispatch_match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
+
 }  // namespace
 
 void register_llm_ssm_conv_dispatch(DispatchRegistryBuilder & registry) {
+    registry.add({
+        "llm.ssm_conv.quantized_prefill",
+        GGML_OP_MUL_MAT,
+        DispatchMatchKind::Fused,
+        306,
+        DispatchSource::Llm,
+        match_mul_mat_conv4_dispatch,
+    });
     registry.add({
         "llm.ssm_conv.dconv4_silu",
         GGML_OP_CONCAT,

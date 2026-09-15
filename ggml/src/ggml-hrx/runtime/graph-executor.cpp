@@ -122,7 +122,7 @@ GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
     const PreparedCommandProgramCacheExecutionResult execution =
         use_graph_prepared ? lookup.program->execute_with_result(execution_context, bindings) :
                              context_.prepared_programs.execute_with_result(execution_context, lookup.program->uid(),
-                                                                            lookup.program->command_shape(),
+                                                                            lookup.program->command_shape_hash(),
                                                                             lookup.program->commands(), bindings);
     if (!execution.success) {
         result.status.append(execution.status);

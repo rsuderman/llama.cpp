@@ -196,7 +196,7 @@ template.def<@ggml.flash_attention.decode_split.produce_partials.active> device 
   } else {
     // Stage one 64x16 K panel at a time. Every physical load is guarded, so
     // callers need no initialized padding beyond the logical KV length.
-    %tail_score_fragment = scf.for %head_tile = [%c0 to %qk_head_size step %c16](%score_accumulator = %score_init : vector<4xf32>) -> (vector<4xf32>) unroll {
+    %tail_score_fragment = scf.for %head_tile = [%c0 to %qk_head_size step %c16](%score_accumulator = %score_init : vector<4xf32>) -> (vector<4xf32>) {
       scf.for %load_iteration = [%c0 to %c4 step %c1] unroll {
         %linear = index.madd %load_iteration, %c256, %workitem : index
         %key_row = index.div %linear, %c16 : index
@@ -278,14 +278,14 @@ template.def<@ggml.flash_attention.decode_split.produce_partials.active> device 
     %output_tile_channel = index.mul %output_tile, %c128 : index
     %subgroup_output_base = index.mul %subgroup, %c32 : index
     %subgroup_output_channel0 = index.add %output_tile_channel, %subgroup_output_base : index
-    %subgroup_output_channel = index.assume %subgroup_output_channel0 [range(%subgroup_output_channel0, 0, 224)] : index
+    %subgroup_output_channel = index.assume %subgroup_output_channel0 [range(%subgroup_output_channel0, 0, 480)] : index
     %subgroup_output_channel1_0 = index.add %subgroup_output_channel, %c16 : index
-    %subgroup_output_channel1 = index.assume %subgroup_output_channel1_0 [range(%subgroup_output_channel1_0, 16, 240)] : index
+    %subgroup_output_channel1 = index.assume %subgroup_output_channel1_0 [range(%subgroup_output_channel1_0, 16, 496)] : index
     %subgroup_output_channel_valid = index.cmp ult, %subgroup_output_channel, %value_head_size : index
     %subgroup_output_channel1_valid = index.cmp ult, %subgroup_output_channel1, %value_head_size : index
     %lane_output_base = index.mul %lane, %c4 : index
     %lane_output_channel0 = index.add %output_tile_channel, %lane_output_base : index
-    %lane_output_channel = index.assume %lane_output_channel0 [range(%lane_output_channel0, 0, 252)] : index
+    %lane_output_channel = index.assume %lane_output_channel0 [range(%lane_output_channel0, 0, 636)] : index
     %lane_output_channel_valid = index.cmp ult, %lane_output_channel, %value_head_size : index
     %lane_publishes_output = scalar.andi %lane_has_output, %lane_output_channel_valid : i1
     %safe_lane_output_channel0 = scf.select %lane_output_channel_valid, %lane_output_channel, %c0 : index
@@ -308,6 +308,9 @@ template.def<@ggml.flash_attention.decode_split.produce_partials.active> device 
     %last_value_fragment_channel = index.sub %value_width, %c16 : index
     %clamped_value_channel0 = index.min %safe_value_channel0, %last_value_fragment_channel : index
     %clamped_value_channel1 = index.min %safe_value_channel1, %last_value_fragment_channel : index
+    %last_stage_fragment_channel = index.sub %output_stage_size, %c16 : index
+    %clamped_stage_channel0 = index.min %safe_subgroup_output_channel, %last_stage_fragment_channel : index
+    %clamped_stage_channel1 = index.min %safe_subgroup_output_channel1, %last_stage_fragment_channel : index
     %product_fragment0, %product_fragment1 = scf.if %is_full_block -> (vector<8xf16>, vector<8xf16>) {
       %full_product_fragment0, %full_product_fragment1 = scf.for %key_tile = [%c0 to %c64 step %c16](%product_accumulator0 = %product_init0 : vector<8xf16>, %product_accumulator1 = %product_init1 : vector<8xf16>) -> (vector<8xf16>, vector<8xf16>) unroll {
         %value_token0 = index.add %key_origin, %key_tile : index
@@ -345,10 +348,9 @@ template.def<@ggml.flash_attention.decode_split.produce_partials.active> device 
         }
         kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
         %probability_fragment = vector.fragment.load<lhs> %probability_stage_view[%c0, %key_tile] shape [%m, %k] : view<16x64xf16, %probability_transposed_layout> -> vector<16xf16>
-        %tail_value_stage_view0 = buffer.view %tail_value_stage[%c0_offset] : buffer -> view<16x[%safe_subgroup_output_channel_end]xf16>
-        %tail_value_stage_view1 = buffer.view %tail_value_stage[%c0_offset] : buffer -> view<16x[%safe_subgroup_output_channel1_end]xf16>
-        %value_fragment0 = vector.fragment.load<rhs> %tail_value_stage_view0[%c0, %safe_subgroup_output_channel] shape [%k, %n] : view<16x[%safe_subgroup_output_channel_end]xf16> -> vector<16xf16>
-        %value_fragment1 = vector.fragment.load<rhs> %tail_value_stage_view1[%c0, %safe_subgroup_output_channel1] shape [%k, %n] : view<16x[%safe_subgroup_output_channel1_end]xf16> -> vector<16xf16>
+        // Bound each fragment without changing the physical LDS row stride.
+        %value_fragment0 = vector.fragment.load<rhs> %tail_value_stage_view[%c0, %clamped_stage_channel0] shape [%k, %n] : view<16x[%output_stage_size]xf16> -> vector<16xf16>
+        %value_fragment1 = vector.fragment.load<rhs> %tail_value_stage_view[%c0, %clamped_stage_channel1] shape [%k, %n] : view<16x[%output_stage_size]xf16> -> vector<16xf16>
         %next_product_accumulator0 = vector.mma %probability_fragment, %value_fragment0, %product_accumulator0 : vector<16xf16>, vector<16xf16>, vector<8xf16>
         %next_product_accumulator1 = vector.mma %probability_fragment, %value_fragment1, %product_accumulator1 : vector<16xf16>, vector<16xf16>, vector<8xf16>
         kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
@@ -795,7 +797,7 @@ template.def<@ggml.flash_attention.decode_split.pack_completed_q8> device @ggml_
       %word_element_add = index.mul %word_in_block, %c4 : index
       %input_channel_add = index.add %block_element_add, %word_element_add : index
       %input_channel0 = index.add %head_tile_channel, %input_channel_add : index
-      %input_channel = index.assume %input_channel0 [range(%input_channel0, 0, 252)] : index
+      %input_channel = index.assume %input_channel0 [range(%input_channel0, 0, 508)] : index
       %valid_channel = index.cmp ult, %input_channel, %value_head_size : index
       %publish_word = scalar.andi %valid_group, %valid_channel : i1
       %input_values = scf.if %publish_word -> (vector<4xf32>) {

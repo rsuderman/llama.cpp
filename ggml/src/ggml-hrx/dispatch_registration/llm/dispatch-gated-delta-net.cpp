@@ -1,6 +1,7 @@
 #include "dispatch-gated-delta-net.h"
 
 #include "../common/dispatch-mul-mat-common.h"
+#include "../common/dispatch-rmsnorm.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
@@ -23,6 +24,10 @@ static constexpr KernelCatalogRef kGatedDeltaNetProjectionEpilogueKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_gated_delta_net_projection_epilogue_f32");
 static constexpr KernelCatalogRef kGatedDeltaNetPrefillKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_gated_delta_net_f32_wmma_head128");
+static constexpr KernelCatalogRef kGatedDeltaNetRmsNormGateKernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "llm_gated_delta_net_f32_wmma_head128_rmsnorm_gate");
+static constexpr KernelCatalogRef kRmsNormGateKernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_gate_f32_f16");
 static constexpr KernelCatalogRef kGatedDeltaNetPrefillProjectionEpilogueKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_gated_delta_net_f32_wmma_head128_projection_epilogue");
 static constexpr KernelCatalogRef kGatedDeltaNetInplaceKernel =
@@ -33,9 +38,17 @@ static constexpr KernelCatalogRef kGatedDeltaNetSnapshotKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_gated_delta_net_f32_wmma_head128_snapshot");
 static constexpr KernelCatalogRef kGatedDeltaNetSnapshotProjectionEpilogueKernel = GGML_HRX_KERNEL_REF(
     "loom_libs", "llm_gated_delta_net_f32_wmma_head128_snapshot_projection_epilogue");
+static constexpr KernelCatalogRef kGatedDeltaNetSelectedSnapshotKernel = GGML_HRX_KERNEL_REF(
+    "loom_libs", "llm_gated_delta_net_f32_wmma_head128_selected_snapshot_projection_epilogue");
+static constexpr KernelCatalogRef kGatedDeltaNetSelectedRmsQ8Kernel = GGML_HRX_KERNEL_REF(
+    "loom_libs", "llm_gated_delta_net_f32_wmma_head128_selected_snapshot_projection_rms_gate_q8");
+static constexpr KernelCatalogRef kRmsNormGateQ8Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_gate_f32_q8_1_x4");
 static constexpr KernelCatalogRef kCopyF32Kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_copy_f32");
 static constexpr KernelCatalogRef kMulMatSymmetricI4LowRowAdjacentDualWmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_wmma");
+static constexpr KernelCatalogRef kMulMatDualQ4F32DecodeKernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_dual_q4_f32_decode");
 
 static const Value * graph_value(const Graph & graph, ValueId id) {
     return graph.values().find(id);
@@ -81,6 +94,7 @@ struct GatedDeltaNetMatch {
     const Value *                  v              = nullptr;
     const Value *                  state          = nullptr;
     const Value *                  gdn_output     = nullptr;
+    const Value *                  attention      = nullptr;
     const Value *                  new_state      = nullptr;
     const Value *                  cache          = nullptr;
     int64_t                        width          = 0;
@@ -114,6 +128,7 @@ struct GatedDeltaNetProjectionPairMatch {
     int64_t           input_size  = 0;
     int64_t           output_size = 0;
     int64_t           token_count = 0;
+    bool              native_f32 = false;
 
     bool matched() const {
         return first_node != nullptr && second_node != nullptr && input != nullptr && first_weight != nullptr &&
@@ -348,6 +363,7 @@ static GatedDeltaNetMatch match_gated_delta_net(const Graph & graph, const Graph
     match.v              = v;
     match.state          = state;
     match.gdn_output     = gdn_output;
+    match.attention      = graph_value(graph, attention_view->output);
     match.new_state      = new_state;
     match.cache          = cache;
     match.width          = width;
@@ -398,10 +414,18 @@ static GatedDeltaNetProjectionPairMatch match_gated_delta_net_projection_pair(co
         return {};
     }
 
-    const CommonMulMatMatch first = common_match_mul_mat_any_format(
+    CommonMulMatMatch first = common_match_mul_mat_any_format(
         context.graph, first_node, kMulMatSymmetricI4LowRowAdjacentDualWmmaKernel, false);
-    const CommonMulMatMatch second = common_match_mul_mat_any_format(
+    CommonMulMatMatch second = common_match_mul_mat_any_format(
         context.graph, second_node, kMulMatSymmetricI4LowRowAdjacentDualWmmaKernel, false);
+    if (!first.matched()) {
+        first = common_match_mul_mat_any_format(
+            context.graph, first_node, kMulMatDualQ4F32DecodeKernel, true);
+    }
+    if (!second.matched()) {
+        second = common_match_mul_mat_any_format(
+            context.graph, second_node, kMulMatDualQ4F32DecodeKernel, true);
+    }
     if (!first.matched() || !second.matched() || first.weight->type != GGML_TYPE_Q4_K ||
         second.weight->type != GGML_TYPE_Q4_K || first.weight->alias_source.value >= 0 ||
         second.weight->alias_source.value >= 0 || first.input->id != second.input->id ||
@@ -416,8 +440,40 @@ static GatedDeltaNetProjectionPairMatch match_gated_delta_net_projection_pair(co
         common_symmetric_i4_activation_layout(first.input_size, first.token_count);
     const CommandPlanAlternateValue * alternate = find_alternate_value(context.graph, context.plan, first.input->id,
                                                                        GGML_TYPE_COUNT, activation_layout.total_bytes);
-    if (alternate == nullptr || alternate->name != kCommonSymmetricI4K32ActivationAlternateName) {
+    const bool symmetric_input = first.token_count > 1 &&
+        alternate != nullptr && alternate->name == kCommonSymmetricI4K32ActivationAlternateName;
+    const bool native_f32 = is_f32(first.input) && first.input->contiguous &&
+        first.token_count == 1 && first.output_size >= 24 && first.output_size < 64 &&
+        first.input_size >= 4096 && first.input_size <= 32768 && first.input_size % 1024 == 0;
+    if (!symmetric_input && !native_f32) {
         return {};
+    }
+    if (!symmetric_input) {
+        size_t second_index = 0;
+        if (!context.graph.index().node_index(second_node, second_index) || second_index <= context.root_index) {
+            return {};
+        }
+        for (const Value * input : { first.input, second.weight }) {
+            const GraphNode * producer = context.graph.index().producer(input->storage_root);
+            size_t index = 0;
+            if (producer != nullptr && (!context.graph.index().node_index(producer, index) ||
+                index >= context.covered_nodes.size() || !context.covered_nodes[index])) {
+                return {};
+            }
+        }
+        const auto & nodes = context.graph.nodes();
+        for (size_t i = context.root_index + 1; i < second_index; ++i) {
+            const GraphNode & node = nodes[i];
+            if (node.op == GGML_OP_NONE || node.op == GGML_OP_VIEW || node.op == GGML_OP_RESHAPE ||
+                node.op == GGML_OP_PERMUTE || node.op == GGML_OP_TRANSPOSE) {
+                continue;
+            }
+            const Value * output = graph_value(context.graph, node.output);
+            if (output != nullptr && (output->storage == first.input->storage ||
+                output->storage == second.weight->storage)) {
+                return {};
+            }
+        }
     }
 
     match.first_node    = first_node;
@@ -427,7 +483,8 @@ static GatedDeltaNetProjectionPairMatch match_gated_delta_net_projection_pair(co
     match.second_weight = second.weight;
     match.first_output  = first.output;
     match.second_output = second.output;
-    match.activation    = alternate->alternate_value;
+    match.activation    = symmetric_input ? alternate->alternate_value : ValueId{};
+    match.native_f32    = !symmetric_input;
     match.input_size    = first.input_size;
     match.output_size   = first.output_size;
     match.token_count   = first.token_count;
@@ -567,6 +624,7 @@ static GatedDeltaNetMatch match_direct_gated_delta_net(const Graph & graph, cons
     match.v              = v;
     match.state          = state;
     match.gdn_output     = gdn_output;
+    match.attention      = graph_value(graph, attention_view->output);
     match.new_state      = new_state;
     match.cache          = cache;
     match.width          = width;
@@ -619,6 +677,22 @@ static bool match_gated_delta_net_projection_pair_dispatch(const DispatchMatchCo
         return false;
     }
 
+    if (match.native_f32) {
+        Dispatch projections;
+        projections.kernel = make_kernel_specialization(kMulMatDualQ4F32DecodeKernel);
+        set_compile_parameter(projections.kernel, "ggml.mul_mat_dual_q4_f32_c1.input_size", match.input_size);
+        set_compile_parameter(projections.kernel, "ggml.mul_mat_dual_q4_f32_c1.output_size", match.output_size);
+        projections.bindings = {
+            { match.input->id, 0, match.input->byte_count },
+            { match.first_weight->id, 0, match.first_weight->byte_count },
+            { match.second_weight->id, 0, match.second_weight->byte_count },
+            { match.first_output->id, 0, match.first_output->byte_count },
+            { match.second_output->id, 0, match.second_output->byte_count },
+        };
+        dispatch_match.dispatches.push_back(std::move(projections));
+        return true;
+    }
+
     const CommonSymmetricI4ActivationLayout activation_layout =
         common_symmetric_i4_activation_layout(match.input_size, match.token_count);
 
@@ -649,6 +723,36 @@ static bool match_gated_delta_net_projection_pair_dispatch(const DispatchMatchCo
     return true;
 }
 
+static bool match_gated_delta_net_rmsnorm_gate(const DispatchMatchContext & context,
+                                              const GatedDeltaNetMatch & gdn,
+                                              DispatchMatch & match) {
+    if (gdn.attention->kind != ValueKind::Transient || gdn.gdn_output->kind != ValueKind::Transient) {
+        return false;
+    }
+    const GraphNode * rms = common_find_only_consumer_with_op(context.graph, gdn.attention->id, GGML_OP_RMS_NORM);
+    DispatchMatchContext rms_context = context;
+    rms_context.root_node = rms;
+    if (rms == nullptr || !context.graph.index().node_index(rms, rms_context.root_index) ||
+        !common_match_rmsnorm_gate_dispatch(rms_context, match) || match.dispatches.size() != 1) {
+        return false;
+    }
+    const Dispatch & norm = match.dispatches.front();
+    if (norm.kernel.kernel_id != kRmsNormGateKernel.id || norm.bindings.size() != 5 ||
+        norm.kernel.compile_parameters.at("ggml.rmsnorm_gate_f32.hidden_size") != std::to_string(gdn.width) ||
+        norm.kernel.compile_parameters.at("ggml.rmsnorm_gate_f32.f16_output_row_width") !=
+            std::to_string(gdn.width * gdn.head_count)) {
+        return false;
+    }
+    // These inputs remain live while the fused operation publishes its rows.
+    const Value * output = graph_value(context.graph, norm.bindings[3].value);
+    for (const Value * input : {gdn.raw_q, gdn.raw_k, gdn.v, gdn.state, gdn.gate, gdn.beta, gdn.cache}) {
+        if (!distinct_storage(*output, *input)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool match_gated_delta_net_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
     const GatedDeltaNetMatch match = context.root_node != nullptr && context.root_node->op == GGML_OP_GATED_DELTA_NET ?
                                          match_direct_gated_delta_net(context.graph, context.root_node) :
@@ -657,21 +761,26 @@ static bool match_gated_delta_net_dispatch(const DispatchMatchContext & context,
         return false;
     }
 
+    const bool can_fuse_projection_epilogue = match.has_projection_epilogue() && match.token_count <= 16;
+    DispatchMatch rms_match;
+    const bool fuse_rmsnorm_gate = match.snapshot_count == 1 && !can_fuse_projection_epilogue &&
+                                  match_gated_delta_net_rmsnorm_gate(context, match, rms_match);
+    Dispatch rms_gate;
+    if (fuse_rmsnorm_gate) {
+        rms_gate = std::move(rms_match.dispatches.front());
+        rms_match.dispatches.clear();
+        dispatch_match = std::move(rms_match);
+    }
+
     for (const GraphNode * node : match.covered) {
         if (!append_covered_node(context, node, dispatch_match)) {
             return false;
         }
     }
 
-    const size_t rms_scales_bytes =
-        static_cast<size_t>(match.head_count * match.token_count * match.sequence_count) * sizeof(float);
-    const ValueId rms_scales = context.next_plan_value;
-    dispatch_match.transients.push_back({ rms_scales, "llm_gated_delta_net_rms_scales", rms_scales_bytes, 256 });
-
     const int64_t written_snapshot_count = std::min(match.token_count, match.snapshot_count);
     const int64_t prefix_token_count     = match.token_count - written_snapshot_count;
     const size_t  cache_stride           = match.cache->nb[2];
-    const bool can_fuse_projection_epilogue = match.has_projection_epilogue() && match.token_count <= 16;
     const bool fuse_snapshot_projection_epilogue =
         can_fuse_projection_epilogue && match.snapshot_count != 1 && prefix_token_count == 0 &&
         written_snapshot_count == match.token_count && (match.token_count >= 2 || match.sequence_count > 1) &&
@@ -695,7 +804,8 @@ static bool match_gated_delta_net_dispatch(const DispatchMatchContext & context,
 
     if (match.snapshot_count == 1) {
         Dispatch gdn;
-        gdn.kernel = make_kernel_specialization(can_fuse_projection_epilogue ?
+        gdn.kernel = make_kernel_specialization(fuse_rmsnorm_gate ? kGatedDeltaNetRmsNormGateKernel :
+                                                can_fuse_projection_epilogue ?
                                                     kGatedDeltaNetPrefillProjectionEpilogueKernel :
                                                     kGatedDeltaNetPrefillKernel);
         configure_gated_delta_net_kernel(gdn, match, match.token_count);
@@ -713,7 +823,12 @@ static bool match_gated_delta_net_dispatch(const DispatchMatchContext & context,
         }
         gdn.bindings.push_back({ match.state->id, 0, match.state->byte_count });
         gdn.bindings.push_back({ match.gdn_output->id, 0, match.gdn_output->byte_count });
-        gdn.bindings.push_back({ rms_scales, 0, rms_scales_bytes });
+        if (fuse_rmsnorm_gate) {
+            for (const char * parameter : {"ggml.rmsnorm_gate_f32.rms_epsilon", "ggml.rmsnorm_gate_f32.gate_op"}) {
+                gdn.kernel.compile_parameters.emplace(parameter, rms_gate.kernel.compile_parameters.at(parameter));
+            }
+            gdn.bindings.insert(gdn.bindings.end(), rms_gate.bindings.begin() + 1, rms_gate.bindings.end());
+        }
 
         Dispatch cache_copy;
         cache_copy.kernel = make_kernel_specialization(kCopyF32Kernel);
@@ -760,7 +875,6 @@ static bool match_gated_delta_net_dispatch(const DispatchMatchContext & context,
         gdn.bindings.push_back(
             { match.gdn_output->id, 0,
               static_cast<size_t>(match.token_count * match.sequence_count) * attention_token_bytes });
-        gdn.bindings.push_back({ rms_scales, 0, rms_scales_bytes });
         dispatch_match.dispatches.push_back(std::move(gdn));
         return true;
     }
@@ -781,7 +895,6 @@ static bool match_gated_delta_net_dispatch(const DispatchMatchContext & context,
         const size_t gate_span = static_cast<size_t>(prefix_token_count - 1) * match.gate->nb[2] + gate_token_bytes;
         const size_t beta_span = static_cast<size_t>(prefix_token_count - 1) * match.beta->nb[2] + gate_token_bytes;
         const size_t prefix_attention_bytes = static_cast<size_t>(prefix_token_count) * attention_token_bytes;
-        const size_t prefix_rms_bytes       = static_cast<size_t>(prefix_token_count) * gate_token_bytes;
 
         Dispatch prefix;
         prefix.kernel = make_kernel_specialization(can_fuse_projection_epilogue ?
@@ -806,7 +919,6 @@ static bool match_gated_delta_net_dispatch(const DispatchMatchContext & context,
         }
         prefix.bindings.push_back({ match.state->id, 0, state_bytes });
         prefix.bindings.push_back({ match.gdn_output->id, 0, prefix_attention_bytes + state_bytes });
-        prefix.bindings.push_back({ rms_scales, 0, prefix_rms_bytes });
         dispatch_match.dispatches.push_back(std::move(prefix));
         append_state_copy(match.gdn_output->id, prefix_attention_bytes, match.cache->id,
                           static_cast<size_t>(written_snapshot_count - 1) * cache_stride);
@@ -847,15 +959,250 @@ static bool match_gated_delta_net_dispatch(const DispatchMatchContext & context,
         gdn.bindings.push_back({ match.cache->id, static_cast<size_t>(slot) * cache_stride, state_bytes });
         gdn.bindings.push_back(
             { match.gdn_output->id, static_cast<size_t>(token) * attention_token_bytes, attention_token_bytes });
-        gdn.bindings.push_back({ rms_scales, static_cast<size_t>(token) * gate_token_bytes, gate_token_bytes });
         dispatch_match.dispatches.push_back(std::move(gdn));
     }
 
     return true;
 }
+static bool match_gated_delta_net_rmsnorm_q8(const DispatchMatchContext & context,
+                                           const GatedDeltaNetMatch & gdn,
+                                           const Value & state_cache,
+                                           DispatchMatch & result) {
+    if (gdn.head_count < 24 || gdn.attention->kind != ValueKind::Transient || !gdn.attention->contiguous) {
+        return false;
+    }
+    const Graph & graph = context.graph;
+    const Value * input = gdn.attention;
+    const GraphNode * reshape = nullptr;
+    const GraphNode * rms = common_find_only_consumer_with_op(graph, input->id, GGML_OP_RMS_NORM);
+    if (rms == nullptr) {
+        reshape = common_find_only_consumer_with_op(graph, input->id, GGML_OP_RESHAPE);
+        const Value * reshaped = reshape != nullptr ? graph_value(graph, reshape->output) : nullptr;
+        if (reshaped == nullptr || !is_layout_alias_node(graph, *reshape) || !reshaped->contiguous ||
+            !same_full_value_range(*input, *reshaped)) {
+            return false;
+        }
+        input = reshaped;
+        rms = common_find_only_consumer_with_op(graph, input->id, GGML_OP_RMS_NORM);
+    }
+    DispatchMatchContext rms_context = context;
+    rms_context.root_node = rms;
+    DispatchMatch match;
+    if (rms == nullptr || !graph.index().node_index(rms, rms_context.root_index) ||
+        !common_match_rmsnorm_gate_dispatch(rms_context, match) || match.dispatches.size() != 1) {
+        return false;
+    }
+    const Dispatch & norm = match.dispatches.front();
+    if (norm.kernel.kernel_id != kRmsNormGateQ8Kernel.id || norm.bindings.size() != 5 ||
+        norm.bindings[0].value != input->id ||
+        norm.kernel.integer_parameters.at("token_count") != gdn.head_count * gdn.token_count ||
+        norm.kernel.compile_parameters.at("ggml.rmsnorm_gate_f32.hidden_size") != "128" ||
+        norm.kernel.compile_parameters.at("ggml.rmsnorm_gate_f32.gate_op") != "15" ||
+        norm.kernel.compile_parameters.at("ggml.rmsnorm_gate_f32.f16_output_row_width") != "0") {
+        return false;
+    }
+    const Value * output = graph_value(graph, norm.bindings[3].value);
+    if (output == nullptr || output->kind != ValueKind::Transient || !distinct_storage(*output, state_cache)) {
+        return false;
+    }
+    for (const Value * value : {gdn.raw_q, gdn.raw_k, gdn.v, gdn.alpha_raw, gdn.beta_raw,
+                                gdn.bias, gdn.a_scale, gdn.state, gdn.cache}) {
+        if (!distinct_storage(*output, *value)) {
+            return false;
+        }
+    }
+    for (size_t binding : {size_t{1}, size_t{2}}) {
+        const Value * value = graph_value(graph, norm.bindings[binding].value);
+        if (value == nullptr || !distinct_storage(*value, *gdn.cache) || !distinct_storage(*value, *output)) {
+            return false;
+        }
+        const GraphNode * producer = graph.index().producer(value->storage_root);
+        size_t index = 0;
+        if (producer != nullptr && (!graph.index().node_index(producer, index) ||
+            index >= context.covered_nodes.size() || !context.covered_nodes[index])) {
+            return false;
+        }
+    }
+    if (reshape != nullptr && !append_covered_node(context, reshape, match)) {
+        return false;
+    }
+    result = std::move(match);
+    return true;
+}
+
+static bool match_selected_gated_delta_net_dispatch(const DispatchMatchContext & context, DispatchMatch & result) {
+    const Graph & graph = context.graph;
+    const GraphNode * gather = context.root_node;
+    if (gather == nullptr || gather->op != GGML_OP_GET_ROWS || gather->inputs.size() != 2 || !graph.has_index()) {
+        return false;
+    }
+    const Value * cache = graph_value(graph, gather->inputs[0]);
+    const Value * ids = graph_value(graph, gather->inputs[1]);
+    const Value * gathered = graph_value(graph, gather->output);
+    if (!is_f32(cache) || !is_f32(gathered) || ids == nullptr || ids->type != GGML_TYPE_I32 ||
+        !cache->contiguous || !ids->contiguous || !gathered->contiguous ||
+        cache->ne[0] <= 0 || cache->ne[1] < 1 || cache->ne[1] > 262208 ||
+        cache->ne[2] != 1 || cache->ne[3] != 1 || cache->element_count > (int64_t{1} << 30) ||
+        !is_shape(*ids, 1, 1, 1, 1) || !is_shape(*gathered, cache->ne[0], 1, 1, 1) ||
+        gathered->kind != ValueKind::Transient || !graph.index().has_single_consumer(gathered->id)) {
+        return false;
+    }
+    const GraphNode * reshape = graph.index().consumers(gathered->id).front();
+    if (reshape == nullptr || reshape->op != GGML_OP_RESHAPE || reshape->inputs.size() != 1 ||
+        !graph.index().has_single_consumer(reshape->output)) {
+        return false;
+    }
+    const GraphNode * gdn = graph.index().consumers(reshape->output).front();
+    if (gdn == nullptr || gdn->op != GGML_OP_GATED_DELTA_NET || gdn->inputs.size() != 6 ||
+        gdn->inputs[5] != reshape->output) {
+        return false;
+    }
+    const GraphNode * q_norm = producer_with_op(graph, gdn->inputs[0], GGML_OP_L2_NORM);
+    const GatedDeltaNetMatch match = match_gated_delta_net(graph, q_norm);
+    if (!match.matched() || !match.has_projection_epilogue() || match.sequence_count != 1 ||
+        match.token_count < 1 || match.token_count > 5 || match.snapshot_count < match.token_count ||
+        (match.token_count == 1 && match.snapshot_count == 1) ||
+        cache->ne[0] != match.width * match.width * match.head_count ||
+        !same_full_value_range(*gathered, *match.state) || match.gdn_output->kind != ValueKind::Transient) {
+        return false;
+    }
+    const size_t state_bytes = static_cast<size_t>(cache->ne[0]) * sizeof(float);
+    if (match.cache->nb[2] % state_bytes != 0) {
+        return false;
+    }
+    if (cache->storage == match.cache->storage &&
+        (match.cache->storage_offset < cache->storage_offset ||
+         (match.cache->storage_offset - cache->storage_offset) % state_bytes != 0 ||
+         match.cache->storage_offset - cache->storage_offset > cache->byte_count ||
+         match.cache->byte_count > cache->byte_count - (match.cache->storage_offset - cache->storage_offset))) {
+        return false;
+    }
+    const auto internal = [&](const GraphNode * node) {
+        return std::find(match.covered.begin(), match.covered.end(), node) != match.covered.end();
+    };
+    const std::array<const Value *, 9> inputs = {
+        match.raw_q, match.raw_k, match.v, match.alpha_raw, match.beta_raw, match.bias, match.a_scale, cache, ids
+    };
+    for (const Value * input : inputs) {
+        const GraphNode * producer = graph.index().producer(input->storage_root);
+        size_t index = 0;
+        if (producer != nullptr && (!graph.index().node_index(producer, index) ||
+            index >= context.covered_nodes.size() || !context.covered_nodes[index])) {
+            return false;
+        }
+        if (!distinct_storage(*input, *match.gdn_output) ||
+            (input != cache && !distinct_storage(*input, *match.cache))) {
+            return false;
+        }
+    }
+    size_t copy_index = 0;
+    for (const GraphNode * node : match.covered) {
+        const Value * output = graph_value(graph, node->output);
+        if (node->op == GGML_OP_CPY) {
+            if (!graph.index().node_index(node, copy_index)) {
+                return false;
+            }
+        }
+        if (output->id == match.cache->id || output->id == match.attention->id) {
+            continue;
+        }
+        if (!is_layout_alias_node(graph, *node) && output->kind != ValueKind::Transient) {
+            return false;
+        }
+        for (const GraphNode * consumer : graph.index().consumers(output->id)) {
+            if (!internal(consumer)) {
+                return false;
+            }
+        }
+    }
+    if (copy_index <= context.root_index) {
+        return false;
+    }
+    // The fused dispatch publishes snapshots at the gather's position.
+    for (size_t index = context.root_index + 1; index < copy_index; ++index) {
+        const GraphNode & node = graph.nodes()[index];
+        const Value * output = graph_value(graph, node.output);
+        if (internal(&node) || is_layout_alias_node(graph, node) || output->byte_count == 0) {
+            continue;
+        }
+        const auto touches_cache = [&](const Value * value) {
+            return value != nullptr && value->byte_count != 0 && value->storage == match.cache->storage;
+        };
+        if (touches_cache(output)) {
+            return false;
+        }
+        for (ValueId input : node.inputs) {
+            if (touches_cache(graph_value(graph, input))) {
+                return false;
+            }
+        }
+    }
+    DispatchMatchContext gdn_context = context;
+    gdn_context.root_node = q_norm;
+    if (!graph.index().node_index(q_norm, gdn_context.root_index)) {
+        return false;
+    }
+    DispatchMatch selected;
+    DispatchMatch rms_match;
+    const bool fuse_rms_q8 = match_gated_delta_net_rmsnorm_q8(context, match, *cache, rms_match);
+    if ((match.token_count == 1 && !fuse_rms_q8) ||
+        !match_gated_delta_net_dispatch(gdn_context, selected) ||
+        selected.dispatches.size() != (match.token_count == 1 ? 2 : 1) ||
+        selected.dispatches.back().bindings.size() != (match.token_count == 1 ? 9 : 10) ||
+        !append_covered_node(context, gather, selected)) {
+        return false;
+    }
+    if (fuse_rms_q8) {
+        Dispatch dispatch = std::move(selected.dispatches.back());
+        const Dispatch & norm = rms_match.dispatches.front();
+        const auto snapshot = dispatch.bindings[match.token_count == 1 ? 7 : 8];
+        auto kernel = make_kernel_specialization(kGatedDeltaNetSelectedRmsQ8Kernel);
+        kernel.compile_parameters = std::move(dispatch.kernel.compile_parameters);
+        set_compile_parameter(kernel, "llm.gated_delta_net.state_row_count", cache->ne[1]);
+        set_compile_parameter(kernel, "llm.gated_delta_net.snapshot_stride", match.cache->nb[2] / sizeof(float));
+        for (const auto & parameter : norm.kernel.compile_parameters) {
+            kernel.compile_parameters.emplace(parameter);
+        }
+        dispatch.kernel = std::move(kernel);
+        dispatch.bindings.resize(7);
+        dispatch.bindings.push_back({ cache->id, 0, cache->byte_count });
+        dispatch.bindings.push_back(snapshot);
+        dispatch.bindings.push_back(norm.bindings[3]);
+        dispatch.bindings.push_back({ ids->id, 0, ids->byte_count });
+        dispatch.bindings.push_back(norm.bindings[1]);
+        dispatch.bindings.push_back(norm.bindings[2]);
+        dispatch.bindings.push_back(norm.bindings[4]);
+        selected.dispatches.clear();
+        selected.dispatches.push_back(std::move(dispatch));
+        selected.covered_nodes.insert(selected.covered_nodes.end(), rms_match.covered_nodes.begin(), rms_match.covered_nodes.end());
+        selected.transients = std::move(rms_match.transients);
+        if (!selected.metadata.append(std::move(rms_match.metadata), selected.status)) {
+            return false;
+        }
+        result = std::move(selected);
+        return true;
+    }
+    Dispatch & dispatch = selected.dispatches.front();
+    auto kernel = make_kernel_specialization(kGatedDeltaNetSelectedSnapshotKernel);
+    kernel.compile_parameters = std::move(dispatch.kernel.compile_parameters);
+    dispatch.kernel = std::move(kernel);
+    set_compile_parameter(dispatch.kernel, "llm.gated_delta_net.state_row_count", cache->ne[1]);
+    dispatch.bindings[7] = { cache->id, 0, cache->byte_count };
+    dispatch.bindings.push_back({ ids->id, 0, ids->byte_count });
+    result = std::move(selected);
+    return true;
+}
 }  // namespace
 
 void register_llm_gated_delta_net_dispatch(DispatchRegistryBuilder & registry) {
+    registry.add({
+        "llm.gated_delta_net.selected_snapshot.f32_wmma_head128",
+        GGML_OP_GET_ROWS,
+        DispatchMatchKind::Fused,
+        250,
+        DispatchSource::Llm,
+        match_selected_gated_delta_net_dispatch,
+    });
     registry.add({
         "llm.gated_delta_net.projection_pair.q4_k",
         GGML_OP_MUL_MAT,

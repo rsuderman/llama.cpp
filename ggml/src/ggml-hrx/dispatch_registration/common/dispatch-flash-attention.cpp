@@ -17,6 +17,8 @@ static constexpr KernelCatalogRef kFlashAttentionF32F16WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_flash_attention_f32_f16_wmma");
 static constexpr KernelCatalogRef kFlashAttentionDecodeSplitNextQ8Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_flash_attention_decode_split_f32_f16_wmma_next_q8");
+static constexpr KernelCatalogRef kCopyTransposeF16Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_copy_transpose_f16");
 static constexpr int64_t kDecodeRowCapacity         = 16;
 static constexpr int64_t kDecodeKvTileSize          = 64;
 static constexpr int64_t kPrefillQkHeadSizeBlock    = 16;
@@ -113,7 +115,9 @@ static size_t q8_1_x4_byte_count(int64_t row_count, int64_t hidden_size) {
     if (row_count <= 0 || hidden_size <= 0) {
         return 0;
     }
-    return static_cast<size_t>(row_count) * ggml_row_size(GGML_TYPE_Q8_1, hidden_size);
+    // Packed Q8 stores four 32-element blocks in each physical group.
+    const int64_t padded_hidden_size = (hidden_size + 127) / 128 * 128;
+    return static_cast<size_t>(row_count) * ggml_row_size(GGML_TYPE_Q8_1, padded_hidden_size);
 }
 
 static int64_t ceil_div(int64_t value, int64_t divisor) {
@@ -386,6 +390,31 @@ static const GraphNode * single_consumer_with_op(const Graph & graph, ValueId va
                                                                                                   nullptr;
 }
 
+static DispatchBinding prepare_flash_attention_value(const DispatchMatchContext & context,
+                                                     const FlashAttentionMatch & match,
+                                                     DispatchMatch & dispatch_match,
+                                                     KernelSpecialization & attention) {
+    if (match.query_token_count < 256 || match.key_value_token_count < 512 ||
+        match.key_value_token_count % 32 != 0) {
+        return { match.value->id, 0, match.value->byte_count };
+    }
+
+    const int64_t columns = match.key_value_head_count * match.value_head_size;
+    const size_t bytes = static_cast<size_t>(match.key_value_token_count * columns) * sizeof(ggml_fp16_t);
+    const ValueId transposed = match_value(context, dispatch_match, 0);
+    dispatch_match.transients.push_back({ transposed, "common.flash_attention.transposed_value", bytes, 256 });
+
+    Dispatch copy;
+    copy.kernel = make_kernel_specialization(kCopyTransposeF16Kernel);
+    copy.kernel.compile_parameters.emplace("ggml.copy_transpose_f16.row_count", to_config_value(match.key_value_token_count));
+    copy.kernel.compile_parameters.emplace("ggml.copy_transpose_f16.column_count", to_config_value(columns));
+    copy.bindings.push_back({ match.value->id, 0, bytes });
+    copy.bindings.push_back({ transposed, 0, bytes });
+    dispatch_match.dispatches.push_back(std::move(copy));
+    attention.compile_parameters.emplace("ggml.flash_attention.value_layout", "1");
+    return { transposed, 0, bytes };
+}
+
 static bool match_flash_attention_gate_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
     const FlashAttentionMatch match = match_flash_attention_f32_f16(context.graph, context.plan, context.root_node);
     if (!match.matched() || match.output_layout == nullptr || match.output_layout->op != GGML_OP_RESHAPE) {
@@ -461,7 +490,7 @@ static bool match_flash_attention_gate_dispatch(const DispatchMatchContext & con
                                            static_cast<int64_t>(raw_gate->nb[2] / sizeof(float)));
     dispatch.bindings.push_back({ match.query->id, 0, match.query->byte_count });
     dispatch.bindings.push_back({ match.key->id, 0, match.key->byte_count });
-    dispatch.bindings.push_back({ match.value->id, 0, match.value->byte_count });
+    dispatch.bindings.push_back(prepare_flash_attention_value(context, match, dispatch_match, dispatch.kernel));
     dispatch.bindings.push_back({ match.mask_binding_value, 0, match.mask_binding_bytes });
     dispatch.bindings.push_back({ raw_gate->id, 0, raw_gate->byte_count });
     dispatch.bindings.push_back({ output->id, 0, output->byte_count });
@@ -485,7 +514,7 @@ static bool match_flash_attention_f32_f16_dispatch(const DispatchMatchContext & 
                                            1);
     dispatch.bindings.push_back({ match.query->id, 0, match.query->byte_count });
     dispatch.bindings.push_back({ match.key->id, 0, match.key->byte_count });
-    dispatch.bindings.push_back({ match.value->id, 0, match.value->byte_count });
+    dispatch.bindings.push_back(prepare_flash_attention_value(context, match, dispatch_match, dispatch.kernel));
     dispatch.bindings.push_back({ match.mask_binding_value, 0, match.mask_binding_bytes });
     dispatch.bindings.push_back({ match.query->id, 0, match.query->byte_count });
     dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });

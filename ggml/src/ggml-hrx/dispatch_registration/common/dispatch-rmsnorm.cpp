@@ -18,6 +18,8 @@ namespace ggml::hrx {
 namespace {
 
 static constexpr KernelCatalogRef kRmsNormBinaryF32Kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_f32");
+static constexpr KernelCatalogRef kRmsNormBinaryF32K16Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_f32_k16");
 static constexpr KernelCatalogRef kRmsNormBinaryQ8_1X4Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_q8_1_x4");
 static constexpr KernelCatalogRef kRmsNormF32Kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_f32");
@@ -29,6 +31,10 @@ static constexpr KernelCatalogRef kRmsNormBinarySymmetricI4K32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_symmetric_i4_k32");
 static constexpr KernelCatalogRef kRmsNormGateSiluMulSymmetricI4K32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_gate_silu_mul_symmetric_i4_k32");
+static constexpr KernelCatalogRef kRmsNormGateF32F16Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_gate_f32_f16");
+static constexpr KernelCatalogRef kRmsNormGateF32Q8_1X4Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_gate_f32_q8_1_x4");
 
 static const Value * graph_value(const Graph & graph, ValueId id) {
     return graph.values().find(id);
@@ -94,31 +100,35 @@ static bool binary_kind_requires_order(BinaryKind kind) {
     return kind == BinaryKind::Sub || kind == BinaryKind::Div;
 }
 
-static bool is_packed_q8_prefill_consumer(const Graph & graph, const GraphNode * consumer, const Value & input) {
+static bool is_packed_q8_consumer(const Graph & graph, const GraphNode * consumer, const Value & input) {
     if (consumer == nullptr || consumer->op != GGML_OP_MUL_MAT || consumer->inputs.size() != 2 ||
         consumer->inputs[1] != input.id) {
         return false;
     }
     const Value * weight = graph_value(graph, consumer->inputs[0]);
     const Value * output = graph_value(graph, consumer->output);
-    if (weight == nullptr || output == nullptr ||
-        (weight->type != GGML_TYPE_Q5_K && weight->type != GGML_TYPE_IQ4_XS) || input.type != GGML_TYPE_F32 ||
+    if (weight == nullptr || output == nullptr || input.type != GGML_TYPE_F32 ||
         output->type != GGML_TYPE_F32 || !input.contiguous || !weight->contiguous || !output->contiguous) {
         return false;
     }
-    return input.ne[0] >= 256 && input.ne[0] <= 32768 && input.ne[0] % 256 == 0 && input.ne[1] >= 256 &&
-           input.ne[1] <= 2048 && input.ne[1] % 256 == 0 && input.ne[2] == 1 && input.ne[3] == 1 &&
+    const bool prefill = (weight->type == GGML_TYPE_Q5_K || weight->type == GGML_TYPE_IQ4_XS) &&
+                         input.ne[1] >= 256 && input.ne[1] <= 2048 && input.ne[1] % 256 == 0;
+    const bool decode = input.ne[1] >= 1 && input.ne[1] <= 5 && weight->alias_source.value < 0 &&
+                        (weight->type == GGML_TYPE_Q4_K ||
+                         (weight->type == GGML_TYPE_Q6_K && !graph.index().consumers(output->id).empty()));
+    return (prefill || decode) && input.ne[0] >= 256 && input.ne[0] <= 32768 && input.ne[0] % 256 == 0 &&
+           input.ne[2] == 1 && input.ne[3] == 1 &&
            weight->ne[0] == input.ne[0] && weight->ne[1] >= 64 && weight->ne[1] <= 262144 && weight->ne[1] % 64 == 0 &&
            weight->ne[2] == 1 && weight->ne[3] == 1 && output->ne[0] == weight->ne[1] && output->ne[1] == input.ne[1] &&
            output->ne[2] == 1 && output->ne[3] == 1;
 }
 
-static bool has_packed_q8_prefill_consumer(const Graph & graph, const Value & value) {
+static bool has_packed_q8_consumer(const Graph & graph, const Value & value) {
     if (!graph.has_index()) {
         return false;
     }
     for (const GraphNode * consumer : graph.index().consumers(value.id)) {
-        if (is_packed_q8_prefill_consumer(graph, consumer, value)) {
+        if (is_packed_q8_consumer(graph, consumer, value)) {
             return true;
         }
     }
@@ -206,7 +216,7 @@ struct AddRmsNormBinarySymmetricI4Match {
     }
 };
 
-struct RmsNormGateSiluMulSymmetricI4Match {
+struct RmsNormGateMatch {
     std::vector<const GraphNode *> covered;
     const Value *                  input       = nullptr;
     const Value *                  weight      = nullptr;
@@ -215,6 +225,7 @@ struct RmsNormGateSiluMulSymmetricI4Match {
     int64_t                        hidden_size = 0;
     int64_t                        token_count = 0;
     float                          epsilon     = 0.0f;
+    UnaryKind                      gate_op     = UnaryKind::Silu;
 
     bool matched() const {
         return !covered.empty() && input != nullptr && weight != nullptr && raw_gate != nullptr && output != nullptr;
@@ -499,13 +510,12 @@ static AddRmsNormBinarySymmetricI4Match match_add_rmsnorm_binary_symmetric_i4(co
     return match;
 }
 
-static RmsNormGateSiluMulSymmetricI4Match match_rmsnorm_gate_silu_mul_symmetric_i4(const Graph &     graph,
-                                                                                   const GraphNode * node,
-                                                                                   size_t            node_index) {
-    RmsNormGateSiluMulSymmetricI4Match match;
-    const RmsNormBinaryMatch           rms_binary = match_rmsnorm_binary_f32(graph, node, node_index);
-    if (!rms_binary.matched() || rms_binary.op != BinaryKind::Mul ||
-        !is_supported_symmetric_i4_hidden_size(rms_binary.hidden_size)) {
+static RmsNormGateMatch match_rmsnorm_gate(const Graph &     graph,
+                                         const GraphNode * node,
+                                         size_t            node_index) {
+    RmsNormGateMatch match;
+    const RmsNormBinaryMatch rms_binary = match_rmsnorm_binary_f32(graph, node, node_index);
+    if (!rms_binary.matched() || rms_binary.op != BinaryKind::Mul || rms_binary.hidden_size % 64 != 0) {
         return match;
     }
 
@@ -516,15 +526,15 @@ static RmsNormGateSiluMulSymmetricI4Match match_rmsnorm_gate_silu_mul_symmetric_
     const ValueId activated_id =
         terminal->inputs[0] == rms_binary.output->id ? terminal->inputs[1] : terminal->inputs[0];
     const Value *       activated    = graph_value(graph, activated_id);
-    const GraphNode *   silu         = activated != nullptr ? graph.index().producer(activated->id) : nullptr;
-    const UnaryParams * unary_params = silu != nullptr ? op_params_as<UnaryParams>(silu->params) : nullptr;
-    if (silu == nullptr || silu->op != GGML_OP_UNARY || silu->inputs.size() != 1 || unary_params == nullptr ||
-        unary_params->op != UnaryKind::Silu ||
+    const GraphNode *   unary        = activated != nullptr ? graph.index().producer(activated->id) : nullptr;
+    const UnaryParams * unary_params = unary != nullptr ? op_params_as<UnaryParams>(unary->params) : nullptr;
+    if (unary == nullptr || unary->op != GGML_OP_UNARY || unary->inputs.size() != 1 || unary_params == nullptr ||
+        !unary_kind_supported(unary_params->op) ||
         common_find_only_consumer_with_op(graph, activated->id, GGML_OP_MUL) != terminal) {
         return {};
     }
 
-    const Value *     gate_input   = graph_value(graph, silu->inputs[0]);
+    const Value *     gate_input   = graph_value(graph, unary->inputs[0]);
     const GraphNode * gate_reshape = gate_input != nullptr ? graph.index().producer(gate_input->id) : nullptr;
     const bool        has_gate_reshape =
         gate_reshape != nullptr && gate_reshape->op == GGML_OP_RESHAPE && gate_reshape->inputs.size() == 1;
@@ -536,7 +546,6 @@ static RmsNormGateSiluMulSymmetricI4Match match_rmsnorm_gate_silu_mul_symmetric_
         !same_shape(*rms_binary.input, *gate_input) || !same_shape(*rms_binary.input, *activated) ||
         !same_shape(*rms_binary.input, *output) || raw_gate->element_count != output->element_count ||
         graph.index().consumers(gate_input->id).size() != 1 ||
-        !common_has_symmetric_i4_lowrow_consumer(graph, *output) ||
         !pairwise_distinct_storage_roots(
             std::array<const Value *, 4>{ rms_binary.input, rms_binary.rhs, raw_gate, output })) {
         return {};
@@ -546,7 +555,7 @@ static RmsNormGateSiluMulSymmetricI4Match match_rmsnorm_gate_silu_mul_symmetric_
     if (has_gate_reshape) {
         match.covered.push_back(gate_reshape);
     }
-    match.covered.push_back(silu);
+    match.covered.push_back(unary);
     match.covered.push_back(terminal);
     match.input       = rms_binary.input;
     match.weight      = rms_binary.rhs;
@@ -555,6 +564,7 @@ static RmsNormGateSiluMulSymmetricI4Match match_rmsnorm_gate_silu_mul_symmetric_
     match.hidden_size = rms_binary.hidden_size;
     match.token_count = rms_binary.token_count;
     match.epsilon     = rms_binary.epsilon;
+    match.gate_op     = unary_params->op;
     return match;
 }
 
@@ -733,12 +743,77 @@ static bool match_rmsnorm_binary_symmetric_i4_dispatch(const DispatchMatchContex
     return match.status.success();
 }
 
-static bool match_rmsnorm_gate_silu_mul_symmetric_i4_dispatch(const DispatchMatchContext & context,
-                                                              DispatchMatch &              match) {
-    const RmsNormGateSiluMulSymmetricI4Match fused =
-        match_rmsnorm_gate_silu_mul_symmetric_i4(context.graph, context.root_node, context.root_index);
+static bool match_rmsnorm_gate_dispatch(const DispatchMatchContext & context, DispatchMatch & match) {
+    const RmsNormGateMatch fused = match_rmsnorm_gate(context.graph, context.root_node, context.root_index);
     if (!fused.matched()) {
         return false;
+    }
+
+    const bool use_i4 = fused.gate_op == UnaryKind::Silu &&
+                        common_has_symmetric_i4_lowrow_consumer(context.graph, *fused.output);
+    if (!use_i4) {
+        if (fused.hidden_size > 1024) {
+            return false;
+        }
+        const Value * packed_input = fused.output;
+        const GraphNode * consumer = common_find_only_consumer_with_op(context.graph, packed_input->id, GGML_OP_MUL_MAT);
+        if (consumer == nullptr) {
+            const GraphNode * reshape = common_find_only_consumer_with_op(context.graph, packed_input->id, GGML_OP_RESHAPE);
+            const Value * reshaped = reshape != nullptr ? graph_value(context.graph, reshape->output) : nullptr;
+            if (reshaped != nullptr && is_layout_alias_node(context.graph, *reshape) && reshaped->contiguous &&
+                same_full_value_range(*packed_input, *reshaped)) {
+                packed_input = reshaped;
+                consumer = common_find_only_consumer_with_op(context.graph, packed_input->id, GGML_OP_MUL_MAT);
+            }
+        }
+        const CommonMulMatMatch projection =
+            common_match_mul_mat_any_format(context.graph, consumer, kRmsNormGateF32F16Kernel, false);
+        const bool packed_output = projection.matched() && projection.input->id == packed_input->id &&
+                                   projection.weight->alias_source.value < 0 &&
+                                   common_mul_mat_uses_k16_major_f16(projection.weight_format, projection.input_size,
+                                                                     projection.output_size, projection.token_count);
+        const bool q8_output = !packed_output && packed_input->ne[1] <= 5 &&
+                               is_packed_q8_consumer(context.graph, consumer, *packed_input);
+        const size_t activation_bytes = q8_output ? q8_1_x4_byte_count(fused.token_count, fused.hidden_size) :
+                                                   fused.output->byte_count / 2;
+        const ValueId          activation = context.next_plan_value;
+        const char * activation_name = q8_output ? "common.rmsnorm_gate.q8_1_x4" :
+                                       packed_output ? "common.rmsnorm_gate.k16_major_f16" : "common.rmsnorm_gate.f16";
+        Dispatch dispatch;
+        dispatch.kernel = make_kernel_specialization(q8_output ? kRmsNormGateF32Q8_1X4Kernel : kRmsNormGateF32F16Kernel);
+        dispatch.kernel.integer_parameters.emplace("token_count", fused.token_count);
+        dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_gate_f32.hidden_size",
+                                                   to_config_value(fused.hidden_size));
+        dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_gate_f32.rms_epsilon",
+                                                   to_config_value(fused.epsilon));
+        dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_gate_f32.gate_op",
+                                                   std::to_string(unary_kind_config_value(fused.gate_op)));
+        dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_gate_f32.f16_output_row_width",
+                                                   to_config_value(packed_output ? projection.input_size : 0));
+        dispatch.bindings.push_back({ fused.input->id, 0, fused.input->byte_count });
+        dispatch.bindings.push_back({ fused.weight->id, 0, fused.weight->byte_count });
+        dispatch.bindings.push_back({ fused.raw_gate->id, 0, fused.raw_gate->byte_count });
+        dispatch.bindings.push_back({ fused.output->id, 0, fused.output->byte_count });
+        dispatch.bindings.push_back({ activation, 0, activation_bytes });
+        Status status;
+        const bool recorded = packed_output ?
+            match.metadata.append_generated_resource(
+                { packed_input->id, GeneratedResourceRole::F16K16Major, activation, activation_bytes, {} }, status) :
+            match.metadata.append_alternate_value(
+                { fused.output->id, activation, q8_output ? GGML_TYPE_Q8_1 : GGML_TYPE_F16,
+                  activation_bytes, activation_name }, status);
+        if (!recorded) {
+            match.status.append(status);
+            return false;
+        }
+        for (const GraphNode * covered : fused.covered) {
+            if (!append_covered_node_index_once(context.graph, context.covered_nodes, covered, match.covered_nodes)) {
+                return false;
+            }
+        }
+        match.transients.push_back({ activation, activation_name, activation_bytes, 256 });
+        match.dispatches.push_back(std::move(dispatch));
+        return true;
     }
 
     const CommonSymmetricI4ActivationLayout activation_layout =
@@ -782,6 +857,29 @@ static bool match_rmsnorm_gate_silu_mul_symmetric_i4_dispatch(const DispatchMatc
     return match.status.success();
 }
 
+static bool has_qualified_rmsnorm_k16_consumer(const Graph & graph, const RmsNormBinaryMatch & rms) {
+    const bool qualified_shape =
+        (rms.token_count == 512 && (rms.hidden_size == 4096 || rms.hidden_size == 5120 ||
+                                   rms.hidden_size == 6144 || rms.hidden_size == 8192)) ||
+        (rms.token_count == 1024 && rms.hidden_size == 5120);
+    if (!qualified_shape || rms.op != BinaryKind::Mul || rms.output->ne[1] != rms.token_count ||
+        rms.output->ne[2] != 1 || rms.output->ne[3] != 1 ||
+        !pairwise_distinct_storage_roots(std::array<const Value *, 3>{ rms.input, rms.rhs, rms.output })) {
+        return false;
+    }
+    for (const GraphNode * consumer : graph.index().consumers(rms.output->id)) {
+        const CommonMulMatMatch projection =
+            common_match_mul_mat_any_format(graph, consumer, kRmsNormBinaryF32K16Kernel, false);
+        if (projection.matched() && projection.input->id == rms.output->id &&
+            projection.weight->alias_source.value < 0 &&
+            common_mul_mat_uses_k16_major_f16(projection.weight_format, projection.input_size,
+                                              projection.output_size, projection.token_count)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool match_rmsnorm_binary_f32_dispatch(const DispatchMatchContext & context, DispatchMatch & match) {
     const std::vector<GraphNode> & nodes = context.graph.nodes();
     if (context.root_index >= nodes.size()) {
@@ -795,8 +893,9 @@ static bool match_rmsnorm_binary_f32_dispatch(const DispatchMatchContext & conte
         return false;
     }
 
+    const bool packed_output = has_qualified_rmsnorm_k16_consumer(context.graph, rms_match);
     Dispatch dispatch;
-    dispatch.kernel = make_kernel_specialization(kRmsNormBinaryF32Kernel);
+    dispatch.kernel = make_kernel_specialization(packed_output ? kRmsNormBinaryF32K16Kernel : kRmsNormBinaryF32Kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", rms_match.token_count);
     dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_binary_f32.hidden_size",
                                                to_config_value(rms_match.hidden_size));
@@ -807,6 +906,19 @@ static bool match_rmsnorm_binary_f32_dispatch(const DispatchMatchContext & conte
     dispatch.bindings.push_back({ rms_match.input->id, 0, rms_match.input->byte_count });
     dispatch.bindings.push_back({ rms_match.rhs->id, 0, rms_match.rhs->byte_count });
     dispatch.bindings.push_back({ rms_match.output->id, 0, rms_match.output->byte_count });
+
+    if (packed_output) {
+        const ValueId packed = context.next_plan_value;
+        const size_t bytes = rms_match.output->byte_count / 2;
+        Status status;
+        if (!match.metadata.append_generated_resource(
+                { rms_match.output->id, GeneratedResourceRole::F16K16Major, packed, bytes, {} }, status)) {
+            match.status.append(status);
+            return false;
+        }
+        dispatch.bindings.push_back({ packed, 0, bytes });
+        match.transients.push_back({ packed, "common.rmsnorm_binary.k16_major_f16", bytes, 256 });
+    }
 
     match.covered_nodes.push_back(rms_match.rms_node_index);
     match.covered_nodes.push_back(rms_match.binary_node_index);
@@ -824,7 +936,7 @@ static bool match_rmsnorm_binary_q8_1_x4_dispatch(const DispatchMatchContext & c
     if (!rms_match.matched() || rms_match.rms_node_index >= context.covered_nodes.size() ||
         rms_match.binary_node_index >= context.covered_nodes.size() ||
         context.covered_nodes[rms_match.rms_node_index] || context.covered_nodes[rms_match.binary_node_index] ||
-        !has_packed_q8_prefill_consumer(context.graph, *rms_match.output)) {
+        !has_packed_q8_consumer(context.graph, *rms_match.output)) {
         return false;
     }
 
@@ -891,6 +1003,10 @@ static bool match_rmsnorm_f32_dispatch(const DispatchMatchContext & context, Dis
     return true;
 }
 
+bool common_match_rmsnorm_gate_dispatch(const DispatchMatchContext & context, DispatchMatch & match) {
+    return match_rmsnorm_gate_dispatch(context, match);
+}
+
 void register_rmsnorm_dispatches(DispatchRegistryBuilder & registry) {
     registry.add({
         "common.add_rmsnorm_binary_symmetric_i4_k32",
@@ -901,12 +1017,12 @@ void register_rmsnorm_dispatches(DispatchRegistryBuilder & registry) {
         match_add_rmsnorm_binary_symmetric_i4_dispatch,
     });
     registry.add({
-        "common.rmsnorm_gate_silu_mul_symmetric_i4_k32",
+        "common.rmsnorm_gate",
         GGML_OP_RMS_NORM,
         DispatchMatchKind::Fused,
         400,
         DispatchSource::Common,
-        match_rmsnorm_gate_silu_mul_symmetric_i4_dispatch,
+        match_rmsnorm_gate_dispatch,
     });
     registry.add({
         "common.rmsnorm_binary_symmetric_i4_k32",
