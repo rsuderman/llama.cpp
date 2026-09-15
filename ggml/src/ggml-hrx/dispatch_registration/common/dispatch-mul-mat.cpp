@@ -553,7 +553,8 @@ static bool match_q6_k_aligned_skinny_dispatch(const DispatchMatchContext & cont
     if (!match.matched() || !context.graph.has_index() || match.weight->type != GGML_TYPE_Q6_K ||
         match.weight->alias_source.value >= 0 || match.token_count > 16 || match.input_size % 256 != 0 ||
         match.output_size % 64 != 0 || match.output_size > kMulMatQ6KPackedMaxOutputSize ||
-        match.output_size < 8 * match.input_size) {
+        (match.token_count > 1 && match.output_size < 8 * match.input_size) ||
+        !context.graph.index().consumers(match.output->id).empty()) {
         return false;
     }
 

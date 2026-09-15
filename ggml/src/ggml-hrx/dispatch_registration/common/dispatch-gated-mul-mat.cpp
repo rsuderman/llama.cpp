@@ -66,7 +66,7 @@ struct MulMatSwiGLUMatch {
                glu_node != nullptr;
     }
 
-    bool matched() const { return topology_matched() && token_count > 1; }
+    bool matched() const { return topology_matched() && token_count >= 1; }
 
     bool decode_matched() const { return topology_matched() && token_count == 1; }
 };
@@ -809,14 +809,6 @@ void register_gated_mul_mat_dispatches(DispatchRegistryBuilder & registry) {
         300,
         DispatchSource::Common,
         match_mul_mat_swiglu_q5_projection_dispatch,
-    });
-    registry.add({
-        "common.mul_mat_swiglu.f32_f32_decode",
-        GGML_OP_MUL_MAT,
-        DispatchMatchKind::Fused,
-        295,
-        DispatchSource::Common,
-        match_decode_mul_mat_swiglu_dispatch,
     });
     registry.add({
         "common.mul_mat_swiglu.f32_f32_wmma",
