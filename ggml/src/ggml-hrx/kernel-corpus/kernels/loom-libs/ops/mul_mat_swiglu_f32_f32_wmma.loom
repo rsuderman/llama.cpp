@@ -874,11 +874,11 @@ kernel.def target(@ggml_mul_mat_swiglu_gfx11_wave64) @ggml_mul_mat_swiglu_q4_q8_
 
 kernel.def target(@ggml_mul_mat_swiglu_gfx11_wave64) @ggml_mul_mat_swiglu_q4_q8_1_x4_lowtoken_dot_q8_output(%token_count: index) {
   %n0 = config.get @ggml.mul_mat_swiglu.output_size : index
-  %n = index.assume %n0 [range(%n0, 16384, 32768), mul(%n0, 128)] : index
+  %n = index.assume %n0 [range(%n0, 1, 262144), mul(%n0, 128)] : index
   %k0 = config.get @ggml.mul_mat_swiglu.input_size : index
-  %k = index.assume %k0 [range(%k0, 4096, 5120), mul(%k0, 1024)] : index
+  %k = index.assume %k0 [range(%k0, 256, 32768), mul(%k0, 256)] : index
   %capacity0 = config.get @ggml.workload.token_capacity : index
-  %capacity = index.assume %capacity0 [range(%capacity0, 2, 5)] : index
+  %capacity = index.assume %capacity0 [range(%capacity0, 1, 5)] : index
   %local_q8_c1 = index.constant 1 : index
   %local_q8_c31 = index.constant 31 : index
   %local_q8_c32 = index.constant 32 : index
@@ -894,22 +894,22 @@ kernel.def target(@ggml_mul_mat_swiglu_gfx11_wave64) @ggml_mul_mat_swiglu_q4_q8_
   %local_q8_fits = index.cmp ule, %local_q8_bytes, %local_q8_c32768 : index
   %local_q8_enough_work = index.cmp uge, %local_q8_workgroups, %local_q8_c128 : index
   %local_q8_eligible = scalar.andi %local_q8_batched, %local_q8_fits : i1
-  %local = scalar.andi %local_q8_eligible, %local_q8_enough_work : i1
   %c1 = index.constant 1 : index
   %c8 = index.constant 8 : index
   %c32 = index.constant 32 : index
   %c128 = index.constant 128 : index
-  %c512 = index.constant 1024 : index
+  %c512 = index.constant 512 : index
+  %c1024 = index.constant 1024 : index
+  %local = scalar.andi %local_q8_eligible, %local_q8_enough_work : i1
   %partitions = func.call pure @ggml_swiglu_q8_reduction_partitions(%local, %k, %n) : (i1, index, index) -> (index)
-  %local_row_budget = index.constant 64 : index
-  %local_rows = index.div %local_row_budget, %partitions : index
-  %rows = scf.select %local, %local_rows, %c8 : index
+  %partitioned = index.cmp ugt, %partitions, %c1 : index
+  %rows = index.constant 32 : index
   %padding = index.sub %rows, %c1 : index
   %padded_n = index.add %n, %padding : index
   %groups = index.div %padded_n, %rows : index
-  %threads = scf.select %local, %c512, %c128 : index
+  %threads = scf.select %partitioned, %c1024, %c512 : index
   kernel.launch.config workgroups(%groups, %c1, %c1) workgroup_size(%threads, %c1, %c1) : index
-} launch(%token_count: index, %input: buffer, %gate: buffer, %up: buffer, %output: buffer, %q8_output: buffer) where [range(%token_count, 2, 5)] {
+} launch(%token_count: index, %input: buffer, %gate: buffer, %up: buffer, %output: buffer, %q8_output: buffer) where [range(%token_count, 1, 5)] {
   %publish_q8 = scalar.constant true : i1
   template.apply<@ggml.mul_mat_swiglu.q4_q8_lowtoken_body>(%publish_q8, %token_count, %input, %gate, %up, %output, %q8_output) : (i1, index, buffer, buffer, buffer, buffer, buffer)
   kernel.return
@@ -958,10 +958,12 @@ template.def<@ggml.mul_mat_swiglu.q4_q8_lowtoken_body> device @ggml_mul_mat_swig
   %use_local = scalar.andi %local_q8_eligible, %local_q8_enough_work : i1
   %partitions = func.call pure @ggml_swiglu_q8_reduction_partitions(%use_local, %k, %n) : (i1, index, index) -> (index)
   %partitioned = index.cmp ugt, %partitions, %c1 : index
-  %publication_row_budget = index.constant 64 : index
+  %publication_rows = index.constant 32 : index
+  %publication_row_budget = index.mul %publication_rows, %partitions : index
   %local_row_budget = scf.select %publish_q8, %publication_row_budget, %c32 : index
   %local_rows = index.div %local_row_budget, %partitions : index
-  %rows_per_workgroup = scf.select %use_local, %local_rows, %c8 : index
+  %default_rows_per_workgroup = scf.select %use_local, %local_rows, %c8 : index
+  %rows_per_workgroup = scf.select %publish_q8, %publication_rows, %default_rows_per_workgroup : index
   %cohort_width = index.mul %c16, %partitions : index
   %wave_rows = index.div %c4, %partitions : index
   %row_base = index.mul %wg, %rows_per_workgroup : index
@@ -1022,6 +1024,9 @@ template.def<@ggml.mul_mat_swiglu.q4_q8_lowtoken_body> device @ggml_mul_mat_swig
   %epilogue_bytes = scf.select %publish_q8, %epilogue_capacity_bytes, %base : offset
   %epilogue_stage = buffer.alloca<workgroup> align(16) %epilogue_bytes : buffer
   %epilogue_view = buffer.view %epilogue_stage[%base] : buffer -> view<5x32xf32>
+  %epilogue_scratch_capacity_bytes = index.constant 1024 : offset
+  %epilogue_scratch_bytes = scf.select %publish_q8, %epilogue_scratch_capacity_bytes, %base : offset
+  %epilogue_scratch_stage = buffer.alloca<workgroup> align(16) %epilogue_scratch_bytes : buffer
   %epilogue_row = index.rem %row, %c32 : index
   scf.if %use_local {
     %record_words = index.constant 36 : index
@@ -1429,8 +1434,8 @@ template.def<@ggml.mul_mat_swiglu.q4_q8_lowtoken_body> device @ggml_mul_mat_swig
       %epilogue_groups = index.div %n, %c128 : index
       %epilogue_token_groups = index.mul %epilogue_token, %epilogue_groups : index
       %epilogue_token_bytes = index.scale %epilogue_token_groups, %block_bytes : index, offset -> offset
-      %epilogue_scratch = buffer.view %activation_stage[%base] : buffer -> view<256xf32>
-      %epilogue_scratch_d = buffer.view %activation_stage[%base] : buffer -> view<32xf32>
+      %epilogue_scratch = buffer.view %epilogue_scratch_stage[%base] : buffer -> view<256xf32>
+      %epilogue_scratch_d = buffer.view %epilogue_scratch_stage[%base] : buffer -> view<32xf32>
       %epilogue_publish = scalar.constant true : i1
       template.apply<@ggml.quantize_q8_1_x4.publish_vector4_strict>(%epilogue_publish, %epilogue_token_bytes, %epilogue_channel, %epilogue_values, %epilogue_scratch, %epilogue_scratch_d, %q8_output) : (i1, offset, index, vector<4xf32>, view<256xf32>, view<32xf32>, buffer)
     }

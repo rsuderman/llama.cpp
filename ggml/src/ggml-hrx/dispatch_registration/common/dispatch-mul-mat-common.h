@@ -45,6 +45,11 @@ struct CommonSymmetricI4ActivationLayout {
 inline constexpr const char kCommonSymmetricI4K32ActivationAlternateName[] =
     "common.mul_mat.symmetric_i4_k32.activation";
 
+enum class CommonQ8ActivationPolicy {
+    ExistingAlternateOnly,
+    AllowStandaloneQuantize,
+};
+
 inline size_t common_align_up(size_t value, size_t alignment) {
     return (value + alignment - 1) / alignment * alignment;
 }
@@ -536,7 +541,7 @@ inline bool common_prepare_q8_1_x4_input(const DispatchMatchContext & context,
                                          int64_t                      token_count,
                                          DispatchMatch &              match,
                                          DispatchBinding &            binding,
-                                         bool                         allow_create = true) {
+                                         CommonQ8ActivationPolicy     policy) {
     const size_t bytes = static_cast<size_t>(token_count) * ggml_row_size(GGML_TYPE_Q8_1, input_size);
     const CommandPlanAlternateValue * alternate =
         find_alternate_value(context.graph, context.plan, input.id, GGML_TYPE_Q8_1, bytes);
@@ -544,7 +549,7 @@ inline bool common_prepare_q8_1_x4_input(const DispatchMatchContext & context,
         binding = { alternate->alternate_value, 0, bytes };
         return true;
     }
-    if (!allow_create) {
+    if (policy != CommonQ8ActivationPolicy::AllowStandaloneQuantize) {
         return false;
     }
 

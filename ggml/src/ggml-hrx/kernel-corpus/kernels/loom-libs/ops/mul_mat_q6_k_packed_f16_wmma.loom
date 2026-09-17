@@ -18,6 +18,8 @@ config.decl @ggml.mul_mat_q6_k_shortlist.selected_group_count : %value: index wh
 
 template.decl @ggml.mul_mat_q6_k_packed.publish_f16_wave32(%result: vector<16xf16>, %token_offset: index, %token_tile_base: index, %bounded_token_count: index, %bounded_output_size: index, %channel_tile_base: index, %subgroup_channel_add: index, %result_stage: buffer, %output_noalias: buffer, %output_accumulation: index)
 
+template.decl @ggml.mul_mat_q6_k_packed.publish_token1_overwrite_f32_wave32(%result: vector<8xf32>, %output_size: index, %channel_tile_base: index, %subgroup_channel_add: index, %output: buffer)
+
 template.decl @ggml.mul_mat_q6_k_packed.token1.body(%token_count: index, %input_size0: index, %output_size0: index, %channel_tile: index, %scale_row_layout: index, %input: buffer, %weight: buffer, %output: buffer)
 
 template.decl @ggml.mul_mat_q6_k_i8_prepacked.body(%token_count: index, %input_size0: index, %output_size0: index, %channel_tile: index, %input: buffer, %weight: buffer, %output: buffer)
@@ -295,7 +297,43 @@ template.def<@ggml.mul_mat_q6_k_packed.token1.body> device @ggml_mul_mat_q6_k_pa
     scf.yield %block_result : vector<8xf32>
   }
 
-  template.apply<@ggml.mul_mat_q6_k_packed.publish_f32_wave32>(%result, %c0, %c0, %bounded_token_count, %bounded_output_size, %channel_tile_base, %subgroup_channel_add, %output_noalias, %output_accumulation) : (vector<8xf32>, index, index, index, index, index, index, buffer, index)
+  %overwrites_output = index.cmp eq, %output_accumulation, %c0 : index
+  %has_one_token = index.cmp eq, %bounded_token_count, %c1 : index
+  %use_token1_overwrite = scalar.andi %overwrites_output, %has_one_token : i1
+  scf.if %use_token1_overwrite {
+    template.apply<@ggml.mul_mat_q6_k_packed.publish_token1_overwrite_f32_wave32>(%result, %bounded_output_size, %channel_tile_base, %subgroup_channel_add, %output_noalias) : (vector<8xf32>, index, index, index, buffer)
+  } else {
+    template.apply<@ggml.mul_mat_q6_k_packed.publish_f32_wave32>(%result, %c0, %c0, %bounded_token_count, %bounded_output_size, %channel_tile_base, %subgroup_channel_add, %output_noalias, %output_accumulation) : (vector<8xf32>, index, index, index, index, index, index, buffer, index)
+  }
+  template.return
+}
+
+template.def<@ggml.mul_mat_q6_k_packed.publish_token1_overwrite_f32_wave32> device @ggml_mul_mat_q6_k_packed_publish_token1_overwrite_f32_wave32(%result: vector<8xf32>, %output_size: index, %channel_tile_base: index, %subgroup_channel_add: index, %output: buffer) {
+  %base = index.constant 0 : offset
+  %c0 = index.constant 0 : index
+  %c1 = index.constant 1 : index
+  %c2 = index.constant 2 : index
+  %c8 = index.constant 8 : index
+  %c16 = index.constant 16 : index
+  %channel = index.add %channel_tile_base, %subgroup_channel_add : index
+  %lane = kernel.subgroup.lane.id : index
+  %lane_token = index.rem %lane, %c16 : index
+  %lane_channel = index.div %lane, %c16 : index
+  %partial_channel_base = index.add %channel, %lane_channel : index
+  %stores_token0 = index.cmp eq, %lane_token, %c0 : index
+  scf.if %stores_token0 {
+    %dst = buffer.view %output[%base] : buffer -> view<1x[%output_size]xf32>
+    scf.for %element = [%c0 to %c8 step %c1] unroll {
+      %channel_step = index.mul %element, %c2 : index
+      %partial_channel = index.add %partial_channel_base, %channel_step : index
+      %channel_valid = index.cmp ult, %partial_channel, %output_size : index
+      scf.if %channel_valid {
+        %bounded_channel, %output_channels = index.assume %partial_channel, %output_size [lt(%partial_channel, %output_size)] : index, index
+        %value = vector.extract %result[%element] : vector<8xf32> -> f32
+        view.store %value, %dst[%c0, %bounded_channel] : f32, view<1x[%output_size]xf32>
+      }
+    }
+  }
   template.return
 }
 

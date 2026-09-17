@@ -638,10 +638,14 @@ static bool match_mul_mat_swiglu_q4_q8_prefill_dispatch(const DispatchMatchConte
     return true;
 }
 
+static bool supports_swiglu_q8_output_shape(const MulMatSwiGLUMatch & match) {
+    return match.op == BinaryKind::SwiGLU && match.token_count >= 1 && match.token_count <= 5 &&
+           common_is_supported_dense_input_size(CommonMulMatWeightFormat::Q4K, match.input_size) &&
+           common_is_supported_dense_output_size(match.output_size) && match.output_size % 128 == 0;
+}
+
 static bool has_qualified_swiglu_q8_consumer(const Graph & graph, const MulMatSwiGLUMatch & match) {
-    if (match.op != BinaryKind::SwiGLU || match.token_count < 2 || match.token_count > 5 ||
-        match.input_size < 4096 || match.input_size > 5120 || match.input_size % 1024 != 0 ||
-        match.output_size < 16384 || match.output_size > 32768 || match.output_size % 128 != 0 ||
+    if (!supports_swiglu_q8_output_shape(match) ||
         !distinct_storage(graph, *match.input, *match.gate_weight) ||
         !distinct_storage(graph, *match.input, *match.up_weight) ||
         !distinct_storage(graph, *match.input, *match.output) ||
@@ -651,14 +655,16 @@ static bool has_qualified_swiglu_q8_consumer(const Graph & graph, const MulMatSw
         return false;
     }
     for (const GraphNode * consumer : graph.index().consumers(match.output->id)) {
-        const CommonMulMatMatch projection =
-            common_match_mul_mat_any_format(graph, consumer, kMulMatSwiGLUQ4Q8OutputKernel, false);
+        CommonMulMatMatch projection =
+            common_match_mul_mat_any_format(graph, consumer, kMulMatSwiGLUQ4Q8OutputKernel, true);
+        if (!projection.matched()) {
+            projection = common_match_mul_mat_any_format(graph, consumer, kMulMatSwiGLUQ4Q8OutputKernel, false);
+        }
         if (projection.matched() && projection.input->id == match.output->id &&
             projection.weight->alias_source.value < 0 && projection.output_size >= 64 &&
             projection.output_size % 64 == 0 &&
             (projection.weight_format == CommonMulMatWeightFormat::Q4K ||
-             (projection.weight_format == CommonMulMatWeightFormat::Q6K &&
-              !graph.index().consumers(projection.output->id).empty()))) {
+             projection.weight_format == CommonMulMatWeightFormat::Q6K)) {
             return true;
         }
     }
@@ -679,7 +685,8 @@ static bool match_mul_mat_swiglu_dispatch(const DispatchMatchContext & context, 
     const bool publish_q8 = use_q8 && has_qualified_swiglu_q8_consumer(context.graph, match);
     DispatchBinding activation = { match.input->id, 0, match.input->byte_count };
     if (use_q8 && !common_prepare_q8_1_x4_input(context, *match.input, match.input_size, match.token_count,
-                                               dispatch_match, activation)) {
+                                               dispatch_match, activation,
+                                               CommonQ8ActivationPolicy::AllowStandaloneQuantize)) {
         return false;
     }
 

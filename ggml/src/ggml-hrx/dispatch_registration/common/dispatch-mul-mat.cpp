@@ -84,13 +84,14 @@ struct MulMatPostOpsMatch {
     const GraphNode *              residual_add_node = nullptr;
     const GraphNode *              layout_node       = nullptr;
     std::vector<const GraphNode *> add_nodes;
-    KernelCatalogRef               kernel        = {};
-    CommonMulMatWeightFormat       weight_format = CommonMulMatWeightFormat::Q4K;
-    int64_t                        input_size    = 0;
-    int64_t                        output_size   = 0;
-    int64_t                        token_count   = 0;
-    bool                           has_bias      = false;
-    bool                           has_residual  = false;
+    KernelCatalogRef               kernel                 = {};
+    CommonMulMatWeightFormat       weight_format          = CommonMulMatWeightFormat::Q4K;
+    int64_t                        input_size             = 0;
+    int64_t                        output_size            = 0;
+    int64_t                        token_count            = 0;
+    bool                           has_bias               = false;
+    bool                           has_residual           = false;
+    bool                           requires_q8_activation = false;
 
     bool matched() const {
         return input != nullptr && weight != nullptr && projection_output != nullptr && residual_output != nullptr &&
@@ -110,7 +111,8 @@ struct DecodeMulMatAddMatch {
 };
 
 static bool is_bias_shape(const Value & value, int64_t output_size) {
-    if (value.type != GGML_TYPE_F32 || !value.contiguous || value.ne[0] != output_size) {
+    if (value.kind != ValueKind::External || value.type != GGML_TYPE_F32 || !value.contiguous ||
+        value.ne[0] != output_size) {
         return false;
     }
     for (int i = 1; i < GGML_MAX_DIMS; ++i) {
@@ -810,7 +812,10 @@ static bool match_packed_q8_1_x4_prefill_dispatch(const DispatchMatchContext & c
             return false;
         }
     } else if (!common_prepare_q8_1_x4_input(context, *match.input, match.input_size, match.token_count,
-                                             dispatch_match, activation, match.weight->type == GGML_TYPE_Q4_K)) {
+                                             dispatch_match, activation,
+                                             match.weight->type == GGML_TYPE_Q4_K ?
+                                                 CommonQ8ActivationPolicy::AllowStandaloneQuantize :
+                                                 CommonQ8ActivationPolicy::ExistingAlternateOnly)) {
         return false;
     }
 
@@ -878,9 +883,7 @@ static MulMatPostOpsMatch match_mul_mat_postops(const DispatchMatchContext & con
                                        root.weight_format == CommonMulMatWeightFormat::Q6K) &&
                                       root.input_size >= 4096 && root.output_size >= 4096 &&
                                       root.output_size <= root.input_size && root.output_size % 64 == 0;
-    if (root.token_count == 1 && !lowtoken_contraction) {
-        return {};
-    }
+    const bool token1_requires_q8_activation = root.token_count == 1 && !lowtoken_contraction;
 
     const Value * current = root.output;
     if (lowtoken_contraction) {
@@ -959,6 +962,7 @@ static MulMatPostOpsMatch match_mul_mat_postops(const DispatchMatchContext & con
     match.input_size        = root.input_size;
     match.output_size       = root.output_size;
     match.token_count       = root.token_count;
+    match.requires_q8_activation = token1_requires_q8_activation;
     return match;
 }
 
@@ -1003,7 +1007,8 @@ static bool try_match_fused_unary(const DispatchMatchContext & context, CommonMu
 
 static bool build_mul_mat_dispatch(const DispatchMatchContext & context,
                                    const CommonMulMatMatch &  match,
-                                   DispatchMatch &            dispatch_match) {
+                                   DispatchMatch &            dispatch_match,
+                                   CommonQ8ActivationPolicy   q8_policy = CommonQ8ActivationPolicy::ExistingAlternateOnly) {
     const bool split_k = match.weight_format == CommonMulMatWeightFormat::Q4K && !match.has_fused_unary &&
                          match.input_size >= 4096 && match.input_size % 1024 == 0 &&
                          match.output_size <= 64 && match.output_size % 4 == 0 &&
@@ -1021,22 +1026,27 @@ static bool build_mul_mat_dispatch(const DispatchMatchContext & context,
                                                std::to_string(unary_kind_config_value(match.output_unary_op)));
     const bool pack_rows = match.token_count <= 5 && match.output_size % 64 == 0 &&
                            match.weight->alias_source.value < 0;
-    const bool pack_q4 = pack_rows && match.weight_format == CommonMulMatWeightFormat::Q4K;
-    const bool pack_q6 = pack_rows && match.weight_format == CommonMulMatWeightFormat::Q6K;
+    const bool can_pack_q4 = pack_rows && match.weight_format == CommonMulMatWeightFormat::Q4K;
+    const bool can_pack_q6 = pack_rows && match.weight_format == CommonMulMatWeightFormat::Q6K;
+    bool       pack_q4     = false;
+    bool       pack_q6     = false;
+    DispatchBinding activation = { match.input->id, 0, match.input->byte_count };
+    if (can_pack_q4 || can_pack_q6) {
+        if (common_prepare_q8_1_x4_input(context, *match.input, match.input_size, match.token_count,
+                                         dispatch_match, activation, q8_policy)) {
+            pack_q4 = can_pack_q4;
+            pack_q6 = can_pack_q6;
+            dispatch.kernel.compile_parameters.emplace("ggml.mul_mat.activation_format",
+                                                       std::to_string(GGML_TYPE_Q8_1));
+        } else if (q8_policy == CommonQ8ActivationPolicy::AllowStandaloneQuantize) {
+            return false;
+        }
+    }
     const CommonMulMatWeightFormat format = pack_q4 ? CommonMulMatWeightFormat::Q4KRow64 :
                                            pack_q6 ? CommonMulMatWeightFormat::Q6KRow64 : match.weight_format;
     dispatch.kernel.compile_parameters.emplace(
         "ggml.mul_mat.weight_format",
         common_to_config_value(common_mul_mat_format_config_value(format)));
-    DispatchBinding activation = { match.input->id, 0, match.input->byte_count };
-    if (pack_q4 || pack_q6) {
-        if (!common_prepare_q8_1_x4_input(context, *match.input, match.input_size, match.token_count,
-                                          dispatch_match, activation)) {
-            return false;
-        }
-        dispatch.kernel.compile_parameters.emplace("ggml.mul_mat.activation_format",
-                                                    std::to_string(GGML_TYPE_Q8_1));
-    }
     dispatch.bindings.push_back(activation);
     if (pack_q4 || pack_q6) {
         const char * layout = pack_q4 ? kQ4KPackedK256Row64Layout : kQ6KPackedK256Row64ScaleRowLayout;
@@ -1070,6 +1080,25 @@ static bool build_mul_mat_dispatch(const DispatchMatchContext & context,
     return true;
 }
 
+static bool match_q6_k_token1_final_projection_q8_dispatch(const DispatchMatchContext & context,
+                                                           DispatchMatch &              dispatch_match) {
+    CommonMulMatMatch match =
+        common_match_mul_mat_any_format(context.graph, context.root_node, kMulMatF32F32WmmaKernel, true);
+    if (!match.matched()) {
+        match = common_match_mul_mat_any_format(context.graph, context.root_node, kMulMatF32F32WmmaKernel, false);
+    }
+    if (!match.matched() || !context.graph.has_index() || match.weight->type != GGML_TYPE_Q6_K ||
+        match.token_count < 1 || match.token_count > 5 || match.weight->alias_source.value >= 0 ||
+        match.input_size % 256 != 0 || match.output_size % 64 != 0 ||
+        match.output_size > kMulMatQ6KPackedMaxOutputSize ||
+        !context.graph.index().consumers(match.output->id).empty()) {
+        return false;
+    }
+
+    return build_mul_mat_dispatch(context, match, dispatch_match,
+                                  CommonQ8ActivationPolicy::AllowStandaloneQuantize);
+}
+
 static bool match_mul_mat_postops_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
     const MulMatPostOpsMatch match = match_mul_mat_postops(context);
     if (!match.matched()) {
@@ -1087,22 +1116,32 @@ static bool match_mul_mat_postops_dispatch(const DispatchMatchContext & context,
                                                common_to_config_value(match.output_size));
     const bool pack_rows = match.token_count <= 5 && match.output_size % 64 == 0 &&
                            match.weight->alias_source.value < 0;
-    const bool pack_q4 = pack_rows && match.weight_format == CommonMulMatWeightFormat::Q4K;
-    const bool pack_q6 = pack_rows && match.weight_format == CommonMulMatWeightFormat::Q6K;
+    const bool can_pack_q4 = pack_rows && match.weight_format == CommonMulMatWeightFormat::Q4K;
+    const bool can_pack_q6 = pack_rows && match.weight_format == CommonMulMatWeightFormat::Q6K;
+    bool       pack_q4     = false;
+    bool       pack_q6     = false;
+    DispatchBinding activation = { match.input->id, 0, match.input->byte_count };
+    if (match.requires_q8_activation && !can_pack_q4 && !can_pack_q6) {
+        return false;
+    }
+    if (can_pack_q4 || can_pack_q6) {
+        if (common_prepare_q8_1_x4_input(context, *match.input, match.input_size, match.token_count,
+                                         dispatch_match, activation,
+                                         CommonQ8ActivationPolicy::ExistingAlternateOnly)) {
+            pack_q4 = can_pack_q4;
+            pack_q6 = can_pack_q6;
+            dispatch.kernel.compile_parameters.emplace("ggml.mul_mat.activation_format",
+                                                       std::to_string(GGML_TYPE_Q8_1));
+        }
+    }
+    if (match.requires_q8_activation && !pack_q4 && !pack_q6) {
+        return false;
+    }
     const CommonMulMatWeightFormat format = pack_q4 ? CommonMulMatWeightFormat::Q4KRow64 :
                                            pack_q6 ? CommonMulMatWeightFormat::Q6KRow64 : match.weight_format;
     dispatch.kernel.compile_parameters.emplace(
         "ggml.mul_mat_postops.weight_format",
         common_to_config_value(common_mul_mat_format_config_value(format)));
-    DispatchBinding activation = { match.input->id, 0, match.input->byte_count };
-    if (pack_q4 || pack_q6) {
-        if (!common_prepare_q8_1_x4_input(context, *match.input, match.input_size, match.token_count,
-                                          dispatch_match, activation)) {
-            return false;
-        }
-        dispatch.kernel.compile_parameters.emplace("ggml.mul_mat.activation_format",
-                                                    std::to_string(GGML_TYPE_Q8_1));
-    }
     dispatch.bindings.push_back(activation);
     if (pack_q4 || pack_q6) {
         const char * layout = pack_q4 ? kQ4KPackedK256Row64Layout : kQ6KPackedK256Row64ScaleRowLayout;
@@ -1171,11 +1210,6 @@ static DecodeMulMatAddMatch match_decode_mul_mat_add(const DispatchMatchContext 
     size_t add_index = 0;
     if (!context.graph.index().node_index(add_node, add_index) || add_index >= context.covered_nodes.size() ||
         context.covered_nodes[add_index]) {
-        return match;
-    }
-
-    // Keep ADD -> RMS_NORM available for the stronger next-rmsnorm fusion.
-    if (common_find_single_consumer_with_op(context.graph, output->id, GGML_OP_RMS_NORM) != nullptr) {
         return match;
     }
 
@@ -1300,6 +1334,14 @@ void register_mul_mat_dispatches(DispatchRegistryBuilder & registry) {
         295,
         DispatchSource::Common,
         match_q6_k_prefill_wave32_dispatch,
+    });
+    registry.add({
+        "common.mul_mat.q6_k_token1_final_projection_q8",
+        GGML_OP_MUL_MAT,
+        DispatchMatchKind::Fused,
+        305,
+        DispatchSource::Common,
+        match_q6_k_token1_final_projection_q8_dispatch,
     });
     registry.add({
         "common.mul_mat.q6_k_aligned_skinny",
