@@ -1095,6 +1095,11 @@ static bool match_q6_k_token1_final_projection_q8_dispatch(const DispatchMatchCo
         return false;
     }
 
+    if (match.token_count == 1 && match.output_size >= 16 * match.input_size) {
+        return build_q6_k_aligned_skinny_dispatch(match, context.root_index, kMulMatQ6KPackedToken1F16WmmaKernel,
+                                                  dispatch_match);
+    }
+
     return build_mul_mat_dispatch(context, match, dispatch_match,
                                   CommonQ8ActivationPolicy::AllowStandaloneQuantize);
 }
