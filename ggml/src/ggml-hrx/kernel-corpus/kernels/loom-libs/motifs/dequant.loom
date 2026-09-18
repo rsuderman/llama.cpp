@@ -7174,7 +7174,7 @@ func.def inline @ggml_dequant_weight_row_bytes(%weight_format: index, %hidden_si
 //   40/41/50/51: Q4_0/Q4_1/Q5_0/Q5_1
 //   22/20/21/23: IQ2_S/IQ4_NL/IQ3_S/IQ4_XS
 //   80/81: Q8_0/Q8_1
-//   16/17/32: F16/BF16/F32
+//   16/30/32: F16/BF16/F32
 func.def inline @ggml_dequant_f16_vector4(%iq4nl_table: vector<16xi8>, %iq3s_grid_low0: vector<32xf32>, %iq3s_grid_low1: vector<32xf32>, %iq3s_grid_low2: vector<32xf32>, %iq3s_grid_low3: vector<32xf32>, %iq3s_grid_low4: vector<32xf32>, %iq3s_grid_low5: vector<32xf32>, %iq3s_grid_low6: vector<32xf32>, %iq3s_grid_low7: vector<32xf32>, %iq3s_grid_low8: vector<32xf32>, %iq3s_grid_low9: vector<32xf32>, %iq3s_grid_low10: vector<32xf32>, %iq3s_grid_low11: vector<32xf32>, %iq3s_grid_low12: vector<32xf32>, %iq3s_grid_low13: vector<32xf32>, %iq3s_grid_low14: vector<32xf32>, %iq3s_grid_low15: vector<32xf32>, %iq3s_grid_high0: vector<32xf32>, %iq3s_grid_high1: vector<32xf32>, %iq3s_grid_high2: vector<32xf32>, %iq3s_grid_high3: vector<32xf32>, %iq3s_grid_high4: vector<32xf32>, %iq3s_grid_high5: vector<32xf32>, %iq3s_grid_high6: vector<32xf32>, %iq3s_grid_high7: vector<32xf32>, %iq3s_grid_high8: vector<32xf32>, %iq3s_grid_high9: vector<32xf32>, %iq3s_grid_high10: vector<32xf32>, %iq3s_grid_high11: vector<32xf32>, %iq3s_grid_high12: vector<32xf32>, %iq3s_grid_high13: vector<32xf32>, %iq3s_grid_high14: vector<32xf32>, %iq3s_grid_high15: vector<32xf32>, %weight_format: index, %weight: buffer, %row_byte_base: offset, %input_size: index, %quant_block: index, %quant_group: index, %packet: index, %k: index) -> (vector<4xf16>) {
   %q1_0_format = index.constant 10 : index
   %c3 = index.constant 11 : index
@@ -7187,7 +7187,7 @@ func.def inline @ggml_dequant_f16_vector4(%iq4nl_table: vector<16xi8>, %iq3s_gri
   %c22 = index.constant 22 : index
   %c23 = index.constant 23 : index
   %c16 = index.constant 16 : index
-  %c17 = index.constant 17 : index
+  %bf16_format = index.constant 30 : index
   %c32 = index.constant 32 : index
   %q4_0_format = index.constant 40 : index
   %q4_1_format = index.constant 41 : index
@@ -7213,7 +7213,7 @@ func.def inline @ggml_dequant_f16_vector4(%iq4nl_table: vector<16xi8>, %iq3s_gri
   %is_q8_0 = index.cmp eq, %weight_format, %q8_0_format : index
   %is_q8_1 = index.cmp eq, %weight_format, %q8_1_format : index
   %is_f16 = index.cmp eq, %weight_format, %c16 : index
-  %is_bf16 = index.cmp eq, %weight_format, %c17 : index
+  %is_bf16 = index.cmp eq, %weight_format, %bf16_format : index
   %is_f32 = index.cmp eq, %weight_format, %c32 : index
   // Shared block index used by 32-value formats that pack eight groups per
   // 256-value tile.
