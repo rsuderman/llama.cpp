@@ -622,6 +622,31 @@ static bool node_is_covered(const DispatchMatchContext & context, const GraphNod
            context.covered_nodes[index];
 }
 
+static bool has_uncovered_q6_k_final_projection_consumer(const DispatchMatchContext & context, ValueId input) {
+    for (const GraphNode * consumer : consumers_with_op_through_layout_aliases(context.graph, input, GGML_OP_MUL_MAT)) {
+        if (consumer == nullptr || node_is_covered(context, consumer) || consumer->inputs.size() < 2 ||
+            !node_has_input_or_alias(context.graph, *consumer, input)) {
+            continue;
+        }
+
+        const Value * weight = graph_value(context.graph, consumer->inputs[0]);
+        const Value * rhs    = graph_value(context.graph, consumer->inputs[1]);
+        const Value * output = graph_value(context.graph, consumer->output);
+        if (weight == nullptr || rhs == nullptr || output == nullptr || weight->type != GGML_TYPE_Q6_K ||
+            rhs->type != GGML_TYPE_F32 || output->type != GGML_TYPE_F32 || weight->alias_source.value >= 0 ||
+            rhs->ne[0] <= 0 || output->ne[0] <= 0) {
+            continue;
+        }
+
+        const int64_t input_size  = rhs->ne[0];
+        const int64_t output_size = output->ne[0];
+        if (input_size % 256 == 0 && output_size % 64 == 0 && output_size >= 16 * input_size) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool residual_input_is_safe_for_in_place(const DispatchMatchContext & context,
                                                 const WeightedReduceMatch &  match) {
     if (match.residual_input == nullptr || match.residual == nullptr) {
@@ -1024,6 +1049,9 @@ static DecodeRoutedDownMatch match_decode_routed_ffn_down_next_q8(const Dispatch
         match_routed_ffn_down_weighted_reduce_topology(context, weighted, root_output, route_weights);
     if (!reduce.topology_matched() || !reduce.next_rmsnorm.matched() ||
         !residual_input_is_safe_for_in_place(context, reduce)) {
+        return {};
+    }
+    if (has_uncovered_q6_k_final_projection_consumer(context, reduce.next_rmsnorm.output->id)) {
         return {};
     }
 
