@@ -1036,9 +1036,7 @@ template.def<@ggml.mul_mat_swiglu.q4_q8_lowtoken_body> device @ggml_mul_mat_swig
     %active_packets = index.mul %activation_active_rows, %record_packets : index
     %source_words = buffer.view %input_na[%base] : buffer -> view<[%activation_words]xi32>
     %stage_words = buffer.view %activation_stage[%base] : buffer -> view<[%activation_words]xi32>
-    %default_stage_workgroup = index.constant 512 : index
-    %publication_stage_workgroup = index.constant 1024 : index
-    %stage_workgroup = scf.select %publish_q8, %publication_stage_workgroup, %default_stage_workgroup : index
+    %stage_workgroup = kernel.workgroup.size<x> : index
     %stage_round_add = index.sub %stage_workgroup, %c1 : index
     %stage_rounded = index.add %activation_packets, %stage_round_add : index
     %stage_rounds = index.div %stage_rounded, %stage_workgroup : index
