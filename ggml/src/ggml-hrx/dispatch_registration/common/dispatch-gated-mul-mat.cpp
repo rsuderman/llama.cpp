@@ -692,6 +692,10 @@ static bool match_mul_mat_swiglu_dispatch(const DispatchMatchContext & context, 
 
     Dispatch dispatch;
     const bool use_direct_dot = match.token_count <= 5 && match.input_size % 256 == 0;
+    const bool use_wmma       = !use_q8 && !use_direct_dot;
+    if (use_wmma && match.token_count < 2) {
+        return false;
+    }
     dispatch.kernel = make_kernel_specialization(publish_q8 ? kMulMatSwiGLUQ4Q8OutputKernel :
         use_q8 ? kMulMatSwiGLUQ4Q8LowTokenDotKernel :
         (use_direct_dot ? kMulMatSwiGLUF32F32LowTokenDotKernel : kMulMatSwiGLUF32F32WmmaKernel));

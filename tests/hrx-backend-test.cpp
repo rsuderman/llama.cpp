@@ -3026,6 +3026,28 @@ static void require_matmul_swiglu_falls_back(ggml_context * ctx, ggml_tensor * o
     }
 }
 
+static void require_matmul_swiglu_falls_back_to_compilable_plan(ggml_context * ctx, ggml_tensor * output) {
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    REQUIRE(graph != nullptr);
+    ggml_build_forward_expand(graph, output);
+
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+    REQUIRE(scheduler.plan().valid());
+    REQUIRE(scheduler.plan().dispatches.size() > 1);
+    for (const ggml::hrx::Dispatch & dispatch : scheduler.plan().dispatches) {
+        REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) != "loom_libs:ggml_mul_mat_swiglu_f32_f32_wmma");
+    }
+
+    const ggml::hrx::CommandProgram commands = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(commands.valid());
+    REQUIRE(command_program_verifies(commands));
+}
+
 static void require_matmul_root_matches_identity_single(ggml_context * ctx, ggml_tensor * output) {
     ggml_cgraph * graph = ggml_new_graph(ctx);
     REQUIRE(graph != nullptr);
@@ -5633,6 +5655,22 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(output != nullptr);
         schedule_fused_matmul_swiglu_command(ctx, output, GGML_TYPE_IQ4_NL, GGML_TYPE_IQ4_NL, 2, 640, 2048,
                                              ggml::hrx::BinaryKind::GeGLU);
+    }
+
+    {
+        ggml_tensor * gate_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_IQ4_NL, 640, 2048);
+        ggml_tensor * up_weight   = ggml_new_tensor_2d(ctx, GGML_TYPE_IQ4_NL, 640, 2048);
+        ggml_tensor * input       = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 640, 1);
+        REQUIRE(gate_weight != nullptr);
+        REQUIRE(up_weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * gate = ggml_mul_mat(ctx, gate_weight, input);
+        ggml_tensor * up   = ggml_mul_mat(ctx, up_weight, input);
+        REQUIRE(gate != nullptr);
+        REQUIRE(up != nullptr);
+        ggml_tensor * output = ggml_glu_split(ctx, gate, up, GGML_GLU_OP_SWIGLU);
+        REQUIRE(output != nullptr);
+        require_matmul_swiglu_falls_back_to_compilable_plan(ctx, output);
     }
 
     {
