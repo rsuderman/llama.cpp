@@ -363,9 +363,11 @@ static const char * backend_name(ggml_backend_t backend) {
     return static_cast<ggml_backend_hrx_context *>(backend->context)->name.c_str();
 }
 
+static void backend_synchronize(ggml_backend_t backend);
+
 static void backend_free(ggml_backend_t backend) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
-    HRX_CHECK(hrx_stream_synchronize(context->stream));
+    backend_synchronize(backend);
     context->prepared_programs.clear();
     context->graph_programs.clear();
     context->kernel_executables.clear();
@@ -498,7 +500,9 @@ static bool backend_copy_tensor_async(ggml_backend_t      backend_src,
 
 static void backend_synchronize(ggml_backend_t backend) {
     auto * context = static_cast<ggml_backend_hrx_context *>(backend->context);
-    HRX_CHECK(hrx_stream_synchronize(context->stream));
+    if (HRX_CHECK(hrx_stream_synchronize(context->stream))) {
+        context->graph_replay_state.mark_stream_synchronized();
+    }
 }
 
 static const char * status_first_error(const ggml::hrx::Status & status) {

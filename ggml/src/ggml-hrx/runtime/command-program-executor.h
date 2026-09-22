@@ -7,6 +7,7 @@
 #include "runtime/graph-replay.h"
 #include "runtime/host-memory.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -27,6 +28,28 @@ struct KernelExecutable;
 class TransientArena;
 class HostBufferRegistry;
 
+struct PendingHostWriteback {
+    void *       host_destination = nullptr;
+    const void * mapped_source    = nullptr;
+    size_t       size             = 0;
+    hrx_buffer_t retained_buffer  = nullptr;
+};
+
+struct GraphReplayStreamState {
+    GraphReplayStreamState() = default;
+    ~GraphReplayStreamState();
+
+    GraphReplayStreamState(const GraphReplayStreamState &)             = delete;
+    GraphReplayStreamState & operator=(const GraphReplayStreamState &) = delete;
+
+    void mark_stream_synchronized();
+    void add_host_writeback(void * host_destination, const void * mapped_source, size_t size, hrx_buffer_t buffer);
+    void clear();
+
+  private:
+    std::vector<PendingHostWriteback> pending_host_writebacks_;
+};
+
 struct CommandProgramExecutionContext {
     hrx_device_t            device             = nullptr;
     hrx_stream_t            stream             = nullptr;
@@ -37,6 +60,7 @@ struct CommandProgramExecutionContext {
     HostTransferManager *   host_transfers     = nullptr;
     HostWeightCache *       host_weights       = nullptr;
     HostBufferRegistry *    host_buffers       = nullptr;
+    GraphReplayStreamState * graph_replay_state = nullptr;
 };
 
 struct PreparedCommandBinding {

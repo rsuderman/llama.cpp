@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -17,6 +18,43 @@
 #include <utility>
 
 namespace ggml::hrx {
+
+GraphReplayStreamState::~GraphReplayStreamState() {
+    clear();
+}
+
+void GraphReplayStreamState::clear() {
+    for (PendingHostWriteback & writeback : pending_host_writebacks_) {
+        if (writeback.retained_buffer != nullptr) {
+            hrx_buffer_release(writeback.retained_buffer);
+            writeback.retained_buffer = nullptr;
+        }
+    }
+    pending_host_writebacks_.clear();
+}
+
+void GraphReplayStreamState::mark_stream_synchronized() {
+    for (PendingHostWriteback & writeback : pending_host_writebacks_) {
+        if (writeback.host_destination != nullptr && writeback.mapped_source != nullptr && writeback.size > 0) {
+            std::memcpy(writeback.host_destination, writeback.mapped_source, writeback.size);
+        }
+        if (writeback.retained_buffer != nullptr) {
+            hrx_buffer_release(writeback.retained_buffer);
+            writeback.retained_buffer = nullptr;
+        }
+    }
+    pending_host_writebacks_.clear();
+}
+
+void GraphReplayStreamState::add_host_writeback(void *       host_destination,
+                                                const void * mapped_source,
+                                                size_t       size,
+                                                hrx_buffer_t buffer) {
+    if (buffer != nullptr) {
+        hrx_buffer_retain(buffer);
+    }
+    pending_host_writebacks_.push_back({ host_destination, mapped_source, size, buffer });
+}
 
 PreparedProgramConstantBuffer::~PreparedProgramConstantBuffer() {
     if (buffer != nullptr) {
@@ -858,23 +896,79 @@ static Status upload_prepared_host_staging(const CommandProgramExecutionContext 
     return status;
 }
 
-static Status download_prepared_host_staging(const CommandProgramExecutionContext & context,
-                                             const PreparedCommandProgram &         prepared) {
+static void mark_graph_replay_synchronized(const CommandProgramExecutionContext & context) {
+    if (context.graph_replay_state != nullptr) {
+        context.graph_replay_state->mark_stream_synchronized();
+    }
+}
+
+static Status enqueue_stream_execution_barrier(const CommandProgramExecutionContext & context, const char * label) {
     Status status;
-    if (prepared.host_staging.empty()) {
+    if (ErrorResult error = take_status(hrx_stream_execution_barrier(context.stream))) {
+        status.log("%s failed: %s", label, error->c_str());
+    }
+    return status;
+}
+
+static Status flush_stream_commands(const CommandProgramExecutionContext & context, const char * label) {
+    Status status;
+    if (ErrorResult error = take_status(hrx_stream_flush(context.stream))) {
+        status.log("%s failed: %s", label, error->c_str());
+    }
+    return status;
+}
+
+static Status wait_stream_commands(const CommandProgramExecutionContext & context, const char * label) {
+    Status status;
+    if (ErrorResult error = take_status(hrx_stream_wait(context.stream))) {
+        status.log("%s failed: %s", label, error->c_str());
+    }
+    return status;
+}
+
+static Status download_prepared_host_staging(const CommandProgramExecutionContext & context,
+                                             const PreparedCommandProgram &         prepared,
+                                             bool                                   insert_barrier = true) {
+    Status status;
+
+    bool has_download = false;
+    for (const HostStagingBuffer & staging : prepared.host_staging) {
+        has_download = has_download || staging.download;
+    }
+    if (!has_download) {
         return status;
     }
-    if (context.host_transfers == nullptr) {
-        status.log("missing HRX host transfer manager");
+    if (context.graph_replay_state == nullptr) {
+        status.log("missing HRX stream completion state");
         return status;
+    }
+    if (insert_barrier) {
+        Status barrier_status = enqueue_stream_execution_barrier(context, "insert HRX host download barrier");
+        if (!barrier_status.success()) {
+            return barrier_status;
+        }
     }
     for (const HostStagingBuffer & staging : prepared.host_staging) {
         if (!staging.download) {
             continue;
         }
-        Status download_status = context.host_transfers->download_synchronous(context.stream, staging.buffer, 0,
-                                                                              staging.host_data, staging.length);
-        status.append(download_status);
+        hrx_buffer_t download_buffer = nullptr;
+        void *       download_data   = nullptr;
+        Status allocation_status =
+            allocate_mapped_host_staging_buffer(context.device, staging.length, download_buffer, download_data);
+        if (!allocation_status.success()) {
+            status.log("allocate HRX host download staging buffer for value %d failed", staging.value);
+            status.append(allocation_status);
+            return status;
+        }
+        if (ErrorResult error = take_status(hrx_stream_copy_buffer(context.stream, staging.buffer, 0,
+                                                                   download_buffer, 0, staging.length))) {
+            status.log("HRX host download staging copy failed for value %d: %s", staging.value, error->c_str());
+            hrx_buffer_release(download_buffer);
+            return status;
+        }
+        context.graph_replay_state->add_host_writeback(staging.host_data, download_data, staging.length, download_buffer);
+        hrx_buffer_release(download_buffer);
     }
     return status;
 }
@@ -1785,6 +1879,20 @@ RecordedCommandGraphExecutionResult bind_and_launch_recorded_command_graph(
         result.event = HrxGraphReplayEvent::LaunchFailed;
         return result;
     }
+    Status replay_flush_status = flush_stream_commands(context, "flush HRX graph replay commands");
+    if (!replay_flush_status.success()) {
+        result.launch_ns = hrx_graph_replay_now_ns() - launch_start_ns;
+        result.status.append(replay_flush_status);
+        result.event = HrxGraphReplayEvent::LaunchFailed;
+        return result;
+    }
+    Status replay_wait_status = wait_stream_commands(context, "wait for HRX graph replay commands");
+    if (!replay_wait_status.success()) {
+        result.launch_ns = hrx_graph_replay_now_ns() - launch_start_ns;
+        result.status.append(replay_wait_status);
+        result.event = HrxGraphReplayEvent::LaunchFailed;
+        return result;
+    }
     const char * diagnostic_sync_size = std::getenv("GGML_HRX_DIAGNOSTIC_GRAPH_SYNC_PROGRAM_COMMANDS");
     const bool   diagnostic_sync      = std::getenv("GGML_HRX_DIAGNOSTIC_GRAPH_SYNC") != nullptr ||
                                  (diagnostic_sync_size != nullptr && diagnostic_sync_size[0] != '\0' &&
@@ -1796,8 +1904,9 @@ RecordedCommandGraphExecutionResult bind_and_launch_recorded_command_graph(
             result.event = HrxGraphReplayEvent::LaunchFailed;
             return result;
         }
+        mark_graph_replay_synchronized(context);
     }
-    Status download_status = download_prepared_host_staging(context, prepared);
+    Status download_status = download_prepared_host_staging(context, prepared, false);
     if (!download_status.success()) {
         result.launch_ns = hrx_graph_replay_now_ns() - launch_start_ns;
         result.status.append(download_status);

@@ -165,5 +165,9 @@ struct HostStagingBuffer {
 };
 
 Status allocate_host_staging_buffer(hrx_device_t device, size_t size, HostStagingBuffer & staging);
+Status allocate_mapped_host_staging_buffer(hrx_device_t device,
+                                           size_t       size,
+                                           hrx_buffer_t & buffer,
+                                           void *&      host_data);
 
 }  // namespace ggml::hrx

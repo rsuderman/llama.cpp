@@ -1218,6 +1218,37 @@ static Status allocate_device_buffer(hrx_device_t device, size_t size, hrx_buffe
 
 }  // namespace
 
+Status allocate_mapped_host_staging_buffer(hrx_device_t device, size_t size, hrx_buffer_t & buffer, void *& host_data) {
+    Status status;
+    buffer    = nullptr;
+    host_data = nullptr;
+    if (device == nullptr) {
+        status.log("missing HRX device for host staging allocation");
+        return status;
+    }
+    if (size == 0) {
+        status.log("cannot allocate an empty host staging buffer");
+        return status;
+    }
+    hrx_buffer_params_t params = {
+        HRX_MEMORY_TYPE_HOST_LOCAL | HRX_MEMORY_TYPE_DEVICE_VISIBLE,
+        HRX_MEMORY_ACCESS_ALL,
+        HRX_BUFFER_USAGE_DEFAULT | HRX_BUFFER_USAGE_MAPPING_SCOPED | HRX_BUFFER_USAGE_MAPPING_PERSISTENT,
+        0,
+    };
+    if (ErrorResult error =
+            take_status(hrx_allocator_allocate_buffer(hrx_device_allocator(device), params, size, &buffer))) {
+        status.log("allocate mapped HRX host staging buffer: %s", error->c_str());
+        return status;
+    }
+    if (ErrorResult error = take_status(hrx_buffer_map(buffer, HRX_MAP_READ | HRX_MAP_WRITE, 0, size, &host_data))) {
+        status.log("map HRX host staging buffer: %s", error->c_str());
+        hrx_buffer_release(buffer);
+        buffer = nullptr;
+    }
+    return status;
+}
+
 Status HostTransferManager::upload_synchronous(hrx_stream_t stream,
                                                const void * host_source,
                                                hrx_buffer_t destination,
