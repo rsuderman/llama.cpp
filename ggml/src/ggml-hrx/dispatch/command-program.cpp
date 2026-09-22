@@ -8,6 +8,7 @@
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace ggml::hrx {
@@ -376,6 +377,74 @@ static void verify_transient_allocations(const CommandProgram & program, Status 
     }
 }
 
+static bool binding_requires_prior_write(const CommandBinding & binding) {
+    return binding.origin == CommandBindingOrigin::Transient && binding.access == ResourceAccess::Read;
+}
+
+static bool binding_defines_transient_value(const CommandBinding & binding) {
+    return binding.origin == CommandBindingOrigin::Transient && resource_access_writes(binding.access);
+}
+
+static int32_t find_later_transient_writer(const std::vector<Command> & commands,
+                                           size_t                       begin,
+                                           ValueId                      value) {
+    for (size_t i = begin; i < commands.size(); ++i) {
+        const Command & command = commands[i];
+        for (const CommandBinding & binding : command.bindings) {
+            if (binding.value == value && binding_defines_transient_value(binding)) {
+                return static_cast<int32_t>(command.ordinal);
+            }
+        }
+    }
+    return -1;
+}
+
+static void verify_transient_reads_are_defined(const CommandProgram & program, Status & status) {
+    std::unordered_set<int32_t> defined;
+    for (const Command & command : program.initialization_commands) {
+        for (const CommandBinding & binding : command.bindings) {
+            if (binding_defines_transient_value(binding)) {
+                defined.insert(binding.value.value);
+            }
+        }
+    }
+    for (const ConstantInitialization & initialization : program.constant_initializations) {
+        defined.insert(initialization.value.value);
+    }
+    if (program.completion_counters.byte_count > 0) {
+        for (const TransientAllocation & allocation : program.transients.allocations) {
+            if (allocation_overlaps_region(allocation, program.completion_counters.arena_offset,
+                                           program.completion_counters.byte_count)) {
+                defined.insert(allocation.value.value);
+            }
+        }
+    }
+
+    for (size_t command_index = 0; command_index < program.commands.size(); ++command_index) {
+        const Command &   command         = program.commands[command_index];
+        const std::string command_context = format_command(command);
+        for (size_t binding_index = 0; binding_index < command.bindings.size(); ++binding_index) {
+            const CommandBinding & binding = command.bindings[binding_index];
+            if (!binding_requires_prior_write(binding) || defined.find(binding.value.value) != defined.end()) {
+                continue;
+            }
+            const int32_t later_writer = find_later_transient_writer(program.commands, command_index + 1, binding.value);
+            if (later_writer >= 0) {
+                status.log("%s %s reads transient value %d before write by command %d", command_context.c_str(),
+                           format_command_binding(binding).c_str(), binding.value.value, later_writer);
+            } else {
+                status.log("%s %s reads transient value %d before write", command_context.c_str(),
+                           format_command_binding(binding).c_str(), binding.value.value);
+            }
+        }
+        for (const CommandBinding & binding : command.bindings) {
+            if (binding_defines_transient_value(binding)) {
+                defined.insert(binding.value.value);
+            }
+        }
+    }
+}
+
 }  // namespace
 
 const TransientAllocation * find_transient_allocation(const TransientPlan & plan, ValueId value) {
@@ -448,6 +517,7 @@ VerificationResult verify_command_program(const CommandProgram & program,
         }
     }
     verify_transient_allocations(program, result.status);
+    verify_transient_reads_are_defined(program, result.status);
     for (const ConstantInitialization & initialization : program.constant_initializations) {
         const TransientAllocation * allocation = find_transient_allocation(program.transients, initialization.value);
         if (allocation == nullptr) {

@@ -42,6 +42,16 @@ static bool is_supported_token_count(int64_t token_count) {
     return token_count >= 1 && token_count <= 2048;
 }
 
+static bool value_is_available(const Graph & graph, ValueId value, const std::vector<bool> & covered_nodes) {
+    const GraphNode * producer = graph.index().producer(value);
+    if (producer == nullptr) {
+        return true;
+    }
+    size_t producer_index = 0;
+    return graph.index().node_index(producer, producer_index) && producer_index < covered_nodes.size() &&
+           covered_nodes[producer_index];
+}
+
 struct GatherAddMatch {
     const GraphNode * first_get_rows        = nullptr;
     const GraphNode * second_get_rows       = nullptr;
@@ -166,6 +176,10 @@ static bool match_gather_add_f32_dispatch(const DispatchMatchContext & context, 
         gather_add.add_node_index >= context.covered_nodes.size() ||
         context.covered_nodes[gather_add.first_get_rows_index] ||
         context.covered_nodes[gather_add.second_get_rows_index] || context.covered_nodes[gather_add.add_node_index]) {
+        return false;
+    }
+    if (!value_is_available(context.graph, gather_add.first_source->id, context.covered_nodes) ||
+        !value_is_available(context.graph, gather_add.second_source->id, context.covered_nodes)) {
         return false;
     }
 
