@@ -121,15 +121,15 @@
       },
       "kernel": "loom_libs:ggml_rmsnorm_binary_f32",
       "library_sources": [
-        "motifs/rmsnorm_f32.loom",
+        "motifs/normalization/rmsnorm.loom",
         "motifs/binary_f32_apply.loom"
       ],
       "primary_sources": [
-        "ops/rmsnorm_binary_f32.loom"
+        "ops/normalization/rmsnorm.loom"
       ],
       "sources": [
-        "ops/rmsnorm_binary_f32.loom",
-        "motifs/rmsnorm_f32.loom",
+        "ops/normalization/rmsnorm.loom",
+        "motifs/normalization/rmsnorm.loom",
         "motifs/binary_f32_apply.loom"
       ],
       "symbol": "ggml_rmsnorm_binary_f32",

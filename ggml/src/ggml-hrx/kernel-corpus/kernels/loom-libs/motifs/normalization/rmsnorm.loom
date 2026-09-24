@@ -130,3 +130,36 @@ template.def<@ggml.rmsnorm_f32.apply> device @ggml_rmsnorm_f32_apply(%value: f32
   %normalized = scalar.mulf<reassoc|nnan|ninf|nsz> %value, %scale : f32
   template.return %normalized : f32
 }
+
+
+config.decl @ggml.rmsnorm_f32.hidden_size : %value: index where [range(%value, 64, 32768), mul(%value, 64)]
+config.decl @ggml.rmsnorm_f32.input_stride : %value: index where [range(%value, 64, 1048576)]
+config.decl @ggml.rmsnorm_f32.rms_epsilon : f32
+
+template.decl @ggml.rmsnorm_f32.body(%token_count: index, %input: buffer, %output: buffer)
+
+template.def<@ggml.rmsnorm_f32.body> device @ggml_rmsnorm_f32_body(%token_count: index, %input: buffer, %output: buffer) {
+  %hidden_size0 = config.get @ggml.rmsnorm_f32.hidden_size : index
+  %input_stride0 = config.get @ggml.rmsnorm_f32.input_stride : index
+  %epsilon = config.get @ggml.rmsnorm_f32.rms_epsilon : f32
+  %hidden_size1 = index.assume %hidden_size0 [range(%hidden_size0, 64, 32768), mul(%hidden_size0, 64)] : index
+  %input_stride1 = index.assume %input_stride0 [range(%input_stride0, 64, 1048576)] : index
+  %hidden_size, %input_stride = index.assume %hidden_size1, %input_stride1 [le(%hidden_size1, %input_stride1)] : index, index
+  %token0 = kernel.workgroup.id<x> : index
+  %workitem = kernel.workitem.id<x> : index
+  %c0 = index.constant 0 : index
+  %c256 = index.constant 256 : index
+  %c0_offset = index.constant 0 : offset
+  %input_noalias, %output_noalias = buffer.assume.noalias %input, %output : buffer, buffer
+  %row_scale, %token, %launch_token_count, %valid_token = template.apply<@ggml.rmsnorm_f32.row_scale>(%token_count, %token0, %hidden_size, %input_stride, %epsilon, %input_noalias) : (index, index, index, index, f32, buffer) -> (f32, index, index, i1)
+  %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%input_stride]xf32>
+  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32>
+  scf.if %valid_token {
+    scf.for %channel = [%workitem to %hidden_size step %c256] {
+      %value = view.load %input_view[%token, %channel] : view<[%launch_token_count]x[%input_stride]xf32> -> f32
+      %normalized = template.apply<@ggml.rmsnorm_f32.apply>(%value, %row_scale) : (f32, f32) -> (f32)
+      view.store %normalized, %output_view[%token, %channel] : f32, view<[%launch_token_count]x[%hidden_size]xf32>
+    }
+  }
+  template.return
+}
