@@ -2648,9 +2648,12 @@ static void schedule_single_matmul_command(ggml_context * ctx,
     const std::string           kernel_name = kernel_name_for_id(dispatch.kernel.kernel_id);
     const bool vector_kernel    = string_contains(kernel_name, "ggml_mul_mat_vector");
     const bool q6_vector_kernel = kernel_name == "loom_libs:ggml_mul_mat_vector_q6_f32_f32";
+    const std::string expected_kernel(expected_kernel_name);
+    const bool q8_capable_kernel = expected_kernel == "loom_libs:ggml_mul_mat_f32_f32_wmma" ||
+                                   expected_kernel == "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32";
     const bool q8_input = !vector_kernel && expected_token_count <= 5 && expected_output_size % 64 == 0 &&
                            (weight_type == GGML_TYPE_Q4_K || weight_type == GGML_TYPE_Q6_K) &&
-                           std::string(expected_kernel_name) == "loom_libs:ggml_mul_mat_f32_f32_wmma";
+                           q8_capable_kernel;
     const size_t command_count = q8_input ? 2 : 1;
     REQUIRE(scheduler.plan().dispatches.size() == command_count);
     if (q8_input) {
@@ -2658,7 +2661,6 @@ static void schedule_single_matmul_command(ggml_context * ctx,
                 "qwen3_moe:ggml_quantize_q8_1_x4_f32");
     }
 
-    const std::string expected_kernel(expected_kernel_name);
     const bool        accepts_vector_token1 =
         expected_token_count == 1 && (expected_kernel == "loom_libs:ggml_mul_mat_f32_f32_wmma" ||
                                       expected_kernel == "loom_libs:ggml_mul_mat_f32_f32_decode_wave64" ||
@@ -5600,7 +5602,7 @@ static void run_gdn_rmsnorm_gate_dispatch_checks() {
 
 static void run_qwen_matmul_dispatch_checks() {
     ggml_init_params params = {};
-    params.mem_size         = 8 * 1024 * 1024;
+    params.mem_size         = 12 * 1024 * 1024;
     params.no_alloc         = true;
     ggml_context * ctx      = ggml_init(params);
     REQUIRE(ctx != nullptr);
@@ -5612,7 +5614,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(input != nullptr);
         ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
         REQUIRE(output != nullptr);
-        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
     }
 
     {
@@ -5632,7 +5634,47 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(input != nullptr);
         ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
         REQUIRE(output != nullptr);
-        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 2, 2048, 128);
+        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 2, 2048, 128);
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 2048, 128);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 3);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 3, 2048, 128);
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 2048, 128);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 5);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 5, 2048, 128);
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 2048, 128);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 6);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_tiled_input_f32_publish_f32", 6, 2048, 128);
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q5_0, 640, 128);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 640, 2);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(output != nullptr);
+        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_tiled_input_f32_publish_f32", 2, 640, 128);
     }
 
     {
@@ -5652,7 +5694,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(input != nullptr);
         ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
         REQUIRE(output != nullptr);
-        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
     }
 
     {
@@ -5672,7 +5714,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(input != nullptr);
         ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
         REQUIRE(output != nullptr);
-        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
     }
 
     {
@@ -5692,7 +5734,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(input != nullptr);
         ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
         REQUIRE(output != nullptr);
-        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
     }
 
     {
@@ -5712,7 +5754,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(input != nullptr);
         ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
         REQUIRE(output != nullptr);
-        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
     }
 
     {
@@ -5732,7 +5774,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(input != nullptr);
         ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
         REQUIRE(output != nullptr);
-        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
     }
 
     {
@@ -5752,7 +5794,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(input != nullptr);
         ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
         REQUIRE(output != nullptr);
-        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 256);
+        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 256);
     }
 
     {
@@ -6111,7 +6153,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(matmul != nullptr);
         ggml_tensor * output = ggml_silu(ctx, matmul);
         REQUIRE(output != nullptr);
-        schedule_fused_matmul_unary_command(ctx, output, "loom_libs:ggml_mul_mat_f32_f32_wmma",
+        schedule_fused_matmul_unary_command(ctx, output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32",
                                             ggml::hrx::UnaryKind::Silu, 4, 2048, 128);
     }
 
@@ -6124,7 +6166,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(matmul != nullptr);
         ggml_tensor * output = ggml_relu(ctx, matmul);
         REQUIRE(output != nullptr);
-        schedule_fused_matmul_unary_command(ctx, output, "loom_libs:ggml_mul_mat_f32_f32_wmma",
+        schedule_fused_matmul_unary_command(ctx, output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32",
                                             ggml::hrx::UnaryKind::Relu, 4, 2048, 128);
     }
 
@@ -6137,8 +6179,21 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(matmul != nullptr);
         ggml_tensor * output = ggml_gelu(ctx, matmul);
         REQUIRE(output != nullptr);
-        schedule_fused_matmul_unary_command(ctx, output, "loom_libs:ggml_mul_mat_f32_f32_wmma",
+        schedule_fused_matmul_unary_command(ctx, output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32",
                                             ggml::hrx::UnaryKind::Gelu, 4, 2048, 128);
+    }
+
+    {
+        ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q5_0, 640, 128);
+        ggml_tensor * input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 640, 2);
+        REQUIRE(weight != nullptr);
+        REQUIRE(input != nullptr);
+        ggml_tensor * matmul = ggml_mul_mat(ctx, weight, input);
+        REQUIRE(matmul != nullptr);
+        ggml_tensor * output = ggml_gelu(ctx, matmul);
+        REQUIRE(output != nullptr);
+        schedule_fused_matmul_unary_command(ctx, output, "loom_libs:ggml_mul_mat_tiled_input_f32_publish_f32",
+                                            ggml::hrx::UnaryKind::Gelu, 2, 640, 128);
     }
 
     {
@@ -6182,7 +6237,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(q4_input != nullptr);
         ggml_tensor * q4_output = ggml_mul_mat(ctx, q4_weight, q4_input);
         REQUIRE(q4_output != nullptr);
-        schedule_single_matmul_command(ctx, q4_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, q4_output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
 
         ggml_tensor * q4_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 2048, 128);
         ggml_tensor * q4_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
@@ -6201,7 +6256,7 @@ static void run_qwen_matmul_dispatch_checks() {
             REQUIRE(legacy_input != nullptr);
             ggml_tensor * legacy_output = ggml_mul_mat(ctx, legacy_weight, legacy_input);
             REQUIRE(legacy_output != nullptr);
-            schedule_single_matmul_command(ctx, legacy_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+            schedule_single_matmul_command(ctx, legacy_output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
 
             ggml_tensor * legacy_decode_weight = ggml_new_tensor_2d(ctx, legacy_type, 2048, 128);
             ggml_tensor * legacy_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
@@ -6219,7 +6274,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(q3_input != nullptr);
         ggml_tensor * q3_output = ggml_mul_mat(ctx, q3_weight, q3_input);
         REQUIRE(q3_output != nullptr);
-        schedule_single_matmul_command(ctx, q3_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, q3_output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
 
         ggml_tensor * q3_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q3_K, 2048, 128);
         ggml_tensor * q3_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
@@ -6236,7 +6291,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(iq2_s_input != nullptr);
         ggml_tensor * iq2_s_output = ggml_mul_mat(ctx, iq2_s_weight, iq2_s_input);
         REQUIRE(iq2_s_output != nullptr);
-        schedule_single_matmul_command(ctx, iq2_s_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 2, 2048, 640);
+        schedule_single_matmul_command(ctx, iq2_s_output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 2, 2048, 640);
 
         ggml_tensor * iq2_s_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_IQ2_S, 2048, 640);
         ggml_tensor * iq2_s_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
@@ -6253,7 +6308,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(iq3_s_input != nullptr);
         ggml_tensor * iq3_s_output = ggml_mul_mat(ctx, iq3_s_weight, iq3_s_input);
         REQUIRE(iq3_s_output != nullptr);
-        schedule_single_matmul_command(ctx, iq3_s_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, iq3_s_output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
 
         ggml_tensor * iq3_s_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_IQ3_S, 2048, 128);
         ggml_tensor * iq3_s_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
@@ -6270,7 +6325,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(iq4_nl_input != nullptr);
         ggml_tensor * iq4_nl_output = ggml_mul_mat(ctx, iq4_nl_weight, iq4_nl_input);
         REQUIRE(iq4_nl_output != nullptr);
-        schedule_single_matmul_command(ctx, iq4_nl_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, iq4_nl_output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
 
         ggml_tensor * iq4_nl_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_IQ4_NL, 2048, 128);
         ggml_tensor * iq4_nl_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
@@ -6287,7 +6342,8 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(iq4_nl_small_input != nullptr);
         ggml_tensor * iq4_nl_small_output = ggml_mul_mat(ctx, iq4_nl_small_weight, iq4_nl_small_input);
         REQUIRE(iq4_nl_small_output != nullptr);
-        schedule_single_matmul_command(ctx, iq4_nl_small_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 2, 640, 1024);
+        schedule_single_matmul_command(ctx, iq4_nl_small_output, "loom_libs:ggml_mul_mat_tiled_input_f32_publish_f32",
+                                       2, 640, 1024);
 
         ggml_tensor * iq4_nl_small_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_IQ4_NL, 640, 1024);
         ggml_tensor * iq4_nl_small_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 640, 1);
@@ -6305,7 +6361,8 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(q5_0_small_input != nullptr);
         ggml_tensor * q5_0_small_output = ggml_mul_mat(ctx, q5_0_small_weight, q5_0_small_input);
         REQUIRE(q5_0_small_output != nullptr);
-        schedule_single_matmul_command(ctx, q5_0_small_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 2, 640, 256);
+        schedule_single_matmul_command(ctx, q5_0_small_output, "loom_libs:ggml_mul_mat_tiled_input_f32_publish_f32",
+                                       2, 640, 256);
 
         ggml_tensor * q5_0_small_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q5_0, 640, 256);
         ggml_tensor * q5_0_small_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 640, 1);
@@ -6322,7 +6379,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(q6_input != nullptr);
         ggml_tensor * q6_output = ggml_mul_mat(ctx, q6_weight, q6_input);
         REQUIRE(q6_output != nullptr);
-        schedule_single_matmul_command(ctx, q6_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 2, 2048, 128);
+        schedule_single_matmul_command(ctx, q6_output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 2, 2048, 128);
 
         ggml_tensor * q6_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q6_K, 2048, 128);
         ggml_tensor * q6_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
@@ -6348,7 +6405,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(iq4_xs_input != nullptr);
         ggml_tensor * iq4_xs_output = ggml_mul_mat(ctx, iq4_xs_weight, iq4_xs_input);
         REQUIRE(iq4_xs_output != nullptr);
-        schedule_single_matmul_command(ctx, iq4_xs_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, iq4_xs_output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
 
         ggml_tensor * iq4_xs_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_IQ4_XS, 2048, 128);
         ggml_tensor * iq4_xs_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
@@ -6364,7 +6421,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(q8_0_input != nullptr);
         ggml_tensor * q8_0_output = ggml_mul_mat(ctx, q8_0_weight, q8_0_input);
         REQUIRE(q8_0_output != nullptr);
-        schedule_single_matmul_command(ctx, q8_0_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, q8_0_output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
 
         ggml_tensor * q8_0_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_0, 2048, 128);
         ggml_tensor * q8_0_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
@@ -6399,7 +6456,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(q8_1_input != nullptr);
         ggml_tensor * q8_1_output = ggml_mul_mat(ctx, q8_1_weight, q8_1_input);
         REQUIRE(q8_1_output != nullptr);
-        schedule_single_matmul_command(ctx, q8_1_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, q8_1_output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
 
         ggml_tensor * q8_1_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_1, 2048, 128);
         ggml_tensor * q8_1_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
@@ -6416,7 +6473,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(f16_input != nullptr);
         ggml_tensor * f16_output = ggml_mul_mat(ctx, f16_weight, f16_input);
         REQUIRE(f16_output != nullptr);
-        schedule_single_matmul_command(ctx, f16_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, f16_output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
 
         ggml_tensor * f16_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, 2048, 128);
         ggml_tensor * f16_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
@@ -6433,7 +6490,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(f32_input != nullptr);
         ggml_tensor * f32_output = ggml_mul_mat(ctx, f32_weight, f32_input);
         REQUIRE(f32_output != nullptr);
-        schedule_single_matmul_command(ctx, f32_output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, f32_output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
 
         ggml_tensor * f32_decode_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 128);
         ggml_tensor * f32_decode_input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
@@ -6487,7 +6544,7 @@ static void run_qwen_matmul_dispatch_checks() {
         REQUIRE(input != nullptr);
         ggml_tensor * output = ggml_mul_mat(ctx, weight, input);
         REQUIRE(output != nullptr);
-        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_f32_f32_wmma", 4, 2048, 128);
+        schedule_single_matmul_command(ctx, output, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 4, 2048, 128);
     }
 
     {
@@ -10482,16 +10539,18 @@ static void run_lowtoken_residual_dispatch_checks() {
         for (const auto & command : program.commands) {
             const std::string name = kernel_name_for_id(command.kernel.kernel_id);
             binary += name == "loom_libs:ggml_binary_f32";
-            const bool legacy_postops = name == "loom_libs:ggml_mul_mat_bias_f32_f32_wmma" ||
-                                        name == "loom_libs:ggml_mul_mat_add_f32_f32_wmma";
             const bool tiled_postops =
                 name == "loom_libs:ggml_mul_mat_tiled_input_f32_bias_publish_f32" ||
                 name == "loom_libs:ggml_mul_mat_tiled_input_f32_residual_publish_f32" ||
                 name == "loom_libs:ggml_mul_mat_tiled_input_f32_bias_residual_publish_f32";
+            const bool skinny_postops =
+                name == "loom_libs:ggml_mul_mat_skinny_input_f32_bias_publish_f32" ||
+                name == "loom_libs:ggml_mul_mat_skinny_input_f32_residual_publish_f32" ||
+                name == "loom_libs:ggml_mul_mat_skinny_input_f32_bias_residual_publish_f32";
             const bool vector_postops = name == "loom_libs:ggml_mul_mat_vector_bias_f32_f32" ||
                                         name == "loom_libs:ggml_mul_mat_vector_residual_f32_f32" ||
                                         name == "loom_libs:ggml_mul_mat_vector_bias_residual_f32_f32";
-            if (!legacy_postops && !tiled_postops && !vector_postops) {
+            if (!tiled_postops && !skinny_postops && !vector_postops) {
                 continue;
             }
             ++fused;
@@ -10510,6 +10569,41 @@ static void run_lowtoken_residual_dispatch_checks() {
         REQUIRE(binary == expected_binary);
         ggml_free(ctx);
     }
+}
+
+static void run_lowtoken_bias_dispatch_checks() {
+    ggml_context * ctx = ggml_init({ 16 * 1024 * 1024, nullptr, true });
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q6_K, 3584, 1024);
+    ggml_tensor * input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3584, 2);
+    ggml_tensor * projection = ggml_mul_mat(ctx, weight, input);
+    ggml_tensor * bias = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1024);
+    ggml_tensor * output = ggml_add(ctx, projection, bias);
+
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 64, false);
+    ggml_build_forward_expand(graph, output);
+    ggml::hrx::GraphImportResult imported = ggml::hrx::import_ggml_graph(*graph);
+    REQUIRE(imported.valid());
+
+    ggml::hrx::DispatchScheduler scheduler;
+    REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+    const ggml::hrx::CommandProgram program = ggml::hrx::build_command_program(
+        imported.graph, scheduler.plan(), ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+    REQUIRE(program.valid());
+    REQUIRE(command_program_verifies(program));
+
+    size_t skinny_bias = 0;
+    size_t tiled_bias = 0;
+    for (const auto & command : program.commands) {
+        const std::string name = kernel_name_for_id(command.kernel.kernel_id);
+        skinny_bias += name == "loom_libs:ggml_mul_mat_skinny_input_f32_bias_publish_f32";
+        tiled_bias += name == "loom_libs:ggml_mul_mat_tiled_input_f32_bias_publish_f32";
+    }
+    REQUIRE(skinny_bias == 1);
+    REQUIRE(tiled_bias == 0);
+
+    ggml_free(ctx);
 }
 
 static void run_gdn_selected_rms_q8_dispatch_checks() {
@@ -10704,6 +10798,7 @@ static void register_hrx_backend_host_cases(test_runner::Suite & suite) {
     suite.host_case("rmsnorm_gate_packed_output", [] { run_rmsnorm_gate_packed_output_checks(); });
     suite.host_case("rmsnorm_gate_q8_output", [] { run_rmsnorm_gate_q8_output_checks(); });
     suite.host_case("lowtoken_residual_dispatch", [] { run_lowtoken_residual_dispatch_checks(); });
+    suite.host_case("lowtoken_bias_dispatch", [] { run_lowtoken_bias_dispatch_checks(); });
     suite.host_case("quantized_conv4_dispatch", [] { run_quantized_conv4_dispatch_checks(); });
     suite.host_case("gdn_rmsnorm_gate_dispatch", [] { run_gdn_rmsnorm_gate_dispatch_checks(); });
     suite.host_case("gdn_native_projection_pair_dispatch", [] { run_gdn_native_projection_pair_dispatch_checks(); });

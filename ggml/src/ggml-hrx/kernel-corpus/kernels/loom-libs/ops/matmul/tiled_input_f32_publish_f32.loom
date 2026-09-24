@@ -32,7 +32,7 @@ config.decl @ggml.mul_mat.weight_format : %value: index where [range(%value, 4, 
 
 config.decl @ggml.mul_mat.activation_format : %value: index where [range(%value, 0, 16)]
 
-config.decl @ggml.mul_mat_postops.input_size : %value: index where [range(%value, 256, 32768), mul(%value, 256)]
+config.decl @ggml.mul_mat_postops.input_size : %value: index where [range(%value, 256, 32768), mul(%value, 32)]
 
 config.decl @ggml.mul_mat_postops.output_size : %value: index where [range(%value, 1, 262144)]
 
