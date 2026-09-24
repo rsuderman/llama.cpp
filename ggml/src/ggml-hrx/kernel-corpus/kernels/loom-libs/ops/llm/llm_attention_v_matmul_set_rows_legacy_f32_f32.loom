@@ -8,7 +8,7 @@ template.decl @ggml.mul_mat_f32_f32_wmma.publish_vector4(%publish_word: i1, %tok
 
 template.decl @llm.attention_qkv.store_cache_vector4(%arg0: index, %arg1: index, %arg2: index, %arg3: index, %arg4: index, %arg5: index, %arg6: buffer, %arg7: vector<4xf32>, %arg8: buffer)
 
-amdgpu.target<gfx11-generic> @llm_attention_v_matmul_set_rows_gfx11_wave64 {subgroup_size = 64}
+amdgpu.target<gfx11-generic> @llm_attention_v_matmul_set_rows_legacy_gfx11_wave64 {subgroup_size = 64}
 
 config.decl @llm.attention_qkv.input_size : %value: index where [range(%value, 256, 32768), mul(%value, 256)]
 
@@ -35,7 +35,7 @@ template.def<@ggml.mul_mat_f32_f32_wmma.finish_tile> device @llm_attention_v_mat
   template.return
 }
 
-kernel.def target(@llm_attention_v_matmul_set_rows_gfx11_wave64) @llm_attention_v_matmul_set_rows_f32_f32_wmma(%token_count: index) {
+kernel.def target(@llm_attention_v_matmul_set_rows_legacy_gfx11_wave64) @llm_attention_v_matmul_set_rows_legacy_f32_f32(%token_count: index) {
   %output_size = config.get @llm.attention_qkv.output_size : index
   %token_capacity = config.get @ggml.workload.token_capacity : index
   %input_size = config.get @llm.attention_qkv.input_size : index

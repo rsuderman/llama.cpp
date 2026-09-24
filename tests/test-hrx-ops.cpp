@@ -4684,7 +4684,7 @@ int main() {
     run_dense_matmul_cpu_reference_case(GGML_TYPE_Q4_K, "loom_libs:ggml_mul_mat_vector_f32_f32", 1, 128);
     for (ggml_type type : { GGML_TYPE_Q4_K, GGML_TYPE_Q6_K }) {
         for (ggml_type cache_type : { GGML_TYPE_F16, GGML_TYPE_F32 }) {
-            run_dense_matmul_cpu_reference_case(type, "loom_libs:llm_attention_v_matmul_set_rows_decode_f32_f32",
+            run_dense_matmul_cpu_reference_case(type, "loom_libs:llm_attention_v_matmul_set_rows_vector_f32_f32",
                                                1, 1024, 2048, false, false, cache_type);
         }
     }
@@ -4723,7 +4723,7 @@ int main() {
     run_dense_matmul_swiglu_cpu_reference_case(GGML_TYPE_Q4_K, GGML_TYPE_F16,
                                                "loom_libs:ggml_mul_mat_swiglu_f32_f32_lowtoken_dot", 2, 128, GGML_GLU_OP_GEGLU);
     run_dense_matmul_swiglu_cpu_reference_case(GGML_TYPE_IQ4_NL, GGML_TYPE_IQ4_NL,
-                                               "loom_libs:ggml_mul_mat_swiglu_f32_f32_wmma", 2, 2048, GGML_GLU_OP_GEGLU,
+                                               "loom_libs:ggml_mul_mat_tiled_pair_input_f32_binary_publish_f32", 2, 2048, GGML_GLU_OP_GEGLU,
                                                640);
     run_dense_matmul_swiglu_cpu_reference_case(GGML_TYPE_Q4_K, GGML_TYPE_F16,
                                                "loom_libs:ggml_mul_mat_swiglu_f32_f32_lowtoken_dot", 2, 128, GGML_GLU_OP_REGLU);
@@ -4732,9 +4732,9 @@ int main() {
     run_dense_matmul_swiglu_cpu_reference_case(
         GGML_TYPE_Q4_K, GGML_TYPE_F16, "loom_libs:ggml_mul_mat_swiglu_f32_f32_lowtoken_dot", 2, 128, GGML_GLU_OP_GEGLU_QUICK);
     run_dense_matmul_packed_glu_cpu_reference_case(GGML_TYPE_Q4_K,
-                                                   "loom_libs:ggml_mul_mat_swiglu_f32_f32_wmma", 2, 128);
+                                                   "loom_libs:ggml_mul_mat_tiled_pair_input_f32_binary_publish_f32", 2, 128);
     run_dense_matmul_packed_glu_cpu_reference_case(GGML_TYPE_Q4_K,
-                                                   "loom_libs:ggml_mul_mat_swiglu_f32_f32_wmma", 2, 128,
+                                                   "loom_libs:ggml_mul_mat_tiled_pair_input_f32_binary_publish_f32", 2, 128,
                                                    GGML_GLU_OP_SWIGLU, true);
     run_dense_matmul_binary_cpu_reference_case(GGML_TYPE_Q4_K, GGML_TYPE_F16,
                                                "loom_libs:ggml_mul_mat_swiglu_f32_f32_lowtoken_dot", 2, 128);
@@ -4772,16 +4772,21 @@ int main() {
         GGML_TYPE_Q4_K, GGML_TYPE_Q4_K, "loom_libs:ggml_mul_mat_swiglu_q4_k_f16_wmma_prefill_wave32", 256, 4096);
     run_dense_matmul_binary_cpu_reference_case(
         GGML_TYPE_Q4_K, GGML_TYPE_Q4_K, "loom_libs:ggml_mul_mat_swiglu_q4_k_f16_wmma_prefill_wave32", 1024, 2048);
-    run_dense_matmul_postops_cpu_reference_case(GGML_TYPE_F16, "loom_libs:ggml_mul_mat_bias_f32_f32_wmma", 33, 256,
+    run_dense_matmul_postops_cpu_reference_case(GGML_TYPE_F16,
+                                                "loom_libs:ggml_mul_mat_tiled_input_f32_bias_publish_f32", 33, 256,
                                                 true, false, false);
-    run_dense_matmul_postops_cpu_reference_case(GGML_TYPE_F16, "loom_libs:ggml_mul_mat_add_f32_f32_wmma", 33, 256,
+    run_dense_matmul_postops_cpu_reference_case(GGML_TYPE_F16,
+                                                "loom_libs:ggml_mul_mat_tiled_input_f32_residual_publish_f32", 33, 256,
                                                 false, true, false);
-    run_dense_matmul_postops_cpu_reference_case(GGML_TYPE_F16, "loom_libs:ggml_mul_mat_bias_add_f32_f32_wmma", 33, 256,
-                                                true, true, false);
-    run_dense_matmul_postops_cpu_reference_case(GGML_TYPE_F16, "loom_libs:ggml_mul_mat_add_f32_f32_wmma", 33, 256,
+    run_dense_matmul_postops_cpu_reference_case(GGML_TYPE_F16,
+                                                "loom_libs:ggml_mul_mat_tiled_input_f32_bias_residual_publish_f32", 33,
+                                                256, true, true, false);
+    run_dense_matmul_postops_cpu_reference_case(GGML_TYPE_F16,
+                                                "loom_libs:ggml_mul_mat_tiled_input_f32_residual_publish_f32", 33, 256,
                                                 false, true, true);
-    run_dense_matmul_postops_cpu_reference_case(GGML_TYPE_F16, "loom_libs:ggml_mul_mat_bias_add_f32_f32_wmma", 33, 256,
-                                                true, true, true);
+    run_dense_matmul_postops_cpu_reference_case(GGML_TYPE_F16,
+                                                "loom_libs:ggml_mul_mat_tiled_input_f32_bias_residual_publish_f32", 33,
+                                                256, true, true, true);
     for (ggml_type type : { GGML_TYPE_Q4_K, GGML_TYPE_Q6_K }) {
         const int64_t input_size = type == GGML_TYPE_Q4_K ? 20480 : 8192;
         run_dense_matmul_cpu_reference_case(
