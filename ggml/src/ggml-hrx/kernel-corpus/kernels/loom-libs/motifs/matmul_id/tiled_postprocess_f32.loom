@@ -1,12 +1,12 @@
-template.decl @ggml.mul_mat_id_f32_f32_wmma.add_bias_vector4(%output_size0: index, %channel: index, %values: vector<4xf32>, %bias: buffer) -> (vector<4xf32>)
+template.decl @ggml.matmul_id.tiled_f32_f32.add_bias_vector4(%output_size0: index, %channel: index, %values: vector<4xf32>, %bias: buffer) -> (vector<4xf32>)
 
-template.decl @ggml.mul_mat_id_f32_f32_wmma.add_residual_vector4(%token_count0: index, %route_count0: index, %output_size0: index, %assignment0: index, %channel: index, %values: vector<4xf32>, %residual_input: buffer) -> (vector<4xf32>)
+template.decl @ggml.matmul_id.tiled_f32_f32.add_residual_vector4(%token_count0: index, %route_count0: index, %output_size0: index, %assignment0: index, %channel: index, %values: vector<4xf32>, %residual_input: buffer) -> (vector<4xf32>)
 
-template.decl @ggml.mul_mat_id_f32_f32_wmma.finish_routed_rmsnorm_weight(%token_count0: index, %route_count0: index, %output_size0: index, %expert_count0: index, %output_tile_count0: index, %maximum_partition_count0: index, %epsilon: f32, %descriptor_ordinal0: index, %expert0: index, %route_tile_base0: index, %partition_row_count0: index, %expert_table: buffer, %source: buffer, %norm_weight: buffer, %normalized_output: buffer, %completion_counters: buffer)
+template.decl @ggml.matmul_id.tiled_f32_f32.finish_routed_rmsnorm_weight(%token_count0: index, %route_count0: index, %output_size0: index, %expert_count0: index, %output_tile_count0: index, %maximum_partition_count0: index, %epsilon: f32, %descriptor_ordinal0: index, %expert0: index, %route_tile_base0: index, %partition_row_count0: index, %expert_table: buffer, %source: buffer, %norm_weight: buffer, %normalized_output: buffer, %completion_counters: buffer)
 
-template.decl @ggml.mul_mat_id_f32_f32_wmma.store_vector4(%token_count0: index, %route_count0: index, %output_size0: index, %assignment0: index, %channel: index, %values: vector<4xf32>, %output: buffer)
+template.decl @ggml.matmul_id.tiled_f32_f32.store_vector4(%token_count0: index, %route_count0: index, %output_size0: index, %assignment0: index, %channel: index, %values: vector<4xf32>, %output: buffer)
 
-template.def<@ggml.mul_mat_id_f32_f32_wmma.add_bias_vector4> device @ggml_mul_mat_id_f32_f32_wmma_add_bias_vector4(%output_size0: index, %channel: index, %values: vector<4xf32>, %bias: buffer) -> (vector<4xf32>) {
+template.def<@ggml.matmul_id.tiled_f32_f32.add_bias_vector4> device @ggml_mul_mat_id_tiled_f32_f32_add_bias_vector4(%output_size0: index, %channel: index, %values: vector<4xf32>, %bias: buffer) -> (vector<4xf32>) {
   %output_size = index.assume %output_size0 [range(%output_size0, 1, 262144)] : index
   %c1 = index.constant 1 : index
   %c0_offset = index.constant 0 : offset
@@ -19,7 +19,7 @@ template.def<@ggml.mul_mat_id_f32_f32_wmma.add_bias_vector4> device @ggml_mul_ma
   template.return %sum : vector<4xf32>
 }
 
-template.def<@ggml.mul_mat_id_f32_f32_wmma.add_residual_vector4> device @ggml_mul_mat_id_f32_f32_wmma_add_residual_vector4(%token_count0: index, %route_count0: index, %output_size0: index, %assignment0: index, %channel: index, %values: vector<4xf32>, %residual_input: buffer) -> (vector<4xf32>) {
+template.def<@ggml.matmul_id.tiled_f32_f32.add_residual_vector4> device @ggml_mul_mat_id_tiled_f32_f32_add_residual_vector4(%token_count0: index, %route_count0: index, %output_size0: index, %assignment0: index, %channel: index, %values: vector<4xf32>, %residual_input: buffer) -> (vector<4xf32>) {
   %token_count = index.assume %token_count0 [range(%token_count0, 1, 2048)] : index
   %route_count = index.assume %route_count0 [range(%route_count0, 1, 32)] : index
   %output_size = index.assume %output_size0 [range(%output_size0, 1, 262144)] : index
@@ -36,7 +36,7 @@ template.def<@ggml.mul_mat_id_f32_f32_wmma.add_residual_vector4> device @ggml_mu
   template.return %sum : vector<4xf32>
 }
 
-template.def<@ggml.mul_mat_id_f32_f32_wmma.store_vector4> device @ggml_mul_mat_id_f32_f32_wmma_store_vector4(%token_count0: index, %route_count0: index, %output_size0: index, %assignment0: index, %channel: index, %values: vector<4xf32>, %output: buffer) {
+template.def<@ggml.matmul_id.tiled_f32_f32.store_vector4> device @ggml_mul_mat_id_tiled_f32_f32_store_vector4(%token_count0: index, %route_count0: index, %output_size0: index, %assignment0: index, %channel: index, %values: vector<4xf32>, %output: buffer) {
   %token_count = index.assume %token_count0 [range(%token_count0, 1, 2048)] : index
   %route_count = index.assume %route_count0 [range(%route_count0, 1, 32)] : index
   %output_size = index.assume %output_size0 [range(%output_size0, 1, 262144)] : index
@@ -51,7 +51,7 @@ template.def<@ggml.mul_mat_id_f32_f32_wmma.store_vector4> device @ggml_mul_mat_i
   template.return
 }
 
-template.def<@ggml.mul_mat_id_f32_f32_wmma.finish_routed_rmsnorm_weight> device @ggml_mul_mat_id_f32_f32_wmma_finish_routed_rmsnorm_weight(%token_count0: index, %route_count0: index, %output_size0: index, %expert_count0: index, %output_tile_count0: index, %maximum_partition_count0: index, %epsilon: f32, %descriptor_ordinal0: index, %expert0: index, %route_tile_base0: index, %partition_row_count0: index, %expert_table: buffer, %source: buffer, %norm_weight: buffer, %normalized_output: buffer, %completion_counters: buffer) {
+template.def<@ggml.matmul_id.tiled_f32_f32.finish_routed_rmsnorm_weight> device @ggml_mul_mat_id_tiled_f32_f32_finish_routed_rmsnorm_weight(%token_count0: index, %route_count0: index, %output_size0: index, %expert_count0: index, %output_tile_count0: index, %maximum_partition_count0: index, %epsilon: f32, %descriptor_ordinal0: index, %expert0: index, %route_tile_base0: index, %partition_row_count0: index, %expert_table: buffer, %source: buffer, %norm_weight: buffer, %normalized_output: buffer, %completion_counters: buffer) {
   %token_count = index.assume %token_count0 [range(%token_count0, 1, 2048)] : index
   %route_count = index.assume %route_count0 [range(%route_count0, 1, 32)] : index
   %output_size = index.assume %output_size0 [range(%output_size0, 128, 32768), mul(%output_size0, 128)] : index

@@ -1,9 +1,9 @@
 // Routed GGML gate/up MUL_MAT_ID fused with SwiGLU for compact expert tables.
-template.decl @ggml.mul_mat_id_swiglu.apply_vector4(%gate: vector<4xf32>, %up: vector<4xf32>) -> (vector<4xf32>)
+template.decl @ggml.matmul_id.skinny_pair_f32_swiglu.apply_vector4(%gate: vector<4xf32>, %up: vector<4xf32>) -> (vector<4xf32>)
 
-template.decl @ggml.mul_mat_id_swiglu.body(%gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size: index, %output_size: index, %route_count: index, %input_route_count: index, %expert_count: index, %channel_tile: index, %partition_ordinal: index, %input: buffer, %expert_table: buffer, %partition_table: buffer, %gate_weight: buffer, %up_weight: buffer, %output: buffer)
+template.decl @ggml.matmul_id.skinny_pair_f32_swiglu.body(%gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size: index, %output_size: index, %route_count: index, %input_route_count: index, %expert_count: index, %channel_tile: index, %partition_ordinal: index, %input: buffer, %expert_table: buffer, %partition_table: buffer, %gate_weight: buffer, %up_weight: buffer, %output: buffer)
 
-amdgpu.target<gfx11-generic> @ggml_mul_mat_id_swiglu_gfx11_wave64 {subgroup_size = 64}
+amdgpu.target<gfx11-generic> @ggml_mul_mat_id_skinny_pair_input_f32_swiglu_publish_f32_gfx11_wave64 {subgroup_size = 64}
 
 config.decl @ggml.mul_mat_id_swiglu.input_size : %value: index where [range(%value, 256, 32768), mul(%value, 32)]
 
@@ -53,7 +53,7 @@ func.def inline @ggml_moe_unpack_expert_partition_descriptor(%descriptor: i32) -
   func.return %expert, %route_tile_base, %partition_row_count : index, index, index
 }
 
-template.def<@ggml.mul_mat_id_swiglu.apply_vector4> device @ggml_mul_mat_id_swiglu_apply_vector4(%gate: vector<4xf32>, %up: vector<4xf32>) -> (vector<4xf32>) {
+template.def<@ggml.matmul_id.skinny_pair_f32_swiglu.apply_vector4> device @ggml_mul_mat_id_skinny_pair_f32_swiglu_apply_vector4(%gate: vector<4xf32>, %up: vector<4xf32>) -> (vector<4xf32>) {
   %c0_f32x4 = vector.constant 0.0 : vector<4xf32>
   %c1_f32x4 = vector.constant 1.0 : vector<4xf32>
   %negative_gate = vector.subf %c0_f32x4, %gate : vector<4xf32>
@@ -65,7 +65,7 @@ template.def<@ggml.mul_mat_id_swiglu.apply_vector4> device @ggml_mul_mat_id_swig
   template.return %result : vector<4xf32>
 }
 
-template.def<@ggml.mul_mat_id_swiglu.body> device @ggml_mul_mat_id_swiglu_f32_f32_wmma_body(%gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size: index, %output_size: index, %route_count: index, %input_route_count: index, %expert_count: index, %channel_tile: index, %partition_ordinal: index, %input: buffer, %expert_table: buffer, %partition_table: buffer, %gate_weight: buffer, %up_weight: buffer, %output: buffer) {
+template.def<@ggml.matmul_id.skinny_pair_f32_swiglu.body> device @ggml_mul_mat_id_skinny_pair_f32_swiglu_f32_f32_wmma_body(%gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size: index, %output_size: index, %route_count: index, %input_route_count: index, %expert_count: index, %channel_tile: index, %partition_ordinal: index, %input: buffer, %expert_table: buffer, %partition_table: buffer, %gate_weight: buffer, %up_weight: buffer, %output: buffer) {
   %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048)] : index
   %bounded_input_size = index.assume %input_size [range(%input_size, 256, 32768), mul(%input_size, 32)] : index
   %bounded_route_count = index.assume %route_count [range(%route_count, 1, 32)] : index
@@ -322,7 +322,7 @@ template.def<@ggml.mul_mat_id_swiglu.body> device @ggml_mul_mat_id_swiglu_f32_f3
       %up_values = vector.load %up_result_physical_view[%publish_route, %publish_channel_add] : view<16x16xf16> -> vector<4xf16>
       %gate_wide = vector.extf %gate_values : vector<4xf16> to vector<4xf32>
       %up_wide = vector.extf %up_values : vector<4xf16> to vector<4xf32>
-      %activated = template.apply<@ggml.mul_mat_id_swiglu.apply_vector4>(%gate_wide, %up_wide) : (vector<4xf32>, vector<4xf32>) -> (vector<4xf32>)
+      %activated = template.apply<@ggml.matmul_id.skinny_pair_f32_swiglu.apply_vector4>(%gate_wide, %up_wide) : (vector<4xf32>, vector<4xf32>) -> (vector<4xf32>)
       %mask = vector.mask.range [%channel0 to %bounded_output_size step %c1] : index -> vector<4xi1>
       vector.store.mask %activated, %output_view[%bounded_assignment0, %channel0], %mask : vector<4xf32>, view<[%output_row_count]x[%bounded_output_size]xf32>, vector<4xi1>
     }
@@ -335,7 +335,7 @@ template.def<@ggml.mul_mat_id_swiglu.body> device @ggml_mul_mat_id_swiglu_f32_f3
       %up_values = vector.load %up_result_physical_view[%publish_route, %publish_channel_add] : view<16x16xf16> -> vector<4xf16>
       %gate_wide = vector.extf %gate_values : vector<4xf16> to vector<4xf32>
       %up_wide = vector.extf %up_values : vector<4xf16> to vector<4xf32>
-      %activated = template.apply<@ggml.mul_mat_id_swiglu.apply_vector4>(%gate_wide, %up_wide) : (vector<4xf32>, vector<4xf32>) -> (vector<4xf32>)
+      %activated = template.apply<@ggml.matmul_id.skinny_pair_f32_swiglu.apply_vector4>(%gate_wide, %up_wide) : (vector<4xf32>, vector<4xf32>) -> (vector<4xf32>)
       %mask = vector.mask.range [%channel0 to %bounded_output_size step %c1] : index -> vector<4xi1>
       vector.store.mask %activated, %output_view[%bounded_assignment1, %channel0], %mask : vector<4xf32>, view<[%output_row_count]x[%bounded_output_size]xf32>, vector<4xi1>
     }
@@ -348,7 +348,7 @@ template.def<@ggml.mul_mat_id_swiglu.body> device @ggml_mul_mat_id_swiglu_f32_f3
       %up_values = vector.load %up_result_physical_view[%publish_route, %publish_channel_add] : view<16x16xf16> -> vector<4xf16>
       %gate_wide = vector.extf %gate_values : vector<4xf16> to vector<4xf32>
       %up_wide = vector.extf %up_values : vector<4xf16> to vector<4xf32>
-      %activated = template.apply<@ggml.mul_mat_id_swiglu.apply_vector4>(%gate_wide, %up_wide) : (vector<4xf32>, vector<4xf32>) -> (vector<4xf32>)
+      %activated = template.apply<@ggml.matmul_id.skinny_pair_f32_swiglu.apply_vector4>(%gate_wide, %up_wide) : (vector<4xf32>, vector<4xf32>) -> (vector<4xf32>)
       %mask = vector.mask.range [%channel1 to %bounded_output_size step %c1] : index -> vector<4xi1>
       vector.store.mask %activated, %output_view[%bounded_assignment0, %channel1], %mask : vector<4xf32>, view<[%output_row_count]x[%bounded_output_size]xf32>, vector<4xi1>
     }
@@ -361,7 +361,7 @@ template.def<@ggml.mul_mat_id_swiglu.body> device @ggml_mul_mat_id_swiglu_f32_f3
       %up_values = vector.load %up_result_physical_view[%publish_route, %publish_channel_add] : view<16x16xf16> -> vector<4xf16>
       %gate_wide = vector.extf %gate_values : vector<4xf16> to vector<4xf32>
       %up_wide = vector.extf %up_values : vector<4xf16> to vector<4xf32>
-      %activated = template.apply<@ggml.mul_mat_id_swiglu.apply_vector4>(%gate_wide, %up_wide) : (vector<4xf32>, vector<4xf32>) -> (vector<4xf32>)
+      %activated = template.apply<@ggml.matmul_id.skinny_pair_f32_swiglu.apply_vector4>(%gate_wide, %up_wide) : (vector<4xf32>, vector<4xf32>) -> (vector<4xf32>)
       %mask = vector.mask.range [%channel1 to %bounded_output_size step %c1] : index -> vector<4xi1>
       vector.store.mask %activated, %output_view[%bounded_assignment1, %channel1], %mask : vector<4xf32>, view<[%output_row_count]x[%bounded_output_size]xf32>, vector<4xi1>
     }
@@ -370,7 +370,7 @@ template.def<@ggml.mul_mat_id_swiglu.body> device @ggml_mul_mat_id_swiglu_f32_f3
   template.return
 }
 
-kernel.def target(@ggml_mul_mat_id_swiglu_gfx11_wave64) @ggml_mul_mat_id_swiglu_f32_f32_wmma(%token_count: index) {
+kernel.def target(@ggml_mul_mat_id_skinny_pair_input_f32_swiglu_publish_f32_gfx11_wave64) @ggml_mul_mat_id_skinny_pair_input_f32_swiglu_publish_f32(%token_count: index) {
   %expert_count = config.get @ggml.mul_mat_id_swiglu.expert_count : index
   %route_count = config.get @ggml.mul_mat_id_swiglu.route_count : index
   %output_size = config.get @ggml.mul_mat_id_swiglu.output_size : index
@@ -400,6 +400,6 @@ kernel.def target(@ggml_mul_mat_id_swiglu_gfx11_wave64) @ggml_mul_mat_id_swiglu_
   %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048), le(%token_count, %token_capacity)] : index
   %channel_tile = kernel.workgroup.id<x> : index
   %partition_ordinal = kernel.workgroup.id<y> : index
-  template.apply<@ggml.mul_mat_id_swiglu.body>(%gate_weight_format, %up_weight_format, %bounded_token_count, %input_size, %output_size, %route_count, %input_route_count, %expert_count, %channel_tile, %partition_ordinal, %input, %expert_table, %partition_table, %gate_weight, %up_weight, %output) : (index, index, index, index, index, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer, buffer)
+  template.apply<@ggml.matmul_id.skinny_pair_f32_swiglu.body>(%gate_weight_format, %up_weight_format, %bounded_token_count, %input_size, %output_size, %route_count, %input_route_count, %expert_count, %channel_tile, %partition_ordinal, %input, %expert_table, %partition_table, %gate_weight, %up_weight, %output) : (index, index, index, index, index, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer, buffer)
   kernel.return
 }

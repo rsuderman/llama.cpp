@@ -1,13 +1,13 @@
 // Shared routed expert WMMA matmul pipeline for GGML MUL_MAT_ID.
 //
 // Op wrappers provide publication and tile-finalization hooks by defining:
-//   ggml.mul_mat_id_f32_f32_wmma.publish_vector4
-//   ggml.mul_mat_id_f32_f32_wmma.finish_tile
-template.decl @ggml.mul_mat_id_f32_f32_wmma.core(%weight_format: index, %token_count: index, %input_size: index, %output_size: index, %route_count: index, %input_route_count: index, %expert_count: index, %epsilon: f32, %channel_tile: index, %partition_ordinal: index, %input: buffer, %expert_table: buffer, %partition_table: buffer, %weight: buffer, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer, %norm_weight: buffer, %normalized_output: buffer, %completion_counters: buffer)
+//   ggml.matmul_id.skinny_f32_f32.publish_vector4
+//   ggml.matmul_id.skinny_f32_f32.finish_tile
+template.decl @ggml.matmul_id.skinny_f32_f32.core(%weight_format: index, %token_count: index, %input_size: index, %output_size: index, %route_count: index, %input_route_count: index, %expert_count: index, %epsilon: f32, %channel_tile: index, %partition_ordinal: index, %input: buffer, %expert_table: buffer, %partition_table: buffer, %weight: buffer, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer, %norm_weight: buffer, %normalized_output: buffer, %completion_counters: buffer)
 
-template.decl @ggml.mul_mat_id_f32_f32_wmma.finish_tile(%arg0: index, %arg1: index, %arg2: index, %arg3: index, %arg4: index, %arg5: index, %arg6: f32, %arg7: index, %arg8: index, %arg9: index, %arg10: index, %arg11: index, %arg12: buffer, %arg13: buffer, %arg14: buffer, %arg15: buffer, %arg16: buffer, %arg17: buffer, %arg18: buffer)
+template.decl @ggml.matmul_id.skinny_f32_f32.finish_tile(%arg0: index, %arg1: index, %arg2: index, %arg3: index, %arg4: index, %arg5: index, %arg6: f32, %arg7: index, %arg8: index, %arg9: index, %arg10: index, %arg11: index, %arg12: buffer, %arg13: buffer, %arg14: buffer, %arg15: buffer, %arg16: buffer, %arg17: buffer, %arg18: buffer)
 
-template.decl @ggml.mul_mat_id_f32_f32_wmma.publish_vector4(%arg0: i1, %arg1: index, %arg2: index, %arg3: index, %arg4: index, %arg5: index, %arg6: index, %arg7: index, %arg8: vector<4xf32>, %arg9: buffer, %arg10: buffer, %arg11: buffer, %arg12: buffer, %arg13: buffer, %arg14: buffer, %arg15: buffer)
+template.decl @ggml.matmul_id.skinny_f32_f32.publish_vector4(%arg0: i1, %arg1: index, %arg2: index, %arg3: index, %arg4: index, %arg5: index, %arg6: index, %arg7: index, %arg8: vector<4xf32>, %arg9: buffer, %arg10: buffer, %arg11: buffer, %arg12: buffer, %arg13: buffer, %arg14: buffer, %arg15: buffer)
 
 func.decl @ggml_dequant_weight_tile_bytes(%weight_format: index) -> (offset)
 
@@ -43,7 +43,7 @@ func.def inline @ggml_moe_unpack_expert_partition_descriptor(%descriptor: i32) -
   func.return %expert, %route_tile_base, %partition_row_count : index, index, index
 }
 
-template.def<@ggml.mul_mat_id_f32_f32_wmma.core> device @ggml_mul_mat_id_f32_f32_wmma_core(%weight_format: index, %token_count: index, %input_size: index, %output_size: index, %route_count: index, %input_route_count: index, %expert_count: index, %epsilon: f32, %channel_tile: index, %partition_ordinal: index, %input: buffer, %expert_table: buffer, %partition_table: buffer, %weight: buffer, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer, %norm_weight: buffer, %normalized_output: buffer, %completion_counters: buffer) {
+template.def<@ggml.matmul_id.skinny_f32_f32.core> device @ggml_mul_mat_id_skinny_f32_f32_core(%weight_format: index, %token_count: index, %input_size: index, %output_size: index, %route_count: index, %input_route_count: index, %expert_count: index, %epsilon: f32, %channel_tile: index, %partition_ordinal: index, %input: buffer, %expert_table: buffer, %partition_table: buffer, %weight: buffer, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer, %norm_weight: buffer, %normalized_output: buffer, %completion_counters: buffer) {
   %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048)] : index
   %bounded_route_count = index.assume %route_count [range(%route_count, 1, 32)] : index
   %bounded_input_route_count = index.assume %input_route_count [range(%input_route_count, 1, 32), le(%input_route_count, %bounded_route_count)] : index
@@ -268,7 +268,7 @@ template.def<@ggml.mul_mat_id_f32_f32_wmma.core> device @ggml_mul_mat_id_f32_f32
     scf.if %writes00 {
       %values = vector.load %result_physical_view[%publish_route, %publish_channel_add] : view<16x16xf16> -> vector<4xf16>
       %wide = vector.extf %values : vector<4xf16> to vector<4xf32>
-      template.apply<@ggml.mul_mat_id_f32_f32_wmma.publish_vector4>(%writes00, %bounded_assignment0, %assignment_token0, %assignment_route0, %channel0, %bounded_token_count, %bounded_route_count, %bounded_output_size, %wide, %bias, %output, %residual_input, %residual_output, %norm_weight, %normalized_output, %completion_counters) : (i1, index, index, index, index, index, index, index, vector<4xf32>, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
+      template.apply<@ggml.matmul_id.skinny_f32_f32.publish_vector4>(%writes00, %bounded_assignment0, %assignment_token0, %assignment_route0, %channel0, %bounded_token_count, %bounded_route_count, %bounded_output_size, %wide, %bias, %output, %residual_input, %residual_output, %norm_weight, %normalized_output, %completion_counters) : (i1, index, index, index, index, index, index, index, vector<4xf32>, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
     }
     kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
     vector.fragment.store<result> %result01, %result_fragment_view[%c0, %c0] shape [%m, %n] : vector<8xf16>, view<16x16xf16, %result_fragment_layout>
@@ -276,7 +276,7 @@ template.def<@ggml.mul_mat_id_f32_f32_wmma.core> device @ggml_mul_mat_id_f32_f32
     scf.if %writes01 {
       %values = vector.load %result_physical_view[%publish_route, %publish_channel_add] : view<16x16xf16> -> vector<4xf16>
       %wide = vector.extf %values : vector<4xf16> to vector<4xf32>
-      template.apply<@ggml.mul_mat_id_f32_f32_wmma.publish_vector4>(%writes01, %bounded_assignment1, %assignment_token1, %assignment_route1, %channel0, %bounded_token_count, %bounded_route_count, %bounded_output_size, %wide, %bias, %output, %residual_input, %residual_output, %norm_weight, %normalized_output, %completion_counters) : (i1, index, index, index, index, index, index, index, vector<4xf32>, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
+      template.apply<@ggml.matmul_id.skinny_f32_f32.publish_vector4>(%writes01, %bounded_assignment1, %assignment_token1, %assignment_route1, %channel0, %bounded_token_count, %bounded_route_count, %bounded_output_size, %wide, %bias, %output, %residual_input, %residual_output, %norm_weight, %normalized_output, %completion_counters) : (i1, index, index, index, index, index, index, index, vector<4xf32>, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
     }
     kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
     vector.fragment.store<result> %result10, %result_fragment_view[%c0, %c0] shape [%m, %n] : vector<8xf16>, view<16x16xf16, %result_fragment_layout>
@@ -284,7 +284,7 @@ template.def<@ggml.mul_mat_id_f32_f32_wmma.core> device @ggml_mul_mat_id_f32_f32
     scf.if %writes10 {
       %values = vector.load %result_physical_view[%publish_route, %publish_channel_add] : view<16x16xf16> -> vector<4xf16>
       %wide = vector.extf %values : vector<4xf16> to vector<4xf32>
-      template.apply<@ggml.mul_mat_id_f32_f32_wmma.publish_vector4>(%writes10, %bounded_assignment0, %assignment_token0, %assignment_route0, %channel1, %bounded_token_count, %bounded_route_count, %bounded_output_size, %wide, %bias, %output, %residual_input, %residual_output, %norm_weight, %normalized_output, %completion_counters) : (i1, index, index, index, index, index, index, index, vector<4xf32>, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
+      template.apply<@ggml.matmul_id.skinny_f32_f32.publish_vector4>(%writes10, %bounded_assignment0, %assignment_token0, %assignment_route0, %channel1, %bounded_token_count, %bounded_route_count, %bounded_output_size, %wide, %bias, %output, %residual_input, %residual_output, %norm_weight, %normalized_output, %completion_counters) : (i1, index, index, index, index, index, index, index, vector<4xf32>, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
     }
     kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
     vector.fragment.store<result> %result11, %result_fragment_view[%c0, %c0] shape [%m, %n] : vector<8xf16>, view<16x16xf16, %result_fragment_layout>
@@ -292,10 +292,10 @@ template.def<@ggml.mul_mat_id_f32_f32_wmma.core> device @ggml_mul_mat_id_f32_f32
     scf.if %writes11 {
       %values = vector.load %result_physical_view[%publish_route, %publish_channel_add] : view<16x16xf16> -> vector<4xf16>
       %wide = vector.extf %values : vector<4xf16> to vector<4xf32>
-      template.apply<@ggml.mul_mat_id_f32_f32_wmma.publish_vector4>(%writes11, %bounded_assignment1, %assignment_token1, %assignment_route1, %channel1, %bounded_token_count, %bounded_route_count, %bounded_output_size, %wide, %bias, %output, %residual_input, %residual_output, %norm_weight, %normalized_output, %completion_counters) : (i1, index, index, index, index, index, index, index, vector<4xf32>, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
+      template.apply<@ggml.matmul_id.skinny_f32_f32.publish_vector4>(%writes11, %bounded_assignment1, %assignment_token1, %assignment_route1, %channel1, %bounded_token_count, %bounded_route_count, %bounded_output_size, %wide, %bias, %output, %residual_input, %residual_output, %norm_weight, %normalized_output, %completion_counters) : (i1, index, index, index, index, index, index, index, vector<4xf32>, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
     }
     kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
-    template.apply<@ggml.mul_mat_id_f32_f32_wmma.finish_tile>(%bounded_token_count, %bounded_route_count, %bounded_output_size, %bounded_expert_count, %output_tile_count, %maximum_partition_count, %epsilon, %channel_tile, %descriptor_ordinal, %bounded_expert, %route_tile_base, %partition_row_count, %expert_table, %output, %residual_input, %residual_output, %norm_weight, %normalized_output, %completion_counters) : (index, index, index, index, index, index, f32, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
+    template.apply<@ggml.matmul_id.skinny_f32_f32.finish_tile>(%bounded_token_count, %bounded_route_count, %bounded_output_size, %bounded_expert_count, %output_tile_count, %maximum_partition_count, %epsilon, %channel_tile, %descriptor_ordinal, %bounded_expert, %route_tile_base, %partition_row_count, %expert_table, %output, %residual_input, %residual_output, %norm_weight, %normalized_output, %completion_counters) : (index, index, index, index, index, index, f32, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
     kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   }
   template.return

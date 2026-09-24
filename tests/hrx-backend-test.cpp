@@ -7208,6 +7208,25 @@ static std::string common_mul_mat_weight_format(ggml_type type) {
     }
 }
 
+static const char * common_mul_mat_id_f32_kernel_name(int64_t token_count) {
+    return token_count <= 5 ? "loom_libs:ggml_mul_mat_id_skinny_input_f32_publish_f32" :
+                              "loom_libs:ggml_mul_mat_id_tiled_input_f32_publish_f32";
+}
+
+static const char * common_mul_mat_id_postops_f32_kernel_name(int64_t token_count, bool has_rmsnorm) {
+    if (has_rmsnorm) {
+        return token_count <= 5 ? "loom_libs:ggml_mul_mat_id_skinny_input_f32_postops_next_rmsnorm_publish_f32" :
+                                  "loom_libs:ggml_mul_mat_id_tiled_input_f32_postops_next_rmsnorm_publish_f32";
+    }
+    return token_count <= 5 ? "loom_libs:ggml_mul_mat_id_skinny_input_f32_postops_publish_f32" :
+                              "loom_libs:ggml_mul_mat_id_tiled_input_f32_postops_publish_f32";
+}
+
+static const char * common_mul_mat_id_swiglu_f32_kernel_name(int64_t token_count) {
+    return token_count <= 5 ? "loom_libs:ggml_mul_mat_id_skinny_pair_input_f32_swiglu_publish_f32" :
+                              "loom_libs:ggml_mul_mat_id_tiled_pair_input_f32_swiglu_publish_f32";
+}
+
 static ggml::hrx::DispatchMatch require_common_mul_mat_id_for_graph(ggml::hrx::Graph &       graph,
                                                                     ggml::hrx::CommandPlan & plan,
                                                                     std::vector<bool> &      covered_nodes,
@@ -7232,7 +7251,7 @@ static ggml::hrx::DispatchMatch require_common_mul_mat_id_for_graph(ggml::hrx::G
     REQUIRE(match_dispatch_at_index(graph, plan, covered_nodes, output_index, match));
     REQUIRE(match.dispatches.size() == 1);
     const ggml::hrx::Dispatch & dispatch = match.dispatches[0];
-    REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_mul_mat_id_f32_f32_wmma");
+    REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == common_mul_mat_id_f32_kernel_name(output->ne[2]));
     REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == output->ne[2]);
     REQUIRE(dispatch.bindings.size() == 5);
     REQUIRE(dispatch.bindings[0].value == input_value->id);
@@ -7270,9 +7289,9 @@ static CommonMulMatIdSwiGLUTensors build_common_mul_mat_id_swiglu_graph(ggml_con
                                                                         ggml_type      up_weight_type,
                                                                         ggml_glu_op    glu_op      = GGML_GLU_OP_SWIGLU,
                                                                         int64_t        input_size  = 256,
-                                                                        int64_t        output_size = 128) {
+                                                                        int64_t        output_size = 128,
+                                                                        int64_t        token_count = 4) {
     CommonMulMatIdSwiGLUTensors tensors;
-    constexpr int64_t           token_count       = 4;
     constexpr int64_t           route_count       = 8;
     constexpr int64_t           input_route_count = 1;
     constexpr int64_t           expert_count      = 16;
@@ -7319,7 +7338,8 @@ static void require_common_mul_mat_id_swiglu_match(ggml_context *               
     REQUIRE(match.metadata.moe_routing_bundles().size() == 1);
 
     const ggml::hrx::Dispatch & dispatch = match.dispatches.back();
-    REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_mul_mat_id_swiglu_f32_f32_wmma");
+    REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) ==
+            common_mul_mat_id_swiglu_f32_kernel_name(tensors.output->ne[2]));
     REQUIRE(dispatch.kernel.integer_parameters.at("token_count") == tensors.output->ne[2]);
     REQUIRE(dispatch.bindings.size() == 6);
     require_compile_parameter(dispatch, "ggml.mul_mat_id_swiglu.input_size",
@@ -7430,7 +7450,7 @@ static void run_common_mul_mat_id_swiglu_dispatch_checks() {
         ggml::hrx::DispatchMatch     match;
         REQUIRE(match_dispatch_at_index(imported.graph, plan, covered_nodes, gate_index, match));
         REQUIRE(kernel_name_for_id(match.dispatches.back().kernel.kernel_id) ==
-                "loom_libs:ggml_mul_mat_id_f32_f32_wmma");
+                common_mul_mat_id_f32_kernel_name(tensors.output->ne[2]));
     }
 
     ggml_free(ctx);
@@ -7462,9 +7482,9 @@ static CommonMulMatIdPostOpsTensors build_common_mul_mat_id_postops_graph(ggml_c
                                                                           bool           include_bias,
                                                                           bool           include_residual,
                                                                           bool           include_rmsnorm,
-                                                                          ggml_type      weight_type = GGML_TYPE_Q4_K) {
+                                                                          ggml_type      weight_type  = GGML_TYPE_Q4_K,
+                                                                          int64_t        token_count  = 4) {
     CommonMulMatIdPostOpsTensors tensors;
-    constexpr int64_t            token_count  = 4;
     constexpr int64_t            route_count  = 8;
     constexpr int64_t            input_size   = 256;
     constexpr int64_t            output_size  = 128;
@@ -7610,34 +7630,40 @@ static void run_common_mul_mat_id_postops_dispatch_checks() {
 
     {
         const CommonMulMatIdPostOpsTensors tensors = build_common_mul_mat_id_postops_graph(ctx, true, false, false);
-        require_common_mul_mat_id_postops_match(ctx, tensors, "loom_libs:ggml_mul_mat_id_postops_f32_f32_wmma", true,
-                                                false, false);
+        require_common_mul_mat_id_postops_match(
+            ctx, tensors, common_mul_mat_id_postops_f32_kernel_name(tensors.projection->ne[2], false), true, false,
+            false);
     }
     {
         const CommonMulMatIdPostOpsTensors tensors = build_common_mul_mat_id_postops_graph(ctx, false, true, false);
-        require_common_mul_mat_id_postops_match(ctx, tensors, "loom_libs:ggml_mul_mat_id_postops_f32_f32_wmma", false,
-                                                true, false);
+        require_common_mul_mat_id_postops_match(
+            ctx, tensors, common_mul_mat_id_postops_f32_kernel_name(tensors.projection->ne[2], false), false, true,
+            false);
     }
     {
         const CommonMulMatIdPostOpsTensors tensors = build_common_mul_mat_id_postops_graph(ctx, true, true, false);
-        require_common_mul_mat_id_postops_match(ctx, tensors, "loom_libs:ggml_mul_mat_id_postops_f32_f32_wmma", true,
-                                                true, false);
+        require_common_mul_mat_id_postops_match(
+            ctx, tensors, common_mul_mat_id_postops_f32_kernel_name(tensors.projection->ne[2], false), true, true,
+            false);
     }
     {
         const CommonMulMatIdPostOpsTensors tensors =
             build_common_mul_mat_id_postops_graph(ctx, true, true, false, GGML_TYPE_BF16);
-        require_common_mul_mat_id_postops_match(ctx, tensors, "loom_libs:ggml_mul_mat_id_postops_f32_f32_wmma", true,
-                                                true, false);
+        require_common_mul_mat_id_postops_match(
+            ctx, tensors, common_mul_mat_id_postops_f32_kernel_name(tensors.projection->ne[2], false), true, true,
+            false);
     }
     {
         const CommonMulMatIdPostOpsTensors tensors = build_common_mul_mat_id_postops_graph(ctx, false, true, true);
         require_common_mul_mat_id_postops_match(
-            ctx, tensors, "loom_libs:ggml_mul_mat_id_postops_next_rmsnorm_f32_f32_wmma", false, true, true);
+            ctx, tensors, common_mul_mat_id_postops_f32_kernel_name(tensors.projection->ne[2], true), false, true,
+            true);
     }
     {
         const CommonMulMatIdPostOpsTensors tensors = build_common_mul_mat_id_postops_graph(ctx, true, true, true);
         require_common_mul_mat_id_postops_match(
-            ctx, tensors, "loom_libs:ggml_mul_mat_id_postops_next_rmsnorm_f32_f32_wmma", true, true, true);
+            ctx, tensors, common_mul_mat_id_postops_f32_kernel_name(tensors.projection->ne[2], true), true, true,
+            true);
     }
 
     ggml_free(ctx);
@@ -8146,7 +8172,7 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         REQUIRE(kernel_name_for_id(gate_up_match.dispatches[1].kernel.kernel_id) ==
                 "loom_libs:ggml_moe_build_expert_partition_table");
         REQUIRE(kernel_name_for_id(gate_up_match.dispatches[2].kernel.kernel_id) ==
-                "loom_libs:ggml_mul_mat_id_swiglu_f32_f32_wmma");
+                common_mul_mat_id_swiglu_f32_kernel_name(tensors.output->ne[2]));
         REQUIRE(gate_up_match.dispatches[2].bindings.size() == 6);
         REQUIRE(gate_up_match.dispatches[2].bindings[1].value == gate_up_match.transients[0].value);
         REQUIRE(gate_up_match.dispatches[2].bindings[2].value == gate_up_match.transients[1].value);
@@ -8164,7 +8190,7 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         REQUIRE(match_dispatch_at_index(imported.graph, plan, covered_nodes, gate_index, gate_up_match));
         REQUIRE(gate_up_match.dispatches.size() == 1);
         REQUIRE(kernel_name_for_id(gate_up_match.dispatches[0].kernel.kernel_id) ==
-                "loom_libs:ggml_mul_mat_id_f32_f32_wmma");
+                common_mul_mat_id_f32_kernel_name(tensors.gate->ne[2]));
     }
 
     {
@@ -8178,7 +8204,7 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         REQUIRE(match_dispatch_at_index(imported.graph, plan, covered_nodes, gate_index, gate_up_match));
         REQUIRE(gate_up_match.dispatches.size() == 1);
         REQUIRE(kernel_name_for_id(gate_up_match.dispatches[0].kernel.kernel_id) ==
-                "loom_libs:ggml_mul_mat_id_swiglu_f32_f32_wmma");
+                common_mul_mat_id_swiglu_f32_kernel_name(tensors.output->ne[2]));
         REQUIRE(gate_up_match.dispatches[0].bindings.size() == 6);
     }
 
@@ -8193,7 +8219,7 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         REQUIRE(match_dispatch_at_index(imported.graph, plan, covered_nodes, gate_index, gate_up_match));
         REQUIRE(gate_up_match.dispatches.size() == 1);
         REQUIRE(kernel_name_for_id(gate_up_match.dispatches[0].kernel.kernel_id) ==
-                "loom_libs:ggml_mul_mat_id_swiglu_f32_f32_wmma");
+                common_mul_mat_id_swiglu_f32_kernel_name(tensors.output->ne[2]));
         REQUIRE(gate_up_match.dispatches[0].bindings.size() == 6);
     }
 
@@ -8207,7 +8233,7 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         REQUIRE(match_dispatch_at_index(imported.graph, plan, covered_nodes, down_index, down_match));
         REQUIRE(down_match.dispatches.size() == 1);
         REQUIRE(kernel_name_for_id(down_match.dispatches[0].kernel.kernel_id) ==
-                "loom_libs:ggml_mul_mat_id_f32_f32_wmma");
+                common_mul_mat_id_f32_kernel_name(tensors.output->ne[2]));
     }
 
     {
@@ -8222,7 +8248,7 @@ static void run_qwen_routed_gate_up_dispatch_checks() {
         REQUIRE(match_dispatch_at_index(imported.graph, plan, covered_nodes, down_index, down_match));
         REQUIRE(down_match.dispatches.size() == 1);
         REQUIRE(kernel_name_for_id(down_match.dispatches[0].kernel.kernel_id) ==
-                "loom_libs:ggml_mul_mat_id_f32_f32_wmma");
+                common_mul_mat_id_f32_kernel_name(tensors.output->ne[2]));
     }
 
     ggml_free(ctx);
