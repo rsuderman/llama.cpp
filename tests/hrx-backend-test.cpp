@@ -23,6 +23,7 @@
 #include "runtime/graph-program-cache.h"
 #include "runtime/graph-replay.h"
 #include "runtime/loom-kernel-jit.h"
+#include "testing_suite.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10647,85 +10648,97 @@ static void run_gdn_selected_rms_q8_dispatch_checks() {
     ggml_free(ctx);
 }
 
-int main() {
-    run_status_checks();
-    run_command_plan_metadata_checks();
-    run_dispatch_registry_checks();
-    run_graph_import_checks();
-    run_graph_import_mixed_backend_boundary_checks();
-    run_graph_view_external_use_checks();
-    run_scale_f32_dispatch_checks();
-    run_cont_f32_dispatch_checks();
-    run_binary_f32_broadcast_dispatch_checks();
-    run_graph_snapshot_diagnostics_checks();
-    run_unmatched_graph_diagnostics_checks();
-    run_completion_counter_plan_checks();
-    run_graph_index_checks();
-    run_rope_set_rows_dispatch_checks();
-    run_graph_traversal_checks();
-    run_qwen_token_embedding_dispatch_checks();
-    run_gather_add_dispatch_checks();
-    run_qwen_flash_attention_dispatch_checks();
-    run_tiled_pair_matmul_postops_dispatch_checks();
-    run_qwen_attention_postprocess_dispatch_checks();
-    run_qwen_matmul_dispatch_checks();
-    run_packed_f16_producer_consumer_checks();
-    run_tiled_matmul_alternate_publish_checks();
-    run_k16_major_preparation_reuse_checks();
-    run_rmsnorm_binary_k16_output_checks();
-    run_swiglu_q8_output_checks();
-    run_rmsnorm_gate_packed_output_checks();
-    run_rmsnorm_gate_q8_output_checks();
-    run_lowtoken_residual_dispatch_checks();
-    run_quantized_conv4_dispatch_checks();
-    run_gdn_rmsnorm_gate_dispatch_checks();
-    run_gdn_native_projection_pair_dispatch_checks();
-    run_gdn_selected_snapshot_dispatch_checks();
-    run_gdn_selected_rms_q8_dispatch_checks();
-    run_llama_attention_matmul_dispatch_checks();
-    run_quantized_value_projection_dispatch_checks();
-    schedule_qwen_terminal_q6k_q8_command(1);
-    schedule_qwen_terminal_q6k_q8_command(18);
-    schedule_get_rows_q8_1_alternate_command(GGML_TYPE_Q4_K);
-    schedule_get_rows_q8_1_alternate_command(GGML_TYPE_BF16);
-    run_qwen_router_top8_dispatch_checks();
-    run_common_mul_mat_id_swiglu_dispatch_checks();
-    run_qwen_routed_gate_up_dispatch_checks();
-    run_common_mul_mat_id_postops_dispatch_checks();
-    run_alias_value_import_checks();
-    run_multi_dispatch_checks();
-    run_layout_alias_scheduler_elision_checks();
-    run_zero_output_scheduler_elision_checks();
-    run_transient_import_checks();
-    run_graph_view_preserves_shared_output_storage_checks();
-    run_chained_dispatch_requires_transients();
-    run_graph_replay_host_staging_is_not_ineligible();
-    run_multiple_transient_plan_checks();
-    run_disjoint_transient_plan_packing_checks();
-    run_command_program_kernel_dump_checks();
-    run_command_shape_hash_checks();
-    run_graph_program_cache_uid_mismatch_checks();
-    run_graph_match_hash_collision_checks();
-    run_graph_match_bijection_checks();
-    run_validated_graph_uid_match_checks();
-    run_graph_executor_contract_checks();
-    REQUIRE(ggml::hrx::loom_async_jit_enabled_from_environment() == async_jit_expected_from_environment());
+static void register_hrx_backend_host_cases(test_runner::Suite & suite) {
+    suite.host_case("status", [] { run_status_checks(); });
+    suite.host_case("command_plan_metadata", [] { run_command_plan_metadata_checks(); });
+    suite.host_case("dispatch_registry", [] { run_dispatch_registry_checks(); });
+    suite.host_case("graph_import", [] { run_graph_import_checks(); });
+    suite.host_case("graph_import_mixed_backend_boundary", [] { run_graph_import_mixed_backend_boundary_checks(); });
+    suite.host_case("graph_view_external_use", [] { run_graph_view_external_use_checks(); });
+    suite.host_case("scale_f32_dispatch", [] { run_scale_f32_dispatch_checks(); });
+    suite.host_case("cont_f32_dispatch", [] { run_cont_f32_dispatch_checks(); });
+    suite.host_case("binary_f32_broadcast_dispatch", [] { run_binary_f32_broadcast_dispatch_checks(); });
+    suite.host_case("graph_snapshot_diagnostics", [] { run_graph_snapshot_diagnostics_checks(); });
+    suite.host_case("unmatched_graph_diagnostics", [] { run_unmatched_graph_diagnostics_checks(); });
+    suite.host_case("completion_counter_plan", [] { run_completion_counter_plan_checks(); });
+    suite.host_case("graph_index", [] { run_graph_index_checks(); });
+    suite.host_case("rope_set_rows_dispatch", [] { run_rope_set_rows_dispatch_checks(); });
+    suite.host_case("graph_traversal", [] { run_graph_traversal_checks(); });
+    suite.host_case("qwen_token_embedding_dispatch", [] { run_qwen_token_embedding_dispatch_checks(); });
+    suite.host_case("gather_add_dispatch", [] { run_gather_add_dispatch_checks(); });
+    suite.host_case("qwen_flash_attention_dispatch", [] { run_qwen_flash_attention_dispatch_checks(); });
+    suite.host_case("tiled_pair_matmul_postops_dispatch", [] { run_tiled_pair_matmul_postops_dispatch_checks(); });
+    suite.host_case("qwen_attention_postprocess_dispatch", [] { run_qwen_attention_postprocess_dispatch_checks(); });
+    suite.host_case("qwen_matmul_dispatch", [] { run_qwen_matmul_dispatch_checks(); });
+    suite.host_case("packed_f16_producer_consumer", [] { run_packed_f16_producer_consumer_checks(); });
+    suite.host_case("tiled_matmul_alternate_publish", [] { run_tiled_matmul_alternate_publish_checks(); });
+    suite.host_case("k16_major_preparation_reuse", [] { run_k16_major_preparation_reuse_checks(); });
+    suite.host_case("rmsnorm_binary_k16_output", [] { run_rmsnorm_binary_k16_output_checks(); });
+    suite.host_case("swiglu_q8_output", [] { run_swiglu_q8_output_checks(); });
+    suite.host_case("rmsnorm_gate_packed_output", [] { run_rmsnorm_gate_packed_output_checks(); });
+    suite.host_case("rmsnorm_gate_q8_output", [] { run_rmsnorm_gate_q8_output_checks(); });
+    suite.host_case("lowtoken_residual_dispatch", [] { run_lowtoken_residual_dispatch_checks(); });
+    suite.host_case("quantized_conv4_dispatch", [] { run_quantized_conv4_dispatch_checks(); });
+    suite.host_case("gdn_rmsnorm_gate_dispatch", [] { run_gdn_rmsnorm_gate_dispatch_checks(); });
+    suite.host_case("gdn_native_projection_pair_dispatch", [] { run_gdn_native_projection_pair_dispatch_checks(); });
+    suite.host_case("gdn_selected_snapshot_dispatch", [] { run_gdn_selected_snapshot_dispatch_checks(); });
+    suite.host_case("gdn_selected_rms_q8_dispatch", [] { run_gdn_selected_rms_q8_dispatch_checks(); });
+    suite.host_case("llama_attention_matmul_dispatch", [] { run_llama_attention_matmul_dispatch_checks(); });
+    suite.host_case("quantized_value_projection_dispatch", [] { run_quantized_value_projection_dispatch_checks(); });
+    suite.host_case("qwen_terminal_q6k_q8_command.tokens1", [] { schedule_qwen_terminal_q6k_q8_command(1); });
+    suite.host_case("qwen_terminal_q6k_q8_command.tokens18", [] { schedule_qwen_terminal_q6k_q8_command(18); });
+    suite.host_case("get_rows_q8_1_alternate_command.q4_k", [] { schedule_get_rows_q8_1_alternate_command(GGML_TYPE_Q4_K); });
+    suite.host_case("get_rows_q8_1_alternate_command.bf16", [] { schedule_get_rows_q8_1_alternate_command(GGML_TYPE_BF16); });
+    suite.host_case("qwen_router_top8_dispatch", [] { run_qwen_router_top8_dispatch_checks(); });
+    suite.host_case("common_mul_mat_id_swiglu_dispatch", [] { run_common_mul_mat_id_swiglu_dispatch_checks(); });
+    suite.host_case("qwen_routed_gate_up_dispatch", [] { run_qwen_routed_gate_up_dispatch_checks(); });
+    suite.host_case("common_mul_mat_id_postops_dispatch", [] { run_common_mul_mat_id_postops_dispatch_checks(); });
+    suite.host_case("alias_value_import", [] { run_alias_value_import_checks(); });
+    suite.host_case("multi_dispatch", [] { run_multi_dispatch_checks(); });
+    suite.host_case("layout_alias_scheduler_elision", [] { run_layout_alias_scheduler_elision_checks(); });
+    suite.host_case("zero_output_scheduler_elision", [] { run_zero_output_scheduler_elision_checks(); });
+    suite.host_case("transient_import", [] { run_transient_import_checks(); });
+    suite.host_case("graph_view_preserves_shared_output_storage", [] { run_graph_view_preserves_shared_output_storage_checks(); });
+    suite.host_case("chained_dispatch_requires_transients", [] { run_chained_dispatch_requires_transients(); });
+    suite.host_case("graph_replay_host_staging_is_not_ineligible", [] { run_graph_replay_host_staging_is_not_ineligible(); });
+    suite.host_case("multiple_transient_plan", [] { run_multiple_transient_plan_checks(); });
+    suite.host_case("disjoint_transient_plan_packing", [] { run_disjoint_transient_plan_packing_checks(); });
+    suite.host_case("command_program_kernel_dump", [] { run_command_program_kernel_dump_checks(); });
+    suite.host_case("command_shape_hash", [] { run_command_shape_hash_checks(); });
+    suite.host_case("graph_program_cache_uid_mismatch", [] { run_graph_program_cache_uid_mismatch_checks(); });
+    suite.host_case("graph_match_hash_collision", [] { run_graph_match_hash_collision_checks(); });
+    suite.host_case("graph_match_bijection", [] { run_graph_match_bijection_checks(); });
+    suite.host_case("validated_graph_uid_match", [] { run_validated_graph_uid_match_checks(); });
+    suite.host_case("graph_executor_contract", [] { run_graph_executor_contract_checks(); });
+    suite.host_case("loom_async_jit_environment", [] {
+        REQUIRE(ggml::hrx::loom_async_jit_enabled_from_environment() == async_jit_expected_from_environment());
+    });
+}
 
-    if (ggml_backend_hrx_get_device_count() == 0) {
-        std::fprintf(stderr, "test skipped: no HRX devices available\n");
-        return 0;
-    }
+static void register_hrx_backend_device_cases(test_runner::Suite & suite) {
+    suite.device_case("zero_output_device_support", [] { run_zero_output_device_support_checks(); });
+    suite.device_case("scale_f32_device_support", [] { run_scale_f32_device_support_checks(); });
+    suite.device_case("qwen_expert_table_partition_prefill_512_execution", [] { run_qwen_expert_table_partition_prefill_512_execution(); });
+    suite.device_case("add_f32", [] { run_add_f32(); });
+    suite.device_case("scale_f32", [] { run_scale_f32(); });
+    suite.device_case("scale_f32_inplace", [] { run_scale_f32_inplace(); });
+    suite.device_case("two_independent_add_f32", [] { run_two_independent_add_f32(); });
+    suite.device_case("chained_add_f32", [] { run_chained_add_f32(); });
+    suite.device_case("same_uid_distinct_graph_reuses_graph_program.default", [] { run_same_uid_distinct_graph_reuses_graph_program(); });
+    suite.device_case("same_uid_distinct_graph_reuses_graph_program.distinct_uid", [] { run_same_uid_distinct_graph_reuses_graph_program(true); });
+    suite.device_case("unsupported_op_fails", [] { run_unsupported_op_fails(); });
+}
 
-    run_zero_output_device_support_checks();
-    run_scale_f32_device_support_checks();
-    run_qwen_expert_table_partition_prefill_512_execution();
-    run_add_f32();
-    run_scale_f32();
-    run_scale_f32_inplace();
-    run_two_independent_add_f32();
-    run_chained_add_f32();
-    run_same_uid_distinct_graph_reuses_graph_program();
-    run_same_uid_distinct_graph_reuses_graph_program(true);
-    run_unsupported_op_fails();
-    return 0;
+static void register_hrx_backend_cases(test_runner::Suite & suite) {
+    register_hrx_backend_host_cases(suite);
+    register_hrx_backend_device_cases(suite);
+}
+
+int main(int argc, char ** argv) {
+    test_runner::Suite suite(test_runner::Config::with_prefix(
+        "HRX backend test", "hrx-backend", "GGML_HRX_BACKEND_TEST"));
+    register_hrx_backend_cases(suite);
+
+    const bool has_device = ggml_backend_hrx_get_device_count() != 0;
+    return suite.run(argc, argv, has_device);
 }
