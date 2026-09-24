@@ -29,10 +29,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -111,7 +111,7 @@
       "library_sources": [
         "motifs/mul_mat_f32_f32_wmma_core.loom",
         "motifs/llm_attention_qkv_matmul_postops.loom",
-        "motifs/rope_f32.loom",
+        "motifs/rope/rope_f32.loom",
         "motifs/dequant.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/q4_k_f16.loom",
@@ -128,7 +128,7 @@
         "ops/llm_attention_q_matmul_rope_f32_f32_wmma.loom",
         "motifs/mul_mat_f32_f32_wmma_core.loom",
         "motifs/llm_attention_qkv_matmul_postops.loom",
-        "motifs/rope_f32.loom",
+        "motifs/rope/rope_f32.loom",
         "motifs/dequant.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/q4_k_f16.loom",
@@ -219,7 +219,7 @@
       "library_sources": [
         "motifs/mul_mat_f32_f32_wmma_core.loom",
         "motifs/llm_attention_qkv_matmul_postops.loom",
-        "motifs/rope_f32.loom",
+        "motifs/rope/rope_f32.loom",
         "motifs/dequant.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/q4_k_f16.loom",
@@ -236,7 +236,7 @@
         "ops/llm_attention_k_matmul_rope_set_rows_f32_f32_wmma.loom",
         "motifs/mul_mat_f32_f32_wmma_core.loom",
         "motifs/llm_attention_qkv_matmul_postops.loom",
-        "motifs/rope_f32.loom",
+        "motifs/rope/rope_f32.loom",
         "motifs/dequant.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/q4_k_f16.loom",

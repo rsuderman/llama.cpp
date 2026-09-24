@@ -30,10 +30,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -211,10 +211,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -320,10 +320,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -752,12 +752,15 @@
         "token_count": 2
       },
       "kernel": "loom_libs:ggml_set_rows",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/rows/cache_publish.loom"
+      ],
       "primary_sources": [
-        "ops/set_rows.loom"
+        "ops/rows/set_rows.loom"
       ],
       "sources": [
-        "ops/set_rows.loom"
+        "ops/rows/set_rows.loom",
+        "motifs/rows/cache_publish.loom"
       ],
       "symbol": "ggml_set_rows",
       "workload_parameters": [
@@ -921,10 +924,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -1081,10 +1084,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -1607,12 +1610,15 @@
         "token_count": 4
       },
       "kernel": "loom_libs:ggml_set_rows",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/rows/cache_publish.loom"
+      ],
       "primary_sources": [
-        "ops/set_rows.loom"
+        "ops/rows/set_rows.loom"
       ],
       "sources": [
-        "ops/set_rows.loom"
+        "ops/rows/set_rows.loom",
+        "motifs/rows/cache_publish.loom"
       ],
       "symbol": "ggml_set_rows",
       "workload_parameters": [
@@ -1776,10 +1782,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -1863,10 +1869,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -2389,12 +2395,15 @@
         "token_count": 5
       },
       "kernel": "loom_libs:ggml_set_rows",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/rows/cache_publish.loom"
+      ],
       "primary_sources": [
-        "ops/set_rows.loom"
+        "ops/rows/set_rows.loom"
       ],
       "sources": [
-        "ops/set_rows.loom"
+        "ops/rows/set_rows.loom",
+        "motifs/rows/cache_publish.loom"
       ],
       "symbol": "ggml_set_rows",
       "workload_parameters": [
@@ -2558,10 +2567,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -2694,10 +2703,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -3220,12 +3229,15 @@
         "token_count": 3
       },
       "kernel": "loom_libs:ggml_set_rows",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/rows/cache_publish.loom"
+      ],
       "primary_sources": [
-        "ops/set_rows.loom"
+        "ops/rows/set_rows.loom"
       ],
       "sources": [
-        "ops/set_rows.loom"
+        "ops/rows/set_rows.loom",
+        "motifs/rows/cache_publish.loom"
       ],
       "symbol": "ggml_set_rows",
       "workload_parameters": [
@@ -3389,10 +3401,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -3525,10 +3537,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -4109,12 +4121,15 @@
         "token_count": 16
       },
       "kernel": "loom_libs:ggml_set_rows",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/rows/cache_publish.loom"
+      ],
       "primary_sources": [
-        "ops/set_rows.loom"
+        "ops/rows/set_rows.loom"
       ],
       "sources": [
-        "ops/set_rows.loom"
+        "ops/rows/set_rows.loom",
+        "motifs/rows/cache_publish.loom"
       ],
       "symbol": "ggml_set_rows",
       "workload_parameters": [
@@ -4327,10 +4342,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -4435,10 +4450,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -4804,12 +4819,15 @@
         "token_count": 1
       },
       "kernel": "loom_libs:ggml_set_rows",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/rows/cache_publish.loom"
+      ],
       "primary_sources": [
-        "ops/set_rows.loom"
+        "ops/rows/set_rows.loom"
       ],
       "sources": [
-        "ops/set_rows.loom"
+        "ops/rows/set_rows.loom",
+        "motifs/rows/cache_publish.loom"
       ],
       "symbol": "ggml_set_rows",
       "workload_parameters": [
@@ -5058,10 +5076,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -5471,10 +5489,10 @@
         "motifs/f32_f16.loom"
       ],
       "primary_sources": [
-        "ops/get_rows_f32.loom"
+        "ops/rows/get_rows_f32.loom"
       ],
       "sources": [
-        "ops/get_rows_f32.loom",
+        "ops/rows/get_rows_f32.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",

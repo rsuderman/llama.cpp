@@ -147,7 +147,7 @@
       "path": "ops/mul_mat_f32_f32_decode.loom"
     },
     {
-      "path": "ops/get_rows_f32.loom"
+      "path": "ops/rows/get_rows_f32.loom"
     },
     {
       "path": "ops/gated_delta_net_f32_wmma.loom"
@@ -159,13 +159,10 @@
       "path": "ops/ssm_conv_generic_f32.loom"
     },
     {
-      "path": "ops/rope_f32.loom"
+      "path": "ops/rope/rope_f32.loom"
     },
     {
-      "path": "ops/set_rows.loom"
-    },
-    {
-      "path": "ops/rope_set_rows_f32.loom"
+      "path": "ops/rows/set_rows.loom"
     },
     {
       "path": "ops/flash_attention_f32_f16_wmma.loom"
@@ -198,7 +195,10 @@
       "path": "motifs/publish_f32.loom"
     },
     {
-      "path": "motifs/rope_f32.loom"
+      "path": "motifs/rope/rope_f32.loom"
+    },
+    {
+      "path": "motifs/rows/cache_publish.loom"
     },
     {
       "path": "motifs/dequant.loom"
@@ -1993,7 +1993,7 @@
         "library_sources": [
           "motifs/matmul/tiled_input_f32_dequant_accumulate_f32.loom",
           "motifs/llm_attention_qkv_matmul_postops.loom",
-          "motifs/rope_f32.loom",
+          "motifs/rope/rope_f32.loom",
           "motifs/dequant.loom",
           "motifs/q4_k_f16.loom",
           "motifs/q6_k_f16.loom",
@@ -2007,7 +2007,7 @@
       "compile_dependencies": [
         "motifs/matmul/tiled_input_f32_dequant_accumulate_f32.loom",
         "motifs/llm_attention_qkv_matmul_postops.loom",
-        "motifs/rope_f32.loom",
+        "motifs/rope/rope_f32.loom",
         "motifs/dequant.loom",
         "motifs/q4_k_f16.loom",
         "motifs/q6_k_f16.loom",
@@ -2062,7 +2062,7 @@
         "library_sources": [
           "motifs/matmul/tiled_input_f32_dequant_accumulate_f32.loom",
           "motifs/llm_attention_qkv_matmul_postops.loom",
-          "motifs/rope_f32.loom",
+          "motifs/rope/rope_f32.loom",
           "motifs/dequant.loom",
           "motifs/q4_k_f16.loom",
           "motifs/q6_k_f16.loom",
@@ -2076,7 +2076,7 @@
       "compile_dependencies": [
         "motifs/matmul/tiled_input_f32_dequant_accumulate_f32.loom",
         "motifs/llm_attention_qkv_matmul_postops.loom",
-        "motifs/rope_f32.loom",
+        "motifs/rope/rope_f32.loom",
         "motifs/dequant.loom",
         "motifs/q4_k_f16.loom",
         "motifs/q6_k_f16.loom",
@@ -2190,7 +2190,7 @@
         "library_sources": [
           "motifs/matmul/vector_activation.loom",
           "motifs/matmul/vector_decode_pair.loom",
-          "motifs/rope_f32.loom",
+          "motifs/rope/rope_f32.loom",
           "motifs/matmul/vector_publish.loom",
           "motifs/llm_attention_qkv_matmul_postops.loom",
           "motifs/dequant.loom",
@@ -2206,7 +2206,7 @@
       "compile_dependencies": [
         "motifs/matmul/vector_activation.loom",
         "motifs/matmul/vector_decode_pair.loom",
-        "motifs/rope_f32.loom",
+        "motifs/rope/rope_f32.loom",
         "motifs/matmul/vector_publish.loom",
         "motifs/llm_attention_qkv_matmul_postops.loom",
         "motifs/dequant.loom",
@@ -2263,7 +2263,7 @@
         "library_sources": [
           "motifs/matmul/vector_activation.loom",
           "motifs/matmul/vector_decode_pair.loom",
-          "motifs/rope_f32.loom",
+          "motifs/rope/rope_f32.loom",
           "motifs/matmul/vector_publish.loom",
           "motifs/llm_attention_qkv_matmul_postops.loom",
           "motifs/dequant.loom",
@@ -2279,7 +2279,7 @@
       "compile_dependencies": [
         "motifs/matmul/vector_activation.loom",
         "motifs/matmul/vector_decode_pair.loom",
-        "motifs/rope_f32.loom",
+        "motifs/rope/rope_f32.loom",
         "motifs/matmul/vector_publish.loom",
         "motifs/llm_attention_qkv_matmul_postops.loom",
         "motifs/dequant.loom",
@@ -2399,7 +2399,7 @@
         "library_sources": [
           "motifs/mul_mat_f32_f32_wmma_core.loom",
           "motifs/llm_attention_qkv_matmul_postops.loom",
-          "motifs/rope_f32.loom",
+          "motifs/rope/rope_f32.loom",
           "motifs/dequant.loom",
           "motifs/unary_f32_apply.loom",
           "motifs/q4_k_f16.loom",
@@ -2414,7 +2414,7 @@
       "compile_dependencies": [
         "motifs/mul_mat_f32_f32_wmma_core.loom",
         "motifs/llm_attention_qkv_matmul_postops.loom",
-        "motifs/rope_f32.loom",
+        "motifs/rope/rope_f32.loom",
         "motifs/dequant.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/q4_k_f16.loom",
@@ -2470,7 +2470,7 @@
         "library_sources": [
           "motifs/mul_mat_f32_f32_wmma_core.loom",
           "motifs/llm_attention_qkv_matmul_postops.loom",
-          "motifs/rope_f32.loom",
+          "motifs/rope/rope_f32.loom",
           "motifs/dequant.loom",
           "motifs/unary_f32_apply.loom",
           "motifs/q4_k_f16.loom",
@@ -2485,7 +2485,7 @@
       "compile_dependencies": [
         "motifs/mul_mat_f32_f32_wmma_core.loom",
         "motifs/llm_attention_qkv_matmul_postops.loom",
-        "motifs/rope_f32.loom",
+        "motifs/rope/rope_f32.loom",
         "motifs/dequant.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/q4_k_f16.loom",
@@ -5265,7 +5265,7 @@
       "name": "ggml_get_rows_f32",
       "family": "loom_libs",
       "symbol": "ggml_get_rows_f32",
-      "source": "ops/get_rows_f32.loom",
+      "source": "ops/rows/get_rows_f32.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -5308,7 +5308,7 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/get_rows_f32.loom"
+          "ops/rows/get_rows_f32.loom"
         ],
         "library_sources": [
           "motifs/dequant.loom",
@@ -5340,7 +5340,7 @@
       "name": "ggml_get_rows_f32_next",
       "family": "loom_libs",
       "symbol": "ggml_get_rows_f32_next",
-      "source": "ops/get_rows_f32.loom",
+      "source": "ops/rows/get_rows_f32.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -5385,7 +5385,7 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/get_rows_f32.loom"
+          "ops/rows/get_rows_f32.loom"
         ],
         "library_sources": [
           "motifs/dequant.loom",
@@ -5417,7 +5417,7 @@
       "name": "ggml_rope_f32",
       "family": "loom_libs",
       "symbol": "ggml_rope_f32",
-      "source": "ops/rope_f32.loom",
+      "source": "ops/rope/rope_f32.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -5448,21 +5448,23 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/rope_f32.loom"
+          "ops/rope/rope_f32.loom"
         ],
         "library_sources": [
-          "motifs/rope_f32.loom"
+          "motifs/rope/rope_f32.loom",
+          "motifs/rows/cache_publish.loom"
         ]
       },
       "compile_dependencies": [
-        "motifs/rope_f32.loom"
+        "motifs/rope/rope_f32.loom",
+        "motifs/rows/cache_publish.loom"
       ]
     },
     {
       "name": "ggml_set_rows",
       "family": "loom_libs",
       "symbol": "ggml_set_rows",
-      "source": "ops/set_rows.loom",
+      "source": "ops/rows/set_rows.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -5505,17 +5507,21 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/set_rows.loom"
+          "ops/rows/set_rows.loom"
         ],
-        "library_sources": []
+        "library_sources": [
+          "motifs/rows/cache_publish.loom"
+        ]
       },
-      "compile_dependencies": []
+      "compile_dependencies": [
+        "motifs/rows/cache_publish.loom"
+      ]
     },
     {
       "name": "ggml_rope_set_rows_f32",
       "family": "loom_libs",
       "symbol": "ggml_rope_set_rows_f32",
-      "source": "ops/rope_set_rows_f32.loom",
+      "source": "ops/rope/rope_f32.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -5556,14 +5562,16 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/rope_set_rows_f32.loom"
+          "ops/rope/rope_f32.loom"
         ],
         "library_sources": [
-          "motifs/rope_f32.loom"
+          "motifs/rope/rope_f32.loom",
+          "motifs/rows/cache_publish.loom"
         ]
       },
       "compile_dependencies": [
-        "motifs/rope_f32.loom"
+        "motifs/rope/rope_f32.loom",
+        "motifs/rows/cache_publish.loom"
       ]
     },
     {
