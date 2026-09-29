@@ -1,4 +1,4 @@
-// Compile-time selected routed SwiGLU accumulator.
+// Compile-time selected routed F16 pair accumulator.
 
 template.decl @ggml.mul_mat_id_swiglu_f16_f16.accumulate_block(%quant_block: index, %load_row: index, %load_k: index, %load_packet: index, %channel_tile_base: index, %bounded_output_size: index, %assignment_count: index, %token_count: index, %route_count: index, %input_size: index, %subgroup_channel_add: index, %subgroup_route_add: index, %input: buffer, %route_stage: buffer, %weight_stage: buffer, %activation_stage: buffer, %gate_weight: buffer, %up_weight: buffer, %expert_byte_base: offset, %gate_weight_row_bytes: offset, %up_weight_row_bytes: offset, %gate_weight_format: index, %up_weight_format: index, %gate_accumulator: vector<16xf16>, %up_accumulator: vector<16xf16>) -> (vector<16xf16>, vector<16xf16>)
 

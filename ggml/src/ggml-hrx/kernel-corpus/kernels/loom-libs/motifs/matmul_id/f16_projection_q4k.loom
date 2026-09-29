@@ -1,4 +1,4 @@
-// Shared routed Q4_K single-projection WMMA step.
+// Shared routed F16 pair Q4_K single-projection WMMA step.
 //
 // Callers own the outer routing and fusion schedule. This motif stages one
 // projected Q4_K weight tile, optionally stages the shared routed activation

@@ -1,13 +1,13 @@
-// Shared routed gate/up SwiGLU schedule for FP16 WMMA fast paths.
+// Shared routed gate/up schedule for F16 pair WMMA fast paths.
 //
-// The body owns routing, staging lifetime, accumulator flow, SwiGLU, and f16
-// publish. A common accumulator motif selects the dtype-specific inner loop.
+// The body owns routing, staging lifetime, and accumulator flow. Separate
+// motifs select the dtype-specific inner loop and publish the binary result.
 
 template.decl @ggml.mul_mat_id_swiglu_f16_f16.accumulate_block(%quant_block: index, %load_row: index, %load_k: index, %load_packet: index, %channel_tile_base: index, %bounded_output_size: index, %assignment_count: index, %token_count: index, %route_count: index, %input_size: index, %subgroup_channel_add: index, %subgroup_route_add: index, %input: buffer, %route_stage: buffer, %weight_stage: buffer, %activation_stage: buffer, %gate_weight: buffer, %up_weight: buffer, %expert_byte_base: offset, %gate_weight_row_bytes: offset, %up_weight_row_bytes: offset, %gate_weight_format: index, %up_weight_format: index, %gate_accumulator: vector<16xf16>, %up_accumulator: vector<16xf16>) -> (vector<16xf16>, vector<16xf16>)
 
 template.decl @ggml.mul_mat_id_swiglu_f16_f16.body(%gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size: index, %route_count: index, %expert_count: index, %output_size: index, %descriptor_expert_mask: i32, %descriptor_partition_shift: i32, %descriptor_row_count_shift: i32, %channel_tile: index, %partition_ordinal: index, %input: buffer, %expert_table: buffer, %partition_table: buffer, %gate_weight: buffer, %up_weight: buffer, %output: buffer)
 
-template.decl @ggml.mul_mat_id_swiglu_f16_f16.apply_vector8(%gate: vector<8xf32>, %up: vector<8xf32>) -> (vector<8xf32>)
+template.decl @ggml.mul_mat_id_swiglu_f16_f16.binary_publish_vector8(%gate: vector<8xf32>, %up: vector<8xf32>, %assignment: index, %channel: index, %output_row_count: index, %output_size: index, %output: buffer)
 
 func.decl @ggml_dequant_weight_tile_bytes(%weight_format: index) -> (offset)
 
@@ -30,12 +30,6 @@ func.def inline @ggml_mul_mat_id_swiglu_f16_f16_unpack_expert_partition_descript
   %partition_row_count0 = index.cast %partition_row_count_i32 : i32 to index
   %partition_row_count = index.assume %partition_row_count0 [range(%partition_row_count0, 1, 32)] : index
   func.return %expert, %route_tile_base, %partition_row_count : index, index, index
-}
-
-template.def<@ggml.mul_mat_id_swiglu_f16_f16.apply_vector8> device @ggml_mul_mat_id_swiglu_f16_f16_apply_swiglu_vector8(%gate: vector<8xf32>, %up: vector<8xf32>) -> (vector<8xf32>) {
-  %activated = vector.siluf %gate : vector<8xf32>
-  %result = vector.mulf %activated, %up : vector<8xf32>
-  template.return %result : vector<8xf32>
 }
 
 template.def<@ggml.mul_mat_id_swiglu_f16_f16.body> device @ggml_mul_mat_id_swiglu_f16_f16_wmma_body(%gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size: index, %route_count: index, %expert_count: index, %output_size: index, %descriptor_expert_mask: i32, %descriptor_partition_shift: i32, %descriptor_row_count_shift: i32, %channel_tile: index, %partition_ordinal: index, %input: buffer, %expert_table: buffer, %partition_table: buffer, %gate_weight: buffer, %up_weight: buffer, %output: buffer) {
@@ -87,7 +81,6 @@ template.def<@ggml.mul_mat_id_swiglu_f16_f16.body> device @ggml_mul_mat_id_swigl
   %assignment_view = buffer.view %expert_table_noalias[%assignment_table_byte_base] : buffer -> view<[%bounded_expert_count]x[%token_count]xi32>
   %partition_count_view = buffer.view %partition_table_noalias[%c0_offset] : buffer -> view<1xi32>
   %partition_descriptor_view = buffer.view %partition_table_noalias[%c4_bytes] : buffer -> view<[%maximum_partition_count]xi32>
-  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%output_row_count]x[%bounded_output_size]xf16>
   %weight_stage = buffer.alloca<workgroup> align(16) %weight_stage_bytes : buffer
   %activation_stage = buffer.alloca<workgroup> align(16) %activation_stage_bytes : buffer
   %route_stage = buffer.alloca<workgroup> align(16) %route_stage_bytes : buffer
@@ -182,10 +175,7 @@ template.def<@ggml.mul_mat_id_swiglu_f16_f16.body> device @ggml_mul_mat_id_swigl
     scf.if %writes {
       %up_values = vector.load %result_physical_view[%publish_route, %publish_channel_add] : view<16x16xf16> -> vector<8xf16>
       %up_wide = vector.extf %up_values : vector<8xf16> to vector<8xf32>
-      %wide_values = template.apply<@ggml.mul_mat_id_swiglu_f16_f16.apply_vector8>(%gate_wide, %up_wide) : (vector<8xf32>, vector<8xf32>) -> (vector<8xf32>)
-      %values = vector.fptrunc %wide_values : vector<8xf32> to vector<8xf16>
-      %mask = vector.mask.range [%channel to %bounded_output_size step %c1] : index -> vector<8xi1>
-      vector.store.mask %values, %output_view[%bounded_assignment, %channel], %mask : vector<8xf16>, view<[%output_row_count]x[%bounded_output_size]xf16>, vector<8xi1>
+      template.apply<@ggml.mul_mat_id_swiglu_f16_f16.binary_publish_vector8>(%gate_wide, %up_wide, %bounded_assignment, %channel, %output_row_count, %bounded_output_size, %output_noalias) : (vector<8xf32>, vector<8xf32>, index, index, index, index, buffer)
     }
     kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
   }

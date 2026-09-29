@@ -1,4 +1,4 @@
-// Routed gate/up SwiGLU f16-output path with compile-time weight-format selection.
+// Routed gate/up SwiGLU F16-output path with compile-time weight-format selection.
 
 template.decl @ggml.mul_mat_id_swiglu_f16_f16.body(%arg0: index, %arg1: index, %arg2: index, %arg3: index, %arg4: index, %arg5: index, %arg6: index, %arg7: i32, %arg8: i32, %arg9: i32, %arg10: index, %arg11: index, %arg12: buffer, %arg13: buffer, %arg14: buffer, %arg15: buffer, %arg16: buffer, %arg17: buffer)
 
