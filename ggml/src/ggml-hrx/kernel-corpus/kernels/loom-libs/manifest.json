@@ -267,10 +267,49 @@
       "path": "motifs/gated_delta_net/projection_epilogue.loom"
     },
     {
-      "path": "ops/ssm_conv_f32.loom"
+      "path": "motifs/ssm_conv/generic_apply.loom"
     },
     {
-      "path": "ops/ssm_conv_generic_f32.loom"
+      "path": "motifs/ssm_conv/dconv4_silu.loom"
+    },
+    {
+      "path": "motifs/ssm_conv/prefill_finish.loom"
+    },
+    {
+      "path": "motifs/ssm_conv/snapshot_window_tail.loom"
+    },
+    {
+      "path": "motifs/ssm_conv/prefill_window.loom"
+    },
+    {
+      "path": "motifs/ssm_conv/rollback_store.loom"
+    },
+    {
+      "path": "motifs/ssm_conv/decode_update.loom"
+    },
+    {
+      "path": "motifs/ssm_conv/state_materialize.loom"
+    },
+    {
+      "path": "ops/ssm_conv/generic_f32.loom"
+    },
+    {
+      "path": "ops/ssm_conv/generic_binary_f32.loom"
+    },
+    {
+      "path": "ops/ssm_conv/prefill_finish_f32.loom"
+    },
+    {
+      "path": "ops/ssm_conv/snapshot_window_tail_f32.loom"
+    },
+    {
+      "path": "ops/ssm_conv/prefill_dconv4_silu_512_wg1024.loom"
+    },
+    {
+      "path": "ops/ssm_conv/decode_dconv4_silu_f32.loom"
+    },
+    {
+      "path": "ops/ssm_conv/rollback_dconv4_silu_f32.loom"
     },
     {
       "path": "ops/rope/rope_f32.loom"
@@ -5588,7 +5627,7 @@
       "name": "llm_ssm_conv_f32",
       "family": "loom_libs",
       "symbol": "llm_ssm_conv_f32",
-      "source": "ops/ssm_conv_generic_f32.loom",
+      "source": "ops/ssm_conv/generic_f32.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -5605,14 +5644,16 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/ssm_conv_generic_f32.loom"
+          "ops/ssm_conv/generic_f32.loom"
         ],
         "library_sources": [
+          "motifs/ssm_conv/generic_apply.loom",
           "motifs/elementwise/unary_apply.loom",
           "motifs/elementwise/binary_apply.loom"
         ]
       },
       "compile_dependencies": [
+        "motifs/ssm_conv/generic_apply.loom",
         "motifs/elementwise/unary_apply.loom",
         "motifs/elementwise/binary_apply.loom"
       ]
@@ -5621,7 +5662,7 @@
       "name": "llm_ssm_conv_binary_f32",
       "family": "loom_libs",
       "symbol": "llm_ssm_conv_binary_f32",
-      "source": "ops/ssm_conv_generic_f32.loom",
+      "source": "ops/ssm_conv/generic_binary_f32.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -5640,14 +5681,16 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/ssm_conv_generic_f32.loom"
+          "ops/ssm_conv/generic_binary_f32.loom"
         ],
         "library_sources": [
+          "motifs/ssm_conv/generic_apply.loom",
           "motifs/elementwise/unary_apply.loom",
           "motifs/elementwise/binary_apply.loom"
         ]
       },
       "compile_dependencies": [
+        "motifs/ssm_conv/generic_apply.loom",
         "motifs/elementwise/unary_apply.loom",
         "motifs/elementwise/binary_apply.loom"
       ]
@@ -5656,7 +5699,7 @@
       "name": "llm_ssm_conv_snapshot_window_tail_f32",
       "family": "loom_libs",
       "symbol": "llm_ssm_conv_snapshot_window_tail_f32",
-      "source": "ops/ssm_conv_f32.loom",
+      "source": "ops/ssm_conv/snapshot_window_tail_f32.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -5675,17 +5718,21 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/ssm_conv_f32.loom"
+          "ops/ssm_conv/snapshot_window_tail_f32.loom"
         ],
-        "library_sources": []
+        "library_sources": [
+          "motifs/ssm_conv/snapshot_window_tail.loom"
+        ]
       },
-      "compile_dependencies": []
+      "compile_dependencies": [
+        "motifs/ssm_conv/snapshot_window_tail.loom"
+      ]
     },
     {
       "name": "llm_ssm_conv_dconv4_silu_prefill_finish_f32",
       "family": "loom_libs",
       "symbol": "llm_ssm_conv_dconv4_silu_prefill_finish_f32",
-      "source": "ops/ssm_conv_generic_f32.loom",
+      "source": "ops/ssm_conv/prefill_finish_f32.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -5706,23 +5753,23 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/ssm_conv_generic_f32.loom"
+          "ops/ssm_conv/prefill_finish_f32.loom"
         ],
         "library_sources": [
-          "motifs/elementwise/unary_apply.loom",
-          "motifs/elementwise/binary_apply.loom"
+          "motifs/ssm_conv/prefill_finish.loom",
+          "motifs/ssm_conv/dconv4_silu.loom"
         ]
       },
       "compile_dependencies": [
-        "motifs/elementwise/unary_apply.loom",
-        "motifs/elementwise/binary_apply.loom"
+        "motifs/ssm_conv/prefill_finish.loom",
+        "motifs/ssm_conv/dconv4_silu.loom"
       ]
     },
     {
       "name": "llm_ssm_conv_dconv4_silu_prefill_512_wg1024",
       "family": "loom_libs",
       "symbol": "llm_ssm_conv_dconv4_silu_prefill_512_wg1024",
-      "source": "ops/ssm_conv_f32.loom",
+      "source": "ops/ssm_conv/prefill_dconv4_silu_512_wg1024.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -5741,17 +5788,21 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/ssm_conv_f32.loom"
+          "ops/ssm_conv/prefill_dconv4_silu_512_wg1024.loom"
         ],
-        "library_sources": []
+        "library_sources": [
+          "motifs/ssm_conv/prefill_window.loom"
+        ]
       },
-      "compile_dependencies": []
+      "compile_dependencies": [
+        "motifs/ssm_conv/prefill_window.loom"
+      ]
     },
     {
       "name": "llm_ssm_conv_dconv4_silu_decode_f32",
       "family": "loom_libs",
       "symbol": "llm_ssm_conv_dconv4_silu_decode_f32",
-      "source": "ops/ssm_conv_f32.loom",
+      "source": "ops/ssm_conv/decode_dconv4_silu_f32.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -5772,17 +5823,27 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/ssm_conv_f32.loom"
+          "ops/ssm_conv/decode_dconv4_silu_f32.loom"
         ],
-        "library_sources": []
+        "library_sources": [
+          "motifs/ssm_conv/state_materialize.loom",
+          "motifs/ssm_conv/rollback_store.loom",
+          "motifs/ssm_conv/decode_update.loom",
+          "motifs/ssm_conv/dconv4_silu.loom"
+        ]
       },
-      "compile_dependencies": []
+      "compile_dependencies": [
+        "motifs/ssm_conv/state_materialize.loom",
+        "motifs/ssm_conv/rollback_store.loom",
+        "motifs/ssm_conv/decode_update.loom",
+        "motifs/ssm_conv/dconv4_silu.loom"
+      ]
     },
     {
       "name": "llm_ssm_conv_dconv4_silu_rollback_f32",
       "family": "loom_libs",
       "symbol": "llm_ssm_conv_dconv4_silu_rollback_f32",
-      "source": "ops/ssm_conv_f32.loom",
+      "source": "ops/ssm_conv/rollback_dconv4_silu_f32.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -5811,11 +5872,21 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/ssm_conv_f32.loom"
+          "ops/ssm_conv/rollback_dconv4_silu_f32.loom"
         ],
-        "library_sources": []
+        "library_sources": [
+          "motifs/ssm_conv/state_materialize.loom",
+          "motifs/ssm_conv/rollback_store.loom",
+          "motifs/ssm_conv/decode_update.loom",
+          "motifs/ssm_conv/dconv4_silu.loom"
+        ]
       },
-      "compile_dependencies": []
+      "compile_dependencies": [
+        "motifs/ssm_conv/state_materialize.loom",
+        "motifs/ssm_conv/rollback_store.loom",
+        "motifs/ssm_conv/decode_update.loom",
+        "motifs/ssm_conv/dconv4_silu.loom"
+      ]
     },
     {
       "name": "llm_gated_delta_net_f32_wmma_head128",

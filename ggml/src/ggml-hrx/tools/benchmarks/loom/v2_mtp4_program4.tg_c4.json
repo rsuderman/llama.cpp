@@ -228,12 +228,21 @@
       "count": 48,
       "integer_parameters": {},
       "kernel": "loom_libs:llm_ssm_conv_dconv4_silu_rollback_f32",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/ssm_conv/state_materialize.loom",
+        "motifs/ssm_conv/rollback_store.loom",
+        "motifs/ssm_conv/decode_update.loom",
+        "motifs/ssm_conv/dconv4_silu.loom"
+      ],
       "primary_sources": [
-        "ops/ssm_conv_f32.loom"
+        "ops/ssm_conv/rollback_dconv4_silu_f32.loom"
       ],
       "sources": [
-        "ops/ssm_conv_f32.loom"
+        "ops/ssm_conv/rollback_dconv4_silu_f32.loom",
+        "motifs/ssm_conv/state_materialize.loom",
+        "motifs/ssm_conv/rollback_store.loom",
+        "motifs/ssm_conv/decode_update.loom",
+        "motifs/ssm_conv/dconv4_silu.loom"
       ],
       "symbol": "llm_ssm_conv_dconv4_silu_rollback_f32",
       "workload_parameters": []
