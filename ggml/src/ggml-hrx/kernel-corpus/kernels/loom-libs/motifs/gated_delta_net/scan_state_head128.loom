@@ -13,6 +13,22 @@ template.decl @llm.gated_delta_net.snapshot_fragment_prefix.body(%state_factor: 
 
 template.decl @llm.gated_delta_net.f32_wmma_head128.body(%state_inplace: i1, %publish_snapshots: i1, %projection_epilogue: i1, %snapshot_stride: index, %scale: f32, %q: buffer, %k: buffer, %v: buffer, %g: buffer, %beta: buffer, %bias: buffer, %a_scale: buffer, %state_in: buffer, %dst: buffer, %snapshot_cache: buffer, %rmsnorm_gate: i1, %rms_epsilon: f32, %rms_gate_op: index, %rms_weight: buffer, %raw_gate: buffer, %norm_output: buffer, %half_output: buffer, %select_state: i1, %state_row_count: index, %state_ids: buffer, %publish_q8: i1)
 
+template.decl @llm.gated_delta_net.projection_epilogue.apply(%alpha: f32, %beta: f32, %bias: f32, %a_scale: f32, %zero: f32, %one: f32) -> (f32, f32)
+
+template.decl @llm.gated_delta_net.rmsnorm_gate.publish_head128(%base: offset, %n_tokens: index, %n_heads: index, %n_seqs: index, %lane: index, %wave: index, %time_base: index, %seq: index, %zero: index, %head: index, %c4: index, %c8: index, %c16: index, %c128: index, %rms_epsilon: f32, %gate_op: index, %publish_q8: i1, %lds: buffer, %rms_weight: buffer, %raw_gate: buffer, %norm_output: buffer, %half_output: buffer)
+
+template.decl @llm.gated_delta_net.inplace_state.publish_head128(%state: view<1073741824xf32>, %index0: index, %index1: index, %index2: index, %index3: index, %index4: index, %index5: index, %index6: index, %index7: index, %index8: index, %index9: index, %index10: index, %index11: index, %index12: index, %index13: index, %index14: index, %index15: index, %value0: vector<4xf32>, %value1: vector<4xf32>, %value2: vector<4xf32>, %value3: vector<4xf32>, %value4: vector<4xf32>, %value5: vector<4xf32>, %value6: vector<4xf32>, %value7: vector<4xf32>, %value8: vector<4xf32>, %value9: vector<4xf32>, %value10: vector<4xf32>, %value11: vector<4xf32>, %value12: vector<4xf32>, %value13: vector<4xf32>, %value14: vector<4xf32>, %value15: vector<4xf32>)
+
+template.decl @llm.gated_delta_net.snapshot_load.vector4(%state: view<1073741824xf32>, %index: index, %state_offset: index, %selected_state_offset: index, %selected_valid: i1, %zero: vector<4xf32>) -> (vector<4xf32>)
+
+template.decl @llm.gated_delta_net.snapshot_publish.final_head128(%cache: view<1073741824xf32>, %index0: index, %index1: index, %index2: index, %index3: index, %index4: index, %index5: index, %index6: index, %index7: index, %index8: index, %index9: index, %index10: index, %index11: index, %index12: index, %index13: index, %index14: index, %index15: index, %value0: vector<4xf32>, %value1: vector<4xf32>, %value2: vector<4xf32>, %value3: vector<4xf32>, %value4: vector<4xf32>, %value5: vector<4xf32>, %value6: vector<4xf32>, %value7: vector<4xf32>, %value8: vector<4xf32>, %value9: vector<4xf32>, %value10: vector<4xf32>, %value11: vector<4xf32>, %value12: vector<4xf32>, %value13: vector<4xf32>, %value14: vector<4xf32>, %value15: vector<4xf32>)
+
+template.decl @llm.gated_delta_net.selected_snapshot_load.state_offset(%select_state: i1, %state_row_count: index, %state_ids: buffer, %base: offset, %sequence_count: index, %sequence: index, %head_count: index, %head: index, %state_size: index, %default_offset: index) -> (index, i1)
+
+template.decl @llm.gated_delta_net.publish_f32.scalar(%value: f32, %output: view<1073741824xf32>, %index: index)
+
+template.decl @llm.gated_delta_net.publish_f32.state_head128(%column: index, %head_width: index, %state_offset: index, %attention_elements: index, %row: index, %state_stride: index, %output: view<1073741824xf32>, %value0: vector<4xf32>, %value1: vector<4xf32>, %value2: vector<4xf32>, %value3: vector<4xf32>, %value4: vector<4xf32>, %value5: vector<4xf32>, %value6: vector<4xf32>, %value7: vector<4xf32>, %value8: vector<4xf32>, %value9: vector<4xf32>, %value10: vector<4xf32>, %value11: vector<4xf32>, %value12: vector<4xf32>, %value13: vector<4xf32>, %value14: vector<4xf32>, %value15: vector<4xf32>)
+
 // Chunked Gated DeltaNet matrix-core scan with one eight-wave workgroup per head and sequence.
 // Each lane retains four rows of every state column in registers and stages the shard to F16 LDS once per 16-token chunk.
 // The 63,296-byte LDS footprint permits one full-head workgroup per CU.
@@ -53,216 +69,6 @@ config.decl @llm.gated_delta_net.snapshot_stride : %value: index where [range(%v
 config.decl @llm.gated_delta_net.l2_epsilon : f32
 
 config.decl @llm.gated_delta_net.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
-
-kernel.def export("llm_gated_delta_net_f32_wmma_head128") @llm_gated_delta_net_f32_wmma_head128() {
-  %unit = index.constant 1 : index
-  %wg = index.constant 256 : index
-  %blk = index.constant 128 : index
-  %blk_m = index.constant 127 : index
-  %s_v = config.get @llm.gated_delta_net.head_width : index
-  %n_heads = config.get @llm.gated_delta_net.head_count : index
-  %n_seqs = config.get @llm.gated_delta_net.sequence_count : index
-  %cr = index.add %s_v, %blk_m : index
-  %col_blocks = index.div %cr, %blk : index
-  kernel.launch.config workgroups(%n_heads, %n_seqs, %col_blocks) workgroup_size(%wg, %unit, %unit) : index
-} launch(%q: buffer, %k: buffer, %v: buffer, %g: buffer, %beta: buffer, %state_in: buffer, %dst: buffer) {
-  %state_inplace = scalar.constant false : i1
-  %publish_snapshots = scalar.constant false : i1
-  %projection_epilogue = scalar.constant false : i1
-  %snapshot_stride = index.constant 1 : index
-  %scale = scalar.constant 0.0883883461356163 : f32
-  %rmsnorm_gate = scalar.constant false : i1
-  %select_state = scalar.constant false : i1
-  %state_row_count = index.constant 1 : index
-  %publish_q8 = scalar.constant false : i1
-  template.apply<@llm.gated_delta_net.f32_wmma_head128.body>(%state_inplace, %publish_snapshots, %projection_epilogue, %snapshot_stride, %scale, %q, %k, %v, %g, %beta, %g, %beta, %state_in, %dst, %state_in, %rmsnorm_gate, %scale, %snapshot_stride, %dst, %dst, %dst, %dst, %select_state, %state_row_count, %dst, %publish_q8) : (i1, i1, i1, index, f32, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, i1, f32, index, buffer, buffer, buffer, buffer, i1, index, buffer, i1)
-  kernel.return
-}
-
-// Low-row scan with the alpha/beta projection epilogue folded into the
-// existing one-thread-per-token scalar load point.
-kernel.def export("llm_gated_delta_net_f32_wmma_head128_projection_epilogue") @llm_gated_delta_net_f32_wmma_head128_projection_epilogue() {
-  %unit = index.constant 1 : index
-  %wg = index.constant 256 : index
-  %blk = index.constant 128 : index
-  %blk_m = index.constant 127 : index
-  %s_v = config.get @llm.gated_delta_net.head_width : index
-  %n_heads = config.get @llm.gated_delta_net.head_count : index
-  %n_seqs = config.get @llm.gated_delta_net.sequence_count : index
-  %cr = index.add %s_v, %blk_m : index
-  %col_blocks = index.div %cr, %blk : index
-  kernel.launch.config workgroups(%n_heads, %n_seqs, %col_blocks) workgroup_size(%wg, %unit, %unit) : index
-} launch(%q: buffer, %k: buffer, %v: buffer, %alpha_raw: buffer, %beta_raw: buffer, %bias: buffer, %a_scale: buffer, %state_in: buffer, %dst: buffer) {
-  %state_inplace = scalar.constant false : i1
-  %publish_snapshots = scalar.constant false : i1
-  %projection_epilogue = scalar.constant true : i1
-  %snapshot_stride = index.constant 1 : index
-  %scale = scalar.constant 0.0883883461356163 : f32
-  %rmsnorm_gate = scalar.constant false : i1
-  %select_state = scalar.constant false : i1
-  %state_row_count = index.constant 1 : index
-  %publish_q8 = scalar.constant false : i1
-  template.apply<@llm.gated_delta_net.f32_wmma_head128.body>(%state_inplace, %publish_snapshots, %projection_epilogue, %snapshot_stride, %scale, %q, %k, %v, %alpha_raw, %beta_raw, %bias, %a_scale, %state_in, %dst, %state_in, %rmsnorm_gate, %scale, %snapshot_stride, %dst, %dst, %dst, %dst, %select_state, %state_row_count, %dst, %publish_q8) : (i1, i1, i1, index, f32, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, i1, f32, index, buffer, buffer, buffer, buffer, i1, index, buffer, i1)
-  kernel.return
-}
-
-// Decode specialization keeps recurrent state in the graph-owned cache row.
-kernel.def export("llm_gated_delta_net_f32_wmma_head128_inplace") @llm_gated_delta_net_f32_wmma_head128_inplace() {
-  %unit = index.constant 1 : index
-  %wg = index.constant 256 : index
-  %blk = index.constant 128 : index
-  %blk_m = index.constant 127 : index
-  %s_v = config.get @llm.gated_delta_net.head_width : index
-  %n_heads = config.get @llm.gated_delta_net.head_count : index
-  %n_seqs = config.get @llm.gated_delta_net.sequence_count : index
-  %cr = index.add %s_v, %blk_m : index
-  %col_blocks = index.div %cr, %blk : index
-  kernel.launch.config workgroups(%n_heads, %n_seqs, %col_blocks) workgroup_size(%wg, %unit, %unit) : index
-} launch(%q: buffer, %k: buffer, %v: buffer, %g: buffer, %beta: buffer, %state_inout: buffer, %dst: buffer) {
-  %state_inplace = scalar.constant true : i1
-  %publish_snapshots = scalar.constant false : i1
-  %projection_epilogue = scalar.constant false : i1
-  %snapshot_stride = index.constant 1 : index
-  %scale = scalar.constant 0.0883883461356163 : f32
-  %rmsnorm_gate = scalar.constant false : i1
-  %select_state = scalar.constant false : i1
-  %state_row_count = index.constant 1 : index
-  %publish_q8 = scalar.constant false : i1
-  template.apply<@llm.gated_delta_net.f32_wmma_head128.body>(%state_inplace, %publish_snapshots, %projection_epilogue, %snapshot_stride, %scale, %q, %k, %v, %g, %beta, %g, %beta, %state_inout, %dst, %state_inout, %rmsnorm_gate, %scale, %snapshot_stride, %dst, %dst, %dst, %dst, %select_state, %state_row_count, %dst, %publish_q8) : (i1, i1, i1, index, f32, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, i1, f32, index, buffer, buffer, buffer, buffer, i1, index, buffer, i1)
-  kernel.return
-}
-
-// Low-row in-place scan with the alpha/beta projection epilogue folded into
-// the existing one-thread-per-token scalar load point.
-kernel.def export("llm_gated_delta_net_f32_wmma_head128_inplace_projection_epilogue") @llm_gated_delta_net_f32_wmma_head128_inplace_projection_epilogue() {
-  %unit = index.constant 1 : index
-  %wg = index.constant 256 : index
-  %blk = index.constant 128 : index
-  %blk_m = index.constant 127 : index
-  %s_v = config.get @llm.gated_delta_net.head_width : index
-  %n_heads = config.get @llm.gated_delta_net.head_count : index
-  %n_seqs = config.get @llm.gated_delta_net.sequence_count : index
-  %cr = index.add %s_v, %blk_m : index
-  %col_blocks = index.div %cr, %blk : index
-  kernel.launch.config workgroups(%n_heads, %n_seqs, %col_blocks) workgroup_size(%wg, %unit, %unit) : index
-} launch(%q: buffer, %k: buffer, %v: buffer, %alpha_raw: buffer, %beta_raw: buffer, %bias: buffer, %a_scale: buffer, %state_inout: buffer, %dst: buffer) {
-  %state_inplace = scalar.constant true : i1
-  %publish_snapshots = scalar.constant false : i1
-  %projection_epilogue = scalar.constant true : i1
-  %snapshot_stride = index.constant 1 : index
-  %scale = scalar.constant 0.0883883461356163 : f32
-  %rmsnorm_gate = scalar.constant false : i1
-  %select_state = scalar.constant false : i1
-  %state_row_count = index.constant 1 : index
-  %publish_q8 = scalar.constant false : i1
-  template.apply<@llm.gated_delta_net.f32_wmma_head128.body>(%state_inplace, %publish_snapshots, %projection_epilogue, %snapshot_stride, %scale, %q, %k, %v, %alpha_raw, %beta_raw, %bias, %a_scale, %state_inout, %dst, %state_inout, %rmsnorm_gate, %scale, %snapshot_stride, %dst, %dst, %dst, %dst, %select_state, %state_row_count, %dst, %publish_q8) : (i1, i1, i1, index, f32, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, i1, f32, index, buffer, buffer, buffer, buffer, i1, index, buffer, i1)
-  kernel.return
-}
-
-// Low-row MTP specialization publishes each recurrence prefix and final state to the reverse-ordered rollback cache.
-kernel.def export("llm_gated_delta_net_f32_wmma_head128_snapshot") @llm_gated_delta_net_f32_wmma_head128_snapshot() {
-  %unit = index.constant 1 : index
-  %wg = index.constant 256 : index
-  %blk = index.constant 128 : index
-  %blk_m = index.constant 127 : index
-  %s_v = config.get @llm.gated_delta_net.head_width : index
-  %n_heads = config.get @llm.gated_delta_net.head_count : index
-  %n_seqs = config.get @llm.gated_delta_net.sequence_count : index
-  %cr = index.add %s_v, %blk_m : index
-  %col_blocks = index.div %cr, %blk : index
-  kernel.launch.config workgroups(%n_heads, %n_seqs, %col_blocks) workgroup_size(%wg, %unit, %unit) : index
-} launch(%q: buffer, %k: buffer, %v: buffer, %g: buffer, %beta: buffer, %state_in: buffer, %snapshot_cache: buffer, %dst: buffer) {
-  %state_inplace = scalar.constant false : i1
-  %publish_snapshots = scalar.constant true : i1
-  %projection_epilogue = scalar.constant false : i1
-  %scale = scalar.constant 0.0883883461356163 : f32
-  %snapshot_stride = config.get @llm.gated_delta_net.snapshot_stride : index
-  %rmsnorm_gate = scalar.constant false : i1
-  %select_state = scalar.constant false : i1
-  %state_row_count = index.constant 1 : index
-  %publish_q8 = scalar.constant false : i1
-  template.apply<@llm.gated_delta_net.f32_wmma_head128.body>(%state_inplace, %publish_snapshots, %projection_epilogue, %snapshot_stride, %scale, %q, %k, %v, %g, %beta, %g, %beta, %state_in, %dst, %snapshot_cache, %rmsnorm_gate, %scale, %snapshot_stride, %dst, %dst, %dst, %dst, %select_state, %state_row_count, %dst, %publish_q8) : (i1, i1, i1, index, f32, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, i1, f32, index, buffer, buffer, buffer, buffer, i1, index, buffer, i1)
-  kernel.return
-}
-
-// Low-row snapshot scan with the alpha/beta projection epilogue folded into
-// the existing one-thread-per-token scalar load point.
-kernel.def export("llm_gated_delta_net_f32_wmma_head128_snapshot_projection_epilogue") @llm_gated_delta_net_f32_wmma_head128_snapshot_projection_epilogue() {
-  %unit = index.constant 1 : index
-  %wg = index.constant 256 : index
-  %blk = index.constant 128 : index
-  %blk_m = index.constant 127 : index
-  %s_v = config.get @llm.gated_delta_net.head_width : index
-  %n_heads = config.get @llm.gated_delta_net.head_count : index
-  %n_seqs = config.get @llm.gated_delta_net.sequence_count : index
-  %cr = index.add %s_v, %blk_m : index
-  %col_blocks = index.div %cr, %blk : index
-  kernel.launch.config workgroups(%n_heads, %n_seqs, %col_blocks) workgroup_size(%wg, %unit, %unit) : index
-} launch(%q: buffer, %k: buffer, %v: buffer, %alpha_raw: buffer, %beta_raw: buffer, %bias: buffer, %a_scale: buffer, %state_in: buffer, %snapshot_cache: buffer, %dst: buffer) {
-  %state_inplace = scalar.constant false : i1
-  %publish_snapshots = scalar.constant true : i1
-  %projection_epilogue = scalar.constant true : i1
-  %scale = scalar.constant 0.0883883461356163 : f32
-  %snapshot_stride = config.get @llm.gated_delta_net.snapshot_stride : index
-  %rmsnorm_gate = scalar.constant false : i1
-  %select_state = scalar.constant false : i1
-  %state_row_count = index.constant 1 : index
-  %publish_q8 = scalar.constant false : i1
-  template.apply<@llm.gated_delta_net.f32_wmma_head128.body>(%state_inplace, %publish_snapshots, %projection_epilogue, %snapshot_stride, %scale, %q, %k, %v, %alpha_raw, %beta_raw, %bias, %a_scale, %state_in, %dst, %snapshot_cache, %rmsnorm_gate, %scale, %snapshot_stride, %dst, %dst, %dst, %dst, %select_state, %state_row_count, %dst, %publish_q8) : (i1, i1, i1, index, f32, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, i1, f32, index, buffer, buffer, buffer, buffer, i1, index, buffer, i1)
-  kernel.return
-}
-
-kernel.def export("llm_gated_delta_net_f32_wmma_head128_selected_snapshot_projection_epilogue") @llm_gated_delta_net_f32_wmma_head128_selected_snapshot_projection_epilogue() {
-  %unit = index.constant 1 : index
-  %wg = index.constant 256 : index
-  %blk = index.constant 128 : index
-  %blk_m = index.constant 127 : index
-  %s_v = config.get @llm.gated_delta_net.head_width : index
-  %n_heads = config.get @llm.gated_delta_net.head_count : index
-  %n_seqs = config.get @llm.gated_delta_net.sequence_count : index
-  %cr = index.add %s_v, %blk_m : index
-  %col_blocks = index.div %cr, %blk : index
-  kernel.launch.config workgroups(%n_heads, %n_seqs, %col_blocks) workgroup_size(%wg, %unit, %unit) : index
-} launch(%q: buffer, %k: buffer, %v: buffer, %alpha_raw: buffer, %beta_raw: buffer, %bias: buffer, %a_scale: buffer, %state_in: buffer, %snapshot_cache: buffer, %dst: buffer, %state_ids: buffer) {
-  %state_inplace = scalar.constant false : i1
-  %publish_snapshots = scalar.constant true : i1
-  %projection_epilogue = scalar.constant true : i1
-  %scale = scalar.constant 0.0883883461356163 : f32
-  %snapshot_stride = config.get @llm.gated_delta_net.snapshot_stride : index
-  %rmsnorm_gate = scalar.constant false : i1
-  %select_state = scalar.constant true : i1
-  %state_row_count = config.get @llm.gated_delta_net.state_row_count : index
-  %publish_q8 = scalar.constant false : i1
-  template.apply<@llm.gated_delta_net.f32_wmma_head128.body>(%state_inplace, %publish_snapshots, %projection_epilogue, %snapshot_stride, %scale, %q, %k, %v, %alpha_raw, %beta_raw, %bias, %a_scale, %state_in, %dst, %snapshot_cache, %rmsnorm_gate, %scale, %snapshot_stride, %dst, %dst, %dst, %dst, %select_state, %state_row_count, %state_ids, %publish_q8) : (i1, i1, i1, index, f32, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, i1, f32, index, buffer, buffer, buffer, buffer, i1, index, buffer, i1)
-  kernel.return
-}
-
-kernel.def export("llm_gated_delta_net_f32_wmma_head128_selected_snapshot_projection_rms_gate_q8") @llm_gated_delta_net_f32_wmma_head128_selected_snapshot_projection_rms_gate_q8() {
-  %unit = index.constant 1 : index
-  %wg = index.constant 256 : index
-  %blk = index.constant 128 : index
-  %blk_m = index.constant 127 : index
-  %s_v = config.get @llm.gated_delta_net.head_width : index
-  %n_heads = config.get @llm.gated_delta_net.head_count : index
-  %n_seqs = config.get @llm.gated_delta_net.sequence_count : index
-  %cr = index.add %s_v, %blk_m : index
-  %col_blocks = index.div %cr, %blk : index
-  kernel.launch.config workgroups(%n_heads, %n_seqs, %col_blocks) workgroup_size(%wg, %unit, %unit) : index
-} launch(%q: buffer, %k: buffer, %v: buffer, %alpha_raw: buffer, %beta_raw: buffer, %bias: buffer, %a_scale: buffer, %state_in: buffer, %snapshot_cache: buffer, %dst: buffer, %state_ids: buffer, %rms_weight: buffer, %raw_gate: buffer, %q8_output: buffer) {
-  %state_inplace = scalar.constant false : i1
-  %publish_snapshots = scalar.constant true : i1
-  %projection_epilogue = scalar.constant true : i1
-  %scale = scalar.constant 0.0883883461356163 : f32
-  %snapshot_stride = config.get @llm.gated_delta_net.snapshot_stride : index
-  %rms_epsilon = config.get @ggml.rmsnorm_gate_f32.rms_epsilon : f32
-  %rms_gate_op = config.get @ggml.rmsnorm_gate_f32.gate_op : index
-  %rmsnorm_gate = scalar.constant true : i1
-  %select_state = scalar.constant true : i1
-  %state_row_count = config.get @llm.gated_delta_net.state_row_count : index
-  %publish_q8 = scalar.constant true : i1
-  template.apply<@llm.gated_delta_net.f32_wmma_head128.body>(%state_inplace, %publish_snapshots, %projection_epilogue, %snapshot_stride, %scale, %q, %k, %v, %alpha_raw, %beta_raw, %bias, %a_scale, %state_in, %dst, %snapshot_cache, %rmsnorm_gate, %rms_epsilon, %rms_gate_op, %rms_weight, %raw_gate, %dst, %q8_output, %select_state, %state_row_count, %state_ids, %publish_q8) : (i1, i1, i1, index, f32, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, i1, f32, index, buffer, buffer, buffer, buffer, i1, index, buffer, i1)
-  kernel.return
-}
 
 template.def<@llm.gated_delta_net.f32_wmma_head128.body> device @llm_gated_delta_net_f32_wmma_head128_body(%state_inplace: i1, %publish_snapshots: i1, %projection_epilogue: i1, %snapshot_stride: index, %scale: f32, %q: buffer, %k: buffer, %v: buffer, %g: buffer, %beta: buffer, %bias: buffer, %a_scale: buffer, %state_in: buffer, %dst: buffer, %snapshot_cache: buffer, %rmsnorm_gate: i1, %rms_epsilon: f32, %rms_gate_op: index, %rms_weight: buffer, %raw_gate: buffer, %norm_output: buffer, %half_output: buffer, %select_state: i1, %state_row_count: index, %state_ids: buffer, %publish_q8: i1) {
   %base = index.constant 0 : offset
@@ -447,25 +253,7 @@ template.def<@llm.gated_delta_net.f32_wmma_head128.body> device @llm_gated_delta
   %so0 = index.mul %seq, %n_heads : index
   %so1 = index.add %so0, %h_idx : index
   %state_offset = index.mul %so1, %sv_sq : index
-  %selected_state_offset, %selected_valid = scf.if %select_state -> (index, i1) {
-    %selected_zero_i32 = scalar.constant 0 : i32
-    %selected_limit_i32 = index.cast %state_row_count : index to i32
-    %selected_ids_view = buffer.view %state_ids[%base] : buffer -> view<[%n_seqs]xi32>
-    %selected_raw = view.load %selected_ids_view[%seq] : view<[%n_seqs]xi32> -> i32
-    %selected_nonnegative = scalar.cmpi sge, %selected_raw, %selected_zero_i32 : i32
-    %selected_in_range = scalar.cmpi slt, %selected_raw, %selected_limit_i32 : i32
-    %selected_ok = scalar.andi %selected_nonnegative, %selected_in_range : i1
-    %selected_safe_i32 = scf.select %selected_ok, %selected_raw, %selected_zero_i32 : i32
-    %selected_id0 = index.cast %selected_safe_i32 : i32 to index
-    %selected_id = index.assume %selected_id0 [range(%selected_id0, 0, 262207), lt(%selected_id0, %state_row_count)] : index
-    %selected_head0 = index.mul %selected_id, %n_heads : index
-    %selected_head = index.add %selected_head0, %h_idx : index
-    %selected_offset = index.mul %selected_head, %sv_sq : index
-    scf.yield %selected_offset, %selected_ok : index, i1
-  } else {
-    %selected_always_valid = scalar.constant true : i1
-    scf.yield %state_offset, %selected_always_valid : index, i1
-  }
+  %selected_state_offset, %selected_valid = template.apply<@llm.gated_delta_net.selected_snapshot_load.state_offset>(%select_state, %state_row_count, %state_ids, %base, %n_seqs, %seq, %n_heads, %h_idx, %sv_sq, %state_offset) : (i1, index, buffer, offset, index, index, index, index, index, index) -> (index, i1)
   %selected_zero_state = vector.constant 0.0 : vector<4xf32>
   %ab0 = index.mul %seq, %n_tokens : index
   %ab1 = index.mul %ab0, %n_heads : index
@@ -563,16 +351,7 @@ template.def<@llm.gated_delta_net.f32_wmma_head128.body> device @llm_gated_delta
         %braw = view.load %b_view[%gbi] : view<1073741824xf32> -> f32
         %bias_value = view.load %bias_view[%h_idx] : view<4096xf32> -> f32
         %a_value = view.load %a_scale_view[%h_idx] : view<4096xf32> -> f32
-        %biased = scalar.addf<nnan|ninf|nsz> %graw, %bias_value : f32
-        %abs = scalar.absf %biased : f32
-        %neg_abs = scalar.negf %abs : f32
-        %exp = scalar.expf<afn> %neg_abs : f32
-        %one_plus = scalar.addf<nnan|ninf|nsz> %projection_one, %exp : f32
-        %log = scalar.logf<afn> %one_plus : f32
-        %positive = scalar.maxnumf %biased, %projection_zero : f32
-        %softplus = scalar.addf<nnan|ninf|nsz> %positive, %log : f32
-        %gate_result = scalar.mulf<nnan|ninf|nsz> %softplus, %a_value : f32
-        %beta_result = scalar.logisticf<afn> %braw : f32
+        %gate_result, %beta_result = template.apply<@llm.gated_delta_net.projection_epilogue.apply>(%graw, %braw, %bias_value, %a_value, %projection_zero, %projection_one) : (f32, f32, f32, f32, f32, f32) -> (f32, f32)
         scf.yield %gate_result, %beta_result : f32, f32
       } else {
         scf.yield %projection_zero, %projection_zero : f32, f32
@@ -617,100 +396,52 @@ template.def<@llm.gated_delta_net.f32_wmma_head128.body> device @llm_gated_delta
   %icb0_a = index.add %state_offset, %icb0_m : index
   %icb0_r = index.add %icb0_a, %row0 : index
   %icb0 = index.assume %icb0_r [range(%icb0_r, 0, 1073741820)] : index
-  %selected_icb0_local = index.sub %icb0, %state_offset : index
-  %selected_icb0 = index.add %selected_icb0_local, %selected_state_offset : index
-  %selected_s0 = vector.load %si_view[%selected_icb0] : view<1073741824xf32> -> vector<4xf32>
-  %s0_init = scf.select %selected_valid, %selected_s0, %selected_zero_state : vector<4xf32>
+  %s0_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb0, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb1_r = index.add %icb0, %k128 : index
   %icb1 = index.assume %icb1_r [range(%icb1_r, 0, 1073741820)] : index
-  %selected_icb1_local = index.sub %icb1, %state_offset : index
-  %selected_icb1 = index.add %selected_icb1_local, %selected_state_offset : index
-  %selected_s1 = vector.load %si_view[%selected_icb1] : view<1073741824xf32> -> vector<4xf32>
-  %s1_init = scf.select %selected_valid, %selected_s1, %selected_zero_state : vector<4xf32>
+  %s1_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb1, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb2_r = index.add %icb1, %k128 : index
   %icb2 = index.assume %icb2_r [range(%icb2_r, 0, 1073741820)] : index
-  %selected_icb2_local = index.sub %icb2, %state_offset : index
-  %selected_icb2 = index.add %selected_icb2_local, %selected_state_offset : index
-  %selected_s2 = vector.load %si_view[%selected_icb2] : view<1073741824xf32> -> vector<4xf32>
-  %s2_init = scf.select %selected_valid, %selected_s2, %selected_zero_state : vector<4xf32>
+  %s2_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb2, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb3_r = index.add %icb2, %k128 : index
   %icb3 = index.assume %icb3_r [range(%icb3_r, 0, 1073741820)] : index
-  %selected_icb3_local = index.sub %icb3, %state_offset : index
-  %selected_icb3 = index.add %selected_icb3_local, %selected_state_offset : index
-  %selected_s3 = vector.load %si_view[%selected_icb3] : view<1073741824xf32> -> vector<4xf32>
-  %s3_init = scf.select %selected_valid, %selected_s3, %selected_zero_state : vector<4xf32>
+  %s3_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb3, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb4_r = index.add %icb3, %k128 : index
   %icb4 = index.assume %icb4_r [range(%icb4_r, 0, 1073741820)] : index
-  %selected_icb4_local = index.sub %icb4, %state_offset : index
-  %selected_icb4 = index.add %selected_icb4_local, %selected_state_offset : index
-  %selected_s4 = vector.load %si_view[%selected_icb4] : view<1073741824xf32> -> vector<4xf32>
-  %s4_init = scf.select %selected_valid, %selected_s4, %selected_zero_state : vector<4xf32>
+  %s4_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb4, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb5_r = index.add %icb4, %k128 : index
   %icb5 = index.assume %icb5_r [range(%icb5_r, 0, 1073741820)] : index
-  %selected_icb5_local = index.sub %icb5, %state_offset : index
-  %selected_icb5 = index.add %selected_icb5_local, %selected_state_offset : index
-  %selected_s5 = vector.load %si_view[%selected_icb5] : view<1073741824xf32> -> vector<4xf32>
-  %s5_init = scf.select %selected_valid, %selected_s5, %selected_zero_state : vector<4xf32>
+  %s5_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb5, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb6_r = index.add %icb5, %k128 : index
   %icb6 = index.assume %icb6_r [range(%icb6_r, 0, 1073741820)] : index
-  %selected_icb6_local = index.sub %icb6, %state_offset : index
-  %selected_icb6 = index.add %selected_icb6_local, %selected_state_offset : index
-  %selected_s6 = vector.load %si_view[%selected_icb6] : view<1073741824xf32> -> vector<4xf32>
-  %s6_init = scf.select %selected_valid, %selected_s6, %selected_zero_state : vector<4xf32>
+  %s6_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb6, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb7_r = index.add %icb6, %k128 : index
   %icb7 = index.assume %icb7_r [range(%icb7_r, 0, 1073741820)] : index
-  %selected_icb7_local = index.sub %icb7, %state_offset : index
-  %selected_icb7 = index.add %selected_icb7_local, %selected_state_offset : index
-  %selected_s7 = vector.load %si_view[%selected_icb7] : view<1073741824xf32> -> vector<4xf32>
-  %s7_init = scf.select %selected_valid, %selected_s7, %selected_zero_state : vector<4xf32>
+  %s7_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb7, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb8_r = index.add %icb7, %k128 : index
   %icb8 = index.assume %icb8_r [range(%icb8_r, 0, 1073741820)] : index
-  %selected_icb8_local = index.sub %icb8, %state_offset : index
-  %selected_icb8 = index.add %selected_icb8_local, %selected_state_offset : index
-  %selected_s8 = vector.load %si_view[%selected_icb8] : view<1073741824xf32> -> vector<4xf32>
-  %s8_init = scf.select %selected_valid, %selected_s8, %selected_zero_state : vector<4xf32>
+  %s8_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb8, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb9_r = index.add %icb8, %k128 : index
   %icb9 = index.assume %icb9_r [range(%icb9_r, 0, 1073741820)] : index
-  %selected_icb9_local = index.sub %icb9, %state_offset : index
-  %selected_icb9 = index.add %selected_icb9_local, %selected_state_offset : index
-  %selected_s9 = vector.load %si_view[%selected_icb9] : view<1073741824xf32> -> vector<4xf32>
-  %s9_init = scf.select %selected_valid, %selected_s9, %selected_zero_state : vector<4xf32>
+  %s9_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb9, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb10_r = index.add %icb9, %k128 : index
   %icb10 = index.assume %icb10_r [range(%icb10_r, 0, 1073741820)] : index
-  %selected_icb10_local = index.sub %icb10, %state_offset : index
-  %selected_icb10 = index.add %selected_icb10_local, %selected_state_offset : index
-  %selected_s10 = vector.load %si_view[%selected_icb10] : view<1073741824xf32> -> vector<4xf32>
-  %s10_init = scf.select %selected_valid, %selected_s10, %selected_zero_state : vector<4xf32>
+  %s10_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb10, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb11_r = index.add %icb10, %k128 : index
   %icb11 = index.assume %icb11_r [range(%icb11_r, 0, 1073741820)] : index
-  %selected_icb11_local = index.sub %icb11, %state_offset : index
-  %selected_icb11 = index.add %selected_icb11_local, %selected_state_offset : index
-  %selected_s11 = vector.load %si_view[%selected_icb11] : view<1073741824xf32> -> vector<4xf32>
-  %s11_init = scf.select %selected_valid, %selected_s11, %selected_zero_state : vector<4xf32>
+  %s11_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb11, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb12_r = index.add %icb11, %k128 : index
   %icb12 = index.assume %icb12_r [range(%icb12_r, 0, 1073741820)] : index
-  %selected_icb12_local = index.sub %icb12, %state_offset : index
-  %selected_icb12 = index.add %selected_icb12_local, %selected_state_offset : index
-  %selected_s12 = vector.load %si_view[%selected_icb12] : view<1073741824xf32> -> vector<4xf32>
-  %s12_init = scf.select %selected_valid, %selected_s12, %selected_zero_state : vector<4xf32>
+  %s12_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb12, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb13_r = index.add %icb12, %k128 : index
   %icb13 = index.assume %icb13_r [range(%icb13_r, 0, 1073741820)] : index
-  %selected_icb13_local = index.sub %icb13, %state_offset : index
-  %selected_icb13 = index.add %selected_icb13_local, %selected_state_offset : index
-  %selected_s13 = vector.load %si_view[%selected_icb13] : view<1073741824xf32> -> vector<4xf32>
-  %s13_init = scf.select %selected_valid, %selected_s13, %selected_zero_state : vector<4xf32>
+  %s13_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb13, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb14_r = index.add %icb13, %k128 : index
   %icb14 = index.assume %icb14_r [range(%icb14_r, 0, 1073741820)] : index
-  %selected_icb14_local = index.sub %icb14, %state_offset : index
-  %selected_icb14 = index.add %selected_icb14_local, %selected_state_offset : index
-  %selected_s14 = vector.load %si_view[%selected_icb14] : view<1073741824xf32> -> vector<4xf32>
-  %s14_init = scf.select %selected_valid, %selected_s14, %selected_zero_state : vector<4xf32>
+  %s14_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb14, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %icb15_r = index.add %icb14, %k128 : index
   %icb15 = index.assume %icb15_r [range(%icb15_r, 0, 1073741820)] : index
-  %selected_icb15_local = index.sub %icb15, %state_offset : index
-  %selected_icb15 = index.add %selected_icb15_local, %selected_state_offset : index
-  %selected_s15 = vector.load %si_view[%selected_icb15] : view<1073741824xf32> -> vector<4xf32>
-  %s15_init = scf.select %selected_valid, %selected_s15, %selected_zero_state : vector<4xf32>
+  %s15_init = template.apply<@llm.gated_delta_net.snapshot_load.vector4>(%si_view, %icb15, %state_offset, %selected_state_offset, %selected_valid, %selected_zero_state) : (view<1073741824xf32>, index, index, index, i1, vector<4xf32>) -> (vector<4xf32>)
   %ch_r = index.add %n_tokens, %k15 : index
   %n_chunks = index.div %ch_r, %k16 : index
   %f1 = scalar.constant 1.0 : f32
@@ -2838,54 +2569,7 @@ template.def<@llm.gated_delta_net.f32_wmma_head128.body> device @llm_gated_delta
     scf.if %rmsnorm_gate {
       scf.if %publish_q8 {
       } else {
-      // One native subgroup handles each local attention row, using the
-      // standalone RMS reduction and unary implementation without a global read.
-      %post_rows0 = index.mul %n_tokens, %n_heads : index
-      %post_rows = index.mul %post_rows0, %n_seqs : index
-      %post_tokens = index.mul %n_tokens, %n_seqs : index
-      %post_groups = index.mul %n_heads, %k8 : index
-      %post_channel0 = index.mul %lane, %k4 : index
-      %post_channel = index.assume %post_channel0 [range(%post_channel0, 0, 124), mul(%post_channel0, 4)] : index
-      %post_attention = buffer.view %lds[%base] : buffer -> view<16x128xf32>
-      %post_weights = buffer.view %rms_weight[%base] : buffer -> view<128xf32>
-      %post_gates = buffer.view %raw_gate[%base] : buffer -> view<[%post_rows]x128xf32>
-      %post_f32 = buffer.view %norm_output[%base] : buffer -> view<[%post_rows]x128xf32>
-      %post_f16 = buffer.view %half_output[%base] : buffer -> view<[%post_groups]x[%post_tokens]x16xf16>
-      scf.for %post_local0 = [%wave to %k16 step %k8] {
-        %post_local = index.assume %post_local0 [range(%post_local0, 0, 15)] : index
-        %post_time0 = index.add %t0, %post_local : index
-        %post_valid = index.cmp ult, %post_time0, %n_tokens : index
-        %post_time_safe = scf.select %post_valid, %post_time0, %c0 : index
-        %post_time = index.assume %post_time_safe [lt(%post_time_safe, %n_tokens)] : index
-        %post_token0 = index.madd %seq, %n_tokens, %post_time : index
-        %post_token = index.assume %post_token0 [lt(%post_token0, %post_tokens)] : index
-        %post_row0 = index.madd %post_token, %n_heads, %h_idx : index
-        %post_row = index.assume %post_row0 [lt(%post_row0, %post_rows)] : index
-        %post_scale = template.apply<@ggml.rmsnorm_f32.subgroup_row_scale>(%k16, %post_local, %k128, %rms_epsilon, %lds) : (index, index, index, f32, buffer) -> (f32)
-        scf.if %post_valid {
-          %post_x = vector.load %post_attention[%post_local, %post_channel] : view<16x128xf32> -> vector<4xf32>
-          %post_w = vector.load %post_weights[%post_channel] : view<128xf32> -> vector<4xf32>
-          %post_g = vector.load %post_gates[%post_row, %post_channel] : view<[%post_rows]x128xf32> -> vector<4xf32>
-          %post_scale_v = vector.splat %post_scale : vector<4xf32>
-          %post_normalized = vector.mulf<reassoc|nnan|ninf|nsz> %post_x, %post_scale_v : vector<4xf32>
-          %post_weighted = vector.mulf %post_normalized, %post_w : vector<4xf32>
-          %post_activated = template.apply<@ggml.unary_f32.apply_vector4>(%rms_gate_op, %post_g) : (index, vector<4xf32>) -> (vector<4xf32>)
-          %post_result = vector.mulf %post_weighted, %post_activated : vector<4xf32>
-          vector.store %post_result, %post_f32[%post_row, %post_channel] : vector<4xf32>, view<[%post_rows]x128xf32>
-          scf.if %publish_q8 {
-            %post_flat_channel = index.madd %post_row, %k128, %post_channel : index
-            %post_scratch_values = buffer.view %lds[%base] : buffer -> view<256xf32>
-            %post_scratch_d = buffer.view %lds[%base] : buffer -> view<32xf32>
-            template.apply<@ggml.quantize_q8_1_x4.publish_vector4_strict>(%post_valid, %base, %post_flat_channel, %post_result, %post_scratch_values, %post_scratch_d, %half_output) : (i1, offset, index, vector<4xf32>, view<256xf32>, view<32xf32>, buffer)
-          } else {
-            %post_half = vector.fptrunc %post_result : vector<4xf32> to vector<4xf16>
-            %post_head_channel = index.madd %h_idx, %k128, %post_channel : index
-            %post_group = index.div %post_head_channel, %k16 : index
-            %post_group_lane = index.rem %post_head_channel, %k16 : index
-            vector.store %post_half, %post_f16[%post_group, %post_token, %post_group_lane] : vector<4xf16>, view<[%post_groups]x[%post_tokens]x16xf16>
-          }
-        }
-      }
+      template.apply<@llm.gated_delta_net.rmsnorm_gate.publish_head128>(%base, %n_tokens, %n_heads, %n_seqs, %lane, %wave, %t0, %seq, %c0, %h_idx, %k4, %k8, %k16, %k128, %rms_epsilon, %rms_gate_op, %publish_q8, %lds, %rms_weight, %raw_gate, %norm_output, %half_output) : (offset, index, index, index, index, index, index, index, index, index, index, index, index, index, f32, index, i1, buffer, buffer, buffer, buffer, buffer)
     
       }
     } else {
@@ -2904,7 +2588,7 @@ template.def<@llm.gated_delta_net.f32_wmma_head128.body> device @llm_gated_delta
       %aog0_c = index.add %aog0_a, %vs_gcol : index
       %aog0 = index.assume %aog0_c [range(%aog0_c, 0, 1073741823)] : index
       scf.if %aow0_ok {
-        view.store %aov0, %dst_view[%aog0] : f32, view<1073741824xf32>
+        template.apply<@llm.gated_delta_net.publish_f32.scalar>(%aov0, %dst_view, %aog0) : (f32, view<1073741824xf32>, index)
       }
       %aow1_r = index.add %t0, %k2 : index
       %aow1_s = index.add %aow1_r, %vs_tok : index
@@ -2921,7 +2605,7 @@ template.def<@llm.gated_delta_net.f32_wmma_head128.body> device @llm_gated_delta
       %aog1_c = index.add %aog1_a, %vs_gcol : index
       %aog1 = index.assume %aog1_c [range(%aog1_c, 0, 1073741823)] : index
       scf.if %aow1_ok {
-        view.store %aov1, %dst_view[%aog1] : f32, view<1073741824xf32>
+        template.apply<@llm.gated_delta_net.publish_f32.scalar>(%aov1, %dst_view, %aog1) : (f32, view<1073741824xf32>, index)
       }
       %aow2_r = index.add %t0, %k4 : index
       %aow2_s = index.add %aow2_r, %vs_tok : index
@@ -2938,7 +2622,7 @@ template.def<@llm.gated_delta_net.f32_wmma_head128.body> device @llm_gated_delta
       %aog2_c = index.add %aog2_a, %vs_gcol : index
       %aog2 = index.assume %aog2_c [range(%aog2_c, 0, 1073741823)] : index
       scf.if %aow2_ok {
-        view.store %aov2, %dst_view[%aog2] : f32, view<1073741824xf32>
+        template.apply<@llm.gated_delta_net.publish_f32.scalar>(%aov2, %dst_view, %aog2) : (f32, view<1073741824xf32>, index)
       }
       %aow3_r = index.add %t0, %k6 : index
       %aow3_s = index.add %aow3_r, %vs_tok : index
@@ -2955,7 +2639,7 @@ template.def<@llm.gated_delta_net.f32_wmma_head128.body> device @llm_gated_delta
       %aog3_c = index.add %aog3_a, %vs_gcol : index
       %aog3 = index.assume %aog3_c [range(%aog3_c, 0, 1073741823)] : index
       scf.if %aow3_ok {
-        view.store %aov3, %dst_view[%aog3] : f32, view<1073741824xf32>
+        template.apply<@llm.gated_delta_net.publish_f32.scalar>(%aov3, %dst_view, %aog3) : (f32, view<1073741824xf32>, index)
       }
       %aow4_r = index.add %t0, %k8 : index
       %aow4_s = index.add %aow4_r, %vs_tok : index
@@ -2972,7 +2656,7 @@ template.def<@llm.gated_delta_net.f32_wmma_head128.body> device @llm_gated_delta
       %aog4_c = index.add %aog4_a, %vs_gcol : index
       %aog4 = index.assume %aog4_c [range(%aog4_c, 0, 1073741823)] : index
       scf.if %aow4_ok {
-        view.store %aov4, %dst_view[%aog4] : f32, view<1073741824xf32>
+        template.apply<@llm.gated_delta_net.publish_f32.scalar>(%aov4, %dst_view, %aog4) : (f32, view<1073741824xf32>, index)
       }
       %aow5_r = index.add %t0, %k10 : index
       %aow5_s = index.add %aow5_r, %vs_tok : index
@@ -2989,7 +2673,7 @@ template.def<@llm.gated_delta_net.f32_wmma_head128.body> device @llm_gated_delta
       %aog5_c = index.add %aog5_a, %vs_gcol : index
       %aog5 = index.assume %aog5_c [range(%aog5_c, 0, 1073741823)] : index
       scf.if %aow5_ok {
-        view.store %aov5, %dst_view[%aog5] : f32, view<1073741824xf32>
+        template.apply<@llm.gated_delta_net.publish_f32.scalar>(%aov5, %dst_view, %aog5) : (f32, view<1073741824xf32>, index)
       }
       %aow6_r = index.add %t0, %k12 : index
       %aow6_s = index.add %aow6_r, %vs_tok : index
@@ -3006,7 +2690,7 @@ template.def<@llm.gated_delta_net.f32_wmma_head128.body> device @llm_gated_delta
       %aog6_c = index.add %aog6_a, %vs_gcol : index
       %aog6 = index.assume %aog6_c [range(%aog6_c, 0, 1073741823)] : index
       scf.if %aow6_ok {
-        view.store %aov6, %dst_view[%aog6] : f32, view<1073741824xf32>
+        template.apply<@llm.gated_delta_net.publish_f32.scalar>(%aov6, %dst_view, %aog6) : (f32, view<1073741824xf32>, index)
       }
       %aow7_r = index.add %t0, %k14 : index
       %aow7_s = index.add %aow7_r, %vs_tok : index
@@ -3023,7 +2707,7 @@ template.def<@llm.gated_delta_net.f32_wmma_head128.body> device @llm_gated_delta
       %aog7_c = index.add %aog7_a, %vs_gcol : index
       %aog7 = index.assume %aog7_c [range(%aog7_c, 0, 1073741823)] : index
       scf.if %aow7_ok {
-        view.store %aov7, %dst_view[%aog7] : f32, view<1073741824xf32>
+        template.apply<@llm.gated_delta_net.publish_f32.scalar>(%aov7, %dst_view, %aog7) : (f32, view<1073741824xf32>, index)
       }
     }
     kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
@@ -3624,588 +3308,23 @@ template.def<@llm.gated_delta_net.f32_wmma_head128.body> device @llm_gated_delta
   scf.if %reuse_snapshot_fragments {
   } else {
     scf.if %publish_snapshots {
-      vector.store %sf0, %snapshot_cache_view[%icb0] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf1, %snapshot_cache_view[%icb1] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf2, %snapshot_cache_view[%icb2] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf3, %snapshot_cache_view[%icb3] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf4, %snapshot_cache_view[%icb4] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf5, %snapshot_cache_view[%icb5] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf6, %snapshot_cache_view[%icb6] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf7, %snapshot_cache_view[%icb7] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf8, %snapshot_cache_view[%icb8] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf9, %snapshot_cache_view[%icb9] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf10, %snapshot_cache_view[%icb10] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf11, %snapshot_cache_view[%icb11] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf12, %snapshot_cache_view[%icb12] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf13, %snapshot_cache_view[%icb13] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf14, %snapshot_cache_view[%icb14] : vector<4xf32>, view<1073741824xf32>
-      vector.store %sf15, %snapshot_cache_view[%icb15] : vector<4xf32>, view<1073741824xf32>
+      template.apply<@llm.gated_delta_net.snapshot_publish.final_head128>(%snapshot_cache_view, %icb0, %icb1, %icb2, %icb3, %icb4, %icb5, %icb6, %icb7, %icb8, %icb9, %icb10, %icb11, %icb12, %icb13, %icb14, %icb15, %sf0, %sf1, %sf2, %sf3, %sf4, %sf5, %sf6, %sf7, %sf8, %sf9, %sf10, %sf11, %sf12, %sf13, %sf14, %sf15) : (view<1073741824xf32>, index, index, index, index, index, index, index, index, index, index, index, index, index, index, index, index, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>)
     } else {
       scf.if %state_inplace {
         // All state shards have already been consumed, and each workgroup owns a
         // disjoint head/column range, so publication can safely reuse the cache row.
-        vector.store %sf0, %si_view[%icb0] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf1, %si_view[%icb1] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf2, %si_view[%icb2] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf3, %si_view[%icb3] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf4, %si_view[%icb4] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf5, %si_view[%icb5] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf6, %si_view[%icb6] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf7, %si_view[%icb7] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf8, %si_view[%icb8] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf9, %si_view[%icb9] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf10, %si_view[%icb10] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf11, %si_view[%icb11] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf12, %si_view[%icb12] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf13, %si_view[%icb13] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf14, %si_view[%icb14] : vector<4xf32>, view<1073741824xf32>
-        vector.store %sf15, %si_view[%icb15] : vector<4xf32>, view<1073741824xf32>
+        template.apply<@llm.gated_delta_net.inplace_state.publish_head128>(%si_view, %icb0, %icb1, %icb2, %icb3, %icb4, %icb5, %icb6, %icb7, %icb8, %icb9, %icb10, %icb11, %icb12, %icb13, %icb14, %icb15, %sf0, %sf1, %sf2, %sf3, %sf4, %sf5, %sf6, %sf7, %sf8, %sf9, %sf10, %sf11, %sf12, %sf13, %sf14, %sf15) : (view<1073741824xf32>, index, index, index, index, index, index, index, index, index, index, index, index, index, index, index, index, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>)
       } else {
         // The ordinary graph contract appends updated state after attention.
-        %woc0_m = index.mul %wcol, %s_v : index
-        %woc0_a = index.add %state_offset, %woc0_m : index
-        %woc0_e = index.add %woc0_a, %attn_elems : index
-        %woc0_r = index.add %woc0_e, %row0 : index
-        %woc0 = index.assume %woc0_r [range(%woc0_r, 0, 1073741820)] : index
-        vector.store %sf0, %dst_view[%woc0] : vector<4xf32>, view<1073741824xf32>
-        %woc1_r = index.add %woc0, %k128 : index
-        %woc1 = index.assume %woc1_r [range(%woc1_r, 0, 1073741820)] : index
-        vector.store %sf1, %dst_view[%woc1] : vector<4xf32>, view<1073741824xf32>
-        %woc2_r = index.add %woc1, %k128 : index
-        %woc2 = index.assume %woc2_r [range(%woc2_r, 0, 1073741820)] : index
-        vector.store %sf2, %dst_view[%woc2] : vector<4xf32>, view<1073741824xf32>
-        %woc3_r = index.add %woc2, %k128 : index
-        %woc3 = index.assume %woc3_r [range(%woc3_r, 0, 1073741820)] : index
-        vector.store %sf3, %dst_view[%woc3] : vector<4xf32>, view<1073741824xf32>
-        %woc4_r = index.add %woc3, %k128 : index
-        %woc4 = index.assume %woc4_r [range(%woc4_r, 0, 1073741820)] : index
-        vector.store %sf4, %dst_view[%woc4] : vector<4xf32>, view<1073741824xf32>
-        %woc5_r = index.add %woc4, %k128 : index
-        %woc5 = index.assume %woc5_r [range(%woc5_r, 0, 1073741820)] : index
-        vector.store %sf5, %dst_view[%woc5] : vector<4xf32>, view<1073741824xf32>
-        %woc6_r = index.add %woc5, %k128 : index
-        %woc6 = index.assume %woc6_r [range(%woc6_r, 0, 1073741820)] : index
-        vector.store %sf6, %dst_view[%woc6] : vector<4xf32>, view<1073741824xf32>
-        %woc7_r = index.add %woc6, %k128 : index
-        %woc7 = index.assume %woc7_r [range(%woc7_r, 0, 1073741820)] : index
-        vector.store %sf7, %dst_view[%woc7] : vector<4xf32>, view<1073741824xf32>
-        %woc8_r = index.add %woc7, %k128 : index
-        %woc8 = index.assume %woc8_r [range(%woc8_r, 0, 1073741820)] : index
-        vector.store %sf8, %dst_view[%woc8] : vector<4xf32>, view<1073741824xf32>
-        %woc9_r = index.add %woc8, %k128 : index
-        %woc9 = index.assume %woc9_r [range(%woc9_r, 0, 1073741820)] : index
-        vector.store %sf9, %dst_view[%woc9] : vector<4xf32>, view<1073741824xf32>
-        %woc10_r = index.add %woc9, %k128 : index
-        %woc10 = index.assume %woc10_r [range(%woc10_r, 0, 1073741820)] : index
-        vector.store %sf10, %dst_view[%woc10] : vector<4xf32>, view<1073741824xf32>
-        %woc11_r = index.add %woc10, %k128 : index
-        %woc11 = index.assume %woc11_r [range(%woc11_r, 0, 1073741820)] : index
-        vector.store %sf11, %dst_view[%woc11] : vector<4xf32>, view<1073741824xf32>
-        %woc12_r = index.add %woc11, %k128 : index
-        %woc12 = index.assume %woc12_r [range(%woc12_r, 0, 1073741820)] : index
-        vector.store %sf12, %dst_view[%woc12] : vector<4xf32>, view<1073741824xf32>
-        %woc13_r = index.add %woc12, %k128 : index
-        %woc13 = index.assume %woc13_r [range(%woc13_r, 0, 1073741820)] : index
-        vector.store %sf13, %dst_view[%woc13] : vector<4xf32>, view<1073741824xf32>
-        %woc14_r = index.add %woc13, %k128 : index
-        %woc14 = index.assume %woc14_r [range(%woc14_r, 0, 1073741820)] : index
-        vector.store %sf14, %dst_view[%woc14] : vector<4xf32>, view<1073741824xf32>
-        %woc15_r = index.add %woc14, %k128 : index
-        %woc15 = index.assume %woc15_r [range(%woc15_r, 0, 1073741820)] : index
-        vector.store %sf15, %dst_view[%woc15] : vector<4xf32>, view<1073741824xf32>
+        template.apply<@llm.gated_delta_net.publish_f32.state_head128>(%wcol, %s_v, %state_offset, %attn_elems, %row0, %k128, %dst_view, %sf0, %sf1, %sf2, %sf3, %sf4, %sf5, %sf6, %sf7, %sf8, %sf9, %sf10, %sf11, %sf12, %sf13, %sf14, %sf15) : (index, index, index, index, index, index, view<1073741824xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>)
       }
     }
   }
   scf.if %publish_q8 {
     %t0 = index.constant 0 : index
-      // One native subgroup handles each local attention row, using the
-      // standalone RMS reduction and unary implementation without a global read.
-      %post_rows0 = index.mul %n_tokens, %n_heads : index
-      %post_rows = index.mul %post_rows0, %n_seqs : index
-      %post_tokens = index.mul %n_tokens, %n_seqs : index
-      %post_groups = index.mul %n_heads, %k8 : index
-      %post_channel0 = index.mul %lane, %k4 : index
-      %post_channel = index.assume %post_channel0 [range(%post_channel0, 0, 124), mul(%post_channel0, 4)] : index
-      %post_attention = buffer.view %lds[%base] : buffer -> view<16x128xf32>
-      %post_weights = buffer.view %rms_weight[%base] : buffer -> view<128xf32>
-      %post_gates = buffer.view %raw_gate[%base] : buffer -> view<[%post_rows]x128xf32>
-      %post_f32 = buffer.view %norm_output[%base] : buffer -> view<[%post_rows]x128xf32>
-      %post_f16 = buffer.view %half_output[%base] : buffer -> view<[%post_groups]x[%post_tokens]x16xf16>
-      scf.for %post_local0 = [%wave to %k16 step %k8] {
-        %post_local = index.assume %post_local0 [range(%post_local0, 0, 15)] : index
-        %post_time0 = index.add %t0, %post_local : index
-        %post_valid = index.cmp ult, %post_time0, %n_tokens : index
-        %post_time_safe = scf.select %post_valid, %post_time0, %c0 : index
-        %post_time = index.assume %post_time_safe [lt(%post_time_safe, %n_tokens)] : index
-        %post_token0 = index.madd %seq, %n_tokens, %post_time : index
-        %post_token = index.assume %post_token0 [lt(%post_token0, %post_tokens)] : index
-        %post_row0 = index.madd %post_token, %n_heads, %h_idx : index
-        %post_row = index.assume %post_row0 [lt(%post_row0, %post_rows)] : index
-        %post_scale = template.apply<@ggml.rmsnorm_f32.subgroup_row_scale>(%k16, %post_local, %k128, %rms_epsilon, %lds) : (index, index, index, f32, buffer) -> (f32)
-        scf.if %post_valid {
-          %post_x = vector.load %post_attention[%post_local, %post_channel] : view<16x128xf32> -> vector<4xf32>
-          %post_w = vector.load %post_weights[%post_channel] : view<128xf32> -> vector<4xf32>
-          %post_g = vector.load %post_gates[%post_row, %post_channel] : view<[%post_rows]x128xf32> -> vector<4xf32>
-          %post_scale_v = vector.splat %post_scale : vector<4xf32>
-          %post_normalized = vector.mulf<reassoc|nnan|ninf|nsz> %post_x, %post_scale_v : vector<4xf32>
-          %post_weighted = vector.mulf %post_normalized, %post_w : vector<4xf32>
-          %post_activated = template.apply<@ggml.unary_f32.apply_vector4>(%rms_gate_op, %post_g) : (index, vector<4xf32>) -> (vector<4xf32>)
-          %post_result = vector.mulf %post_weighted, %post_activated : vector<4xf32>
-          vector.store %post_result, %post_f32[%post_row, %post_channel] : vector<4xf32>, view<[%post_rows]x128xf32>
-          scf.if %publish_q8 {
-            %post_flat_channel = index.madd %post_row, %k128, %post_channel : index
-            %post_scratch_values = buffer.view %lds[%base] : buffer -> view<256xf32>
-            %post_scratch_d = buffer.view %lds[%base] : buffer -> view<32xf32>
-            template.apply<@ggml.quantize_q8_1_x4.publish_vector4_strict>(%post_valid, %base, %post_flat_channel, %post_result, %post_scratch_values, %post_scratch_d, %half_output) : (i1, offset, index, vector<4xf32>, view<256xf32>, view<32xf32>, buffer)
-          } else {
-            %post_half = vector.fptrunc %post_result : vector<4xf32> to vector<4xf16>
-            %post_head_channel = index.madd %h_idx, %k128, %post_channel : index
-            %post_group = index.div %post_head_channel, %k16 : index
-            %post_group_lane = index.rem %post_head_channel, %k16 : index
-            vector.store %post_half, %post_f16[%post_group, %post_token, %post_group_lane] : vector<4xf16>, view<[%post_groups]x[%post_tokens]x16xf16>
-          }
-        }
-      }
+      template.apply<@llm.gated_delta_net.rmsnorm_gate.publish_head128>(%base, %n_tokens, %n_heads, %n_seqs, %lane, %wave, %t0, %seq, %c0, %h_idx, %k4, %k8, %k16, %k128, %rms_epsilon, %rms_gate_op, %publish_q8, %lds, %rms_weight, %raw_gate, %norm_output, %half_output) : (offset, index, index, index, index, index, index, index, index, index, index, index, index, index, f32, index, i1, buffer, buffer, buffer, buffer, buffer)
     
   }
 
   template.return
-}
-
-// Prefix-state publisher shared by the four-row rollback specialization.
-// Stage each resident state half in logical result layout, then combine the
-// exact WMMA result in registers and publish it directly to the rollback cache.
-template.def<@llm.gated_delta_net.snapshot_prefix.body> device @llm_gated_delta_net_snapshot_prefix_body(%state_factor: f32, %cache_base: index, %state_offset: index, %wcol: index, %row0: index, %rowh: index, %wave: index, %lane: index, %lds: buffer, %snapshot_cache: buffer, %sa0: vector<4xf32>, %sa1: vector<4xf32>, %sa2: vector<4xf32>, %sa3: vector<4xf32>, %sa4: vector<4xf32>, %sa5: vector<4xf32>, %sa6: vector<4xf32>, %sa7: vector<4xf32>, %sa8: vector<4xf32>, %sa9: vector<4xf32>, %sa10: vector<4xf32>, %sa11: vector<4xf32>, %sa12: vector<4xf32>, %sa13: vector<4xf32>, %sa14: vector<4xf32>, %sa15: vector<4xf32>, %fz8: vector<8xf32>) {
-  %c0o = index.constant 0 : offset
-  %c0 = index.constant 0 : index
-  %c4 = index.constant 4 : index
-  %c16 = index.constant 16 : index
-  %c32 = index.constant 32 : index
-  %c48 = index.constant 48 : index
-  %c64 = index.constant 64 : index
-  %c68 = index.constant 68 : index
-  %c80 = index.constant 80 : index
-  %c96 = index.constant 96 : index
-  %c112 = index.constant 112 : index
-  %c128 = index.constant 128 : index
-  %c4352 = index.constant 4352 : index
-  %c6528 = index.constant 6528 : index
-  %c11072 = index.constant 11072 : index
-  %ka_o = index.constant 4352 : offset
-  %lay_dcol = encoding.layout.strided [24, 1] : encoding<layout>
-  %lay_katok = encoding.layout.strided [1, 24] : encoding<layout>
-  %lay_upd = encoding.layout.strided [68, 1] : encoding<layout>
-  %lay_state = encoding.layout.strided [128, 1] : encoding<layout>
-  %wave_bytes = index.mul %wave, %c6528 : index
-  %wave_base = index.add %wave_bytes, %c11072 : index
-  %wave_off = index.cast %wave_base : index to offset
-  %d_base_i = index.add %wave_base, %c4352 : index
-  %d_base = index.cast %d_base_i : index to offset
-  %d_lhs = buffer.view %lds[%d_base] : buffer -> view<16x16xf16, %lay_dcol>
-  %ka_rhs = buffer.view %lds[%ka_o] : buffer -> view<16x128xf16, %lay_katok>
-  %upd_flat = buffer.view %lds[%wave_off] : buffer -> view<1088xf32>
-  %upd_tile = buffer.view %lds[%wave_off] : buffer -> view<16x68xf32, %lay_upd>
-  %cache_g = buffer.assume.memory_space<global> %snapshot_cache : buffer
-  %cache_state_base = index.add %cache_base, %state_offset : index
-  %wave_state = index.mul %wcol, %c128 : index
-  %cache_wave_base = index.add %cache_state_base, %wave_state : index
-  %cache_byte_i = index.mul %cache_wave_base, %c4 : index
-  %cache_byte = index.cast %cache_byte_i : index to offset
-  %cache_view = buffer.view %cache_g[%cache_byte] : buffer -> view<16x128xf32, %lay_state>
-  %state_factor_v = vector.splat %state_factor : vector<8xf32>
-  %lane_low = index.cmp ult, %lane, %c16 : index
-  %lane_high = index.cmp uge, %lane, %c16 : index
-
-  scf.if %lane_low {
-    vector.store %sa0, %upd_flat[%rowh] : vector<4xf32>, view<1088xf32>
-    %lo_s1_off = index.constant 68 : index
-    %lo_s1_raw = index.add %lo_s1_off, %rowh : index
-    %lo_s1_idx = index.assume %lo_s1_raw [range(%lo_s1_raw, 68, 128)] : index
-    vector.store %sa1, %upd_flat[%lo_s1_idx] : vector<4xf32>, view<1088xf32>
-    %lo_s2_off = index.constant 136 : index
-    %lo_s2_raw = index.add %lo_s2_off, %rowh : index
-    %lo_s2_idx = index.assume %lo_s2_raw [range(%lo_s2_raw, 136, 196)] : index
-    vector.store %sa2, %upd_flat[%lo_s2_idx] : vector<4xf32>, view<1088xf32>
-    %lo_s3_off = index.constant 204 : index
-    %lo_s3_raw = index.add %lo_s3_off, %rowh : index
-    %lo_s3_idx = index.assume %lo_s3_raw [range(%lo_s3_raw, 204, 264)] : index
-    vector.store %sa3, %upd_flat[%lo_s3_idx] : vector<4xf32>, view<1088xf32>
-    %lo_s4_off = index.constant 272 : index
-    %lo_s4_raw = index.add %lo_s4_off, %rowh : index
-    %lo_s4_idx = index.assume %lo_s4_raw [range(%lo_s4_raw, 272, 332)] : index
-    vector.store %sa4, %upd_flat[%lo_s4_idx] : vector<4xf32>, view<1088xf32>
-    %lo_s5_off = index.constant 340 : index
-    %lo_s5_raw = index.add %lo_s5_off, %rowh : index
-    %lo_s5_idx = index.assume %lo_s5_raw [range(%lo_s5_raw, 340, 400)] : index
-    vector.store %sa5, %upd_flat[%lo_s5_idx] : vector<4xf32>, view<1088xf32>
-    %lo_s6_off = index.constant 408 : index
-    %lo_s6_raw = index.add %lo_s6_off, %rowh : index
-    %lo_s6_idx = index.assume %lo_s6_raw [range(%lo_s6_raw, 408, 468)] : index
-    vector.store %sa6, %upd_flat[%lo_s6_idx] : vector<4xf32>, view<1088xf32>
-    %lo_s7_off = index.constant 476 : index
-    %lo_s7_raw = index.add %lo_s7_off, %rowh : index
-    %lo_s7_idx = index.assume %lo_s7_raw [range(%lo_s7_raw, 476, 536)] : index
-    vector.store %sa7, %upd_flat[%lo_s7_idx] : vector<4xf32>, view<1088xf32>
-    %lo_s8_off = index.constant 544 : index
-    %lo_s8_raw = index.add %lo_s8_off, %rowh : index
-    %lo_s8_idx = index.assume %lo_s8_raw [range(%lo_s8_raw, 544, 604)] : index
-    vector.store %sa8, %upd_flat[%lo_s8_idx] : vector<4xf32>, view<1088xf32>
-    %lo_s9_off = index.constant 612 : index
-    %lo_s9_raw = index.add %lo_s9_off, %rowh : index
-    %lo_s9_idx = index.assume %lo_s9_raw [range(%lo_s9_raw, 612, 672)] : index
-    vector.store %sa9, %upd_flat[%lo_s9_idx] : vector<4xf32>, view<1088xf32>
-    %lo_s10_off = index.constant 680 : index
-    %lo_s10_raw = index.add %lo_s10_off, %rowh : index
-    %lo_s10_idx = index.assume %lo_s10_raw [range(%lo_s10_raw, 680, 740)] : index
-    vector.store %sa10, %upd_flat[%lo_s10_idx] : vector<4xf32>, view<1088xf32>
-    %lo_s11_off = index.constant 748 : index
-    %lo_s11_raw = index.add %lo_s11_off, %rowh : index
-    %lo_s11_idx = index.assume %lo_s11_raw [range(%lo_s11_raw, 748, 808)] : index
-    vector.store %sa11, %upd_flat[%lo_s11_idx] : vector<4xf32>, view<1088xf32>
-    %lo_s12_off = index.constant 816 : index
-    %lo_s12_raw = index.add %lo_s12_off, %rowh : index
-    %lo_s12_idx = index.assume %lo_s12_raw [range(%lo_s12_raw, 816, 876)] : index
-    vector.store %sa12, %upd_flat[%lo_s12_idx] : vector<4xf32>, view<1088xf32>
-    %lo_s13_off = index.constant 884 : index
-    %lo_s13_raw = index.add %lo_s13_off, %rowh : index
-    %lo_s13_idx = index.assume %lo_s13_raw [range(%lo_s13_raw, 884, 944)] : index
-    vector.store %sa13, %upd_flat[%lo_s13_idx] : vector<4xf32>, view<1088xf32>
-    %lo_s14_off = index.constant 952 : index
-    %lo_s14_raw = index.add %lo_s14_off, %rowh : index
-    %lo_s14_idx = index.assume %lo_s14_raw [range(%lo_s14_raw, 952, 1012)] : index
-    vector.store %sa14, %upd_flat[%lo_s14_idx] : vector<4xf32>, view<1088xf32>
-    %lo_s15_off = index.constant 1020 : index
-    %lo_s15_raw = index.add %lo_s15_off, %rowh : index
-    %lo_s15_idx = index.assume %lo_s15_raw [range(%lo_s15_raw, 1020, 1080)] : index
-    vector.store %sa15, %upd_flat[%lo_s15_idx] : vector<4xf32>, view<1088xf32>
-  }
-  kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
-  %lo0_state = vector.fragment.load<result> %upd_tile[%c0, %c0] shape [%c16, %c16] : view<16x68xf32, %lay_upd> -> vector<8xf32>
-  %lo0_scaled = vector.mulf<nnan|ninf|nsz> %lo0_state, %state_factor_v : vector<8xf32>
-  %lo0_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %lo0_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %lo0_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c0] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %lo0_mma = vector.mma %lo0_lhs, %lo0_rhs, %lo0_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %lo0_result = vector.addf<nnan|ninf|nsz> %lo0_scaled, %lo0_mma : vector<8xf32>
-  vector.fragment.store<result> %lo0_result, %cache_view[%c0, %c0] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  %lo1_state = vector.fragment.load<result> %upd_tile[%c0, %c16] shape [%c16, %c16] : view<16x68xf32, %lay_upd> -> vector<8xf32>
-  %lo1_scaled = vector.mulf<nnan|ninf|nsz> %lo1_state, %state_factor_v : vector<8xf32>
-  %lo1_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %lo1_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %lo1_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c16] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %lo1_mma = vector.mma %lo1_lhs, %lo1_rhs, %lo1_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %lo1_result = vector.addf<nnan|ninf|nsz> %lo1_scaled, %lo1_mma : vector<8xf32>
-  vector.fragment.store<result> %lo1_result, %cache_view[%c0, %c16] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  %lo2_state = vector.fragment.load<result> %upd_tile[%c0, %c32] shape [%c16, %c16] : view<16x68xf32, %lay_upd> -> vector<8xf32>
-  %lo2_scaled = vector.mulf<nnan|ninf|nsz> %lo2_state, %state_factor_v : vector<8xf32>
-  %lo2_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %lo2_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %lo2_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c32] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %lo2_mma = vector.mma %lo2_lhs, %lo2_rhs, %lo2_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %lo2_result = vector.addf<nnan|ninf|nsz> %lo2_scaled, %lo2_mma : vector<8xf32>
-  vector.fragment.store<result> %lo2_result, %cache_view[%c0, %c32] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  %lo3_state = vector.fragment.load<result> %upd_tile[%c0, %c48] shape [%c16, %c16] : view<16x68xf32, %lay_upd> -> vector<8xf32>
-  %lo3_scaled = vector.mulf<nnan|ninf|nsz> %lo3_state, %state_factor_v : vector<8xf32>
-  %lo3_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %lo3_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %lo3_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c48] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %lo3_mma = vector.mma %lo3_lhs, %lo3_rhs, %lo3_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %lo3_result = vector.addf<nnan|ninf|nsz> %lo3_scaled, %lo3_mma : vector<8xf32>
-  vector.fragment.store<result> %lo3_result, %cache_view[%c0, %c48] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
-  scf.if %lane_high {
-    vector.store %sa0, %upd_flat[%rowh] : vector<4xf32>, view<1088xf32>
-    %hi_s1_off = index.constant 68 : index
-    %hi_s1_raw = index.add %hi_s1_off, %rowh : index
-    %hi_s1_idx = index.assume %hi_s1_raw [range(%hi_s1_raw, 68, 128)] : index
-    vector.store %sa1, %upd_flat[%hi_s1_idx] : vector<4xf32>, view<1088xf32>
-    %hi_s2_off = index.constant 136 : index
-    %hi_s2_raw = index.add %hi_s2_off, %rowh : index
-    %hi_s2_idx = index.assume %hi_s2_raw [range(%hi_s2_raw, 136, 196)] : index
-    vector.store %sa2, %upd_flat[%hi_s2_idx] : vector<4xf32>, view<1088xf32>
-    %hi_s3_off = index.constant 204 : index
-    %hi_s3_raw = index.add %hi_s3_off, %rowh : index
-    %hi_s3_idx = index.assume %hi_s3_raw [range(%hi_s3_raw, 204, 264)] : index
-    vector.store %sa3, %upd_flat[%hi_s3_idx] : vector<4xf32>, view<1088xf32>
-    %hi_s4_off = index.constant 272 : index
-    %hi_s4_raw = index.add %hi_s4_off, %rowh : index
-    %hi_s4_idx = index.assume %hi_s4_raw [range(%hi_s4_raw, 272, 332)] : index
-    vector.store %sa4, %upd_flat[%hi_s4_idx] : vector<4xf32>, view<1088xf32>
-    %hi_s5_off = index.constant 340 : index
-    %hi_s5_raw = index.add %hi_s5_off, %rowh : index
-    %hi_s5_idx = index.assume %hi_s5_raw [range(%hi_s5_raw, 340, 400)] : index
-    vector.store %sa5, %upd_flat[%hi_s5_idx] : vector<4xf32>, view<1088xf32>
-    %hi_s6_off = index.constant 408 : index
-    %hi_s6_raw = index.add %hi_s6_off, %rowh : index
-    %hi_s6_idx = index.assume %hi_s6_raw [range(%hi_s6_raw, 408, 468)] : index
-    vector.store %sa6, %upd_flat[%hi_s6_idx] : vector<4xf32>, view<1088xf32>
-    %hi_s7_off = index.constant 476 : index
-    %hi_s7_raw = index.add %hi_s7_off, %rowh : index
-    %hi_s7_idx = index.assume %hi_s7_raw [range(%hi_s7_raw, 476, 536)] : index
-    vector.store %sa7, %upd_flat[%hi_s7_idx] : vector<4xf32>, view<1088xf32>
-    %hi_s8_off = index.constant 544 : index
-    %hi_s8_raw = index.add %hi_s8_off, %rowh : index
-    %hi_s8_idx = index.assume %hi_s8_raw [range(%hi_s8_raw, 544, 604)] : index
-    vector.store %sa8, %upd_flat[%hi_s8_idx] : vector<4xf32>, view<1088xf32>
-    %hi_s9_off = index.constant 612 : index
-    %hi_s9_raw = index.add %hi_s9_off, %rowh : index
-    %hi_s9_idx = index.assume %hi_s9_raw [range(%hi_s9_raw, 612, 672)] : index
-    vector.store %sa9, %upd_flat[%hi_s9_idx] : vector<4xf32>, view<1088xf32>
-    %hi_s10_off = index.constant 680 : index
-    %hi_s10_raw = index.add %hi_s10_off, %rowh : index
-    %hi_s10_idx = index.assume %hi_s10_raw [range(%hi_s10_raw, 680, 740)] : index
-    vector.store %sa10, %upd_flat[%hi_s10_idx] : vector<4xf32>, view<1088xf32>
-    %hi_s11_off = index.constant 748 : index
-    %hi_s11_raw = index.add %hi_s11_off, %rowh : index
-    %hi_s11_idx = index.assume %hi_s11_raw [range(%hi_s11_raw, 748, 808)] : index
-    vector.store %sa11, %upd_flat[%hi_s11_idx] : vector<4xf32>, view<1088xf32>
-    %hi_s12_off = index.constant 816 : index
-    %hi_s12_raw = index.add %hi_s12_off, %rowh : index
-    %hi_s12_idx = index.assume %hi_s12_raw [range(%hi_s12_raw, 816, 876)] : index
-    vector.store %sa12, %upd_flat[%hi_s12_idx] : vector<4xf32>, view<1088xf32>
-    %hi_s13_off = index.constant 884 : index
-    %hi_s13_raw = index.add %hi_s13_off, %rowh : index
-    %hi_s13_idx = index.assume %hi_s13_raw [range(%hi_s13_raw, 884, 944)] : index
-    vector.store %sa13, %upd_flat[%hi_s13_idx] : vector<4xf32>, view<1088xf32>
-    %hi_s14_off = index.constant 952 : index
-    %hi_s14_raw = index.add %hi_s14_off, %rowh : index
-    %hi_s14_idx = index.assume %hi_s14_raw [range(%hi_s14_raw, 952, 1012)] : index
-    vector.store %sa14, %upd_flat[%hi_s14_idx] : vector<4xf32>, view<1088xf32>
-    %hi_s15_off = index.constant 1020 : index
-    %hi_s15_raw = index.add %hi_s15_off, %rowh : index
-    %hi_s15_idx = index.assume %hi_s15_raw [range(%hi_s15_raw, 1020, 1080)] : index
-    vector.store %sa15, %upd_flat[%hi_s15_idx] : vector<4xf32>, view<1088xf32>
-  }
-  kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
-  %hi0_state = vector.fragment.load<result> %upd_tile[%c0, %c0] shape [%c16, %c16] : view<16x68xf32, %lay_upd> -> vector<8xf32>
-  %hi0_scaled = vector.mulf<nnan|ninf|nsz> %hi0_state, %state_factor_v : vector<8xf32>
-  %hi0_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %hi0_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %hi0_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c64] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %hi0_mma = vector.mma %hi0_lhs, %hi0_rhs, %hi0_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %hi0_result = vector.addf<nnan|ninf|nsz> %hi0_scaled, %hi0_mma : vector<8xf32>
-  vector.fragment.store<result> %hi0_result, %cache_view[%c0, %c64] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  %hi1_state = vector.fragment.load<result> %upd_tile[%c0, %c16] shape [%c16, %c16] : view<16x68xf32, %lay_upd> -> vector<8xf32>
-  %hi1_scaled = vector.mulf<nnan|ninf|nsz> %hi1_state, %state_factor_v : vector<8xf32>
-  %hi1_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %hi1_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %hi1_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c80] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %hi1_mma = vector.mma %hi1_lhs, %hi1_rhs, %hi1_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %hi1_result = vector.addf<nnan|ninf|nsz> %hi1_scaled, %hi1_mma : vector<8xf32>
-  vector.fragment.store<result> %hi1_result, %cache_view[%c0, %c80] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  %hi2_state = vector.fragment.load<result> %upd_tile[%c0, %c32] shape [%c16, %c16] : view<16x68xf32, %lay_upd> -> vector<8xf32>
-  %hi2_scaled = vector.mulf<nnan|ninf|nsz> %hi2_state, %state_factor_v : vector<8xf32>
-  %hi2_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %hi2_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %hi2_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c96] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %hi2_mma = vector.mma %hi2_lhs, %hi2_rhs, %hi2_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %hi2_result = vector.addf<nnan|ninf|nsz> %hi2_scaled, %hi2_mma : vector<8xf32>
-  vector.fragment.store<result> %hi2_result, %cache_view[%c0, %c96] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  %hi3_state = vector.fragment.load<result> %upd_tile[%c0, %c48] shape [%c16, %c16] : view<16x68xf32, %lay_upd> -> vector<8xf32>
-  %hi3_scaled = vector.mulf<nnan|ninf|nsz> %hi3_state, %state_factor_v : vector<8xf32>
-  %hi3_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %hi3_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %hi3_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c112] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %hi3_mma = vector.mma %hi3_lhs, %hi3_rhs, %hi3_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %hi3_result = vector.addf<nnan|ninf|nsz> %hi3_scaled, %hi3_mma : vector<8xf32>
-  vector.fragment.store<result> %hi3_result, %cache_view[%c0, %c112] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  template.return
-}
-
-template.def<@llm.gated_delta_net.snapshot_fragment_prefix.body> device @llm_gated_delta_net_snapshot_fragment_prefix_body(%state_factor: f32, %cache_base: index, %state_offset: index, %wcol: index, %row0: index, %rowh: index, %wave: index, %lane: index, %lds: buffer, %snapshot_cache: buffer, %lo0_state: vector<8xf32>, %lo1_state: vector<8xf32>, %lo2_state: vector<8xf32>, %lo3_state: vector<8xf32>, %hi0_state: vector<8xf32>, %hi1_state: vector<8xf32>, %hi2_state: vector<8xf32>, %hi3_state: vector<8xf32>, %fz8: vector<8xf32>) {
-  %c0o = index.constant 0 : offset
-  %c0 = index.constant 0 : index
-  %c4 = index.constant 4 : index
-  %c16 = index.constant 16 : index
-  %c32 = index.constant 32 : index
-  %c48 = index.constant 48 : index
-  %c64 = index.constant 64 : index
-  %c68 = index.constant 68 : index
-  %c80 = index.constant 80 : index
-  %c96 = index.constant 96 : index
-  %c112 = index.constant 112 : index
-  %c128 = index.constant 128 : index
-  %c4352 = index.constant 4352 : index
-  %c6528 = index.constant 6528 : index
-  %c11072 = index.constant 11072 : index
-  %ka_o = index.constant 4352 : offset
-  %lay_dcol = encoding.layout.strided [24, 1] : encoding<layout>
-  %lay_katok = encoding.layout.strided [1, 24] : encoding<layout>
-  %lay_upd = encoding.layout.strided [68, 1] : encoding<layout>
-  %lay_state = encoding.layout.strided [128, 1] : encoding<layout>
-  %wave_bytes = index.mul %wave, %c6528 : index
-  %wave_base = index.add %wave_bytes, %c11072 : index
-  %wave_off = index.cast %wave_base : index to offset
-  %d_base_i = index.add %wave_base, %c4352 : index
-  %d_base = index.cast %d_base_i : index to offset
-  %d_lhs = buffer.view %lds[%d_base] : buffer -> view<16x16xf16, %lay_dcol>
-  %ka_rhs = buffer.view %lds[%ka_o] : buffer -> view<16x128xf16, %lay_katok>
-  %upd_flat = buffer.view %lds[%wave_off] : buffer -> view<1088xf32>
-  %upd_tile = buffer.view %lds[%wave_off] : buffer -> view<16x68xf32, %lay_upd>
-  %cache_g = buffer.assume.memory_space<global> %snapshot_cache : buffer
-  %cache_state_base = index.add %cache_base, %state_offset : index
-  %wave_state = index.mul %wcol, %c128 : index
-  %cache_wave_base = index.add %cache_state_base, %wave_state : index
-  %cache_byte_i = index.mul %cache_wave_base, %c4 : index
-  %cache_byte = index.cast %cache_byte_i : index to offset
-  %cache_view = buffer.view %cache_g[%cache_byte] : buffer -> view<16x128xf32, %lay_state>
-  %state_factor_v = vector.splat %state_factor : vector<8xf32>
-  %lane_low = index.cmp ult, %lane, %c16 : index
-  %lane_high = index.cmp uge, %lane, %c16 : index
-
-  %lo0_scaled = vector.mulf<nnan|ninf|nsz> %lo0_state, %state_factor_v : vector<8xf32>
-  %lo0_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %lo0_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %lo0_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c0] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %lo0_mma = vector.mma %lo0_lhs, %lo0_rhs, %lo0_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %lo0_result = vector.addf<nnan|ninf|nsz> %lo0_scaled, %lo0_mma : vector<8xf32>
-  vector.fragment.store<result> %lo0_result, %cache_view[%c0, %c0] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  %lo1_scaled = vector.mulf<nnan|ninf|nsz> %lo1_state, %state_factor_v : vector<8xf32>
-  %lo1_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %lo1_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %lo1_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c16] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %lo1_mma = vector.mma %lo1_lhs, %lo1_rhs, %lo1_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %lo1_result = vector.addf<nnan|ninf|nsz> %lo1_scaled, %lo1_mma : vector<8xf32>
-  vector.fragment.store<result> %lo1_result, %cache_view[%c0, %c16] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  %lo2_scaled = vector.mulf<nnan|ninf|nsz> %lo2_state, %state_factor_v : vector<8xf32>
-  %lo2_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %lo2_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %lo2_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c32] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %lo2_mma = vector.mma %lo2_lhs, %lo2_rhs, %lo2_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %lo2_result = vector.addf<nnan|ninf|nsz> %lo2_scaled, %lo2_mma : vector<8xf32>
-  vector.fragment.store<result> %lo2_result, %cache_view[%c0, %c32] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  %lo3_scaled = vector.mulf<nnan|ninf|nsz> %lo3_state, %state_factor_v : vector<8xf32>
-  %lo3_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %lo3_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %lo3_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c48] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %lo3_mma = vector.mma %lo3_lhs, %lo3_rhs, %lo3_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %lo3_result = vector.addf<nnan|ninf|nsz> %lo3_scaled, %lo3_mma : vector<8xf32>
-  vector.fragment.store<result> %lo3_result, %cache_view[%c0, %c48] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
-  %hi0_scaled = vector.mulf<nnan|ninf|nsz> %hi0_state, %state_factor_v : vector<8xf32>
-  %hi0_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %hi0_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %hi0_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c64] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %hi0_mma = vector.mma %hi0_lhs, %hi0_rhs, %hi0_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %hi0_result = vector.addf<nnan|ninf|nsz> %hi0_scaled, %hi0_mma : vector<8xf32>
-  vector.fragment.store<result> %hi0_result, %cache_view[%c0, %c64] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  %hi1_scaled = vector.mulf<nnan|ninf|nsz> %hi1_state, %state_factor_v : vector<8xf32>
-  %hi1_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %hi1_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %hi1_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c80] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %hi1_mma = vector.mma %hi1_lhs, %hi1_rhs, %hi1_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %hi1_result = vector.addf<nnan|ninf|nsz> %hi1_scaled, %hi1_mma : vector<8xf32>
-  vector.fragment.store<result> %hi1_result, %cache_view[%c0, %c80] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  %hi2_scaled = vector.mulf<nnan|ninf|nsz> %hi2_state, %state_factor_v : vector<8xf32>
-  %hi2_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %hi2_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %hi2_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c96] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %hi2_mma = vector.mma %hi2_lhs, %hi2_rhs, %hi2_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %hi2_result = vector.addf<nnan|ninf|nsz> %hi2_scaled, %hi2_mma : vector<8xf32>
-  vector.fragment.store<result> %hi2_result, %cache_view[%c0, %c96] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  %hi3_scaled = vector.mulf<nnan|ninf|nsz> %hi3_state, %state_factor_v : vector<8xf32>
-  %hi3_init = vector.fragment<init> %fz8 shape [%c16, %c16] : vector<8xf32>
-  %hi3_lhs = vector.fragment.load<lhs> %d_lhs[%c0, %c0] shape [%c16, %c16] : view<16x16xf16, %lay_dcol> -> vector<16xf16>
-  %hi3_rhs = vector.fragment.load<rhs> %ka_rhs[%c0, %c112] shape [%c16, %c16] : view<16x128xf16, %lay_katok> -> vector<16xf16>
-  %hi3_mma = vector.mma %hi3_lhs, %hi3_rhs, %hi3_init : vector<16xf16>, vector<16xf16>, vector<8xf32>
-  %hi3_result = vector.addf<nnan|ninf|nsz> %hi3_scaled, %hi3_mma : vector<8xf32>
-  vector.fragment.store<result> %hi3_result, %cache_view[%c0, %c112] shape [%c16, %c16] : vector<8xf32>, view<16x128xf32, %lay_state>
-  template.return
-}
-
-// Quantized alpha/beta projection epilogue.
-config.decl @llm.gated_delta_net.epilogue_head_count : %value: index where [range(%value, 1, 4096)]
-
-config.decl @llm.gated_delta_net.epilogue_element_count : %value: index where [range(%value, 1, 1048576)]
-
-config.decl @llm.gated_delta_net.epilogue_workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
-
-kernel.def export("llm_gated_delta_net_projection_epilogue_f32") @llm_gated_delta_net_projection_epilogue_f32() {
-  %unit = index.constant 1 : index
-  %cneg1 = index.constant -1 : index
-  %elements = config.get @llm.gated_delta_net.epilogue_element_count : index
-  %workgroup_size = config.get @llm.gated_delta_net.epilogue_workgroup_size : index
-  %rounding = index.add %workgroup_size, %cneg1 : index
-  %rounded = index.add %elements, %rounding : index
-  %workgroups = index.div %rounded, %workgroup_size : index
-  kernel.launch.config workgroups(%workgroups, %unit, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
-} launch(%alpha_raw: buffer, %beta_raw: buffer, %bias: buffer, %a_scale: buffer, %gate_dst: buffer, %beta_dst: buffer) {
-  %base = index.constant 0 : offset
-  %elements0 = config.get @llm.gated_delta_net.epilogue_element_count : index
-  %heads0 = config.get @llm.gated_delta_net.epilogue_head_count : index
-  %workgroup_size = config.get @llm.gated_delta_net.epilogue_workgroup_size : index
-  %elements = index.assume %elements0 [range(%elements0, 1, 1048576)] : index
-  %heads = index.assume %heads0 [range(%heads0, 1, 4096)] : index
-  %workgroup0 = kernel.workgroup.id<x> : index
-  %workgroup = index.assume %workgroup0 [range(%workgroup0, 0, 32767)] : index
-  %lane0 = kernel.workitem.id<x> : index
-  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
-  %linear_base = index.mul %workgroup, %workgroup_size : index
-  %linear0 = index.add %linear_base, %lane : index
-  %linear = index.assume %linear0 [range(%linear0, 0, 1048575)] : index
-  %in_bounds = index.cmp ult, %linear, %elements : index
-
-  %alpha_global = buffer.assume.memory_space<global> %alpha_raw : buffer
-  %beta_global = buffer.assume.memory_space<global> %beta_raw : buffer
-  %bias_global = buffer.assume.memory_space<global> %bias : buffer
-  %a_scale_global = buffer.assume.memory_space<global> %a_scale : buffer
-  %gate_global = buffer.assume.memory_space<global> %gate_dst : buffer
-  %beta_dst_global = buffer.assume.memory_space<global> %beta_dst : buffer
-  %alpha_noalias, %beta_noalias, %bias_noalias, %a_scale_noalias, %gate_noalias, %beta_dst_noalias = buffer.assume.noalias %alpha_global, %beta_global, %bias_global, %a_scale_global, %gate_global, %beta_dst_global : buffer, buffer, buffer, buffer, buffer, buffer
-  %alpha_view = buffer.view %alpha_noalias[%base] : buffer -> view<1048576xf32>
-  %beta_view = buffer.view %beta_noalias[%base] : buffer -> view<1048576xf32>
-  %bias_view = buffer.view %bias_noalias[%base] : buffer -> view<4096xf32>
-  %a_scale_view = buffer.view %a_scale_noalias[%base] : buffer -> view<4096xf32>
-  %gate_view = buffer.view %gate_noalias[%base] : buffer -> view<1048576xf32>
-  %beta_dst_view = buffer.view %beta_dst_noalias[%base] : buffer -> view<1048576xf32>
-
-  scf.if %in_bounds {
-    %head = index.rem %linear, %heads : index
-    %alpha = view.load %alpha_view[%linear] : view<1048576xf32> -> f32
-    %beta = view.load %beta_view[%linear] : view<1048576xf32> -> f32
-    %bias_value = view.load %bias_view[%head] : view<4096xf32> -> f32
-    %a_value = view.load %a_scale_view[%head] : view<4096xf32> -> f32
-    %c0 = scalar.constant 0.0 : f32
-    %c1 = scalar.constant 1.0 : f32
-    %biased = scalar.addf<nnan|ninf|nsz> %alpha, %bias_value : f32
-    %abs = scalar.absf %biased : f32
-    %neg_abs = scalar.negf %abs : f32
-    %exp = scalar.expf<afn> %neg_abs : f32
-    %one_plus = scalar.addf<nnan|ninf|nsz> %c1, %exp : f32
-    %log = scalar.logf<afn> %one_plus : f32
-    %positive = scalar.maxnumf %biased, %c0 : f32
-    %softplus = scalar.addf<nnan|ninf|nsz> %positive, %log : f32
-    %gate = scalar.mulf<nnan|ninf|nsz> %softplus, %a_value : f32
-    %beta_result = scalar.logisticf<afn> %beta : f32
-    view.store %gate, %gate_view[%linear] : f32, view<1048576xf32>
-    view.store %beta_result, %beta_dst_view[%linear] : f32, view<1048576xf32>
-  }
-  kernel.return
-}
-
-kernel.def export("llm_gated_delta_net_f32_wmma_head128_rmsnorm_gate") @llm_gated_delta_net_f32_wmma_head128_rmsnorm_gate() {
-  %unit = index.constant 1 : index
-  %wg = index.constant 256 : index
-  %blk = index.constant 128 : index
-  %blk_m = index.constant 127 : index
-  %s_v = config.get @llm.gated_delta_net.head_width : index
-  %n_heads = config.get @llm.gated_delta_net.head_count : index
-  %n_seqs = config.get @llm.gated_delta_net.sequence_count : index
-  %cr = index.add %s_v, %blk_m : index
-  %col_blocks = index.div %cr, %blk : index
-  kernel.launch.config workgroups(%n_heads, %n_seqs, %col_blocks) workgroup_size(%wg, %unit, %unit) : index
-} launch(%q: buffer, %k: buffer, %v: buffer, %g: buffer, %beta: buffer, %state_in: buffer, %dst: buffer, %rms_weight: buffer, %raw_gate: buffer, %norm_output: buffer, %half_output: buffer) {
-  %state_inplace = scalar.constant false : i1
-  %publish_snapshots = scalar.constant false : i1
-  %projection_epilogue = scalar.constant false : i1
-  %snapshot_stride = index.constant 1 : index
-  %scale = scalar.constant 0.0883883461356163 : f32
-  %rmsnorm_gate = scalar.constant true : i1
-  %rms_epsilon = config.get @ggml.rmsnorm_gate_f32.rms_epsilon : f32
-  %rms_gate_op = config.get @ggml.rmsnorm_gate_f32.gate_op : index
-  %select_state = scalar.constant false : i1
-  %state_row_count = index.constant 1 : index
-  %publish_q8 = scalar.constant false : i1
-  template.apply<@llm.gated_delta_net.f32_wmma_head128.body>(%state_inplace, %publish_snapshots, %projection_epilogue, %snapshot_stride, %scale, %q, %k, %v, %g, %beta, %g, %beta, %state_in, %dst, %state_in, %rmsnorm_gate, %rms_epsilon, %rms_gate_op, %rms_weight, %raw_gate, %norm_output, %half_output, %select_state, %state_row_count, %dst, %publish_q8) : (i1, i1, i1, index, f32, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, buffer, i1, f32, index, buffer, buffer, buffer, buffer, i1, index, buffer, i1)
-  kernel.return
 }

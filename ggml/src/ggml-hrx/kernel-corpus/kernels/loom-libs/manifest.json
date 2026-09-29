@@ -162,7 +162,61 @@
       "path": "ops/rows/get_rows_f32.loom"
     },
     {
-      "path": "ops/gated_delta_net_f32_wmma.loom"
+      "path": "ops/gated_delta_net/head128_scan_f32_wmma.loom"
+    },
+    {
+      "path": "ops/gated_delta_net/head128_scan_projection_epilogue_f32_wmma.loom"
+    },
+    {
+      "path": "ops/gated_delta_net/head128_scan_rmsnorm_gate_f32_wmma.loom"
+    },
+    {
+      "path": "ops/gated_delta_net/head128_inplace_f32_wmma.loom"
+    },
+    {
+      "path": "ops/gated_delta_net/head128_inplace_projection_epilogue_f32_wmma.loom"
+    },
+    {
+      "path": "ops/gated_delta_net/head128_snapshot_f32_wmma.loom"
+    },
+    {
+      "path": "ops/gated_delta_net/head128_snapshot_projection_epilogue_f32_wmma.loom"
+    },
+    {
+      "path": "ops/gated_delta_net/head128_selected_snapshot_projection_epilogue_f32_wmma.loom"
+    },
+    {
+      "path": "ops/gated_delta_net/head128_selected_snapshot_projection_rms_gate_publish_q8.loom"
+    },
+    {
+      "path": "motifs/gated_delta_net/scan_state_head128.loom"
+    },
+    {
+      "path": "motifs/gated_delta_net/rmsnorm_gate.loom"
+    },
+    {
+      "path": "motifs/gated_delta_net/inplace_state_head128.loom"
+    },
+    {
+      "path": "motifs/gated_delta_net/snapshot_load.loom"
+    },
+    {
+      "path": "motifs/gated_delta_net/snapshot_publish.loom"
+    },
+    {
+      "path": "motifs/gated_delta_net/selected_snapshot_load.loom"
+    },
+    {
+      "path": "motifs/gated_delta_net/publish_f32.loom"
+    },
+    {
+      "path": "motifs/gated_delta_net/publish_q8.loom"
+    },
+    {
+      "path": "ops/gated_delta_net/projection_epilogue_f32.loom"
+    },
+    {
+      "path": "motifs/gated_delta_net/projection_epilogue.loom"
     },
     {
       "path": "ops/ssm_conv_f32.loom"
@@ -5700,7 +5754,7 @@
       "name": "llm_gated_delta_net_f32_wmma_head128",
       "family": "loom_libs",
       "symbol": "llm_gated_delta_net_f32_wmma_head128",
-      "source": "ops/gated_delta_net_f32_wmma.loom",
+      "source": "ops/gated_delta_net/head128_scan_f32_wmma.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -5725,15 +5779,33 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/gated_delta_net_f32_wmma.loom"
+          "ops/gated_delta_net/head128_scan_f32_wmma.loom"
         ],
         "library_sources": [
+          "motifs/gated_delta_net/scan_state_head128.loom",
+          "motifs/gated_delta_net/projection_epilogue.loom",
+          "motifs/gated_delta_net/rmsnorm_gate.loom",
+          "motifs/gated_delta_net/inplace_state_head128.loom",
+          "motifs/gated_delta_net/snapshot_load.loom",
+          "motifs/gated_delta_net/snapshot_publish.loom",
+          "motifs/gated_delta_net/selected_snapshot_load.loom",
+          "motifs/gated_delta_net/publish_f32.loom",
+          "motifs/gated_delta_net/publish_q8.loom",
           "motifs/normalization/rmsnorm.loom",
           "motifs/unary_f32_apply.loom",
           "motifs/quantize_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
+        "motifs/gated_delta_net/scan_state_head128.loom",
+        "motifs/gated_delta_net/projection_epilogue.loom",
+        "motifs/gated_delta_net/rmsnorm_gate.loom",
+        "motifs/gated_delta_net/inplace_state_head128.loom",
+        "motifs/gated_delta_net/snapshot_load.loom",
+        "motifs/gated_delta_net/snapshot_publish.loom",
+        "motifs/gated_delta_net/selected_snapshot_load.loom",
+        "motifs/gated_delta_net/publish_f32.loom",
+        "motifs/gated_delta_net/publish_q8.loom",
         "motifs/normalization/rmsnorm.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/quantize_q8_1_x4.loom"
@@ -5743,7 +5815,7 @@
       "name": "llm_gated_delta_net_f32_wmma_head128_rmsnorm_gate",
       "family": "loom_libs",
       "symbol": "llm_gated_delta_net_f32_wmma_head128_rmsnorm_gate",
-      "source": "ops/gated_delta_net_f32_wmma.loom",
+      "source": "ops/gated_delta_net/head128_scan_rmsnorm_gate_f32_wmma.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -5776,15 +5848,33 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/gated_delta_net_f32_wmma.loom"
+          "ops/gated_delta_net/head128_scan_rmsnorm_gate_f32_wmma.loom"
         ],
         "library_sources": [
+          "motifs/gated_delta_net/scan_state_head128.loom",
+          "motifs/gated_delta_net/projection_epilogue.loom",
+          "motifs/gated_delta_net/rmsnorm_gate.loom",
+          "motifs/gated_delta_net/inplace_state_head128.loom",
+          "motifs/gated_delta_net/snapshot_load.loom",
+          "motifs/gated_delta_net/snapshot_publish.loom",
+          "motifs/gated_delta_net/selected_snapshot_load.loom",
+          "motifs/gated_delta_net/publish_f32.loom",
+          "motifs/gated_delta_net/publish_q8.loom",
           "motifs/normalization/rmsnorm.loom",
           "motifs/unary_f32_apply.loom",
           "motifs/quantize_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
+        "motifs/gated_delta_net/scan_state_head128.loom",
+        "motifs/gated_delta_net/projection_epilogue.loom",
+        "motifs/gated_delta_net/rmsnorm_gate.loom",
+        "motifs/gated_delta_net/inplace_state_head128.loom",
+        "motifs/gated_delta_net/snapshot_load.loom",
+        "motifs/gated_delta_net/snapshot_publish.loom",
+        "motifs/gated_delta_net/selected_snapshot_load.loom",
+        "motifs/gated_delta_net/publish_f32.loom",
+        "motifs/gated_delta_net/publish_q8.loom",
         "motifs/normalization/rmsnorm.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/quantize_q8_1_x4.loom"
@@ -5794,7 +5884,7 @@
       "name": "llm_gated_delta_net_f32_wmma_head128_projection_epilogue",
       "family": "loom_libs",
       "symbol": "llm_gated_delta_net_f32_wmma_head128_projection_epilogue",
-      "source": "ops/gated_delta_net_f32_wmma.loom",
+      "source": "ops/gated_delta_net/head128_scan_projection_epilogue_f32_wmma.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -5823,15 +5913,33 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/gated_delta_net_f32_wmma.loom"
+          "ops/gated_delta_net/head128_scan_projection_epilogue_f32_wmma.loom"
         ],
         "library_sources": [
+          "motifs/gated_delta_net/scan_state_head128.loom",
+          "motifs/gated_delta_net/projection_epilogue.loom",
+          "motifs/gated_delta_net/rmsnorm_gate.loom",
+          "motifs/gated_delta_net/inplace_state_head128.loom",
+          "motifs/gated_delta_net/snapshot_load.loom",
+          "motifs/gated_delta_net/snapshot_publish.loom",
+          "motifs/gated_delta_net/selected_snapshot_load.loom",
+          "motifs/gated_delta_net/publish_f32.loom",
+          "motifs/gated_delta_net/publish_q8.loom",
           "motifs/normalization/rmsnorm.loom",
           "motifs/unary_f32_apply.loom",
           "motifs/quantize_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
+        "motifs/gated_delta_net/scan_state_head128.loom",
+        "motifs/gated_delta_net/projection_epilogue.loom",
+        "motifs/gated_delta_net/rmsnorm_gate.loom",
+        "motifs/gated_delta_net/inplace_state_head128.loom",
+        "motifs/gated_delta_net/snapshot_load.loom",
+        "motifs/gated_delta_net/snapshot_publish.loom",
+        "motifs/gated_delta_net/selected_snapshot_load.loom",
+        "motifs/gated_delta_net/publish_f32.loom",
+        "motifs/gated_delta_net/publish_q8.loom",
         "motifs/normalization/rmsnorm.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/quantize_q8_1_x4.loom"
@@ -5841,7 +5949,7 @@
       "name": "llm_gated_delta_net_f32_wmma_head128_inplace",
       "family": "loom_libs",
       "symbol": "llm_gated_delta_net_f32_wmma_head128_inplace",
-      "source": "ops/gated_delta_net_f32_wmma.loom",
+      "source": "ops/gated_delta_net/head128_inplace_f32_wmma.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -5866,15 +5974,33 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/gated_delta_net_f32_wmma.loom"
+          "ops/gated_delta_net/head128_inplace_f32_wmma.loom"
         ],
         "library_sources": [
+          "motifs/gated_delta_net/scan_state_head128.loom",
+          "motifs/gated_delta_net/projection_epilogue.loom",
+          "motifs/gated_delta_net/rmsnorm_gate.loom",
+          "motifs/gated_delta_net/inplace_state_head128.loom",
+          "motifs/gated_delta_net/snapshot_load.loom",
+          "motifs/gated_delta_net/snapshot_publish.loom",
+          "motifs/gated_delta_net/selected_snapshot_load.loom",
+          "motifs/gated_delta_net/publish_f32.loom",
+          "motifs/gated_delta_net/publish_q8.loom",
           "motifs/normalization/rmsnorm.loom",
           "motifs/unary_f32_apply.loom",
           "motifs/quantize_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
+        "motifs/gated_delta_net/scan_state_head128.loom",
+        "motifs/gated_delta_net/projection_epilogue.loom",
+        "motifs/gated_delta_net/rmsnorm_gate.loom",
+        "motifs/gated_delta_net/inplace_state_head128.loom",
+        "motifs/gated_delta_net/snapshot_load.loom",
+        "motifs/gated_delta_net/snapshot_publish.loom",
+        "motifs/gated_delta_net/selected_snapshot_load.loom",
+        "motifs/gated_delta_net/publish_f32.loom",
+        "motifs/gated_delta_net/publish_q8.loom",
         "motifs/normalization/rmsnorm.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/quantize_q8_1_x4.loom"
@@ -5884,7 +6010,7 @@
       "name": "llm_gated_delta_net_f32_wmma_head128_inplace_projection_epilogue",
       "family": "loom_libs",
       "symbol": "llm_gated_delta_net_f32_wmma_head128_inplace_projection_epilogue",
-      "source": "ops/gated_delta_net_f32_wmma.loom",
+      "source": "ops/gated_delta_net/head128_inplace_projection_epilogue_f32_wmma.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -5913,15 +6039,33 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/gated_delta_net_f32_wmma.loom"
+          "ops/gated_delta_net/head128_inplace_projection_epilogue_f32_wmma.loom"
         ],
         "library_sources": [
+          "motifs/gated_delta_net/scan_state_head128.loom",
+          "motifs/gated_delta_net/projection_epilogue.loom",
+          "motifs/gated_delta_net/rmsnorm_gate.loom",
+          "motifs/gated_delta_net/inplace_state_head128.loom",
+          "motifs/gated_delta_net/snapshot_load.loom",
+          "motifs/gated_delta_net/snapshot_publish.loom",
+          "motifs/gated_delta_net/selected_snapshot_load.loom",
+          "motifs/gated_delta_net/publish_f32.loom",
+          "motifs/gated_delta_net/publish_q8.loom",
           "motifs/normalization/rmsnorm.loom",
           "motifs/unary_f32_apply.loom",
           "motifs/quantize_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
+        "motifs/gated_delta_net/scan_state_head128.loom",
+        "motifs/gated_delta_net/projection_epilogue.loom",
+        "motifs/gated_delta_net/rmsnorm_gate.loom",
+        "motifs/gated_delta_net/inplace_state_head128.loom",
+        "motifs/gated_delta_net/snapshot_load.loom",
+        "motifs/gated_delta_net/snapshot_publish.loom",
+        "motifs/gated_delta_net/selected_snapshot_load.loom",
+        "motifs/gated_delta_net/publish_f32.loom",
+        "motifs/gated_delta_net/publish_q8.loom",
         "motifs/normalization/rmsnorm.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/quantize_q8_1_x4.loom"
@@ -5931,7 +6075,7 @@
       "name": "llm_gated_delta_net_f32_wmma_head128_snapshot",
       "family": "loom_libs",
       "symbol": "llm_gated_delta_net_f32_wmma_head128_snapshot",
-      "source": "ops/gated_delta_net_f32_wmma.loom",
+      "source": "ops/gated_delta_net/head128_snapshot_f32_wmma.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -5958,15 +6102,33 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/gated_delta_net_f32_wmma.loom"
+          "ops/gated_delta_net/head128_snapshot_f32_wmma.loom"
         ],
         "library_sources": [
+          "motifs/gated_delta_net/scan_state_head128.loom",
+          "motifs/gated_delta_net/projection_epilogue.loom",
+          "motifs/gated_delta_net/rmsnorm_gate.loom",
+          "motifs/gated_delta_net/inplace_state_head128.loom",
+          "motifs/gated_delta_net/snapshot_load.loom",
+          "motifs/gated_delta_net/snapshot_publish.loom",
+          "motifs/gated_delta_net/selected_snapshot_load.loom",
+          "motifs/gated_delta_net/publish_f32.loom",
+          "motifs/gated_delta_net/publish_q8.loom",
           "motifs/normalization/rmsnorm.loom",
           "motifs/unary_f32_apply.loom",
           "motifs/quantize_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
+        "motifs/gated_delta_net/scan_state_head128.loom",
+        "motifs/gated_delta_net/projection_epilogue.loom",
+        "motifs/gated_delta_net/rmsnorm_gate.loom",
+        "motifs/gated_delta_net/inplace_state_head128.loom",
+        "motifs/gated_delta_net/snapshot_load.loom",
+        "motifs/gated_delta_net/snapshot_publish.loom",
+        "motifs/gated_delta_net/selected_snapshot_load.loom",
+        "motifs/gated_delta_net/publish_f32.loom",
+        "motifs/gated_delta_net/publish_q8.loom",
         "motifs/normalization/rmsnorm.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/quantize_q8_1_x4.loom"
@@ -5976,7 +6138,7 @@
       "name": "llm_gated_delta_net_f32_wmma_head128_snapshot_projection_epilogue",
       "family": "loom_libs",
       "symbol": "llm_gated_delta_net_f32_wmma_head128_snapshot_projection_epilogue",
-      "source": "ops/gated_delta_net_f32_wmma.loom",
+      "source": "ops/gated_delta_net/head128_snapshot_projection_epilogue_f32_wmma.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -6007,15 +6169,33 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/gated_delta_net_f32_wmma.loom"
+          "ops/gated_delta_net/head128_snapshot_projection_epilogue_f32_wmma.loom"
         ],
         "library_sources": [
+          "motifs/gated_delta_net/scan_state_head128.loom",
+          "motifs/gated_delta_net/projection_epilogue.loom",
+          "motifs/gated_delta_net/rmsnorm_gate.loom",
+          "motifs/gated_delta_net/inplace_state_head128.loom",
+          "motifs/gated_delta_net/snapshot_load.loom",
+          "motifs/gated_delta_net/snapshot_publish.loom",
+          "motifs/gated_delta_net/selected_snapshot_load.loom",
+          "motifs/gated_delta_net/publish_f32.loom",
+          "motifs/gated_delta_net/publish_q8.loom",
           "motifs/normalization/rmsnorm.loom",
           "motifs/unary_f32_apply.loom",
           "motifs/quantize_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
+        "motifs/gated_delta_net/scan_state_head128.loom",
+        "motifs/gated_delta_net/projection_epilogue.loom",
+        "motifs/gated_delta_net/rmsnorm_gate.loom",
+        "motifs/gated_delta_net/inplace_state_head128.loom",
+        "motifs/gated_delta_net/snapshot_load.loom",
+        "motifs/gated_delta_net/snapshot_publish.loom",
+        "motifs/gated_delta_net/selected_snapshot_load.loom",
+        "motifs/gated_delta_net/publish_f32.loom",
+        "motifs/gated_delta_net/publish_q8.loom",
         "motifs/normalization/rmsnorm.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/quantize_q8_1_x4.loom"
@@ -6025,7 +6205,7 @@
       "name": "llm_gated_delta_net_f32_wmma_head128_selected_snapshot_projection_epilogue",
       "family": "loom_libs",
       "symbol": "llm_gated_delta_net_f32_wmma_head128_selected_snapshot_projection_epilogue",
-      "source": "ops/gated_delta_net_f32_wmma.loom",
+      "source": "ops/gated_delta_net/head128_selected_snapshot_projection_epilogue_f32_wmma.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -6058,15 +6238,33 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/gated_delta_net_f32_wmma.loom"
+          "ops/gated_delta_net/head128_selected_snapshot_projection_epilogue_f32_wmma.loom"
         ],
         "library_sources": [
+          "motifs/gated_delta_net/scan_state_head128.loom",
+          "motifs/gated_delta_net/projection_epilogue.loom",
+          "motifs/gated_delta_net/rmsnorm_gate.loom",
+          "motifs/gated_delta_net/inplace_state_head128.loom",
+          "motifs/gated_delta_net/snapshot_load.loom",
+          "motifs/gated_delta_net/snapshot_publish.loom",
+          "motifs/gated_delta_net/selected_snapshot_load.loom",
+          "motifs/gated_delta_net/publish_f32.loom",
+          "motifs/gated_delta_net/publish_q8.loom",
           "motifs/normalization/rmsnorm.loom",
           "motifs/unary_f32_apply.loom",
           "motifs/quantize_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
+        "motifs/gated_delta_net/scan_state_head128.loom",
+        "motifs/gated_delta_net/projection_epilogue.loom",
+        "motifs/gated_delta_net/rmsnorm_gate.loom",
+        "motifs/gated_delta_net/inplace_state_head128.loom",
+        "motifs/gated_delta_net/snapshot_load.loom",
+        "motifs/gated_delta_net/snapshot_publish.loom",
+        "motifs/gated_delta_net/selected_snapshot_load.loom",
+        "motifs/gated_delta_net/publish_f32.loom",
+        "motifs/gated_delta_net/publish_q8.loom",
         "motifs/normalization/rmsnorm.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/quantize_q8_1_x4.loom"
@@ -6076,7 +6274,7 @@
       "name": "llm_gated_delta_net_f32_wmma_head128_selected_snapshot_projection_rms_gate_q8",
       "family": "loom_libs",
       "symbol": "llm_gated_delta_net_f32_wmma_head128_selected_snapshot_projection_rms_gate_q8",
-      "source": "ops/gated_delta_net_f32_wmma.loom",
+      "source": "ops/gated_delta_net/head128_selected_snapshot_projection_rms_gate_publish_q8.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -6115,15 +6313,33 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/gated_delta_net_f32_wmma.loom"
+          "ops/gated_delta_net/head128_selected_snapshot_projection_rms_gate_publish_q8.loom"
         ],
         "library_sources": [
+          "motifs/gated_delta_net/scan_state_head128.loom",
+          "motifs/gated_delta_net/projection_epilogue.loom",
+          "motifs/gated_delta_net/rmsnorm_gate.loom",
+          "motifs/gated_delta_net/inplace_state_head128.loom",
+          "motifs/gated_delta_net/snapshot_load.loom",
+          "motifs/gated_delta_net/snapshot_publish.loom",
+          "motifs/gated_delta_net/selected_snapshot_load.loom",
+          "motifs/gated_delta_net/publish_f32.loom",
+          "motifs/gated_delta_net/publish_q8.loom",
           "motifs/normalization/rmsnorm.loom",
           "motifs/unary_f32_apply.loom",
           "motifs/quantize_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
+        "motifs/gated_delta_net/scan_state_head128.loom",
+        "motifs/gated_delta_net/projection_epilogue.loom",
+        "motifs/gated_delta_net/rmsnorm_gate.loom",
+        "motifs/gated_delta_net/inplace_state_head128.loom",
+        "motifs/gated_delta_net/snapshot_load.loom",
+        "motifs/gated_delta_net/snapshot_publish.loom",
+        "motifs/gated_delta_net/selected_snapshot_load.loom",
+        "motifs/gated_delta_net/publish_f32.loom",
+        "motifs/gated_delta_net/publish_q8.loom",
         "motifs/normalization/rmsnorm.loom",
         "motifs/unary_f32_apply.loom",
         "motifs/quantize_q8_1_x4.loom"
@@ -6133,7 +6349,7 @@
       "name": "llm_gated_delta_net_projection_epilogue_f32",
       "family": "loom_libs",
       "symbol": "llm_gated_delta_net_projection_epilogue_f32",
-      "source": "ops/gated_delta_net_f32_wmma.loom",
+      "source": "ops/gated_delta_net/projection_epilogue_f32.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -6156,18 +6372,16 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/gated_delta_net_f32_wmma.loom"
+          "ops/gated_delta_net/projection_epilogue_f32.loom"
         ],
         "library_sources": [
-          "motifs/normalization/rmsnorm.loom",
-          "motifs/unary_f32_apply.loom",
-          "motifs/quantize_q8_1_x4.loom"
+          "motifs/gated_delta_net/projection_epilogue.loom",
+          "motifs/gated_delta_net/publish_f32.loom"
         ]
       },
       "compile_dependencies": [
-        "motifs/normalization/rmsnorm.loom",
-        "motifs/unary_f32_apply.loom",
-        "motifs/quantize_q8_1_x4.loom"
+        "motifs/gated_delta_net/projection_epilogue.loom",
+        "motifs/gated_delta_net/publish_f32.loom"
       ]
     },
     {
