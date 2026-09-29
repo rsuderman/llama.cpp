@@ -25,8 +25,15 @@ struct HostTransferStats {
     size_t   download_bytes = 0;
 };
 
+struct HostMappedDownloadLease {
+    std::unique_lock<std::mutex> lock;
+    void *                       host_data = nullptr;
+};
+
 class HostTransferManager {
   public:
+    ~HostTransferManager();
+
     Status upload_synchronous(hrx_stream_t stream,
                               const void * host_source,
                               hrx_buffer_t destination,
@@ -42,6 +49,12 @@ class HostTransferManager {
                                 size_t       offset,
                                 void *       host_destination,
                                 size_t       size);
+    Status download_to_mapped_synchronous(hrx_device_t              device,
+                                          hrx_stream_t              stream,
+                                          hrx_buffer_t              source,
+                                          size_t                    offset,
+                                          size_t                    size,
+                                          HostMappedDownloadLease & lease);
 
     HostTransferStats stats() const;
     void              clear();
@@ -49,6 +62,9 @@ class HostTransferManager {
   private:
     mutable std::mutex mutex_;
     HostTransferStats  stats_;
+    hrx_buffer_t       mapped_download_buffer_   = nullptr;
+    void *             mapped_download_data_     = nullptr;
+    size_t             mapped_download_capacity_ = 0;
 };
 
 struct HostWeightSource {
