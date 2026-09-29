@@ -4720,6 +4720,12 @@ static void register_dense_matmul_cases(Suite & suite) {
                                             "loom_libs:ggml_mul_mat_q5_k_iq4_xs_q8_1_x4_wmma_token256", 256, 128,
                                             kQwenHiddenSize, true);
     });
+    // Exercise the production K dimension and a partial output tile.
+    suite.device_case("dense_matmul.iq4_xs.prefill.tokens512.outputs64", [] {
+        run_dense_matmul_cpu_reference_case(GGML_TYPE_IQ4_XS,
+                                            "loom_libs:ggml_mul_mat_q5_k_iq4_xs_q8_1_x4_wmma_token256", 512, 64,
+                                            3072, true);
+    });
     for (const ggml_type type : { GGML_TYPE_Q4_K, GGML_TYPE_Q6_K }) {
         for (const ggml_type cache_type : { GGML_TYPE_F16, GGML_TYPE_F32 }) {
             suite.device_case(
