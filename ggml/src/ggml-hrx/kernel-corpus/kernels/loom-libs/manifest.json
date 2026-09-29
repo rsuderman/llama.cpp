@@ -42,10 +42,34 @@
       "path": "ops/elementwise/binary_f32.loom"
     },
     {
-      "path": "ops/rmsnorm_f32.loom"
+      "path": "ops/normalization/rmsnorm_f32.loom"
     },
     {
-      "path": "ops/normalization/rmsnorm.loom"
+      "path": "ops/normalization/rmsnorm_binary_f32.loom"
+    },
+    {
+      "path": "ops/normalization/rmsnorm_binary_f32_k16.loom"
+    },
+    {
+      "path": "ops/normalization/rmsnorm_binary_publish_q8_1_x4.loom"
+    },
+    {
+      "path": "ops/normalization/rmsnorm_binary_symmetric_i4_k32.loom"
+    },
+    {
+      "path": "ops/normalization/add_rmsnorm_binary_symmetric_i4_k32.loom"
+    },
+    {
+      "path": "ops/normalization/rmsnorm_gate_silu_mul_symmetric_i4_k32.loom"
+    },
+    {
+      "path": "ops/normalization/rmsnorm_gate_publish_f16.loom"
+    },
+    {
+      "path": "ops/normalization/rmsnorm_gate_publish_q8_1_x4.loom"
+    },
+    {
+      "path": "ops/normalization/rmsnorm_mul_rope_f32.loom"
     },
     {
       "path": "ops/mul_mat_f32_f32_wmma.loom"
@@ -252,6 +276,9 @@
       "path": "ops/rope/rope_f32.loom"
     },
     {
+      "path": "ops/rope/rope_set_rows_f32.loom"
+    },
+    {
       "path": "ops/rows/set_rows.loom"
     },
     {
@@ -304,6 +331,12 @@
     },
     {
       "path": "motifs/normalization/rmsnorm_gate.loom"
+    },
+    {
+      "path": "motifs/normalization/publish_f16.loom"
+    },
+    {
+      "path": "motifs/normalization/publish_q8.loom"
     },
     {
       "path": "motifs/quantize_q8_1_x4.loom"
@@ -977,7 +1010,7 @@
       "name": "ggml_rmsnorm_f32",
       "family": "loom_libs",
       "symbol": "ggml_rmsnorm_f32",
-      "source": "ops/normalization/rmsnorm.loom",
+      "source": "ops/normalization/rmsnorm_f32.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -1002,33 +1035,21 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/normalization/rmsnorm.loom"
+          "ops/normalization/rmsnorm_f32.loom"
         ],
         "library_sources": [
-          "motifs/normalization/rmsnorm.loom",
-          "motifs/normalization/rmsnorm_binary.loom",
-          "motifs/normalization/rmsnorm_symmetric_i4.loom",
-          "motifs/normalization/rmsnorm_gate.loom",
-          "motifs/elementwise/binary_apply.loom",
-          "motifs/elementwise/unary_apply.loom",
-          "motifs/quantize_q8_1_x4.loom"
+          "motifs/normalization/rmsnorm.loom"
         ]
       },
       "compile_dependencies": [
-        "motifs/normalization/rmsnorm.loom",
-        "motifs/normalization/rmsnorm_binary.loom",
-        "motifs/normalization/rmsnorm_symmetric_i4.loom",
-        "motifs/normalization/rmsnorm_gate.loom",
-        "motifs/elementwise/binary_apply.loom",
-        "motifs/elementwise/unary_apply.loom",
-        "motifs/quantize_q8_1_x4.loom"
+        "motifs/normalization/rmsnorm.loom"
       ]
     },
     {
       "name": "ggml_rmsnorm_mul_rope_f32",
       "family": "loom_libs",
       "symbol": "ggml_rmsnorm_mul_rope_f32",
-      "source": "ops/rmsnorm_f32.loom",
+      "source": "ops/normalization/rmsnorm_mul_rope_f32.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -1047,21 +1068,23 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/rmsnorm_f32.loom"
+          "ops/normalization/rmsnorm_mul_rope_f32.loom"
         ],
         "library_sources": [
-          "motifs/normalization/rmsnorm.loom"
+          "motifs/normalization/rmsnorm.loom",
+          "motifs/rope/rope_f32.loom"
         ]
       },
       "compile_dependencies": [
-        "motifs/normalization/rmsnorm.loom"
+        "motifs/normalization/rmsnorm.loom",
+        "motifs/rope/rope_f32.loom"
       ]
     },
     {
       "name": "ggml_rmsnorm_binary_f32",
       "family": "loom_libs",
       "symbol": "ggml_rmsnorm_binary_f32",
-      "source": "ops/normalization/rmsnorm.loom",
+      "source": "ops/normalization/rmsnorm_binary_f32.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -1088,33 +1111,25 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/normalization/rmsnorm.loom"
+          "ops/normalization/rmsnorm_binary_f32.loom"
         ],
         "library_sources": [
           "motifs/normalization/rmsnorm.loom",
           "motifs/normalization/rmsnorm_binary.loom",
-          "motifs/normalization/rmsnorm_symmetric_i4.loom",
-          "motifs/normalization/rmsnorm_gate.loom",
-          "motifs/elementwise/binary_apply.loom",
-          "motifs/elementwise/unary_apply.loom",
-          "motifs/quantize_q8_1_x4.loom"
+          "motifs/elementwise/binary_apply.loom"
         ]
       },
       "compile_dependencies": [
         "motifs/normalization/rmsnorm.loom",
         "motifs/normalization/rmsnorm_binary.loom",
-        "motifs/normalization/rmsnorm_symmetric_i4.loom",
-        "motifs/normalization/rmsnorm_gate.loom",
-        "motifs/elementwise/binary_apply.loom",
-        "motifs/elementwise/unary_apply.loom",
-        "motifs/quantize_q8_1_x4.loom"
+        "motifs/elementwise/binary_apply.loom"
       ]
     },
     {
       "name": "ggml_rmsnorm_binary_f32_k16",
       "family": "loom_libs",
       "symbol": "ggml_rmsnorm_binary_f32_k16",
-      "source": "ops/normalization/rmsnorm.loom",
+      "source": "ops/normalization/rmsnorm_binary_f32_k16.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -1143,33 +1158,27 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/normalization/rmsnorm.loom"
+          "ops/normalization/rmsnorm_binary_f32_k16.loom"
         ],
         "library_sources": [
           "motifs/normalization/rmsnorm.loom",
           "motifs/normalization/rmsnorm_binary.loom",
-          "motifs/normalization/rmsnorm_symmetric_i4.loom",
-          "motifs/normalization/rmsnorm_gate.loom",
-          "motifs/elementwise/binary_apply.loom",
-          "motifs/elementwise/unary_apply.loom",
-          "motifs/quantize_q8_1_x4.loom"
+          "motifs/normalization/publish_f16.loom",
+          "motifs/elementwise/binary_apply.loom"
         ]
       },
       "compile_dependencies": [
         "motifs/normalization/rmsnorm.loom",
         "motifs/normalization/rmsnorm_binary.loom",
-        "motifs/normalization/rmsnorm_symmetric_i4.loom",
-        "motifs/normalization/rmsnorm_gate.loom",
-        "motifs/elementwise/binary_apply.loom",
-        "motifs/elementwise/unary_apply.loom",
-        "motifs/quantize_q8_1_x4.loom"
+        "motifs/normalization/publish_f16.loom",
+        "motifs/elementwise/binary_apply.loom"
       ]
     },
     {
       "name": "ggml_rmsnorm_binary_q8_1_x4",
       "family": "loom_libs",
       "symbol": "ggml_rmsnorm_binary_q8_1_x4",
-      "source": "ops/normalization/rmsnorm.loom",
+      "source": "ops/normalization/rmsnorm_binary_publish_q8_1_x4.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -1198,25 +1207,21 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/normalization/rmsnorm.loom"
+          "ops/normalization/rmsnorm_binary_publish_q8_1_x4.loom"
         ],
         "library_sources": [
           "motifs/normalization/rmsnorm.loom",
           "motifs/normalization/rmsnorm_binary.loom",
-          "motifs/normalization/rmsnorm_symmetric_i4.loom",
-          "motifs/normalization/rmsnorm_gate.loom",
+          "motifs/normalization/publish_q8.loom",
           "motifs/elementwise/binary_apply.loom",
-          "motifs/elementwise/unary_apply.loom",
           "motifs/quantize_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
         "motifs/normalization/rmsnorm.loom",
         "motifs/normalization/rmsnorm_binary.loom",
-        "motifs/normalization/rmsnorm_symmetric_i4.loom",
-        "motifs/normalization/rmsnorm_gate.loom",
+        "motifs/normalization/publish_q8.loom",
         "motifs/elementwise/binary_apply.loom",
-        "motifs/elementwise/unary_apply.loom",
         "motifs/quantize_q8_1_x4.loom"
       ]
     },
@@ -1224,7 +1229,7 @@
       "name": "ggml_rmsnorm_binary_symmetric_i4_k32",
       "family": "loom_libs",
       "symbol": "ggml_rmsnorm_binary_symmetric_i4_k32",
-      "source": "ops/normalization/rmsnorm.loom",
+      "source": "ops/normalization/rmsnorm_binary_symmetric_i4_k32.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -1257,33 +1262,23 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/normalization/rmsnorm.loom"
+          "ops/normalization/rmsnorm_binary_symmetric_i4_k32.loom"
         ],
         "library_sources": [
           "motifs/normalization/rmsnorm.loom",
-          "motifs/normalization/rmsnorm_binary.loom",
-          "motifs/normalization/rmsnorm_symmetric_i4.loom",
-          "motifs/normalization/rmsnorm_gate.loom",
-          "motifs/elementwise/binary_apply.loom",
-          "motifs/elementwise/unary_apply.loom",
-          "motifs/quantize_q8_1_x4.loom"
+          "motifs/normalization/rmsnorm_symmetric_i4.loom"
         ]
       },
       "compile_dependencies": [
         "motifs/normalization/rmsnorm.loom",
-        "motifs/normalization/rmsnorm_binary.loom",
-        "motifs/normalization/rmsnorm_symmetric_i4.loom",
-        "motifs/normalization/rmsnorm_gate.loom",
-        "motifs/elementwise/binary_apply.loom",
-        "motifs/elementwise/unary_apply.loom",
-        "motifs/quantize_q8_1_x4.loom"
+        "motifs/normalization/rmsnorm_symmetric_i4.loom"
       ]
     },
     {
       "name": "ggml_add_rmsnorm_binary_symmetric_i4_k32",
       "family": "loom_libs",
       "symbol": "ggml_add_rmsnorm_binary_symmetric_i4_k32",
-      "source": "ops/normalization/rmsnorm.loom",
+      "source": "ops/normalization/add_rmsnorm_binary_symmetric_i4_k32.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -1320,33 +1315,23 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/normalization/rmsnorm.loom"
+          "ops/normalization/add_rmsnorm_binary_symmetric_i4_k32.loom"
         ],
         "library_sources": [
           "motifs/normalization/rmsnorm.loom",
-          "motifs/normalization/rmsnorm_binary.loom",
-          "motifs/normalization/rmsnorm_symmetric_i4.loom",
-          "motifs/normalization/rmsnorm_gate.loom",
-          "motifs/elementwise/binary_apply.loom",
-          "motifs/elementwise/unary_apply.loom",
-          "motifs/quantize_q8_1_x4.loom"
+          "motifs/normalization/rmsnorm_symmetric_i4.loom"
         ]
       },
       "compile_dependencies": [
         "motifs/normalization/rmsnorm.loom",
-        "motifs/normalization/rmsnorm_binary.loom",
-        "motifs/normalization/rmsnorm_symmetric_i4.loom",
-        "motifs/normalization/rmsnorm_gate.loom",
-        "motifs/elementwise/binary_apply.loom",
-        "motifs/elementwise/unary_apply.loom",
-        "motifs/quantize_q8_1_x4.loom"
+        "motifs/normalization/rmsnorm_symmetric_i4.loom"
       ]
     },
     {
       "name": "ggml_rmsnorm_gate_silu_mul_symmetric_i4_k32",
       "family": "loom_libs",
       "symbol": "ggml_rmsnorm_gate_silu_mul_symmetric_i4_k32",
-      "source": "ops/normalization/rmsnorm.loom",
+      "source": "ops/normalization/rmsnorm_gate_silu_mul_symmetric_i4_k32.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -1381,33 +1366,23 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/normalization/rmsnorm.loom"
+          "ops/normalization/rmsnorm_gate_silu_mul_symmetric_i4_k32.loom"
         ],
         "library_sources": [
           "motifs/normalization/rmsnorm.loom",
-          "motifs/normalization/rmsnorm_binary.loom",
-          "motifs/normalization/rmsnorm_symmetric_i4.loom",
-          "motifs/normalization/rmsnorm_gate.loom",
-          "motifs/elementwise/binary_apply.loom",
-          "motifs/elementwise/unary_apply.loom",
-          "motifs/quantize_q8_1_x4.loom"
+          "motifs/normalization/rmsnorm_symmetric_i4.loom"
         ]
       },
       "compile_dependencies": [
         "motifs/normalization/rmsnorm.loom",
-        "motifs/normalization/rmsnorm_binary.loom",
-        "motifs/normalization/rmsnorm_symmetric_i4.loom",
-        "motifs/normalization/rmsnorm_gate.loom",
-        "motifs/elementwise/binary_apply.loom",
-        "motifs/elementwise/unary_apply.loom",
-        "motifs/quantize_q8_1_x4.loom"
+        "motifs/normalization/rmsnorm_symmetric_i4.loom"
       ]
     },
     {
       "name": "ggml_rmsnorm_gate_f32_f16",
       "family": "loom_libs",
       "symbol": "ggml_rmsnorm_gate_f32_f16",
-      "source": "ops/normalization/rmsnorm.loom",
+      "source": "ops/normalization/rmsnorm_gate_publish_f16.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -1438,24 +1413,22 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/normalization/rmsnorm.loom"
+          "ops/normalization/rmsnorm_gate_publish_f16.loom"
         ],
         "library_sources": [
           "motifs/normalization/rmsnorm.loom",
-          "motifs/normalization/rmsnorm_binary.loom",
-          "motifs/normalization/rmsnorm_symmetric_i4.loom",
           "motifs/normalization/rmsnorm_gate.loom",
-          "motifs/elementwise/binary_apply.loom",
+          "motifs/normalization/publish_f16.loom",
+          "motifs/normalization/publish_q8.loom",
           "motifs/elementwise/unary_apply.loom",
           "motifs/quantize_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
         "motifs/normalization/rmsnorm.loom",
-        "motifs/normalization/rmsnorm_binary.loom",
-        "motifs/normalization/rmsnorm_symmetric_i4.loom",
         "motifs/normalization/rmsnorm_gate.loom",
-        "motifs/elementwise/binary_apply.loom",
+        "motifs/normalization/publish_f16.loom",
+        "motifs/normalization/publish_q8.loom",
         "motifs/elementwise/unary_apply.loom",
         "motifs/quantize_q8_1_x4.loom"
       ]
@@ -1464,7 +1437,7 @@
       "name": "ggml_rmsnorm_gate_f32_q8_1_x4",
       "family": "loom_libs",
       "symbol": "ggml_rmsnorm_gate_f32_q8_1_x4",
-      "source": "ops/normalization/rmsnorm.loom",
+      "source": "ops/normalization/rmsnorm_gate_publish_q8_1_x4.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -1495,24 +1468,22 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/normalization/rmsnorm.loom"
+          "ops/normalization/rmsnorm_gate_publish_q8_1_x4.loom"
         ],
         "library_sources": [
           "motifs/normalization/rmsnorm.loom",
-          "motifs/normalization/rmsnorm_binary.loom",
-          "motifs/normalization/rmsnorm_symmetric_i4.loom",
           "motifs/normalization/rmsnorm_gate.loom",
-          "motifs/elementwise/binary_apply.loom",
+          "motifs/normalization/publish_f16.loom",
+          "motifs/normalization/publish_q8.loom",
           "motifs/elementwise/unary_apply.loom",
           "motifs/quantize_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
         "motifs/normalization/rmsnorm.loom",
-        "motifs/normalization/rmsnorm_binary.loom",
-        "motifs/normalization/rmsnorm_symmetric_i4.loom",
         "motifs/normalization/rmsnorm_gate.loom",
-        "motifs/elementwise/binary_apply.loom",
+        "motifs/normalization/publish_f16.loom",
+        "motifs/normalization/publish_q8.loom",
         "motifs/elementwise/unary_apply.loom",
         "motifs/quantize_q8_1_x4.loom"
       ]
@@ -5492,13 +5463,11 @@
           "ops/rope/rope_f32.loom"
         ],
         "library_sources": [
-          "motifs/rope/rope_f32.loom",
-          "motifs/rows/cache_publish.loom"
+          "motifs/rope/rope_f32.loom"
         ]
       },
       "compile_dependencies": [
-        "motifs/rope/rope_f32.loom",
-        "motifs/rows/cache_publish.loom"
+        "motifs/rope/rope_f32.loom"
       ]
     },
     {
@@ -5562,7 +5531,7 @@
       "name": "ggml_rope_set_rows_f32",
       "family": "loom_libs",
       "symbol": "ggml_rope_set_rows_f32",
-      "source": "ops/rope/rope_f32.loom",
+      "source": "ops/rope/rope_set_rows_f32.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -5603,7 +5572,7 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/rope/rope_f32.loom"
+          "ops/rope/rope_set_rows_f32.loom"
         ],
         "library_sources": [
           "motifs/rope/rope_f32.loom",

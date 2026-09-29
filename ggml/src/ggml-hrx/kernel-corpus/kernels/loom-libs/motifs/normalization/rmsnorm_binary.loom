@@ -4,7 +4,8 @@
 template.decl @ggml.rmsnorm_f32.apply(%arg0: f32, %arg1: f32) -> (f32)
 template.decl @ggml.rmsnorm_f32.row_scale(%arg0: index, %arg1: index, %arg2: index, %arg3: index, %arg4: f32, %arg5: buffer) -> (f32, index, index, i1)
 template.decl @ggml.binary_f32.apply(%arg0: index, %arg1: f32, %arg2: f32) -> (f32)
-template.decl @ggml.quantize_q8_1_x4.publish_vector4(%arg0: i1, %arg1: offset, %arg2: index, %arg3: vector<4xf32>, %arg4: view<256xf32>, %arg5: view<32xf32>, %arg6: buffer)
+template.decl @ggml.normalization.publish_f16.k16_vector4(%values: vector<4xf32>, %channel: index, %token: index, %token_count: index, %hidden_size: index, %packet: index, %output: buffer)
+template.decl @ggml.normalization.publish_q8.binary_vector4(%publish_word: i1, %token_output_byte_base: offset, %channel: index, %values: vector<4xf32>, %scratch_values: view<256xf32>, %scratch_d: view<32xf32>, %output: buffer)
 
 config.decl @ggml.rmsnorm_binary_f32.hidden_size : %value: index where [range(%value, 128, 32768), mul(%value, 128)]
 config.decl @ggml.rmsnorm_binary_f32.rms_epsilon : f32
@@ -72,8 +73,6 @@ template.def<@ggml.rmsnorm_binary_f32_k16.body> device @ggml_rmsnorm_binary_f32_
   %input_view = buffer.view %input_na[%base] : buffer -> view<[%token_count]x[%hidden]xf32>
   %rhs_view = buffer.view %rhs_na[%base] : buffer -> view<[%hidden]xf32>
   %output_view = buffer.view %output_na[%base] : buffer -> view<[%token_count]x[%hidden]xf32>
-  %packed_columns = index.div %hidden, %c16 : index
-  %packed_view = buffer.view %f16_output[%base] : buffer -> view<[%packed_columns]x[%token_count]x16xf16>
   %first_channel = index.mul %tid, %c2 : index
   %stripe_count = index.div %hidden, %c256 : index
   %sum0, %sum1, %cache0, %cache1, %cache2, %cache3 = scf.for %stripe = [%c0 to %stripe_count step %c1](%running0 = %zero : f32, %running1 = %zero : f32, %values0 = %cache_zero : vector<32xf32>, %values1 = %cache_zero : vector<32xf32>, %values2 = %cache_zero : vector<32xf32>, %values3 = %cache_zero : vector<32xf32>) -> (f32, f32, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>) unroll {
@@ -232,15 +231,7 @@ template.def<@ggml.rmsnorm_binary_f32_k16.body> device @ggml_rmsnorm_binary_f32_
     %out3 = template.apply<@ggml.binary_f32.apply>(%op, %norm3, %weight3) : (index, f32, f32) -> (f32)
     %result3 = vector.insert %out3 into %result2[%c3] : f32, vector<4xf32>
     vector.store %result3, %output_view[%token, %channel] : vector<4xf32>, view<[%token_count]x[%hidden]xf32>
-    %packed_column = index.div %channel, %c16 : index
-    %packed_lane = index.rem %channel, %c16 : index
-    %half = vector.fptrunc %result3 : vector<4xf32> to vector<4xf16>
-    vector.store %half, %packed_view[%packed_column, %token, %packed_lane] : vector<4xf16>, view<[%packed_columns]x[%token_count]x16xf16>
-    %fence_pos = index.rem %pair, %c4 : index
-    %end_packet = index.cmp eq, %fence_pos, %c3 : index
-    scf.if %end_packet {
-      scf.schedule.fence
-    }
+    template.apply<@ggml.normalization.publish_f16.k16_vector4>(%result3, %channel, %token, %token_count, %hidden, %pair, %f16_output) : (vector<4xf32>, index, index, index, index, index, buffer)
   }
   template.return
 }
@@ -314,7 +305,7 @@ template.def<@ggml.rmsnorm_binary_q8_1_x4.body> device @ggml_rmsnorm_binary_q8_1
     %packed2 = vector.insert %binary2 into %packed1[2] : f32, vector<4xf32>
     %packed = vector.insert %binary3 into %packed2[3] : f32, vector<4xf32>
     vector.store.mask %packed, %output_view[%token, %channel], %mask : vector<4xf32>, view<[%launch_token_count]x[%hidden_size]xf32>, vector<4xi1>
-    template.apply<@ggml.quantize_q8_1_x4.publish_vector4>(%valid_word, %token_output_byte_base, %channel, %packed, %scratch_values, %scratch_d, %q8_output_noalias) : (i1, offset, index, vector<4xf32>, view<256xf32>, view<32xf32>, buffer)
+    template.apply<@ggml.normalization.publish_q8.binary_vector4>(%valid_word, %token_output_byte_base, %channel, %packed, %scratch_values, %scratch_d, %q8_output_noalias) : (i1, offset, index, vector<4xf32>, view<256xf32>, view<32xf32>, buffer)
   }
   template.return
 }

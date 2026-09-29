@@ -74,15 +74,17 @@
       "kernel": "loom_libs:ggml_rmsnorm_binary_f32",
       "library_sources": [
         "motifs/normalization/rmsnorm.loom",
-        "motifs/binary_f32_apply.loom"
+        "motifs/normalization/rmsnorm_binary.loom",
+        "motifs/elementwise/binary_apply.loom"
       ],
       "primary_sources": [
-        "ops/normalization/rmsnorm.loom"
+        "ops/normalization/rmsnorm_binary_f32.loom"
       ],
       "sources": [
-        "ops/normalization/rmsnorm.loom",
+        "ops/normalization/rmsnorm_binary_f32.loom",
         "motifs/normalization/rmsnorm.loom",
-        "motifs/binary_f32_apply.loom"
+        "motifs/normalization/rmsnorm_binary.loom",
+        "motifs/elementwise/binary_apply.loom"
       ],
       "symbol": "ggml_rmsnorm_binary_f32",
       "workload_parameters": [
@@ -213,16 +215,14 @@
       },
       "kernel": "loom_libs:ggml_rope_f32",
       "library_sources": [
-        "motifs/rope/rope_f32.loom",
-        "motifs/rows/cache_publish.loom"
+        "motifs/rope/rope_f32.loom"
       ],
       "primary_sources": [
         "ops/rope/rope_f32.loom"
       ],
       "sources": [
         "ops/rope/rope_f32.loom",
-        "motifs/rope/rope_f32.loom",
-        "motifs/rows/cache_publish.loom"
+        "motifs/rope/rope_f32.loom"
       ],
       "symbol": "ggml_rope_f32",
       "workload_parameters": [
@@ -253,10 +253,10 @@
         "motifs/rows/cache_publish.loom"
       ],
       "primary_sources": [
-        "ops/rope/rope_f32.loom"
+        "ops/rope/rope_set_rows_f32.loom"
       ],
       "sources": [
-        "ops/rope/rope_f32.loom",
+        "ops/rope/rope_set_rows_f32.loom",
         "motifs/rope/rope_f32.loom",
         "motifs/rows/cache_publish.loom"
       ],
