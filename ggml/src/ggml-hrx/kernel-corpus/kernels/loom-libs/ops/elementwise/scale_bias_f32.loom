@@ -1,6 +1,8 @@
 // Copyright 2026 The HRX Authors
 // SPDX-License-Identifier: Apache-2.0
 
+template.decl @ggml.elementwise.scale_apply(%value: f32, %scale: f32, %bias: f32) -> (f32)
+
 amdgpu.target<gfx11-generic> @ggml_scale_bias_f32_gfx11_wave64 {subgroup_size = 64}
 
 config.decl @ggml.scale.scale : f32
@@ -30,8 +32,7 @@ kernel.def target(@ggml_scale_bias_f32_gfx11_wave64) export("ggml_scale_bias_f32
   %output_view = buffer.view %output[%zero_offset] : buffer -> view<[%count]xf32>
   scf.if %in_bounds {
     %input_value = view.load %input_view[%linear] : view<[%count]xf32> -> f32
-    %scaled = scalar.mulf %input_value, %scale : f32
-    %result = scalar.addf %scaled, %bias : f32
+    %result = template.apply<@ggml.elementwise.scale_apply>(%input_value, %scale, %bias) : (f32, f32, f32) -> (f32)
     view.store %result, %output_view[%linear] : f32, view<[%count]xf32>
   }
   kernel.return
