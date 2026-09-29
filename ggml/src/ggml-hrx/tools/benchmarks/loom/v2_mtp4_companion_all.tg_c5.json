@@ -994,12 +994,15 @@
       "count": 2,
       "integer_parameters": {},
       "kernel": "loom_libs:ggml_concat_dim0_f32",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/copy/concat_dim0.loom"
+      ],
       "primary_sources": [
-        "ops/copy_f32.loom"
+        "ops/copy/concat_dim0_f32.loom"
       ],
       "sources": [
-        "ops/copy_f32.loom"
+        "ops/copy/concat_dim0_f32.loom",
+        "motifs/copy/concat_dim0.loom"
       ],
       "symbol": "ggml_concat_dim0_f32",
       "workload_parameters": []
@@ -2637,12 +2640,15 @@
       "count": 1,
       "integer_parameters": {},
       "kernel": "loom_libs:ggml_concat_dim0_f32",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/copy/concat_dim0.loom"
+      ],
       "primary_sources": [
-        "ops/copy_f32.loom"
+        "ops/copy/concat_dim0_f32.loom"
       ],
       "sources": [
-        "ops/copy_f32.loom"
+        "ops/copy/concat_dim0_f32.loom",
+        "motifs/copy/concat_dim0.loom"
       ],
       "symbol": "ggml_concat_dim0_f32",
       "workload_parameters": []
@@ -3471,12 +3477,15 @@
       "count": 1,
       "integer_parameters": {},
       "kernel": "loom_libs:ggml_concat_dim0_f32",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/copy/concat_dim0.loom"
+      ],
       "primary_sources": [
-        "ops/copy_f32.loom"
+        "ops/copy/concat_dim0_f32.loom"
       ],
       "sources": [
-        "ops/copy_f32.loom"
+        "ops/copy/concat_dim0_f32.loom",
+        "motifs/copy/concat_dim0.loom"
       ],
       "symbol": "ggml_concat_dim0_f32",
       "workload_parameters": []
@@ -3751,12 +3760,15 @@
         "element_count": 786432
       },
       "kernel": "loom_libs:ggml_copy_f32",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/copy/vector_load_store.loom"
+      ],
       "primary_sources": [
-        "ops/copy_f32.loom"
+        "ops/copy/copy_f32.loom"
       ],
       "sources": [
-        "ops/copy_f32.loom"
+        "ops/copy/copy_f32.loom",
+        "motifs/copy/vector_load_store.loom"
       ],
       "symbol": "ggml_copy_f32",
       "workload_parameters": [
@@ -4276,12 +4288,15 @@
       "count": 1,
       "integer_parameters": {},
       "kernel": "loom_libs:ggml_concat_dim0_f32",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/copy/concat_dim0.loom"
+      ],
       "primary_sources": [
-        "ops/copy_f32.loom"
+        "ops/copy/concat_dim0_f32.loom"
       ],
       "sources": [
-        "ops/copy_f32.loom"
+        "ops/copy/concat_dim0_f32.loom",
+        "motifs/copy/concat_dim0.loom"
       ],
       "symbol": "ggml_concat_dim0_f32",
       "workload_parameters": []
@@ -4384,12 +4399,15 @@
       "count": 1,
       "integer_parameters": {},
       "kernel": "loom_libs:ggml_concat_dim0_f32",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/copy/concat_dim0.loom"
+      ],
       "primary_sources": [
-        "ops/copy_f32.loom"
+        "ops/copy/concat_dim0_f32.loom"
       ],
       "sources": [
-        "ops/copy_f32.loom"
+        "ops/copy/concat_dim0_f32.loom",
+        "motifs/copy/concat_dim0.loom"
       ],
       "symbol": "ggml_concat_dim0_f32",
       "workload_parameters": []
@@ -4525,12 +4543,15 @@
       "count": 2,
       "integer_parameters": {},
       "kernel": "loom_libs:ggml_concat_dim0_f32",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/copy/concat_dim0.loom"
+      ],
       "primary_sources": [
-        "ops/copy_f32.loom"
+        "ops/copy/concat_dim0_f32.loom"
       ],
       "sources": [
-        "ops/copy_f32.loom"
+        "ops/copy/concat_dim0_f32.loom",
+        "motifs/copy/concat_dim0.loom"
       ],
       "symbol": "ggml_concat_dim0_f32",
       "workload_parameters": []

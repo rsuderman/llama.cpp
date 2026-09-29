@@ -18,7 +18,25 @@
       "path": "ops/elementwise/scale_bias_f32.loom"
     },
     {
-      "path": "ops/copy_f32.loom"
+      "path": "ops/copy/copy_f32.loom"
+    },
+    {
+      "path": "ops/copy/copy_f32_f16.loom"
+    },
+    {
+      "path": "ops/copy/copy_f16_k16_major.loom"
+    },
+    {
+      "path": "ops/copy/transpose_f16.loom"
+    },
+    {
+      "path": "ops/copy/strided_source_f32.loom"
+    },
+    {
+      "path": "ops/copy/concat_dim0_f32.loom"
+    },
+    {
+      "path": "ops/copy/concat_dim0_strided_source_f32.loom"
     },
     {
       "path": "ops/elementwise/binary_f32.loom"
@@ -165,6 +183,9 @@
       "path": "ops/rows/get_rows_f32.loom"
     },
     {
+      "path": "ops/rows/get_rows_next_f32.loom"
+    },
+    {
       "path": "ops/gated_delta_net/head128_scan_f32_wmma.loom"
     },
     {
@@ -255,6 +276,24 @@
       "path": "motifs/elementwise/binary_apply.loom"
     },
     {
+      "path": "motifs/copy/vector_load_store.loom"
+    },
+    {
+      "path": "motifs/copy/convert_f32_f16.loom"
+    },
+    {
+      "path": "motifs/copy/layout_k16_major.loom"
+    },
+    {
+      "path": "motifs/copy/transpose_tile.loom"
+    },
+    {
+      "path": "motifs/copy/concat_dim0.loom"
+    },
+    {
+      "path": "motifs/copy/strided_source.loom"
+    },
+    {
       "path": "motifs/normalization/rmsnorm.loom"
     },
     {
@@ -277,6 +316,9 @@
     },
     {
       "path": "motifs/rows/cache_publish.loom"
+    },
+    {
+      "path": "motifs/rows/get_rows_decode.loom"
     },
     {
       "path": "motifs/dequant.loom"
@@ -374,7 +416,7 @@
       "name": "ggml_copy_transpose_f16",
       "family": "loom_libs",
       "symbol": "ggml_copy_transpose_f16",
-      "source": "ops/copy_f32.loom",
+      "source": "ops/copy/transpose_f16.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -389,17 +431,21 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/copy_f32.loom"
+          "ops/copy/transpose_f16.loom"
         ],
-        "library_sources": []
+        "library_sources": [
+          "motifs/copy/transpose_tile.loom"
+        ]
       },
-      "compile_dependencies": []
+      "compile_dependencies": [
+        "motifs/copy/transpose_tile.loom"
+      ]
     },
     {
       "name": "ggml_copy_f16_k16_major",
       "family": "loom_libs",
       "symbol": "ggml_copy_f16_k16_major",
-      "source": "ops/copy_f32.loom",
+      "source": "ops/copy/copy_f16_k16_major.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -424,17 +470,23 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/copy_f32.loom"
+          "ops/copy/copy_f16_k16_major.loom"
         ],
-        "library_sources": []
+        "library_sources": [
+          "motifs/copy/layout_k16_major.loom",
+          "motifs/copy/convert_f32_f16.loom"
+        ]
       },
-      "compile_dependencies": []
+      "compile_dependencies": [
+        "motifs/copy/layout_k16_major.loom",
+        "motifs/copy/convert_f32_f16.loom"
+      ]
     },
     {
       "name": "ggml_copy_f32_f16",
       "family": "loom_libs",
       "symbol": "ggml_copy_f32_f16",
-      "source": "ops/copy_f32.loom",
+      "source": "ops/copy/copy_f32_f16.loom",
       "workload_parameters": [
         {
           "name": "element_count",
@@ -459,17 +511,21 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/copy_f32.loom"
+          "ops/copy/copy_f32_f16.loom"
         ],
-        "library_sources": []
+        "library_sources": [
+          "motifs/copy/convert_f32_f16.loom"
+        ]
       },
-      "compile_dependencies": []
+      "compile_dependencies": [
+        "motifs/copy/convert_f32_f16.loom"
+      ]
     },
     {
       "name": "ggml_copy_f32",
       "family": "loom_libs",
       "symbol": "ggml_copy_f32",
-      "source": "ops/copy_f32.loom",
+      "source": "ops/copy/copy_f32.loom",
       "workload_parameters": [
         {
           "name": "element_count",
@@ -494,17 +550,21 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/copy_f32.loom"
+          "ops/copy/copy_f32.loom"
         ],
-        "library_sources": []
+        "library_sources": [
+          "motifs/copy/vector_load_store.loom"
+        ]
       },
-      "compile_dependencies": []
+      "compile_dependencies": [
+        "motifs/copy/vector_load_store.loom"
+      ]
     },
     {
       "name": "ggml_copy_strided_source_f32",
       "family": "loom_libs",
       "symbol": "ggml_copy_strided_source_f32",
-      "source": "ops/copy_f32.loom",
+      "source": "ops/copy/strided_source_f32.loom",
       "workload_parameters": [
         {
           "name": "element_count",
@@ -537,17 +597,21 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/copy_f32.loom"
+          "ops/copy/strided_source_f32.loom"
         ],
-        "library_sources": []
+        "library_sources": [
+          "motifs/copy/strided_source.loom"
+        ]
       },
-      "compile_dependencies": []
+      "compile_dependencies": [
+        "motifs/copy/strided_source.loom"
+      ]
     },
     {
       "name": "ggml_concat_dim0_f32",
       "family": "loom_libs",
       "symbol": "ggml_concat_dim0_f32",
-      "source": "ops/copy_f32.loom",
+      "source": "ops/copy/concat_dim0_f32.loom",
       "workload_parameters": [],
       "launch_parameters": [],
       "bindings": [
@@ -564,17 +628,21 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/copy_f32.loom"
+          "ops/copy/concat_dim0_f32.loom"
         ],
-        "library_sources": []
+        "library_sources": [
+          "motifs/copy/concat_dim0.loom"
+        ]
       },
-      "compile_dependencies": []
+      "compile_dependencies": [
+        "motifs/copy/concat_dim0.loom"
+      ]
     },
     {
       "name": "ggml_concat_dim0_strided_source_f32",
       "family": "loom_libs",
       "symbol": "ggml_concat_dim0_strided_source_f32",
-      "source": "ops/copy_f32.loom",
+      "source": "ops/copy/concat_dim0_strided_source_f32.loom",
       "workload_parameters": [
         {
           "name": "lhs_span",
@@ -609,11 +677,15 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/copy_f32.loom"
+          "ops/copy/concat_dim0_strided_source_f32.loom"
         ],
-        "library_sources": []
+        "library_sources": [
+          "motifs/copy/concat_dim0.loom"
+        ]
       },
-      "compile_dependencies": []
+      "compile_dependencies": [
+        "motifs/copy/concat_dim0.loom"
+      ]
     },
     {
       "name": "ggml_scale_bias_f32",
@@ -5276,6 +5348,7 @@
           "ops/rows/get_rows_f32.loom"
         ],
         "library_sources": [
+          "motifs/rows/get_rows_decode.loom",
           "motifs/dequant.loom",
           "motifs/publish_f32.loom",
           "motifs/quantize_q8_1_x4.loom",
@@ -5289,6 +5362,7 @@
         ]
       },
       "compile_dependencies": [
+        "motifs/rows/get_rows_decode.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
@@ -5305,7 +5379,7 @@
       "name": "ggml_get_rows_f32_next",
       "family": "loom_libs",
       "symbol": "ggml_get_rows_f32_next",
-      "source": "ops/rows/get_rows_f32.loom",
+      "source": "ops/rows/get_rows_next_f32.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -5350,9 +5424,10 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/rows/get_rows_f32.loom"
+          "ops/rows/get_rows_next_f32.loom"
         ],
         "library_sources": [
+          "motifs/rows/get_rows_decode.loom",
           "motifs/dequant.loom",
           "motifs/publish_f32.loom",
           "motifs/quantize_q8_1_x4.loom",
@@ -5366,6 +5441,7 @@
         ]
       },
       "compile_dependencies": [
+        "motifs/rows/get_rows_decode.loom",
         "motifs/dequant.loom",
         "motifs/publish_f32.loom",
         "motifs/quantize_q8_1_x4.loom",
