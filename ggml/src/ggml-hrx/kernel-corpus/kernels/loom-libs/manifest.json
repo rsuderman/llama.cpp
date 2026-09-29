@@ -330,10 +330,34 @@
       "path": "ops/rows/set_rows.loom"
     },
     {
-      "path": "ops/flash_attention_f32_f16_wmma.loom"
+      "path": "ops/flash_attention/prefill_f32_f16_wmma.loom"
     },
     {
-      "path": "ops/flash_attention_decode_split_f32_f16_wmma.loom"
+      "path": "ops/flash_attention/decode_split_f32_f16_wmma_next_q8.loom"
+    },
+    {
+      "path": "motifs/flash_attention/qk_block_wmma.loom"
+    },
+    {
+      "path": "motifs/flash_attention/online_softmax.loom"
+    },
+    {
+      "path": "motifs/flash_attention/pv_block_wmma.loom"
+    },
+    {
+      "path": "motifs/flash_attention/publish_f32.loom"
+    },
+    {
+      "path": "motifs/flash_attention/decode_partials.loom"
+    },
+    {
+      "path": "motifs/flash_attention/decode_reduce.loom"
+    },
+    {
+      "path": "motifs/flash_attention/publish_q8.loom"
+    },
+    {
+      "path": "motifs/flash_attention/completion_counter_reduce.loom"
     },
     {
       "path": "motifs/elementwise/unary_apply.loom"
@@ -5234,7 +5258,7 @@
       "name": "ggml_flash_attention_f32_f16_wmma",
       "family": "loom_libs",
       "symbol": "ggml_flash_attention_f32_f16_wmma",
-      "source": "ops/flash_attention_f32_f16_wmma.loom",
+      "source": "ops/flash_attention/prefill_f32_f16_wmma.loom",
       "workload_parameters": [
         {
           "name": "query_token_count",
@@ -5275,17 +5299,27 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/flash_attention_f32_f16_wmma.loom"
+          "ops/flash_attention/prefill_f32_f16_wmma.loom"
         ],
-        "library_sources": []
+        "library_sources": [
+          "motifs/flash_attention/qk_block_wmma.loom",
+          "motifs/flash_attention/online_softmax.loom",
+          "motifs/flash_attention/pv_block_wmma.loom",
+          "motifs/flash_attention/publish_f32.loom"
+        ]
       },
-      "compile_dependencies": []
+      "compile_dependencies": [
+        "motifs/flash_attention/qk_block_wmma.loom",
+        "motifs/flash_attention/online_softmax.loom",
+        "motifs/flash_attention/pv_block_wmma.loom",
+        "motifs/flash_attention/publish_f32.loom"
+      ]
     },
     {
       "name": "ggml_flash_attention_decode_split_f32_f16_wmma_next_q8",
       "family": "loom_libs",
       "symbol": "ggml_flash_attention_decode_split_f32_f16_wmma_next_q8",
-      "source": "ops/flash_attention_decode_split_f32_f16_wmma.loom",
+      "source": "ops/flash_attention/decode_split_f32_f16_wmma_next_q8.loom",
       "workload_parameters": [
         {
           "name": "key_value_token_count",
@@ -5326,13 +5360,23 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/flash_attention_decode_split_f32_f16_wmma.loom"
+          "ops/flash_attention/decode_split_f32_f16_wmma_next_q8.loom"
         ],
         "library_sources": [
+          "motifs/flash_attention/decode_partials.loom",
+          "motifs/flash_attention/decode_reduce.loom",
+          "motifs/flash_attention/publish_f32.loom",
+          "motifs/flash_attention/publish_q8.loom",
+          "motifs/flash_attention/completion_counter_reduce.loom",
           "motifs/quantize_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
+        "motifs/flash_attention/decode_partials.loom",
+        "motifs/flash_attention/decode_reduce.loom",
+        "motifs/flash_attention/publish_f32.loom",
+        "motifs/flash_attention/publish_q8.loom",
+        "motifs/flash_attention/completion_counter_reduce.loom",
         "motifs/quantize_q8_1_x4.loom"
       ]
     },

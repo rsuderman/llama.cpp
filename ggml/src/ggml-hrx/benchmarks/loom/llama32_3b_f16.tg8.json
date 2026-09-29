@@ -327,12 +327,25 @@
         "key_value_token_count": 256
       },
       "kernel": "loom_libs:ggml_flash_attention_decode_split_f32_f16_wmma_next_q8",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/flash_attention/decode_partials.loom",
+        "motifs/flash_attention/decode_reduce.loom",
+        "motifs/flash_attention/publish_f32.loom",
+        "motifs/flash_attention/publish_q8.loom",
+        "motifs/flash_attention/completion_counter_reduce.loom",
+        "motifs/quantize_q8_1_x4.loom"
+      ],
       "primary_sources": [
-        "ops/flash_attention_decode_split_f32_f16_wmma.loom"
+        "ops/flash_attention/decode_split_f32_f16_wmma_next_q8.loom"
       ],
       "sources": [
-        "ops/flash_attention_decode_split_f32_f16_wmma.loom"
+        "ops/flash_attention/decode_split_f32_f16_wmma_next_q8.loom",
+        "motifs/flash_attention/decode_partials.loom",
+        "motifs/flash_attention/decode_reduce.loom",
+        "motifs/flash_attention/publish_f32.loom",
+        "motifs/flash_attention/publish_q8.loom",
+        "motifs/flash_attention/completion_counter_reduce.loom",
+        "motifs/quantize_q8_1_x4.loom"
       ],
       "symbol": "ggml_flash_attention_decode_split_f32_f16_wmma_next_q8",
       "workload_parameters": [

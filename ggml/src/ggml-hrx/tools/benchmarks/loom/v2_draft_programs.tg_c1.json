@@ -808,12 +808,21 @@
         "query_token_count": 2
       },
       "kernel": "loom_libs:ggml_flash_attention_f32_f16_wmma",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/flash_attention/qk_block_wmma.loom",
+        "motifs/flash_attention/online_softmax.loom",
+        "motifs/flash_attention/pv_block_wmma.loom",
+        "motifs/flash_attention/publish_f32.loom"
+      ],
       "primary_sources": [
-        "ops/flash_attention_f32_f16_wmma.loom"
+        "ops/flash_attention/prefill_f32_f16_wmma.loom"
       ],
       "sources": [
-        "ops/flash_attention_f32_f16_wmma.loom"
+        "ops/flash_attention/prefill_f32_f16_wmma.loom",
+        "motifs/flash_attention/qk_block_wmma.loom",
+        "motifs/flash_attention/online_softmax.loom",
+        "motifs/flash_attention/pv_block_wmma.loom",
+        "motifs/flash_attention/publish_f32.loom"
       ],
       "symbol": "ggml_flash_attention_f32_f16_wmma",
       "workload_parameters": [
@@ -1684,12 +1693,21 @@
         "query_token_count": 4
       },
       "kernel": "loom_libs:ggml_flash_attention_f32_f16_wmma",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/flash_attention/qk_block_wmma.loom",
+        "motifs/flash_attention/online_softmax.loom",
+        "motifs/flash_attention/pv_block_wmma.loom",
+        "motifs/flash_attention/publish_f32.loom"
+      ],
       "primary_sources": [
-        "ops/flash_attention_f32_f16_wmma.loom"
+        "ops/flash_attention/prefill_f32_f16_wmma.loom"
       ],
       "sources": [
-        "ops/flash_attention_f32_f16_wmma.loom"
+        "ops/flash_attention/prefill_f32_f16_wmma.loom",
+        "motifs/flash_attention/qk_block_wmma.loom",
+        "motifs/flash_attention/online_softmax.loom",
+        "motifs/flash_attention/pv_block_wmma.loom",
+        "motifs/flash_attention/publish_f32.loom"
       ],
       "symbol": "ggml_flash_attention_f32_f16_wmma",
       "workload_parameters": [
@@ -2484,12 +2502,21 @@
         "query_token_count": 5
       },
       "kernel": "loom_libs:ggml_flash_attention_f32_f16_wmma",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/flash_attention/qk_block_wmma.loom",
+        "motifs/flash_attention/online_softmax.loom",
+        "motifs/flash_attention/pv_block_wmma.loom",
+        "motifs/flash_attention/publish_f32.loom"
+      ],
       "primary_sources": [
-        "ops/flash_attention_f32_f16_wmma.loom"
+        "ops/flash_attention/prefill_f32_f16_wmma.loom"
       ],
       "sources": [
-        "ops/flash_attention_f32_f16_wmma.loom"
+        "ops/flash_attention/prefill_f32_f16_wmma.loom",
+        "motifs/flash_attention/qk_block_wmma.loom",
+        "motifs/flash_attention/online_softmax.loom",
+        "motifs/flash_attention/pv_block_wmma.loom",
+        "motifs/flash_attention/publish_f32.loom"
       ],
       "symbol": "ggml_flash_attention_f32_f16_wmma",
       "workload_parameters": [
@@ -3336,12 +3363,21 @@
         "query_token_count": 3
       },
       "kernel": "loom_libs:ggml_flash_attention_f32_f16_wmma",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/flash_attention/qk_block_wmma.loom",
+        "motifs/flash_attention/online_softmax.loom",
+        "motifs/flash_attention/pv_block_wmma.loom",
+        "motifs/flash_attention/publish_f32.loom"
+      ],
       "primary_sources": [
-        "ops/flash_attention_f32_f16_wmma.loom"
+        "ops/flash_attention/prefill_f32_f16_wmma.loom"
       ],
       "sources": [
-        "ops/flash_attention_f32_f16_wmma.loom"
+        "ops/flash_attention/prefill_f32_f16_wmma.loom",
+        "motifs/flash_attention/qk_block_wmma.loom",
+        "motifs/flash_attention/online_softmax.loom",
+        "motifs/flash_attention/pv_block_wmma.loom",
+        "motifs/flash_attention/publish_f32.loom"
       ],
       "symbol": "ggml_flash_attention_f32_f16_wmma",
       "workload_parameters": [
@@ -4249,12 +4285,21 @@
         "query_token_count": 16
       },
       "kernel": "loom_libs:ggml_flash_attention_f32_f16_wmma",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/flash_attention/qk_block_wmma.loom",
+        "motifs/flash_attention/online_softmax.loom",
+        "motifs/flash_attention/pv_block_wmma.loom",
+        "motifs/flash_attention/publish_f32.loom"
+      ],
       "primary_sources": [
-        "ops/flash_attention_f32_f16_wmma.loom"
+        "ops/flash_attention/prefill_f32_f16_wmma.loom"
       ],
       "sources": [
-        "ops/flash_attention_f32_f16_wmma.loom"
+        "ops/flash_attention/prefill_f32_f16_wmma.loom",
+        "motifs/flash_attention/qk_block_wmma.loom",
+        "motifs/flash_attention/online_softmax.loom",
+        "motifs/flash_attention/pv_block_wmma.loom",
+        "motifs/flash_attention/publish_f32.loom"
       ],
       "symbol": "ggml_flash_attention_f32_f16_wmma",
       "workload_parameters": [
@@ -4964,12 +5009,21 @@
         "query_token_count": 1
       },
       "kernel": "loom_libs:ggml_flash_attention_f32_f16_wmma",
-      "library_sources": [],
+      "library_sources": [
+        "motifs/flash_attention/qk_block_wmma.loom",
+        "motifs/flash_attention/online_softmax.loom",
+        "motifs/flash_attention/pv_block_wmma.loom",
+        "motifs/flash_attention/publish_f32.loom"
+      ],
       "primary_sources": [
-        "ops/flash_attention_f32_f16_wmma.loom"
+        "ops/flash_attention/prefill_f32_f16_wmma.loom"
       ],
       "sources": [
-        "ops/flash_attention_f32_f16_wmma.loom"
+        "ops/flash_attention/prefill_f32_f16_wmma.loom",
+        "motifs/flash_attention/qk_block_wmma.loom",
+        "motifs/flash_attention/online_softmax.loom",
+        "motifs/flash_attention/pv_block_wmma.loom",
+        "motifs/flash_attention/publish_f32.loom"
       ],
       "symbol": "ggml_flash_attention_f32_f16_wmma",
       "workload_parameters": [
