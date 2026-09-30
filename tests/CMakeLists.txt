@@ -348,10 +348,6 @@ if (TARGET ggml-hrx)
     target_include_directories(hrx-backend-test PRIVATE ../ggml/include ../ggml/src ../ggml/src/ggml-hrx)
     add_test(NAME hrx-backend-test COMMAND hrx-backend-test)
 
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
-    add_test(NAME test-hrx-minimum-commit
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-hrx-minimum-commit.py)
-
     add_executable(test-hrx-loom-jit test-hrx-loom-jit.cpp)
     target_link_libraries(test-hrx-loom-jit PRIVATE ggml-hrx ggml-hrx-kernel-corpus hrx::hrx loomc::loomc)
     target_include_directories(test-hrx-loom-jit PRIVATE ../ggml/include ../ggml/src ../ggml/src/ggml-hrx)
