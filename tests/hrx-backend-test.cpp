@@ -3293,6 +3293,25 @@ static void schedule_qwen_terminal_q6k_q8_command(int64_t token_count) {
     ggml_free(ctx);
 }
 
+static void schedule_qwen_terminal_q6k_vector_command() {
+    ggml_init_params params = {};
+    params.mem_size         = 4 * 1024 * 1024;
+    params.no_alloc         = true;
+    ggml_context * ctx      = ggml_init(params);
+    REQUIRE(ctx != nullptr);
+
+    ggml_tensor * input        = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 1);
+    ggml_tensor * vocab_weight = ggml_new_tensor_2d(ctx, GGML_TYPE_Q6_K, 2048, 151936);
+    REQUIRE(input != nullptr);
+    REQUIRE(vocab_weight != nullptr);
+    ggml_tensor * logits = ggml_mul_mat(ctx, vocab_weight, input);
+    REQUIRE(logits != nullptr);
+
+    schedule_single_matmul_command(
+        ctx, logits, "loom_libs:ggml_mul_mat_vector_q6_f32_f32", 1, 2048, 151936);
+    ggml_free(ctx);
+}
+
 static void schedule_get_rows_q8_1_alternate_command(ggml_type embedding_weight_type) {
     ggml_init_params params = {};
     params.mem_size         = 4 * 1024 * 1024;
@@ -11073,6 +11092,7 @@ static void register_hrx_backend_host_cases(test_runner::Suite & suite) {
     suite.host_case("quantized_value_projection_dispatch", [] { run_quantized_value_projection_dispatch_checks(); });
     suite.host_case("qwen_terminal_q6k_q8_command.tokens1", [] { schedule_qwen_terminal_q6k_q8_command(1); });
     suite.host_case("qwen_terminal_q6k_q8_command.tokens18", [] { schedule_qwen_terminal_q6k_q8_command(18); });
+    suite.host_case("qwen_terminal_q6k_vector_command", [] { schedule_qwen_terminal_q6k_vector_command(); });
     suite.host_case("get_rows_q8_1_alternate_command.q4_k", [] { schedule_get_rows_q8_1_alternate_command(GGML_TYPE_Q4_K); });
     suite.host_case("get_rows_q8_1_alternate_command.bf16", [] { schedule_get_rows_q8_1_alternate_command(GGML_TYPE_BF16); });
     suite.host_case("qwen_router_top8_dispatch", [] { run_qwen_router_top8_dispatch_checks(); });

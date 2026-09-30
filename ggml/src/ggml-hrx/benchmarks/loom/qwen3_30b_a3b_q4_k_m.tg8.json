@@ -386,7 +386,7 @@
       "library_sources": [
         "motifs/matmul_id/vector_weighted.loom",
         "motifs/matmul_id/vector_q4k_q8.loom",
-        "../qwen_moe/ggml/linear_q6k_f32.loom",
+        "motifs/matmul/q6_f32_decode.loom",
         "../qwen_moe/qwen3_moe/attention_prepare_quantized.loom"
       ],
       "primary_sources": [
@@ -396,7 +396,7 @@
         "ops/matmul_id/vector_weighted.loom",
         "motifs/matmul_id/vector_weighted.loom",
         "motifs/matmul_id/vector_q4k_q8.loom",
-        "../qwen_moe/ggml/linear_q6k_f32.loom",
+        "motifs/matmul/q6_f32_decode.loom",
         "../qwen_moe/qwen3_moe/attention_prepare_quantized.loom"
       ],
       "symbol": "ggml_mul_mat_id_vector_weighted_wave64_publish_q8",
@@ -574,7 +574,7 @@
       "library_sources": [
         "motifs/matmul_id/vector_weighted.loom",
         "motifs/matmul_id/vector_q4k_q8.loom",
-        "../qwen_moe/ggml/linear_q6k_f32.loom",
+        "motifs/matmul/q6_f32_decode.loom",
         "../qwen_moe/qwen3_moe/attention_prepare_quantized.loom"
       ],
       "primary_sources": [
@@ -584,7 +584,7 @@
         "ops/matmul_id/vector_weighted.loom",
         "motifs/matmul_id/vector_weighted.loom",
         "motifs/matmul_id/vector_q4k_q8.loom",
-        "../qwen_moe/ggml/linear_q6k_f32.loom",
+        "motifs/matmul/q6_f32_decode.loom",
         "../qwen_moe/qwen3_moe/attention_prepare_quantized.loom"
       ],
       "symbol": "ggml_mul_mat_id_vector_weighted_wave32_publish_q8",

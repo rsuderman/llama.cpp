@@ -5008,6 +5008,10 @@ static void register_dense_matmul_cases(Suite & suite) {
         run_dense_matmul_cpu_reference_case(GGML_TYPE_Q6_K, "loom_libs:ggml_mul_mat_vector_q6_f32_f32", 1, 256, 5120,
                                             true);
     });
+    suite.device_case("dense_matmul.q6_k.vector_q6.tokens1.outputs320.input512", [] {
+        run_dense_matmul_cpu_reference_case(GGML_TYPE_Q6_K, "loom_libs:ggml_mul_mat_vector_q6_f32_f32", 1, 320, 512,
+                                            true);
+    });
 }
 
 static void register_rmsnorm_and_scheduling_cases(Suite & suite) {
