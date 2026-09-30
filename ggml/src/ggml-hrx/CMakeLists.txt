@@ -9,6 +9,9 @@ if(HRX_SOURCE_DIR)
         message(FATAL_ERROR "HRX_SOURCE_DIR does not contain a CMakeLists.txt: ${HRX_SOURCE_DIR}")
     endif()
 
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MinimumRevision.cmake")
+    ggml_hrx_check_minimum_revision("${HRX_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/hrx-minimum-commit.txt")
+
     set(GGML_HRX_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/hrx")
     set(GGML_HRX_BUILD_DIR "${GGML_HRX_PREFIX}/src/ggml-hrx-deps-build")
     set(GGML_HRX_LIB "${GGML_HRX_BUILD_DIR}/libhrx/src/libhrx/${CMAKE_SHARED_LIBRARY_PREFIX}hrx${CMAKE_SHARED_LIBRARY_SUFFIX}")
