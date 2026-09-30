@@ -159,10 +159,31 @@
       "path": "ops/matmul_id/skinny_pair_input_f32_swiglu_publish_f32.loom"
     },
     {
+      "path": "ops/matmul_id/vector_pair_binary.loom"
+    },
+    {
+      "path": "ops/matmul_id/vector_weighted.loom"
+    },
+    {
+      "path": "../qwen_moe/qwen3_moe/attention_prepare_quantized.loom"
+    },
+    {
+      "path": "../qwen_moe/ggml/linear_q6k_f32.loom"
+    },
+    {
       "path": "motifs/matmul_id/pair_input_f32_dequant_accumulate_f32.loom"
     },
     {
       "path": "motifs/matmul_id/pair_swiglu_publish_f32.loom"
+    },
+    {
+      "path": "motifs/matmul_id/vector_q4k_q8.loom"
+    },
+    {
+      "path": "motifs/matmul_id/vector_pair.loom"
+    },
+    {
+      "path": "motifs/matmul_id/vector_weighted.loom"
     },
     {
       "path": "motifs/matmul_id/tiled_input_f32_dequant_accumulate_f32.loom"
@@ -3469,6 +3490,366 @@
         "motifs/f16_f16.loom",
         "motifs/bf16_f16.loom",
         "motifs/f32_f16.loom"
+      ]
+    },
+    {
+      "name": "ggml_mul_mat_id_vector_pair_binary_publish_f32",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_id_vector_pair_binary_publish_f32",
+      "source": "ops/matmul_id/vector_pair_binary.loom",
+      "workload_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        },
+        {
+          "name": "route_count",
+          "type": "index"
+        },
+        {
+          "name": "route_stride",
+          "type": "index"
+        },
+        {
+          "name": "expert_count",
+          "type": "index"
+        },
+        {
+          "name": "output_size",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        },
+        {
+          "name": "route_count",
+          "type": "index"
+        },
+        {
+          "name": "route_stride",
+          "type": "index"
+        },
+        {
+          "name": "expert_count",
+          "type": "index"
+        },
+        {
+          "name": "output_size",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "q8_input",
+        "route_ids",
+        "gate_weight",
+        "up_weight",
+        "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/matmul_id/vector_pair_binary.loom"
+        ],
+        "library_sources": [
+          "motifs/matmul_id/vector_pair.loom",
+          "motifs/matmul_id/vector_q4k_q8.loom",
+          "motifs/elementwise/binary_apply.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "motifs/matmul_id/vector_pair.loom",
+        "motifs/matmul_id/vector_q4k_q8.loom",
+        "motifs/elementwise/binary_apply.loom"
+      ]
+    },
+    {
+      "name": "ggml_mul_mat_id_vector_pair_binary_publish_q8",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_id_vector_pair_binary_publish_q8",
+      "source": "ops/matmul_id/vector_pair_binary.loom",
+      "workload_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        },
+        {
+          "name": "route_count",
+          "type": "index"
+        },
+        {
+          "name": "route_stride",
+          "type": "index"
+        },
+        {
+          "name": "expert_count",
+          "type": "index"
+        },
+        {
+          "name": "output_size",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        },
+        {
+          "name": "route_count",
+          "type": "index"
+        },
+        {
+          "name": "route_stride",
+          "type": "index"
+        },
+        {
+          "name": "expert_count",
+          "type": "index"
+        },
+        {
+          "name": "output_size",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "q8_input",
+        "route_ids",
+        "gate_weight",
+        "up_weight",
+        "output",
+        "completion_counters",
+        "next_q8_output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write",
+        "read_write",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/matmul_id/vector_pair_binary.loom"
+        ],
+        "library_sources": [
+          "motifs/matmul_id/vector_pair.loom",
+          "motifs/matmul_id/vector_q4k_q8.loom",
+          "motifs/elementwise/binary_apply.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "motifs/matmul_id/vector_pair.loom",
+        "motifs/matmul_id/vector_q4k_q8.loom",
+        "motifs/elementwise/binary_apply.loom"
+      ]
+    },
+    {
+      "name": "ggml_mul_mat_id_vector_weighted_wave32_publish_q8",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_id_vector_weighted_wave32_publish_q8",
+      "source": "ops/matmul_id/vector_weighted.loom",
+      "workload_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        },
+        {
+          "name": "input_size",
+          "type": "index"
+        },
+        {
+          "name": "route_count",
+          "type": "index"
+        },
+        {
+          "name": "route_id_stride",
+          "type": "index"
+        },
+        {
+          "name": "expert_count",
+          "type": "index"
+        },
+        {
+          "name": "output_size",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        },
+        {
+          "name": "input_size",
+          "type": "index"
+        },
+        {
+          "name": "route_count",
+          "type": "index"
+        },
+        {
+          "name": "route_id_stride",
+          "type": "index"
+        },
+        {
+          "name": "expert_count",
+          "type": "index"
+        },
+        {
+          "name": "output_size",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "q8_input",
+        "route_ids",
+        "route_weights",
+        "weight",
+        "output",
+        "norm_weight",
+        "completion_counter",
+        "next_q8_output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write",
+        "read",
+        "read_write",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/matmul_id/vector_weighted.loom"
+        ],
+        "library_sources": [
+          "motifs/matmul_id/vector_weighted.loom",
+          "motifs/matmul_id/vector_q4k_q8.loom",
+          "../qwen_moe/ggml/linear_q6k_f32.loom",
+          "../qwen_moe/qwen3_moe/attention_prepare_quantized.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "motifs/matmul_id/vector_weighted.loom",
+        "motifs/matmul_id/vector_q4k_q8.loom",
+        "../qwen_moe/ggml/linear_q6k_f32.loom",
+        "../qwen_moe/qwen3_moe/attention_prepare_quantized.loom"
+      ]
+    },
+    {
+      "name": "ggml_mul_mat_id_vector_weighted_wave64_publish_q8",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_id_vector_weighted_wave64_publish_q8",
+      "source": "ops/matmul_id/vector_weighted.loom",
+      "workload_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        },
+        {
+          "name": "input_size",
+          "type": "index"
+        },
+        {
+          "name": "route_count",
+          "type": "index"
+        },
+        {
+          "name": "route_id_stride",
+          "type": "index"
+        },
+        {
+          "name": "expert_count",
+          "type": "index"
+        },
+        {
+          "name": "output_size",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        },
+        {
+          "name": "input_size",
+          "type": "index"
+        },
+        {
+          "name": "route_count",
+          "type": "index"
+        },
+        {
+          "name": "route_id_stride",
+          "type": "index"
+        },
+        {
+          "name": "expert_count",
+          "type": "index"
+        },
+        {
+          "name": "output_size",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "input",
+        "route_ids",
+        "route_weights",
+        "weight",
+        "output",
+        "norm_weight",
+        "completion_counter",
+        "next_q8_output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read_write",
+        "read",
+        "read_write",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/matmul_id/vector_weighted.loom"
+        ],
+        "library_sources": [
+          "motifs/matmul_id/vector_weighted.loom",
+          "motifs/matmul_id/vector_q4k_q8.loom",
+          "../qwen_moe/ggml/linear_q6k_f32.loom",
+          "../qwen_moe/qwen3_moe/attention_prepare_quantized.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "motifs/matmul_id/vector_weighted.loom",
+        "motifs/matmul_id/vector_q4k_q8.loom",
+        "../qwen_moe/ggml/linear_q6k_f32.loom",
+        "../qwen_moe/qwen3_moe/attention_prepare_quantized.loom"
       ]
     },
     {

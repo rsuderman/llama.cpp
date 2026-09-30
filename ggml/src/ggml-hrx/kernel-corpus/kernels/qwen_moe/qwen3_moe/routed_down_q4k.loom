@@ -17,6 +17,10 @@ template.decl @qwen3_moe.routed_down.next_q8_completion(%arg0: index, %arg1: ind
 
 template.decl @qwen3_moe.routed_down.q4k_q8_1_x4.body(%publish_output: i1, %token_count: index, %token: index, %input_size: index, %route_count: index, %route_id_stride: index, %expert_count: index, %output_size: index, %q8_input: buffer, %route_ids: buffer, %route_weights: buffer, %weight: buffer, %output: buffer)
 
+template.decl @ggml.matmul_id.vector_weighted.q4k_q8.wave32_body(%publish_output: i1, %token_count: index, %token: index, %input_size: index, %route_count: index, %route_id_stride: index, %expert_count: index, %output_size: index, %q8_input: buffer, %route_ids: buffer, %route_weights: buffer, %weight: buffer, %output: buffer)
+
+template.decl @ggml.matmul_id.vector_weighted.next_q8_completion(%output_channels_per_workgroup0: index, %reduction_subgroup_count0: index, %token_count: index, %output_size: index, %output: buffer, %norm_weight: buffer, %completion_counter: buffer, %next_q8_output: buffer)
+
 target.decl @qwen3_moe_attention_prepare_gfx11_wave32
 
 config.decl @qwen3_moe.routed_down.input_size : %value: index where [range(%value, 256, 32768), mul(%value, 256)]
@@ -168,7 +172,7 @@ kernel.def @qwen3_moe_routed_down_q4k_q8_1_x4(%token_count: index, %input_size: 
   %valid_token = index.cmp ult, %token0, %bounded_token_count : index
   %safe_token0 = scf.select %valid_token, %token0, %c0 : index
   %safe_token, %body_token_count = index.assume %safe_token0, %bounded_token_count [lt(%safe_token0, %bounded_token_count)] : index, index
-  template.apply<@qwen3_moe.routed_down.q4k_q8_1_x4.body>(%valid_token, %body_token_count, %safe_token, %configured_input_size, %configured_route_count, %bounded_route_id_stride, %configured_expert_count, %configured_output_size, %q8_input, %route_ids, %route_weights, %weight, %output) : (i1, index, index, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer)
+  template.apply<@ggml.matmul_id.vector_weighted.q4k_q8.wave32_body>(%valid_token, %body_token_count, %safe_token, %configured_input_size, %configured_route_count, %bounded_route_id_stride, %configured_expert_count, %configured_output_size, %q8_input, %route_ids, %route_weights, %weight, %output) : (i1, index, index, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer)
   kernel.return
 }
 
@@ -197,8 +201,8 @@ kernel.def target(@qwen3_moe_attention_prepare_gfx11_wave32) @qwen3_moe_routed_d
   %c8 = index.constant 8 : index
   %publishes_output = scalar.constant true : i1
   %body_token = index.constant 0 : index
-  template.apply<@qwen3_moe.routed_down.q4k_q8_1_x4.body>(%publishes_output, %bounded_token_count, %body_token, %configured_input_size, %configured_route_count, %bounded_route_id_stride, %configured_expert_count, %configured_output_size, %q8_input, %route_ids, %route_weights, %weight, %output) : (i1, index, index, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer)
-  template.apply<@qwen3_moe.routed_down.next_q8_completion>(%c8, %c8, %bounded_token_count, %configured_output_size, %output, %norm_weight, %completion_counter, %next_q8_output) : (index, index, index, index, buffer, buffer, buffer, buffer)
+  template.apply<@ggml.matmul_id.vector_weighted.q4k_q8.wave32_body>(%publishes_output, %bounded_token_count, %body_token, %configured_input_size, %configured_route_count, %bounded_route_id_stride, %configured_expert_count, %configured_output_size, %q8_input, %route_ids, %route_weights, %weight, %output) : (i1, index, index, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer)
+  template.apply<@ggml.matmul_id.vector_weighted.next_q8_completion>(%c8, %c8, %bounded_token_count, %configured_output_size, %output, %norm_weight, %completion_counter, %next_q8_output) : (index, index, index, index, buffer, buffer, buffer, buffer)
   kernel.return
 }
 

@@ -4453,10 +4453,10 @@ static void run_decode_routed_moe_scheduling_case(ggml_type down_weight_type, bo
     std::vector<std::string> expected = {
         "qwen3_moe:qwen3_moe_rmsnorm_f32_quantize_q8_1_x4",
         "qwen3_moe:qwen3_moe_router_projection_top8_fused_decode_f32",
-        down_weight_type == GGML_TYPE_Q4_K ? "qwen3_moe:qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8" :
-                                             "qwen3_moe:qwen3_moe_routed_gate_up_swiglu_q4k_q8",
-        down_weight_type == GGML_TYPE_Q4_K ? "qwen3_moe:qwen3_moe_routed_down_q4k_q8_1_x4_next_q8" :
-                                             "qwen3_moe:qwen3_moe_routed_down_q6k_f32_wave64_next_q8",
+        down_weight_type == GGML_TYPE_Q4_K ? "loom_libs:ggml_mul_mat_id_vector_pair_binary_publish_q8" :
+                                             "loom_libs:ggml_mul_mat_id_vector_pair_binary_publish_f32",
+        down_weight_type == GGML_TYPE_Q4_K ? "loom_libs:ggml_mul_mat_id_vector_weighted_wave32_publish_q8" :
+                                             "loom_libs:ggml_mul_mat_id_vector_weighted_wave64_publish_q8",
     };
     require_kernel_subsequence(scheduled_kernel_sequence(graph), expected);
     ggml_free(ctx);

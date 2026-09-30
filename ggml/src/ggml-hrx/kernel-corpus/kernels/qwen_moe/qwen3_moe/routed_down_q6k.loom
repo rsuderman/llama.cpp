@@ -23,6 +23,10 @@ template.decl @qwen3_moe.routed_down.q6k_f32.body(%publish_output: i1, %subgroup
 
 template.decl @qwen3_moe.routed_down.q6k_f32.pair_body(%token_count: index, %token: index, %input_size: index, %route_count: index, %route_id_stride: index, %expert_count: index, %output_size: index, %input: buffer, %route_ids: buffer, %route_weights: buffer, %weight: buffer, %output: buffer)
 
+template.decl @ggml.matmul_id.vector_weighted.q6k_f32.wave64_pair_body(%token_count: index, %token: index, %input_size: index, %route_count: index, %route_id_stride: index, %expert_count: index, %output_size: index, %input: buffer, %route_ids: buffer, %route_weights: buffer, %weight: buffer, %output: buffer)
+
+template.decl @ggml.matmul_id.vector_weighted.next_q8_completion(%output_channels_per_workgroup0: index, %reduction_subgroup_count0: index, %token_count: index, %output_size: index, %output: buffer, %norm_weight: buffer, %completion_counter: buffer, %next_q8_output: buffer)
+
 template.decl @qwen3_moe.routed_down.q6k_q8_1_x4.body(%publish_output: i1, %token_count: index, %token: index, %input_size: index, %route_count: index, %route_id_stride: index, %expert_count: index, %output_size: index, %q8_input: buffer, %route_ids: buffer, %route_weights: buffer, %weight: buffer, %output: buffer)
 
 amdgpu.target<gfx11-generic> @qwen3_moe_routed_down_q6k_gfx11_wave64 {subgroup_size = 64}
@@ -519,8 +523,8 @@ kernel.def target(@qwen3_moe_routed_down_q6k_gfx11_wave64) @qwen3_moe_routed_dow
   %c4 = index.constant 4 : index
   %c8 = index.constant 8 : index
   %body_token = index.constant 0 : index
-  template.apply<@qwen3_moe.routed_down.q6k_f32.pair_body>(%bounded_token_count, %body_token, %configured_input_size, %configured_route_count, %bounded_route_id_stride, %configured_expert_count, %configured_output_size, %input, %route_ids, %route_weights, %weight, %output) : (index, index, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer)
-  template.apply<@qwen3_moe.routed_down.next_q8_completion>(%c8, %c4, %bounded_token_count, %configured_output_size, %output, %norm_weight, %completion_counter, %next_q8_output) : (index, index, index, index, buffer, buffer, buffer, buffer)
+  template.apply<@ggml.matmul_id.vector_weighted.q6k_f32.wave64_pair_body>(%bounded_token_count, %body_token, %configured_input_size, %configured_route_count, %bounded_route_id_stride, %configured_expert_count, %configured_output_size, %input, %route_ids, %route_weights, %weight, %output) : (index, index, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer)
+  template.apply<@ggml.matmul_id.vector_weighted.next_q8_completion>(%c8, %c4, %bounded_token_count, %configured_output_size, %output, %norm_weight, %completion_counter, %next_q8_output) : (index, index, index, index, buffer, buffer, buffer, buffer)
   kernel.return
 }
 

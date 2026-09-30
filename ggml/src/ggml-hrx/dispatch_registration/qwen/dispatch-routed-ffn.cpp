@@ -4,6 +4,7 @@
 #include "dispatch_registration/common/dispatch-mul-mat-weight-format.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
+#include "graph/op-params.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
 #include <cstdint>
@@ -17,16 +18,16 @@ namespace {
 
 static constexpr KernelCatalogRef kCommonRoutedGateUpSwiGLUF16WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_id_swiglu_f16_f16_wmma");
-static constexpr KernelCatalogRef kQwenRoutedGateUpSwiGLUQ4KQ8Kernel =
-    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_gate_up_swiglu_q4k_q8");
-static constexpr KernelCatalogRef kQwenRoutedGateUpSwiGLUQ4KQ8NextQ8Kernel =
-    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8");
+static constexpr KernelCatalogRef kCommonVectorRoutedGateUpSwiGLUPublishF32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_id_vector_pair_binary_publish_f32");
+static constexpr KernelCatalogRef kCommonVectorRoutedGateUpSwiGLUPublishQ8Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_id_vector_pair_binary_publish_q8");
 static constexpr KernelCatalogRef kCommonMulMatIdF16F16WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_id_f16_f16_wmma");
-static constexpr KernelCatalogRef kQwenRoutedDownQ4KQ8NextQ8Kernel =
-    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_down_q4k_q8_1_x4_next_q8");
-static constexpr KernelCatalogRef kQwenRoutedDownQ6KF32Wave64NextQ8Kernel =
-    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_down_q6k_f32_wave64_next_q8");
+static constexpr KernelCatalogRef kCommonVectorRoutedDownQ4KPublishQ8Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_id_vector_weighted_wave32_publish_q8");
+static constexpr KernelCatalogRef kCommonVectorRoutedDownQ6KPublishQ8Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_id_vector_weighted_wave64_publish_q8");
 static constexpr KernelCatalogRef kQwenRoutedDownWeightedReduceF16F32Kernel =
     GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_routed_down_weighted_reduce_f16_f32");
 static constexpr KernelCatalogRef kQwenRoutedDownWeightedReduceNextRmsNormF32Kernel =
@@ -180,6 +181,46 @@ static void add_routed_down_compile_parameters(Dispatch & dispatch, int64_t toke
     dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_down.output_size",
                                                to_config_value(kRoutedFfnInputSize));
     dispatch.kernel.compile_parameters.emplace("qwen3_moe.workload.token_capacity", to_config_value(token_count));
+}
+
+static void add_common_vector_shape_compile_parameters(Dispatch & dispatch, int64_t input_size, int64_t output_size) {
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_id.vector.input_size", to_config_value(input_size));
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_id.vector.route_count",
+                                               to_config_value(kRoutedFfnRouteCount));
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_id.vector.expert_count",
+                                               to_config_value(kRoutedFfnExpertCount));
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_id.vector.output_size", to_config_value(output_size));
+}
+
+static void add_common_vector_pair_compile_parameters(Dispatch & dispatch, int64_t token_count, ggml_type publish_type) {
+    add_common_vector_shape_compile_parameters(dispatch, kRoutedFfnInputSize, kRoutedFfnExpertHiddenSize);
+    const std::string q4k_format =
+        to_config_value(common_mul_mat_format_config_value(CommonMulMatWeightFormat::Q4K));
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_id.vector.input_format",
+                                               to_config_value(static_cast<int64_t>(GGML_TYPE_Q8_1)));
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_id.vector.lhs_weight_format", q4k_format);
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_id.vector.rhs_weight_format", q4k_format);
+    dispatch.kernel.compile_parameters.emplace(
+        "ggml.mul_mat_id.vector.binary_op",
+        to_config_value(static_cast<int64_t>(binary_kind_config_value(BinaryKind::SwiGLU))));
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_id.vector.publish_format",
+                                               to_config_value(static_cast<int64_t>(publish_type)));
+    dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity", to_config_value(token_count));
+}
+
+static void add_common_vector_weighted_compile_parameters(Dispatch & dispatch, int64_t token_count,
+                                                          ggml_type input_type, ggml_type weight_type) {
+    add_common_vector_shape_compile_parameters(dispatch, kRoutedFfnExpertHiddenSize, kRoutedFfnInputSize);
+    CommonMulMatWeightFormat weight_format;
+    const bool               has_weight_format = common_mul_mat_format_for_type(weight_type, weight_format);
+    GGML_ASSERT(has_weight_format);
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_id.vector.input_format",
+                                               to_config_value(static_cast<int64_t>(input_type)));
+    dispatch.kernel.compile_parameters.emplace(
+        "ggml.mul_mat_id.vector.weight_format", to_config_value(common_mul_mat_format_config_value(weight_format)));
+    dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_id.vector.publish_format",
+                                               to_config_value(static_cast<int64_t>(GGML_TYPE_Q8_1)));
+    dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity", to_config_value(token_count));
 }
 
 static void add_common_routed_down_compile_parameters(Dispatch & dispatch, int64_t token_count, ggml_type weight_type) {
@@ -955,22 +996,15 @@ static bool match_decode_routed_ffn_gate_up_swiglu_q4k_q8_dispatch(const Dispatc
     const ValueId completion_counters = match.publish_q8 ? ValueId(context.next_plan_value.value + 1) : ValueId();
 
     Dispatch dispatch;
-    dispatch.kernel = make_kernel_specialization(match.publish_q8 ? kQwenRoutedGateUpSwiGLUQ4KQ8NextQ8Kernel :
-                                                                    kQwenRoutedGateUpSwiGLUQ4KQ8Kernel);
+    dispatch.kernel = make_kernel_specialization(match.publish_q8 ? kCommonVectorRoutedGateUpSwiGLUPublishQ8Kernel :
+                                                                    kCommonVectorRoutedGateUpSwiGLUPublishF32Kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
     dispatch.kernel.integer_parameters.emplace("route_count", kRoutedFfnRouteCount);
     dispatch.kernel.integer_parameters.emplace("route_stride", match.route_stride);
     dispatch.kernel.integer_parameters.emplace("expert_count", kRoutedFfnExpertCount);
     dispatch.kernel.integer_parameters.emplace("output_size", kRoutedFfnExpertHiddenSize);
-    dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_gate_up.input_size",
-                                               to_config_value(kRoutedFfnInputSize));
-    dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_gate_up.expert_count",
-                                               to_config_value(kRoutedFfnExpertCount));
-    dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_gate_up.route_count",
-                                               to_config_value(kRoutedFfnRouteCount));
-    dispatch.kernel.compile_parameters.emplace("qwen3_moe.routed_gate_up.output_size",
-                                               to_config_value(kRoutedFfnExpertHiddenSize));
-    dispatch.kernel.compile_parameters.emplace("qwen3_moe.workload.token_capacity", to_config_value(match.token_count));
+    add_common_vector_pair_compile_parameters(dispatch, match.token_count,
+                                              match.publish_q8 ? GGML_TYPE_Q8_1 : GGML_TYPE_F32);
 
     const size_t route_id_length = static_cast<size_t>(match.token_count * match.route_stride) * sizeof(int32_t);
     dispatch.bindings.push_back({ match.input_alternate->alternate_value, 0, match.input_alternate->byte_count });
@@ -1070,8 +1104,8 @@ static DecodeRoutedDownMatch match_decode_routed_ffn_down_next_q8(const Dispatch
     match.output            = reduce.output;
     match.route_ids         = route_ids;
     match.reduce            = std::move(reduce);
-    match.kernel =
-        weight->type == GGML_TYPE_Q4_K ? kQwenRoutedDownQ4KQ8NextQ8Kernel : kQwenRoutedDownQ6KF32Wave64NextQ8Kernel;
+    match.kernel = weight->type == GGML_TYPE_Q4_K ? kCommonVectorRoutedDownQ4KPublishQ8Kernel :
+                                                   kCommonVectorRoutedDownQ6KPublishQ8Kernel;
     match.token_count  = 1;
     match.route_stride = route_stride;
     match.input_is_q8  = input_is_q8;
@@ -1097,7 +1131,9 @@ static bool match_decode_routed_ffn_down_next_q8_dispatch(const DispatchMatchCon
     dispatch.kernel.integer_parameters.emplace("route_id_stride", match.route_stride);
     dispatch.kernel.integer_parameters.emplace("expert_count", kRoutedFfnExpertCount);
     dispatch.kernel.integer_parameters.emplace("output_size", kRoutedFfnInputSize);
-    add_routed_down_compile_parameters(dispatch, match.token_count);
+    add_common_vector_weighted_compile_parameters(dispatch, match.token_count,
+                                                  match.input_is_q8 ? GGML_TYPE_Q8_1 : GGML_TYPE_F32,
+                                                  match.weight->type);
     dispatch.kernel.compile_parameters.emplace("qwen3_moe.model.hidden_size", to_config_value(kRoutedFfnInputSize));
     dispatch.kernel.compile_parameters.emplace("qwen3_moe.model.rms_epsilon", "0.000001");
 

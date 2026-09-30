@@ -78,6 +78,18 @@
       "path": "qwen3_moe/routed_gate_up_swiglu_q4k.loom"
     },
     {
+      "path": "../loom-libs/motifs/matmul_id/vector_pair.loom"
+    },
+    {
+      "path": "../loom-libs/motifs/matmul_id/vector_weighted.loom"
+    },
+    {
+      "path": "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom"
+    },
+    {
+      "path": "../loom-libs/motifs/elementwise/binary_apply.loom"
+    },
+    {
       "path": "qwen3_moe/routed_linear_q4k_f16_wmma.loom"
     },
     {
@@ -1336,11 +1348,17 @@
           "qwen3_moe/routed_gate_up_swiglu_q4k.loom"
         ],
         "library_sources": [
-          "ggml/quantize_q8_1_x4.loom"
+          "ggml/quantize_q8_1_x4.loom",
+          "../loom-libs/motifs/matmul_id/vector_pair.loom",
+          "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+          "../loom-libs/motifs/elementwise/binary_apply.loom"
         ]
       },
       "compile_dependencies": [
-        "ggml/quantize_q8_1_x4.loom"
+        "ggml/quantize_q8_1_x4.loom",
+        "../loom-libs/motifs/matmul_id/vector_pair.loom",
+        "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+        "../loom-libs/motifs/elementwise/binary_apply.loom"
       ]
     },
     {
@@ -1399,11 +1417,17 @@
           "qwen3_moe/routed_gate_up_swiglu_q4k.loom"
         ],
         "library_sources": [
-          "ggml/quantize_q8_1_x4.loom"
+          "ggml/quantize_q8_1_x4.loom",
+          "../loom-libs/motifs/matmul_id/vector_pair.loom",
+          "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+          "../loom-libs/motifs/elementwise/binary_apply.loom"
         ]
       },
       "compile_dependencies": [
-        "ggml/quantize_q8_1_x4.loom"
+        "ggml/quantize_q8_1_x4.loom",
+        "../loom-libs/motifs/matmul_id/vector_pair.loom",
+        "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+        "../loom-libs/motifs/elementwise/binary_apply.loom"
       ]
     },
     {
@@ -2429,7 +2453,8 @@
           "ggml/quantize_q8_1_x4.loom",
           "qwen3_moe/attention_prepare_quantized.loom",
           "qwen3_moe/model_config.loom",
-          "qwen3_moe/routed_down_next_q8.loom"
+          "qwen3_moe/routed_down_next_q8.loom",
+          "../loom-libs/motifs/matmul_id/vector_weighted.loom"
         ]
       },
       "compile_dependencies": [
@@ -2438,7 +2463,8 @@
         "ggml/quantize_q8_1_x4.loom",
         "qwen3_moe/attention_prepare_quantized.loom",
         "qwen3_moe/model_config.loom",
-        "qwen3_moe/routed_down_next_q8.loom"
+        "qwen3_moe/routed_down_next_q8.loom",
+        "../loom-libs/motifs/matmul_id/vector_weighted.loom"
       ]
     },
     {
@@ -2582,7 +2608,11 @@
           "qwen3_moe/model_config.loom",
           "qwen3_moe/routed_down_next_q8.loom",
           "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
-          "ggml/quantize_q8_1_x4.loom"
+          "ggml/quantize_q8_1_x4.loom",
+          "../loom-libs/motifs/matmul_id/vector_weighted.loom",
+          "../loom-libs/motifs/matmul_id/vector_pair.loom",
+          "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+          "../loom-libs/motifs/elementwise/binary_apply.loom"
         ]
       },
       "compile_dependencies": [
@@ -2590,7 +2620,11 @@
         "qwen3_moe/model_config.loom",
         "qwen3_moe/routed_down_next_q8.loom",
         "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
-        "ggml/quantize_q8_1_x4.loom"
+        "ggml/quantize_q8_1_x4.loom",
+        "../loom-libs/motifs/matmul_id/vector_weighted.loom",
+        "../loom-libs/motifs/matmul_id/vector_pair.loom",
+        "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+        "../loom-libs/motifs/elementwise/binary_apply.loom"
       ]
     },
     {
@@ -2681,7 +2715,11 @@
           "qwen3_moe/model_config.loom",
           "qwen3_moe/routed_down_next_q8.loom",
           "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
-          "ggml/quantize_q8_1_x4.loom"
+          "ggml/quantize_q8_1_x4.loom",
+          "../loom-libs/motifs/matmul_id/vector_weighted.loom",
+          "../loom-libs/motifs/matmul_id/vector_pair.loom",
+          "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+          "../loom-libs/motifs/elementwise/binary_apply.loom"
         ]
       },
       "compile_dependencies": [
@@ -2689,7 +2727,11 @@
         "qwen3_moe/model_config.loom",
         "qwen3_moe/routed_down_next_q8.loom",
         "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
-        "ggml/quantize_q8_1_x4.loom"
+        "ggml/quantize_q8_1_x4.loom",
+        "../loom-libs/motifs/matmul_id/vector_weighted.loom",
+        "../loom-libs/motifs/matmul_id/vector_pair.loom",
+        "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+        "../loom-libs/motifs/elementwise/binary_apply.loom"
       ]
     },
     {
@@ -2834,7 +2876,8 @@
           "ggml/quantize_q8_1_x4.loom",
           "qwen3_moe/attention_prepare_quantized.loom",
           "qwen3_moe/model_config.loom",
-          "qwen3_moe/routed_down_next_q8.loom"
+          "qwen3_moe/routed_down_next_q8.loom",
+          "../loom-libs/motifs/matmul_id/vector_weighted.loom"
         ]
       },
       "compile_dependencies": [
@@ -2843,7 +2886,8 @@
         "ggml/quantize_q8_1_x4.loom",
         "qwen3_moe/attention_prepare_quantized.loom",
         "qwen3_moe/model_config.loom",
-        "qwen3_moe/routed_down_next_q8.loom"
+        "qwen3_moe/routed_down_next_q8.loom",
+        "../loom-libs/motifs/matmul_id/vector_weighted.loom"
       ]
     },
     {
@@ -2935,7 +2979,8 @@
           "ggml/quantize_q8_1_x4.loom",
           "qwen3_moe/attention_prepare_quantized.loom",
           "qwen3_moe/model_config.loom",
-          "qwen3_moe/routed_down_next_q8.loom"
+          "qwen3_moe/routed_down_next_q8.loom",
+          "../loom-libs/motifs/matmul_id/vector_weighted.loom"
         ]
       },
       "compile_dependencies": [
@@ -2944,7 +2989,8 @@
         "ggml/quantize_q8_1_x4.loom",
         "qwen3_moe/attention_prepare_quantized.loom",
         "qwen3_moe/model_config.loom",
-        "qwen3_moe/routed_down_next_q8.loom"
+        "qwen3_moe/routed_down_next_q8.loom",
+        "../loom-libs/motifs/matmul_id/vector_weighted.loom"
       ]
     },
     {
@@ -3030,7 +3076,8 @@
           "ggml/quantize_q8_1_x4.loom",
           "qwen3_moe/attention_prepare_quantized.loom",
           "qwen3_moe/model_config.loom",
-          "qwen3_moe/routed_down_next_q8.loom"
+          "qwen3_moe/routed_down_next_q8.loom",
+          "../loom-libs/motifs/matmul_id/vector_weighted.loom"
         ]
       },
       "compile_dependencies": [
@@ -3039,7 +3086,8 @@
         "ggml/quantize_q8_1_x4.loom",
         "qwen3_moe/attention_prepare_quantized.loom",
         "qwen3_moe/model_config.loom",
-        "qwen3_moe/routed_down_next_q8.loom"
+        "qwen3_moe/routed_down_next_q8.loom",
+        "../loom-libs/motifs/matmul_id/vector_weighted.loom"
       ]
     },
     {
@@ -3131,7 +3179,8 @@
           "ggml/quantize_q8_1_x4.loom",
           "qwen3_moe/attention_prepare_quantized.loom",
           "qwen3_moe/model_config.loom",
-          "qwen3_moe/routed_down_next_q8.loom"
+          "qwen3_moe/routed_down_next_q8.loom",
+          "../loom-libs/motifs/matmul_id/vector_weighted.loom"
         ]
       },
       "compile_dependencies": [
@@ -3140,7 +3189,8 @@
         "ggml/quantize_q8_1_x4.loom",
         "qwen3_moe/attention_prepare_quantized.loom",
         "qwen3_moe/model_config.loom",
-        "qwen3_moe/routed_down_next_q8.loom"
+        "qwen3_moe/routed_down_next_q8.loom",
+        "../loom-libs/motifs/matmul_id/vector_weighted.loom"
       ]
     },
     {
@@ -3447,11 +3497,17 @@
           "qwen3_moe/routed_gate_up_swiglu_q4k.loom"
         ],
         "library_sources": [
-          "ggml/quantize_q8_1_x4.loom"
+          "ggml/quantize_q8_1_x4.loom",
+          "../loom-libs/motifs/matmul_id/vector_pair.loom",
+          "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+          "../loom-libs/motifs/elementwise/binary_apply.loom"
         ]
       },
       "compile_dependencies": [
-        "ggml/quantize_q8_1_x4.loom"
+        "ggml/quantize_q8_1_x4.loom",
+        "../loom-libs/motifs/matmul_id/vector_pair.loom",
+        "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+        "../loom-libs/motifs/elementwise/binary_apply.loom"
       ]
     },
     {
@@ -3528,11 +3584,17 @@
           "qwen3_moe/routed_gate_up_swiglu_q4k.loom"
         ],
         "library_sources": [
-          "ggml/quantize_q8_1_x4.loom"
+          "ggml/quantize_q8_1_x4.loom",
+          "../loom-libs/motifs/matmul_id/vector_pair.loom",
+          "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+          "../loom-libs/motifs/elementwise/binary_apply.loom"
         ]
       },
       "compile_dependencies": [
-        "ggml/quantize_q8_1_x4.loom"
+        "ggml/quantize_q8_1_x4.loom",
+        "../loom-libs/motifs/matmul_id/vector_pair.loom",
+        "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+        "../loom-libs/motifs/elementwise/binary_apply.loom"
       ]
     },
     {
@@ -3597,11 +3659,17 @@
           "qwen3_moe/routed_gate_up_swiglu_q4k.loom"
         ],
         "library_sources": [
-          "ggml/quantize_q8_1_x4.loom"
+          "ggml/quantize_q8_1_x4.loom",
+          "../loom-libs/motifs/matmul_id/vector_pair.loom",
+          "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+          "../loom-libs/motifs/elementwise/binary_apply.loom"
         ]
       },
       "compile_dependencies": [
-        "ggml/quantize_q8_1_x4.loom"
+        "ggml/quantize_q8_1_x4.loom",
+        "../loom-libs/motifs/matmul_id/vector_pair.loom",
+        "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+        "../loom-libs/motifs/elementwise/binary_apply.loom"
       ]
     },
     {
@@ -4272,7 +4340,11 @@
         "qwen3_moe/model_config.loom",
         "qwen3_moe/routed_down_next_q8.loom",
         "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
-        "ggml/quantize_q8_1_x4.loom"
+        "ggml/quantize_q8_1_x4.loom",
+        "../loom-libs/motifs/matmul_id/vector_weighted.loom",
+        "../loom-libs/motifs/matmul_id/vector_pair.loom",
+        "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+        "../loom-libs/motifs/elementwise/binary_apply.loom"
       ]
     },
     {
@@ -4286,7 +4358,8 @@
         "ggml/quantize_q8_1_x4.loom",
         "qwen3_moe/attention_prepare_quantized.loom",
         "qwen3_moe/model_config.loom",
-        "qwen3_moe/routed_down_next_q8.loom"
+        "qwen3_moe/routed_down_next_q8.loom",
+        "../loom-libs/motifs/matmul_id/vector_weighted.loom"
       ]
     },
     {
@@ -4295,7 +4368,10 @@
         "qwen3_moe/routed_gate_up_swiglu_q4k.loom"
       ],
       "libraries": [
-        "ggml/quantize_q8_1_x4.loom"
+        "ggml/quantize_q8_1_x4.loom",
+        "../loom-libs/motifs/matmul_id/vector_pair.loom",
+        "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
+        "../loom-libs/motifs/elementwise/binary_apply.loom"
       ]
     },
     {
