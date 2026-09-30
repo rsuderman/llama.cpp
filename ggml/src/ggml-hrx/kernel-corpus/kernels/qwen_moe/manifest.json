@@ -108,10 +108,6 @@
       "path": "qwen3_moe/router_top8_f32.loom"
     },
     {
-      "path": "../qwen/token_embedding_q4k.loom",
-      "upstream_path": "experimental/qwen/kernels/token_embedding_q4k.loom"
-    },
-    {
       "path": "../qwen/attention_metadata.loom",
       "upstream_path": "experimental/qwen/kernels/attention_metadata.loom"
     }
@@ -3788,50 +3784,6 @@
         "library_sources": []
       },
       "compile_dependencies": []
-    },
-    {
-      "name": "qwen_token_embedding_q4k",
-      "symbol": "qwen_token_embedding_q4k",
-      "source": "../qwen/token_embedding_q4k.loom",
-      "workload_parameters": [
-        {
-          "name": "token_count",
-          "type": "index"
-        },
-        {
-          "name": "vocabulary_count",
-          "type": "index"
-        }
-      ],
-      "launch_parameters": [
-        {
-          "name": "token_count",
-          "type": "index"
-        },
-        {
-          "name": "vocabulary_count",
-          "type": "index"
-        }
-      ],
-      "bindings": [
-        "token_ids",
-        "weight",
-        "output"
-      ],
-      "binding_access": [
-        "read",
-        "read",
-        "read_write"
-      ],
-      "target_selector": "",
-      "compile_recipe": {
-        "mode": "direct",
-        "primary_sources": [
-          "../qwen/token_embedding_q4k.loom"
-        ],
-        "library_sources": []
-      },
-      "compile_dependencies": []
     }
   ],
   "link_modules": [
@@ -4557,28 +4509,6 @@
         "--output-format=jsonl"
       ],
       "source": "qwen3_moe/flash_attention_f32_f16_wmma.loom"
-    },
-    {
-      "name": "owned_token_embedding_decode_plan_test",
-      "args": [
-        "$(location ../qwen/token_embedding_q4k.loom)",
-        "--benchmark=@qwen_token_embedding_q4k_decode",
-        "--dry-run",
-        "--output-format=jsonl",
-        "--sample-compilation=per_sample"
-      ],
-      "source": "../qwen/token_embedding_q4k.loom"
-    },
-    {
-      "name": "owned_token_embedding_prefill_plan_test",
-      "args": [
-        "$(location ../qwen/token_embedding_q4k.loom)",
-        "--benchmark=@qwen_token_embedding_q4k_prefill_512",
-        "--dry-run",
-        "--output-format=jsonl",
-        "--sample-compilation=per_sample"
-      ],
-      "source": "../qwen/token_embedding_q4k.loom"
     },
     {
       "name": "owned_attention_metadata_prefill_plan_test",

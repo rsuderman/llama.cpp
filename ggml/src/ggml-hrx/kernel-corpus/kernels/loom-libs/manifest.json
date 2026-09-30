@@ -8170,7 +8170,34 @@
     }
   ],
   "link_modules": [],
-  "plan_cases": [],
+  "plan_cases": [
+    {
+      "name": "get_rows_f32_q4k_decode_plan_test",
+      "args": [
+        "$(location ops/rows/get_rows_f32.loom)",
+        "--benchmark=@ggml_get_rows_f32_q4k_decode",
+        "--config=ggml.get_rows_f32.token_capacity=1",
+        "--config=ggml.get_rows_f32.hidden_capacity=2048",
+        "--config=ggml.get_rows_f32.weight_format=4",
+        "--dry-run",
+        "--output-format=jsonl"
+      ],
+      "source": "ops/rows/get_rows_f32.loom"
+    },
+    {
+      "name": "get_rows_f32_q4k_row_access_plan_test",
+      "args": [
+        "$(location ops/rows/get_rows_f32.loom)",
+        "--benchmark=@ggml_get_rows_f32_q4k_row_access",
+        "--config=ggml.get_rows_f32.token_capacity=3",
+        "--config=ggml.get_rows_f32.hidden_capacity=2048",
+        "--config=ggml.get_rows_f32.weight_format=4",
+        "--dry-run",
+        "--output-format=jsonl"
+      ],
+      "source": "ops/rows/get_rows_f32.loom"
+    }
+  ],
   "sources": [],
   "kernels": []
 }
