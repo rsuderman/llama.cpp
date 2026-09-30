@@ -14,9 +14,9 @@ config.decl @ggml.rmsnorm_binary_q8_1_x4.hidden_size : %value: index where [rang
 config.decl @ggml.rmsnorm_binary_q8_1_x4.rms_epsilon : f32
 config.decl @ggml.rmsnorm_binary_q8_1_x4.op : %value: index where [range(%value, 0, 3)]
 
-template.decl @ggml.rmsnorm_binary_f32.body(%token_count: index, %input: buffer, %rhs: buffer, %output: buffer)
+template.decl @ggml.rmsnorm_binary_f32.body(%publish_f16: i1, %token_count: index, %input: buffer, %rhs: buffer, %output: buffer, %f16_output: buffer)
 
-template.def<@ggml.rmsnorm_binary_f32.body> device @ggml_rmsnorm_binary_f32_body(%token_count: index, %input: buffer, %rhs: buffer, %output: buffer) {
+template.def<@ggml.rmsnorm_binary_f32.body> device @ggml_rmsnorm_binary_f32_body(%publish_f16: i1, %token_count: index, %input: buffer, %rhs: buffer, %output: buffer, %f16_output: buffer) {
   %hidden_size0 = config.get @ggml.rmsnorm_binary_f32.hidden_size : index
   %epsilon = config.get @ggml.rmsnorm_binary_f32.rms_epsilon : f32
   %op = config.get @ggml.rmsnorm_binary_f32.op : index
@@ -31,6 +31,7 @@ template.def<@ggml.rmsnorm_binary_f32.body> device @ggml_rmsnorm_binary_f32_body
   %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32>
   %rhs_view = buffer.view %rhs_noalias[%c0_offset] : buffer -> view<[%hidden_size]xf32>
   %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32>
+  %f16_output_view = buffer.view %f16_output[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf16>
   scf.if %valid_token {
     scf.for %channel = [%workitem to %hidden_size step %c256] {
       %value = view.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32> -> f32
@@ -38,6 +39,10 @@ template.def<@ggml.rmsnorm_binary_f32.body> device @ggml_rmsnorm_binary_f32_body
       %normalized = template.apply<@ggml.rmsnorm_f32.apply>(%value, %row_scale) : (f32, f32) -> (f32)
       %result = template.apply<@ggml.binary_f32.apply>(%op, %normalized, %rhs_value) : (index, f32, f32) -> (f32)
       view.store %result, %output_view[%token, %channel] : f32, view<[%launch_token_count]x[%hidden_size]xf32>
+      scf.if %publish_f16 {
+        %half = scalar.fptrunc %result : f32 to f16
+        view.store %half, %f16_output_view[%token, %channel] : f16, view<[%launch_token_count]x[%hidden_size]xf16>
+      }
     }
   }
   template.return
@@ -237,9 +242,9 @@ template.def<@ggml.rmsnorm_binary_f32_k16.body> device @ggml_rmsnorm_binary_f32_
 }
 
 
-template.decl @ggml.rmsnorm_binary_q8_1_x4.body(%token_count: index, %input: buffer, %rhs: buffer, %output: buffer, %q8_output: buffer)
+template.decl @ggml.rmsnorm_binary_q8_1_x4.body(%publish_f16: i1, %token_count: index, %input: buffer, %rhs: buffer, %output: buffer, %q8_output: buffer, %f16_output: buffer)
 
-template.def<@ggml.rmsnorm_binary_q8_1_x4.body> device @ggml_rmsnorm_binary_q8_1_x4_body(%token_count: index, %input: buffer, %rhs: buffer, %output: buffer, %q8_output: buffer) {
+template.def<@ggml.rmsnorm_binary_q8_1_x4.body> device @ggml_rmsnorm_binary_q8_1_x4_body(%publish_f16: i1, %token_count: index, %input: buffer, %rhs: buffer, %output: buffer, %q8_output: buffer, %f16_output: buffer) {
   %hidden_size0 = config.get @ggml.rmsnorm_binary_q8_1_x4.hidden_size : index
   %epsilon = config.get @ggml.rmsnorm_binary_q8_1_x4.rms_epsilon : f32
   %op = config.get @ggml.rmsnorm_binary_q8_1_x4.op : index
@@ -276,6 +281,7 @@ template.def<@ggml.rmsnorm_binary_q8_1_x4.body> device @ggml_rmsnorm_binary_q8_1
   %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32>
   %rhs_view = buffer.view %rhs_noalias[%c0_offset] : buffer -> view<[%hidden_size]xf32>
   %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32>
+  %f16_output_view = buffer.view %f16_output[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf16>
   %scratch = buffer.alloca<workgroup> align(16) %scratch_bytes : buffer
   %scratch_values = buffer.view %scratch[%c0_offset] : buffer -> view<256xf32>
   %scratch_d = buffer.view %scratch[%scratch_d_byte_add] : buffer -> view<32xf32>
@@ -305,6 +311,10 @@ template.def<@ggml.rmsnorm_binary_q8_1_x4.body> device @ggml_rmsnorm_binary_q8_1
     %packed2 = vector.insert %binary2 into %packed1[2] : f32, vector<4xf32>
     %packed = vector.insert %binary3 into %packed2[3] : f32, vector<4xf32>
     vector.store.mask %packed, %output_view[%token, %channel], %mask : vector<4xf32>, view<[%launch_token_count]x[%hidden_size]xf32>, vector<4xi1>
+    scf.if %publish_f16 {
+      %half = vector.fptrunc %packed : vector<4xf32> to vector<4xf16>
+      vector.store.mask %half, %f16_output_view[%token, %channel], %mask : vector<4xf16>, view<[%launch_token_count]x[%hidden_size]xf16>, vector<4xi1>
+    }
     template.apply<@ggml.normalization.publish_q8.binary_vector4>(%valid_word, %token_output_byte_base, %channel, %packed, %scratch_values, %scratch_d, %q8_output_noalias) : (i1, offset, index, vector<4xf32>, view<256xf32>, view<32xf32>, buffer)
   }
   template.return

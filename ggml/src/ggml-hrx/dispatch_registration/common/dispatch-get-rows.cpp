@@ -6,7 +6,9 @@
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -16,6 +18,8 @@ namespace {
 
 static constexpr KernelCatalogRef kGetRowsF32Kernel     = GGML_HRX_KERNEL_REF("loom_libs", "ggml_get_rows_f32");
 static constexpr KernelCatalogRef kGetRowsF32NextKernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_get_rows_f32_next");
+static constexpr KernelCatalogRef kGetRowsRmsNormBinaryQ8_1X4F16Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_get_rows_rmsnorm_binary_q8_1_x4_f16");
 static constexpr int64_t          kMaximumHiddenElements = int64_t{ 1 } << 30;
 static constexpr int64_t          kQ1_0GetRowsFormat    = 10;
 static constexpr int64_t          kQwenHiddenSize       = kQwen30BMoeDispatchProfile.hidden_size;
@@ -53,6 +57,13 @@ static bool is_supported_row_count(int64_t row_count) {
 
 static std::string to_config_value(int64_t value) {
     return std::to_string(value);
+}
+
+static std::string to_config_value(float value) {
+    std::ostringstream out;
+    out.precision(9);
+    out << value;
+    return out.str();
 }
 
 static size_t row_byte_count(ggml_type type, int64_t token_count, int64_t hidden_size) {
@@ -144,6 +155,22 @@ struct GetRowsMatch {
     }
 };
 
+struct GetRowsRmsNormMatch {
+    GetRowsMatch      rows;
+    const GraphNode * rms_node          = nullptr;
+    const GraphNode * binary_node       = nullptr;
+    const Value *     norm_weight       = nullptr;
+    const Value *     normalized_output = nullptr;
+    size_t            rms_node_index    = 0;
+    size_t            binary_node_index = 0;
+    float             epsilon           = 0.0f;
+
+    bool matched() const {
+        return rows.matched() && rms_node != nullptr && binary_node != nullptr && norm_weight != nullptr &&
+               normalized_output != nullptr;
+    }
+};
+
 static void add_common_compile_parameters(Dispatch & dispatch, const GetRowsMatch & match) {
     dispatch.kernel.compile_parameters.emplace("ggml.get_rows_f32.token_capacity", to_config_value(match.token_count));
     dispatch.kernel.compile_parameters.emplace("ggml.get_rows_f32.hidden_capacity", to_config_value(match.hidden_size));
@@ -200,6 +227,66 @@ static GetRowsMatch match_get_rows_f32(const Graph & graph, const GraphNode * no
     match.token_count         = token_count;
     match.row_count           = row_count;
     match.hidden_size         = hidden_size;
+    return match;
+}
+
+static GetRowsRmsNormMatch match_get_rows_rmsnorm_binary(const DispatchMatchContext & context) {
+    GetRowsRmsNormMatch match;
+    match.rows = match_get_rows_f32(context.graph, context.root_node);
+    if (!match.rows.matched() || !context.graph.has_index() || match.rows.hidden_size < 128 ||
+        match.rows.hidden_size > 32768 || match.rows.hidden_size % 128 != 0) {
+        return {};
+    }
+
+    const GraphNode * rms = nullptr;
+    for (const GraphNode * consumer : context.graph.index().consumers(match.rows.output->id)) {
+        if (consumer != nullptr && consumer->op == GGML_OP_RMS_NORM && consumer->inputs.size() == 1 &&
+            consumer->inputs[0] == match.rows.output->id) {
+            if (rms != nullptr) {
+                return {};
+            }
+            rms = consumer;
+        }
+    }
+    if (rms == nullptr) {
+        return {};
+    }
+
+    const RmsNormParams * params     = op_params_as<RmsNormParams>(rms->params);
+    const Value *         rms_output = graph_value(context.graph, rms->output);
+    if (params == nullptr || !std::isfinite(params->eps) || params->eps <= 0.0f || rms_output == nullptr ||
+        rms_output->type != GGML_TYPE_F32 || !rms_output->contiguous || rms_output->ne != match.rows.output->ne) {
+        return {};
+    }
+
+    const std::vector<const GraphNode *> & rms_consumers = context.graph.index().consumers(rms_output->id);
+    if (rms_consumers.size() != 1 || rms_consumers.front() == nullptr || rms_consumers.front()->op != GGML_OP_MUL ||
+        rms_consumers.front()->inputs.size() != 2) {
+        return {};
+    }
+    const GraphNode * binary      = rms_consumers.front();
+    const ValueId     weight_id   = binary->inputs[0] == rms_output->id ? binary->inputs[1] :
+                                    binary->inputs[1] == rms_output->id ? binary->inputs[0] :
+                                                                          ValueId();
+    const Value *     norm_weight = graph_value(context.graph, weight_id);
+    const Value *     output      = graph_value(context.graph, binary->output);
+    if (weight_id.value < 0 || norm_weight == nullptr || output == nullptr || norm_weight->type != GGML_TYPE_F32 ||
+        output->type != GGML_TYPE_F32 || !norm_weight->contiguous || !output->contiguous ||
+        norm_weight->ne[0] != match.rows.hidden_size || norm_weight->ne[1] != 1 || norm_weight->ne[2] != 1 ||
+        norm_weight->ne[3] != 1 || output->ne != match.rows.output->ne ||
+        match.rows.output->storage_root == output->storage_root || norm_weight->storage_root == output->storage_root) {
+        return {};
+    }
+
+    if (!context.graph.index().node_index(rms, match.rms_node_index) ||
+        !context.graph.index().node_index(binary, match.binary_node_index)) {
+        return {};
+    }
+    match.rms_node          = rms;
+    match.binary_node       = binary;
+    match.norm_weight       = norm_weight;
+    match.normalized_output = output;
+    match.epsilon           = params->eps;
     return match;
 }
 
@@ -298,9 +385,67 @@ static bool match_get_rows_f32_next_dispatch(const DispatchMatchContext & contex
     return dispatch_match.status.success();
 }
 
+static bool match_get_rows_rmsnorm_binary_dispatch(const DispatchMatchContext & context,
+                                                   DispatchMatch &              dispatch_match) {
+    const GetRowsRmsNormMatch match = match_get_rows_rmsnorm_binary(context);
+    if (!match.matched() || match.rms_node_index >= context.covered_nodes.size() ||
+        match.binary_node_index >= context.covered_nodes.size() || context.covered_nodes[context.root_index] ||
+        context.covered_nodes[match.rms_node_index] || context.covered_nodes[match.binary_node_index]) {
+        return false;
+    }
+
+    const size_t q8_bytes  = row_byte_count(GGML_TYPE_Q8_1, match.rows.token_count, match.rows.hidden_size);
+    const size_t f16_bytes = row_byte_count(GGML_TYPE_F16, match.rows.token_count, match.rows.hidden_size);
+    if (q8_bytes == 0 || f16_bytes == 0) {
+        return false;
+    }
+    const ValueId q8_value = context.next_plan_value;
+    const ValueId f16_value(context.next_plan_value.value + 1);
+
+    Dispatch dispatch;
+    dispatch.kernel = make_kernel_specialization(kGetRowsRmsNormBinaryQ8_1X4F16Kernel);
+    add_common_integer_parameters(dispatch, match.rows);
+    add_common_compile_parameters(dispatch, match.rows);
+    dispatch.kernel.compile_parameters.emplace("ggml.get_rows_rmsnorm.rms_epsilon", to_config_value(match.epsilon));
+    dispatch.bindings.push_back({ match.rows.ids->id, 0, match.rows.ids->byte_count });
+    dispatch.bindings.push_back({ match.rows.weight->id, 0, match.rows.weight->byte_count });
+    dispatch.bindings.push_back({ match.norm_weight->id, 0, match.norm_weight->byte_count });
+    dispatch.bindings.push_back({ match.rows.output->id, 0, match.rows.output->byte_count });
+    dispatch.bindings.push_back({ match.normalized_output->id, 0, match.normalized_output->byte_count });
+    dispatch.bindings.push_back({ q8_value, 0, q8_bytes });
+    dispatch.bindings.push_back({ f16_value, 0, f16_bytes });
+
+    Status status;
+    if (!dispatch_match.metadata.append_alternate_value(
+            { match.normalized_output->id, q8_value, GGML_TYPE_Q8_1, q8_bytes, "common.get_rows_rmsnorm.q8_1_x4" },
+            status) ||
+        !dispatch_match.metadata.append_alternate_value(
+            { match.normalized_output->id, f16_value, GGML_TYPE_F16, f16_bytes, "common.get_rows_rmsnorm.f16" },
+            status)) {
+        dispatch_match.status.append(status);
+        return false;
+    }
+
+    dispatch_match.covered_nodes.push_back(context.root_index);
+    dispatch_match.covered_nodes.push_back(match.rms_node_index);
+    dispatch_match.covered_nodes.push_back(match.binary_node_index);
+    dispatch_match.transients.push_back({ q8_value, "common.get_rows_rmsnorm.q8_1_x4", q8_bytes, 256 });
+    dispatch_match.transients.push_back({ f16_value, "common.get_rows_rmsnorm.f16", f16_bytes, 256 });
+    dispatch_match.dispatches.push_back(std::move(dispatch));
+    return dispatch_match.status.success();
+}
+
 }  // namespace
 
 void register_get_rows_dispatches(DispatchRegistryBuilder & registry) {
+    registry.add({
+        "common.get_rows_rmsnorm_binary.q8_1_x4_f16",
+        GGML_OP_GET_ROWS,
+        DispatchMatchKind::Fused,
+        330,
+        DispatchSource::Common,
+        match_get_rows_rmsnorm_binary_dispatch,
+    });
     registry.add({
         "common.get_rows.f32_next",
         GGML_OP_GET_ROWS,

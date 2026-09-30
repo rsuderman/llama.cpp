@@ -1009,6 +1009,59 @@ static void run_loom_jit_compile_checks() {
 
 }
 
+static void run_prefill_fusion_compile_checks() {
+    static constexpr const char * kTarget = "gfx1100";
+
+    std::string                         error;
+    std::unique_ptr<ggml::hrx::LoomJit> jit =
+        ggml::hrx::create_loom_jit(kTarget, ggml::hrx::LoomJitMode::Sync, error);
+    REQUIRE(jit != nullptr);
+
+    const auto & rmsnorm_f32_f16 = find_kernel("ggml_rmsnorm_binary_f32_f16");
+    require_compiled_kernel(compile_kernel(*jit, "prefill-rmsnorm-f32-f16", rmsnorm_f32_f16,
+                                           token_count_workload(512), {
+                                               { "ggml.rmsnorm_binary_f32.hidden_size", "2048" },
+                                               { "ggml.rmsnorm_binary_f32.rms_epsilon", "0.00001" },
+                                               { "ggml.rmsnorm_binary_f32.op", "2" },
+                                           }));
+
+    const auto & rmsnorm_q8_f16 = find_kernel("ggml_rmsnorm_binary_q8_1_x4_f16");
+    require_compiled_kernel(compile_kernel(*jit, "prefill-rmsnorm-q8-f16", rmsnorm_q8_f16,
+                                           token_count_workload(512), {
+                                               { "ggml.rmsnorm_binary_q8_1_x4.hidden_size", "2048" },
+                                               { "ggml.rmsnorm_binary_q8_1_x4.rms_epsilon", "0.00001" },
+                                               { "ggml.rmsnorm_binary_q8_1_x4.op", "2" },
+                                           }));
+
+    const auto & flash_f16 = find_kernel("ggml_flash_attention_f32_f16_wmma_publish_f16");
+    require_compiled_kernel(compile_kernel(*jit, "prefill-flash-f16", flash_f16,
+                                           flash_attention_workload(512, 512),
+                                           flash_attention_config("32", "8", "64", "0.125")));
+
+    const auto & swiglu_k16 = find_kernel("ggml_mul_mat_tiled_pair_input_f32_binary_publish_f32_k16");
+    require_compiled_kernel(compile_kernel(*jit, "prefill-swiglu-k16", swiglu_k16,
+                                           token_count_workload(512), {
+                                               { "ggml.mul_mat_swiglu.input_size", "2048" },
+                                               { "ggml.mul_mat_swiglu.output_size", "8192" },
+                                               { "ggml.mul_mat_swiglu.gate_weight_format", "4" },
+                                               { "ggml.mul_mat_swiglu.up_weight_format", "4" },
+                                               { "ggml.mul_mat_swiglu.op", "4" },
+                                               { "ggml.workload.token_capacity", "512" },
+                                           }));
+
+    const auto & get_rows_rmsnorm = find_kernel("ggml_get_rows_rmsnorm_binary_q8_1_x4_f16");
+    require_compiled_kernel(compile_kernel(*jit, "prefill-get-rows-rmsnorm", get_rows_rmsnorm, {
+                                               { "token_count", 512 },
+                                               { "row_count", 128256 },
+                                               { "hidden_size", 2048 },
+                                           }, {
+                                               { "ggml.get_rows_f32.token_capacity", "512" },
+                                               { "ggml.get_rows_f32.hidden_capacity", "2048" },
+                                               { "ggml.get_rows_f32.weight_format", "6" },
+                                               { "ggml.get_rows_rmsnorm.rms_epsilon", "0.00001" },
+                                           }));
+}
+
 static void run_loom_jit_materialize_checks() {
     const ggml::hrx::KernelDefinition & binary = find_kernel("ggml_binary_f32");
 
@@ -1026,6 +1079,7 @@ static bool has_hrx_test_device() {
 
 static void register_hrx_loom_jit_cases(test_runner::Suite & suite) {
     suite.host_case("compile", [] { run_loom_jit_compile_checks(); });
+    suite.host_case("prefill-fusions", [] { run_prefill_fusion_compile_checks(); });
     suite.device_case("materialize", [] { run_loom_jit_materialize_checks(); });
 }
 
