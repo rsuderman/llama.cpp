@@ -39,6 +39,8 @@ func.decl @qwen3_moe_q4k_q8_1_x4_cohort_row_lane(%input_size: index, %weight: bu
 
 kernel.decl @qwen3_moe_attention_rmsnorm_quantize_q8_1_x4(%token_count$39: index) launch(%token_count$40: index, %input: buffer, %weight: buffer, %q8_output: buffer)
 
+kernel.decl @ggml_mul_mat_id_vector_weighted_wave32_publish_q8(%token_count$41: index, %input_size$42: index, %route_count$43: index, %route_id_stride$44: index, %expert_count$45: index, %output_size$46: index) launch(%token_count$47: index, %input_size$48: index, %route_count$49: index, %route_id_stride$50: index, %expert_count$51: index, %output_size$52: index, %q8_input: buffer, %route_ids: buffer, %route_weights: buffer, %weight: buffer, %output: buffer, %norm_weight: buffer, %completion_counter: buffer, %next_q8_output: buffer)
+
 // Shared Q4_K contraction and residual publication. Each lane consumes both
 // nibbles of a packed code load before the subgroup reduces the row.
 template.def<@qwen3_moe.routed_down.q4k_q8_1_x4.body> device @qwen3_moe_routed_down_q4k_q8_1_x4_body(%publish_output: i1, %token_count: index, %token: index, %input_size: index, %route_count: index, %route_id_stride: index, %expert_count: index, %output_size: index, %q8_input: buffer, %route_ids: buffer, %route_weights: buffer, %weight: buffer, %output: buffer) {
@@ -176,36 +178,6 @@ kernel.def @qwen3_moe_routed_down_q4k_q8_1_x4(%token_count: index, %input_size: 
   kernel.return
 }
 
-// Decode-only route that also publishes the normalized Q8_1 x4 row consumed by
-// the next projection boundary.
-kernel.def target(@qwen3_moe_attention_prepare_gfx11_wave32) @qwen3_moe_routed_down_q4k_q8_1_x4_next_q8(%token_count: index, %input_size: index, %route_count: index, %route_id_stride: index, %expert_count: index, %output_size: index) {
-  %configured_output_size = config.get @qwen3_moe.routed_down.output_size : index
-  %c8 = index.constant 8 : index
-  %c7 = index.constant 7 : index
-  %c1 = index.constant 1 : index
-  %workgroup_size = index.constant 256 : index
-  %padded_output_size = index.add %configured_output_size, %c7 : index
-  %output_tiles = index.div %padded_output_size, %c8 : index
-  kernel.launch.config workgroups(%output_tiles, %c1, %c1) workgroup_size(%workgroup_size, %c1, %c1) : index
-} launch(%token_count: index, %input_size: index, %route_count: index, %route_id_stride: index, %expert_count: index, %output_size: index, %q8_input: buffer, %route_ids: buffer, %route_weights: buffer, %weight: buffer, %output: buffer, %norm_weight: buffer, %completion_counter: buffer, %next_q8_output: buffer) {
-  %bounded_token_count = index.assume %token_count [range(%token_count, 1, 1)] : index
-  %configured_input_size0 = config.get @qwen3_moe.routed_down.input_size : index
-  %configured_route_count0 = config.get @qwen3_moe.routed_down.route_count : index
-  %configured_expert_count0 = config.get @qwen3_moe.routed_down.expert_count : index
-  %configured_output_size0 = config.get @qwen3_moe.routed_down.output_size : index
-  %bounded_input_size, %configured_input_size = index.assume %input_size, %configured_input_size0 [range(%input_size, 256, 32768), mul(%input_size, 256), eq(%input_size, %configured_input_size0)] : index, index
-  %bounded_route_count, %configured_route_count = index.assume %route_count, %configured_route_count0 [range(%route_count, 1, 8), eq(%route_count, %configured_route_count0)] : index, index
-  %bounded_route_id_stride = index.assume %route_id_stride [range(%route_id_stride, 1, 512)] : index
-  %bounded_expert_count, %configured_expert_count = index.assume %expert_count, %configured_expert_count0 [range(%expert_count, 1, 512), eq(%expert_count, %configured_expert_count0)] : index, index
-  %bounded_output_size, %configured_output_size = index.assume %output_size, %configured_output_size0 [range(%output_size, 128, 4096), mul(%output_size, 128), eq(%output_size, %configured_output_size0)] : index, index
-  %c8 = index.constant 8 : index
-  %publishes_output = scalar.constant true : i1
-  %body_token = index.constant 0 : index
-  template.apply<@ggml.matmul_id.vector_weighted.q4k_q8.wave32_body>(%publishes_output, %bounded_token_count, %body_token, %configured_input_size, %configured_route_count, %bounded_route_id_stride, %configured_expert_count, %configured_output_size, %q8_input, %route_ids, %route_weights, %weight, %output) : (i1, index, index, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer)
-  template.apply<@ggml.matmul_id.vector_weighted.next_q8_completion>(%c8, %c8, %bounded_token_count, %configured_output_size, %output, %norm_weight, %completion_counter, %next_q8_output) : (index, index, index, index, buffer, buffer, buffer, buffer)
-  kernel.return
-}
-
 // The production hidden width requires all 256 output tiles to arrive before
 // normalization. Compare both residual and packed Q8 publication with the
 // ordinary two-dispatch composition, then reuse the same completion word.
@@ -234,8 +206,8 @@ check.case public @qwen3_moe_routed_down_q4k_q8_1_x4_next_q8_differential_case {
   kernel.launch @ggml_quantize_q8_1_x4_f32[%routed_row_count, %input_size](%routed_row_count, %input_size, %routed_input, %q8_input) : [index, index](index, index, tensor<2x768xf32>, tensor<2x864xi8>)
   kernel.launch @qwen3_moe_routed_down_q4k_q8_1_x4[%token_count, %input_size, %route_count, %route_id_stride, %expert_count, %output_size](%token_count, %input_size, %route_count, %route_id_stride, %expert_count, %output_size, %q8_input, %route_ids, %route_weights, %weight, %expected_output) : [index, index, index, index, index, index](index, index, index, index, index, index, tensor<2x864xi8>, tensor<1x4xi32>, tensor<1x2xf32>, tensor<2x2048x3x144xi8>, tensor<1x2048xf32>)
   kernel.launch @qwen3_moe_attention_rmsnorm_quantize_q8_1_x4[%token_count](%token_count, %expected_output, %norm_weight, %expected_q8) : [index](index, tensor<1x2048xf32>, tensor<2048xf32>, tensor<2304xi8>)
-  kernel.launch @qwen3_moe_routed_down_q4k_q8_1_x4_next_q8[%token_count, %input_size, %route_count, %route_id_stride, %expert_count, %output_size](%token_count, %input_size, %route_count, %route_id_stride, %expert_count, %output_size, %q8_input, %route_ids, %route_weights, %weight, %actual_output0, %norm_weight, %completion_counter, %actual_q8_0) : [index, index, index, index, index, index](index, index, index, index, index, index, tensor<2x864xi8>, tensor<1x4xi32>, tensor<1x2xf32>, tensor<2x2048x3x144xi8>, tensor<1x2048xf32>, tensor<2048xf32>, tensor<1xi32>, tensor<2304xi8>)
-  kernel.launch @qwen3_moe_routed_down_q4k_q8_1_x4_next_q8[%token_count, %input_size, %route_count, %route_id_stride, %expert_count, %output_size](%token_count, %input_size, %route_count, %route_id_stride, %expert_count, %output_size, %q8_input, %route_ids, %route_weights, %weight, %actual_output1, %norm_weight, %completion_counter, %actual_q8_1) : [index, index, index, index, index, index](index, index, index, index, index, index, tensor<2x864xi8>, tensor<1x4xi32>, tensor<1x2xf32>, tensor<2x2048x3x144xi8>, tensor<1x2048xf32>, tensor<2048xf32>, tensor<1xi32>, tensor<2304xi8>)
+  kernel.launch @ggml_mul_mat_id_vector_weighted_wave32_publish_q8[%token_count, %input_size, %route_count, %route_id_stride, %expert_count, %output_size](%token_count, %input_size, %route_count, %route_id_stride, %expert_count, %output_size, %q8_input, %route_ids, %route_weights, %weight, %actual_output0, %norm_weight, %completion_counter, %actual_q8_0) : [index, index, index, index, index, index](index, index, index, index, index, index, tensor<2x864xi8>, tensor<1x4xi32>, tensor<1x2xf32>, tensor<2x2048x3x144xi8>, tensor<1x2048xf32>, tensor<2048xf32>, tensor<1xi32>, tensor<2304xi8>)
+  kernel.launch @ggml_mul_mat_id_vector_weighted_wave32_publish_q8[%token_count, %input_size, %route_count, %route_id_stride, %expert_count, %output_size](%token_count, %input_size, %route_count, %route_id_stride, %expert_count, %output_size, %q8_input, %route_ids, %route_weights, %weight, %actual_output1, %norm_weight, %completion_counter, %actual_q8_1) : [index, index, index, index, index, index](index, index, index, index, index, index, tensor<2x864xi8>, tensor<1x4xi32>, tensor<1x2xf32>, tensor<2x2048x3x144xi8>, tensor<1x2048xf32>, tensor<2048xf32>, tensor<1xi32>, tensor<2304xi8>)
   check.expect.close actual(%actual_output0) expected(%expected_output) atol(9.9999999999999995e-07) rtol(9.9999999999999995e-07) nan(same) : tensor<1x2048xf32>
   check.expect.close actual(%actual_output1) expected(%expected_output) atol(9.9999999999999995e-07) rtol(9.9999999999999995e-07) nan(same) : tensor<1x2048xf32>
   check.expect.equal actual(%actual_q8_0) expected(%expected_q8) : tensor<2304xi8>
@@ -259,7 +231,7 @@ check.case public @qwen3_moe_routed_down_q4k_q8_1_x4_next_q8_benchmark_case {
   %norm_weight = check.generate.fill value(1.0) : tensor<2048xf32>
   %completion_counter = check.generate.fill value(0) : tensor<1xi32>
   %next_q8_output = check.generate.fill value(0) : tensor<2304xi8>
-  kernel.launch @qwen3_moe_routed_down_q4k_q8_1_x4_next_q8[%token_count, %input_size, %route_count, %route_id_stride, %expert_count, %output_size](%token_count, %input_size, %route_count, %route_id_stride, %expert_count, %output_size, %q8_input, %route_ids, %route_weights, %weight, %output, %norm_weight, %completion_counter, %next_q8_output) : [index, index, index, index, index, index](index, index, index, index, index, index, tensor<1x8x864xi8>, tensor<1x8xi32>, tensor<1x8xf32>, tensor<128x2048x3x144xi8>, tensor<1x2048xf32>, tensor<2048xf32>, tensor<1xi32>, tensor<2304xi8>)
+  kernel.launch @ggml_mul_mat_id_vector_weighted_wave32_publish_q8[%token_count, %input_size, %route_count, %route_id_stride, %expert_count, %output_size](%token_count, %input_size, %route_count, %route_id_stride, %expert_count, %output_size, %q8_input, %route_ids, %route_weights, %weight, %output, %norm_weight, %completion_counter, %next_q8_output) : [index, index, index, index, index, index](index, index, index, index, index, index, tensor<1x8x864xi8>, tensor<1x8xi32>, tensor<1x8xf32>, tensor<128x2048x3x144xi8>, tensor<1x2048xf32>, tensor<2048xf32>, tensor<1xi32>, tensor<2304xi8>)
   check.return
 }
 
