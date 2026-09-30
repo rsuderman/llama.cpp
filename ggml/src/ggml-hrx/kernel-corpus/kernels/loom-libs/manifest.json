@@ -369,6 +369,9 @@
       "path": "ops/flash_attention/decode_split_f32_f16_wmma_next_q8.loom"
     },
     {
+      "path": "ops/flash_attention/decode_split_next_q8_test.loom"
+    },
+    {
       "path": "motifs/flash_attention/qk_block_wmma.loom"
     },
     {
@@ -5940,6 +5943,130 @@
       ]
     },
     {
+      "name": "ggml_flash_attention_decode_split_mask_513_of_576",
+      "family": "loom_libs",
+      "symbol": "ggml_flash_attention_decode_split_mask_513_of_576",
+      "source": "ops/flash_attention/decode_split_next_q8_test.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "mask"
+      ],
+      "binding_access": [
+        "read"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "flash_attention_decode_split_next_q8_test_linked",
+        "primary_sources": [
+          "ops/flash_attention/decode_split_next_q8_test.loom"
+        ],
+        "library_sources": [
+          "ops/flash_attention/decode_split_f32_f16_wmma_next_q8.loom",
+          "motifs/flash_attention/decode_partials.loom",
+          "motifs/flash_attention/decode_reduce.loom",
+          "motifs/flash_attention/publish_f32.loom",
+          "motifs/flash_attention/publish_q8.loom",
+          "motifs/flash_attention/completion_counter_reduce.loom",
+          "motifs/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ops/flash_attention/decode_split_f32_f16_wmma_next_q8.loom",
+        "motifs/flash_attention/decode_partials.loom",
+        "motifs/flash_attention/decode_reduce.loom",
+        "motifs/flash_attention/publish_f32.loom",
+        "motifs/flash_attention/publish_q8.loom",
+        "motifs/flash_attention/completion_counter_reduce.loom",
+        "motifs/quantize_q8_1_x4.loom"
+      ]
+    },
+    {
+      "name": "ggml_flash_attention_decode_split_pack_completed_q8_test",
+      "family": "loom_libs",
+      "symbol": "ggml_flash_attention_decode_split_pack_completed_q8_test",
+      "source": "ops/flash_attention/decode_split_next_q8_test.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "input",
+        "output"
+      ],
+      "binding_access": [
+        "read",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "flash_attention_decode_split_next_q8_test_linked",
+        "primary_sources": [
+          "ops/flash_attention/decode_split_next_q8_test.loom"
+        ],
+        "library_sources": [
+          "ops/flash_attention/decode_split_f32_f16_wmma_next_q8.loom",
+          "motifs/flash_attention/decode_partials.loom",
+          "motifs/flash_attention/decode_reduce.loom",
+          "motifs/flash_attention/publish_f32.loom",
+          "motifs/flash_attention/publish_q8.loom",
+          "motifs/flash_attention/completion_counter_reduce.loom",
+          "motifs/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ops/flash_attention/decode_split_f32_f16_wmma_next_q8.loom",
+        "motifs/flash_attention/decode_partials.loom",
+        "motifs/flash_attention/decode_reduce.loom",
+        "motifs/flash_attention/publish_f32.loom",
+        "motifs/flash_attention/publish_q8.loom",
+        "motifs/flash_attention/completion_counter_reduce.loom",
+        "motifs/quantize_q8_1_x4.loom"
+      ]
+    },
+    {
+      "name": "ggml_flash_attention_decode_split_quantize_reference_4096",
+      "family": "loom_libs",
+      "symbol": "ggml_flash_attention_decode_split_quantize_reference_4096",
+      "source": "ops/flash_attention/decode_split_next_q8_test.loom",
+      "workload_parameters": [],
+      "launch_parameters": [],
+      "bindings": [
+        "input",
+        "output"
+      ],
+      "binding_access": [
+        "read",
+        "read_write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "archive",
+        "link_module": "flash_attention_decode_split_next_q8_test_linked",
+        "primary_sources": [
+          "ops/flash_attention/decode_split_next_q8_test.loom"
+        ],
+        "library_sources": [
+          "ops/flash_attention/decode_split_f32_f16_wmma_next_q8.loom",
+          "motifs/flash_attention/decode_partials.loom",
+          "motifs/flash_attention/decode_reduce.loom",
+          "motifs/flash_attention/publish_f32.loom",
+          "motifs/flash_attention/publish_q8.loom",
+          "motifs/flash_attention/completion_counter_reduce.loom",
+          "motifs/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "ops/flash_attention/decode_split_f32_f16_wmma_next_q8.loom",
+        "motifs/flash_attention/decode_partials.loom",
+        "motifs/flash_attention/decode_reduce.loom",
+        "motifs/flash_attention/publish_f32.loom",
+        "motifs/flash_attention/publish_q8.loom",
+        "motifs/flash_attention/completion_counter_reduce.loom",
+        "motifs/quantize_q8_1_x4.loom"
+      ]
+    },
+    {
       "name": "ggml_get_rows_f32",
       "family": "loom_libs",
       "symbol": "ggml_get_rows_f32",
@@ -8169,7 +8296,23 @@
       ]
     }
   ],
-  "link_modules": [],
+  "link_modules": [
+    {
+      "name": "flash_attention_decode_split_next_q8_test_linked",
+      "srcs": [
+        "ops/flash_attention/decode_split_next_q8_test.loom"
+      ],
+      "libraries": [
+        "ops/flash_attention/decode_split_f32_f16_wmma_next_q8.loom",
+        "motifs/flash_attention/decode_partials.loom",
+        "motifs/flash_attention/decode_reduce.loom",
+        "motifs/flash_attention/publish_f32.loom",
+        "motifs/flash_attention/publish_q8.loom",
+        "motifs/flash_attention/completion_counter_reduce.loom",
+        "motifs/quantize_q8_1_x4.loom"
+      ]
+    }
+  ],
   "plan_cases": [
     {
       "name": "get_rows_f32_q4k_decode_plan_test",
