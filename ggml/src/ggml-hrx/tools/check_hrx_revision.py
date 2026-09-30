@@ -23,14 +23,10 @@ def check_revision(source: Path) -> int:
         ).stdout.strip()
 
     try:
-        # Git can discover an enclosing repository around an unpacked source archive.
-        root = Path(git("rev-parse", "--show-toplevel")).resolve()
-        if root != source:
-            raise ValueError(f"HRX_SOURCE_DIR must be the root of its own Git checkout, not a directory inside {root}.")
         head = git("rev-parse", "--verify", "HEAD^{commit}")
         git("cat-file", "-e", f"{minimum}^{{commit}}")
         git("merge-base", "--is-ancestor", minimum, head)
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (OSError, subprocess.CalledProcessError) as error:
         if isinstance(error, subprocess.CalledProcessError):
             reason = error.stderr.strip() or "HRX HEAD does not have the required commit in its available ancestry."
         else:

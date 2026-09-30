@@ -10,6 +10,7 @@ if(HRX_SOURCE_DIR)
         message(FATAL_ERROR "HRX_SOURCE_DIR does not contain a CMakeLists.txt: ${HRX_SOURCE_DIR}")
     endif()
 
+    # Enforce the HRX compatibility floor before building dependencies; rerun configure when the pin or checker changes.
     set(GGML_HRX_REVISION_CHECK "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_hrx_revision.py")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/hrx-minimum-commit.txt" "${GGML_HRX_REVISION_CHECK}")
