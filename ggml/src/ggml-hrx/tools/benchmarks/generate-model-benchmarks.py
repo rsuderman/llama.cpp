@@ -734,8 +734,6 @@ def render_case(symbol: str, command: dict[str, Any], export: dict[str, Any]) ->
         case = case_llm_attention_k_matmul_rope_set_rows(symbol, command, kernel)
     elif kernel in ("llm_attention_v_matmul_set_rows_f32_f32_wmma", "llm_attention_v_matmul_set_rows_decode_f32_f32"):
         case = case_llm_attention_v_matmul_set_rows(symbol, command, kernel)
-    elif kernel == "qwen3_moe_flash_attention_f32_f16_wmma":
-        case = case_flash_attention(symbol, command, kernel, "qwen3_moe")
     elif kernel == "ggml_flash_attention_f32_f16_wmma":
         case = case_flash_attention(symbol, command, kernel, "ggml")
     elif kernel in ("ggml_flash_attention_decode_split_f32_f16_wmma", "ggml_flash_attention_decode_split_f32_f16_wmma_next_q8"):
