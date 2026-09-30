@@ -39,7 +39,7 @@ config.decl @qwen3_moe.workload.token_capacity : %value: index where [range(%val
 
 // These declarations are used only by the differential correctness case. The
 // dense production kernel has no routing input or dependency.
-kernel.decl @qwen3_moe_build_expert_table(%token_count$34: index, %route_count$35: index, %route_stride$36: index, %expert_count$37: index) launch(%token_count$38: index, %route_count$39: index, %route_stride$40: index, %expert_count$41: index, %route_ids: buffer, %expert_table: buffer)
+kernel.decl @ggml_moe_build_expert_table(%token_count$34: index, %route_count$35: index, %route_stride$36: index, %expert_count$37: index) launch(%token_count$38: index, %route_count$39: index, %route_stride$40: index, %expert_count$41: index, %route_ids: buffer, %expert_table: buffer)
 
 kernel.decl @qwen3_moe_routed_linear_q4k_f16_wmma(%token_count$44: index) launch(%token_count$45: index, %input: buffer, %expert_table: buffer, %weight: buffer, %output: buffer)
 
@@ -652,7 +652,7 @@ check.case public @qwen3_moe_dense_linear_q4k_f16_wmma_differential_case {
   %weight = check.generate.fill value(34) : tensor<1x65x2x144xi8>
   %expected = check.generate.fill value(0.0) : tensor<33x65xf32>
   %actual = check.generate.fill value(1.0) : tensor<33x65xf32>
-  kernel.launch @qwen3_moe_build_expert_table[%token_count, %route_count, %route_stride, %expert_count](%token_count, %route_count, %route_stride, %expert_count, %route_ids, %expert_table) : [index, index, index, index](index, index, index, index, tensor<33x1xi32>, tensor<34xi32>)
+  kernel.launch @ggml_moe_build_expert_table[%token_count, %route_count, %route_stride, %expert_count](%token_count, %route_count, %route_stride, %expert_count, %route_ids, %expert_table) : [index, index, index, index](index, index, index, index, tensor<33x1xi32>, tensor<34xi32>)
   kernel.launch @qwen3_moe_routed_linear_q4k_f16_wmma[%token_count](%token_count, %input, %expert_table, %weight, %expected) : [index](index, tensor<33x512xf32>, tensor<34xi32>, tensor<1x65x2x144xi8>, tensor<33x65xf32>)
   kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma[%token_count](%token_count, %input, %weight, %actual) : [index](index, tensor<33x512xf32>, tensor<1x65x2x144xi8>, tensor<33x65xf32>)
   check.expect.close actual(%actual) expected(%expected) atol(0.01) rtol(0.01) nan(same) : tensor<33x65xf32>
@@ -695,7 +695,7 @@ check.case public @qwen3_moe_dense_linear_q4k_f16_wmma_o_differential_case {
   %expected = check.generate.fill value(0.0) : tensor<1x2048xf32>
   %actual = check.generate.fill value(0.0) : tensor<1x2048xf32>
   %direct = check.generate.fill value(0.0) : tensor<1x2048xf32>
-  kernel.launch @qwen3_moe_build_expert_table[%token_count, %route_count, %route_stride, %expert_count](%token_count, %route_count, %route_stride, %expert_count, %route_ids, %expert_table) : [index, index, index, index](index, index, index, index, tensor<1x1xi32>, tensor<2xi32>)
+  kernel.launch @ggml_moe_build_expert_table[%token_count, %route_count, %route_stride, %expert_count](%token_count, %route_count, %route_stride, %expert_count, %route_ids, %expert_table) : [index, index, index, index](index, index, index, index, tensor<1x1xi32>, tensor<2xi32>)
   kernel.launch @ggml_quantize_q8_1_x4_f32[%token_count, %input_size](%token_count, %input_size, %input, %q8_input) : [index, index](index, index, tensor<1x4096xf32>, tensor<1x4608xi8>)
   kernel.launch @qwen3_moe_routed_linear_q4k_f16_wmma[%token_count](%token_count, %input, %expert_table, %weight, %expected) : [index](index, tensor<1x4096xf32>, tensor<2xi32>, tensor<1x2048x16x144xi8>, tensor<1x2048xf32>)
   kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma[%token_count](%token_count, %input, %weight, %actual) : [index](index, tensor<1x4096xf32>, tensor<1x2048x16x144xi8>, tensor<1x2048xf32>)

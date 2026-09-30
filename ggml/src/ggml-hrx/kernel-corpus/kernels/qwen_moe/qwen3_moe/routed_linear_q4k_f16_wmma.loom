@@ -25,9 +25,9 @@ config.decl @qwen3_moe.routed_gate_up.output_size : %value: index where [range(%
 
 kernel.decl @ggml_quantize_q8_1_x4_f32(%token_count$4: index, %input_size$5: index) launch(%token_count$6: index, %input_size$7: index, %input: buffer, %output: buffer)
 
-kernel.decl @qwen3_moe_build_expert_table(%token_count$10: index, %route_count$11: index, %route_stride$12: index, %expert_count$13: index) launch(%token_count$14: index, %route_count$15: index, %route_stride$16: index, %expert_count$17: index, %route_ids: buffer, %expert_table: buffer)
+kernel.decl @ggml_moe_build_expert_table(%token_count$10: index, %route_count$11: index, %route_stride$12: index, %expert_count$13: index) launch(%token_count$14: index, %route_count$15: index, %route_stride$16: index, %expert_count$17: index, %route_ids: buffer, %expert_table: buffer)
 
-kernel.decl @qwen3_moe_build_expert_partition_table(%token_count$20: index, %route_count$21: index, %expert_count$22: index) launch(%token_count$23: index, %route_count$24: index, %expert_count$25: index, %expert_table: buffer, %partition_table: buffer)
+kernel.decl @ggml_moe_build_expert_partition_table(%token_count$20: index, %route_count$21: index, %expert_count$22: index) launch(%token_count$23: index, %route_count$24: index, %expert_count$25: index, %expert_table: buffer, %partition_table: buffer)
 
 func.decl @qwen3_moe_unpack_expert_partition_descriptor(%descriptor: i32) -> (index, index, index)
 
@@ -832,8 +832,8 @@ check.case public @qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma_differential_cas
   %actual_f16 = check.generate.fill value(1.0) : tensor<67x2x33xf16>
   %fused_actual = check.generate.fill value(1.0) : tensor<67x2x33xf16>
   kernel.launch @ggml_quantize_q8_1_x4_f32[%token_count, %input_size](%token_count, %input_size, %input, %q8_input) : [index, index](index, index, tensor<67x512xf32>, tensor<67x576xi8>)
-  kernel.launch @qwen3_moe_build_expert_table[%token_count, %route_count, %route_stride, %expert_count](%token_count, %route_count, %route_stride, %expert_count, %route_ids, %expert_table) : [index, index, index, index](index, index, index, index, tensor<67x4xi32>, tensor<272xi32>)
-  kernel.launch @qwen3_moe_build_expert_partition_table[%token_count, %route_count, %expert_count](%token_count, %route_count, %expert_count, %expert_table, %partition_table) : [index, index, index](index, index, index, tensor<272xi32>, tensor<10xi32>)
+  kernel.launch @ggml_moe_build_expert_table[%token_count, %route_count, %route_stride, %expert_count](%token_count, %route_count, %route_stride, %expert_count, %route_ids, %expert_table) : [index, index, index, index](index, index, index, index, tensor<67x4xi32>, tensor<272xi32>)
+  kernel.launch @ggml_moe_build_expert_partition_table[%token_count, %route_count, %expert_count](%token_count, %route_count, %expert_count, %expert_table, %partition_table) : [index, index, index](index, index, index, tensor<272xi32>, tensor<10xi32>)
   kernel.launch @ggml_mul_mat_id_vector_pair_binary_publish_f32[%token_count, %route_count, %route_stride, %expert_count, %output_size](%token_count, %route_count, %route_stride, %expert_count, %output_size, %q8_input, %route_ids, %gate_weight, %up_weight, %expected) : [index, index, index, index, index](index, index, index, index, index, tensor<67x576xi8>, tensor<67x4xi32>, tensor<4x33x2x144xi8>, tensor<4x33x2x144xi8>, tensor<67x2x33xf32>)
   kernel.launch @qwen3_moe_routed_linear_q4k_f16_wmma[%token_count](%token_count, %input, %expert_table, %gate_weight, %gate_projection) : [index](index, tensor<67x512xf32>, tensor<272xi32>, tensor<4x33x2x144xi8>, tensor<67x2x33xf32>)
   kernel.launch @qwen3_moe_routed_linear_q4k_f16_wmma[%token_count](%token_count, %input, %expert_table, %up_weight, %up_projection) : [index](index, tensor<67x512xf32>, tensor<272xi32>, tensor<4x33x2x144xi8>, tensor<67x2x33xf32>)
@@ -863,7 +863,7 @@ check.case public @qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma_benchmark_case {
   %up_projection = check.generate.fill value(1.0) : tensor<[%token_count]x8x768xf32>
   %output = check.generate.fill value(1.0) : tensor<[%token_count]x8x768xf32>
   %expected = check.generate.fill value(0.0) : tensor<[%token_count]x8x768xf32>
-  kernel.launch @qwen3_moe_build_expert_table[%token_count, %route_count, %route_stride, %expert_count](%token_count, %route_count, %route_stride, %expert_count, %route_ids, %expert_table) : [index, index, index, index](index, index, index, index, tensor<[%token_count]x8xi32>, tensor<262272xi32>)
+  kernel.launch @ggml_moe_build_expert_table[%token_count, %route_count, %route_stride, %expert_count](%token_count, %route_count, %route_stride, %expert_count, %route_ids, %expert_table) : [index, index, index, index](index, index, index, index, tensor<[%token_count]x8xi32>, tensor<262272xi32>)
   kernel.launch @qwen3_moe_routed_linear_q4k_f16_wmma[%token_count](%token_count, %input, %expert_table, %gate_weight, %gate_projection) : [index](index, tensor<[%token_count]x2048xf32>, tensor<262272xi32>, tensor<128x768x8x144xi8>, tensor<[%token_count]x8x768xf32>)
   kernel.launch @qwen3_moe_routed_linear_q4k_f16_wmma[%token_count](%token_count, %input, %expert_table, %up_weight, %up_projection) : [index](index, tensor<[%token_count]x2048xf32>, tensor<262272xi32>, tensor<128x768x8x144xi8>, tensor<[%token_count]x8x768xf32>)
   kernel.launch @qwen3_moe_routed_swiglu_f32[%token_count](%token_count, %gate_projection, %up_projection, %output) : [index](index, tensor<[%token_count]x8x768xf32>, tensor<[%token_count]x8x768xf32>, tensor<[%token_count]x8x768xf32>)
@@ -887,8 +887,8 @@ check.case public @qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma_fused_benchmark_
   %up_weight = check.generate.fill value(0) : tensor<128x768x8x144xi8>
   %output = check.generate.fill value(1.0) : tensor<[%token_count]x8x768xf16>
   %expected = check.generate.fill value(0.0) : tensor<[%token_count]x8x768xf16>
-  kernel.launch @qwen3_moe_build_expert_table[%token_count, %route_count, %route_stride, %expert_count](%token_count, %route_count, %route_stride, %expert_count, %route_ids, %expert_table) : [index, index, index, index](index, index, index, index, tensor<[%token_count]x8xi32>, tensor<262272xi32>)
-  kernel.launch @qwen3_moe_build_expert_partition_table[%token_count, %route_count, %expert_count](%token_count, %route_count, %expert_count, %expert_table, %partition_table) : [index, index, index](index, index, index, tensor<262272xi32>, tensor<641xi32>)
+  kernel.launch @ggml_moe_build_expert_table[%token_count, %route_count, %route_stride, %expert_count](%token_count, %route_count, %route_stride, %expert_count, %route_ids, %expert_table) : [index, index, index, index](index, index, index, index, tensor<[%token_count]x8xi32>, tensor<262272xi32>)
+  kernel.launch @ggml_moe_build_expert_partition_table[%token_count, %route_count, %expert_count](%token_count, %route_count, %expert_count, %expert_table, %partition_table) : [index, index, index](index, index, index, tensor<262272xi32>, tensor<641xi32>)
   kernel.launch @qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma[%token_count](%token_count, %input, %expert_table, %partition_table, %gate_weight, %up_weight, %output) : [index](index, tensor<[%token_count]x2048xf32>, tensor<262272xi32>, tensor<641xi32>, tensor<128x768x8x144xi8>, tensor<128x768x8x144xi8>, tensor<[%token_count]x8x768xf16>)
   check.expect.close actual(%output) expected(%expected) atol(0.0) rtol(0.0) nan(same) : tensor<[%token_count]x8x768xf16>
   check.return

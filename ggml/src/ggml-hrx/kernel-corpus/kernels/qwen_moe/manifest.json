@@ -93,6 +93,9 @@
       "path": "../loom-libs/ops/matmul_id/vector_weighted.loom"
     },
     {
+      "path": "../loom-libs/ops/moe_routing_tables.loom"
+    },
+    {
       "path": "qwen3_moe/routed_linear_q4k_f16_wmma.loom"
     },
     {
@@ -1297,140 +1300,6 @@
       },
       "compile_dependencies": [
         "qwen3_moe/model_config.loom"
-      ]
-    },
-    {
-      "name": "qwen3_moe_build_expert_partition_table",
-      "symbol": "qwen3_moe_build_expert_partition_table",
-      "source": "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
-      "workload_parameters": [
-        {
-          "name": "token_count",
-          "type": "index"
-        },
-        {
-          "name": "route_count",
-          "type": "index"
-        },
-        {
-          "name": "expert_count",
-          "type": "index"
-        }
-      ],
-      "launch_parameters": [
-        {
-          "name": "token_count",
-          "type": "index"
-        },
-        {
-          "name": "route_count",
-          "type": "index"
-        },
-        {
-          "name": "expert_count",
-          "type": "index"
-        }
-      ],
-      "bindings": [
-        "expert_table",
-        "partition_table"
-      ],
-      "binding_access": [
-        "read",
-        "write"
-      ],
-      "target_selector": "",
-      "compile_recipe": {
-        "mode": "archive",
-        "link_module": "routed_gate_up_swiglu_q4k_linked",
-        "primary_sources": [
-          "qwen3_moe/routed_gate_up_swiglu_q4k.loom"
-        ],
-        "library_sources": [
-          "ggml/quantize_q8_1_x4.loom",
-          "../loom-libs/ops/matmul_id/vector_pair_binary.loom",
-          "../loom-libs/motifs/matmul_id/vector_pair.loom",
-          "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
-          "../loom-libs/motifs/elementwise/binary_apply.loom"
-        ]
-      },
-      "compile_dependencies": [
-        "ggml/quantize_q8_1_x4.loom",
-        "../loom-libs/ops/matmul_id/vector_pair_binary.loom",
-        "../loom-libs/motifs/matmul_id/vector_pair.loom",
-        "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
-        "../loom-libs/motifs/elementwise/binary_apply.loom"
-      ]
-    },
-    {
-      "name": "qwen3_moe_build_expert_table",
-      "symbol": "qwen3_moe_build_expert_table",
-      "source": "qwen3_moe/routed_gate_up_swiglu_q4k.loom",
-      "workload_parameters": [
-        {
-          "name": "token_count",
-          "type": "index"
-        },
-        {
-          "name": "route_count",
-          "type": "index"
-        },
-        {
-          "name": "route_stride",
-          "type": "index"
-        },
-        {
-          "name": "expert_count",
-          "type": "index"
-        }
-      ],
-      "launch_parameters": [
-        {
-          "name": "token_count",
-          "type": "index"
-        },
-        {
-          "name": "route_count",
-          "type": "index"
-        },
-        {
-          "name": "route_stride",
-          "type": "index"
-        },
-        {
-          "name": "expert_count",
-          "type": "index"
-        }
-      ],
-      "bindings": [
-        "route_ids",
-        "expert_table"
-      ],
-      "binding_access": [
-        "read",
-        "write"
-      ],
-      "target_selector": "",
-      "compile_recipe": {
-        "mode": "archive",
-        "link_module": "routed_gate_up_swiglu_q4k_linked",
-        "primary_sources": [
-          "qwen3_moe/routed_gate_up_swiglu_q4k.loom"
-        ],
-        "library_sources": [
-          "ggml/quantize_q8_1_x4.loom",
-          "../loom-libs/ops/matmul_id/vector_pair_binary.loom",
-          "../loom-libs/motifs/matmul_id/vector_pair.loom",
-          "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
-          "../loom-libs/motifs/elementwise/binary_apply.loom"
-        ]
-      },
-      "compile_dependencies": [
-        "ggml/quantize_q8_1_x4.loom",
-        "../loom-libs/ops/matmul_id/vector_pair_binary.loom",
-        "../loom-libs/motifs/matmul_id/vector_pair.loom",
-        "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
-        "../loom-libs/motifs/elementwise/binary_apply.loom"
       ]
     },
     {
@@ -3774,7 +3643,8 @@
         "../loom-libs/motifs/matmul_id/vector_weighted.loom",
         "../loom-libs/motifs/matmul_id/vector_pair.loom",
         "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
-        "../loom-libs/motifs/elementwise/binary_apply.loom"
+        "../loom-libs/motifs/elementwise/binary_apply.loom",
+        "../loom-libs/ops/moe_routing_tables.loom"
       ]
     },
     {
@@ -3798,7 +3668,8 @@
         "../loom-libs/motifs/matmul_id/vector_weighted.loom",
         "../loom-libs/motifs/matmul_id/vector_pair.loom",
         "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
-        "../loom-libs/motifs/elementwise/binary_apply.loom"
+        "../loom-libs/motifs/elementwise/binary_apply.loom",
+        "../loom-libs/ops/moe_routing_tables.loom"
       ]
     },
     {
@@ -3822,7 +3693,8 @@
         "../loom-libs/motifs/matmul_id/vector_weighted.loom",
         "../loom-libs/motifs/matmul_id/vector_pair.loom",
         "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
-        "../loom-libs/motifs/elementwise/binary_apply.loom"
+        "../loom-libs/motifs/elementwise/binary_apply.loom",
+        "../loom-libs/ops/moe_routing_tables.loom"
       ]
     },
     {
@@ -3841,7 +3713,8 @@
         "../loom-libs/motifs/matmul_id/vector_weighted.loom",
         "../loom-libs/motifs/matmul_id/vector_pair.loom",
         "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
-        "../loom-libs/motifs/elementwise/binary_apply.loom"
+        "../loom-libs/motifs/elementwise/binary_apply.loom",
+        "../loom-libs/ops/moe_routing_tables.loom"
       ]
     },
     {
@@ -3871,7 +3744,8 @@
         "../loom-libs/ops/matmul_id/vector_pair_binary.loom",
         "../loom-libs/motifs/matmul_id/vector_pair.loom",
         "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
-        "../loom-libs/motifs/elementwise/binary_apply.loom"
+        "../loom-libs/motifs/elementwise/binary_apply.loom",
+        "../loom-libs/ops/moe_routing_tables.loom"
       ]
     },
     {
@@ -3895,7 +3769,8 @@
         "../loom-libs/ops/matmul_id/vector_pair_binary.loom",
         "../loom-libs/motifs/matmul_id/vector_pair.loom",
         "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
-        "../loom-libs/motifs/elementwise/binary_apply.loom"
+        "../loom-libs/motifs/elementwise/binary_apply.loom",
+        "../loom-libs/ops/moe_routing_tables.loom"
       ]
     },
     {
@@ -3909,7 +3784,8 @@
         "../loom-libs/ops/matmul_id/vector_pair_binary.loom",
         "../loom-libs/motifs/matmul_id/vector_pair.loom",
         "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
-        "../loom-libs/motifs/elementwise/binary_apply.loom"
+        "../loom-libs/motifs/elementwise/binary_apply.loom",
+        "../loom-libs/ops/moe_routing_tables.loom"
       ]
     },
     {
@@ -3923,7 +3799,8 @@
         "../loom-libs/ops/matmul_id/vector_pair_binary.loom",
         "../loom-libs/motifs/matmul_id/vector_pair.loom",
         "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
-        "../loom-libs/motifs/elementwise/binary_apply.loom"
+        "../loom-libs/motifs/elementwise/binary_apply.loom",
+        "../loom-libs/ops/moe_routing_tables.loom"
       ]
     },
     {
@@ -3941,7 +3818,8 @@
         "../loom-libs/ops/matmul_id/vector_pair_binary.loom",
         "../loom-libs/motifs/matmul_id/vector_pair.loom",
         "../loom-libs/motifs/matmul_id/vector_q4k_q8.loom",
-        "../loom-libs/motifs/elementwise/binary_apply.loom"
+        "../loom-libs/motifs/elementwise/binary_apply.loom",
+        "../loom-libs/ops/moe_routing_tables.loom"
       ]
     },
     {
@@ -4100,7 +3978,14 @@
         "--config=qwen3_moe.routed_gate_up.route_count=8",
         "--config=qwen3_moe.workload.token_capacity=512",
         "--dry-run",
-        "--output-format=jsonl"
+        "--output-format=jsonl",
+        "--config=ggml.moe_routing.descriptor_expert_mask=127",
+        "--config=ggml.moe_routing.descriptor_partition_shift=7",
+        "--config=ggml.moe_routing.descriptor_row_count_shift=13",
+        "--config=ggml.moe_routing.expert_count=128",
+        "--config=ggml.moe_routing.partition_workgroup_size=128",
+        "--config=ggml.moe_routing.route_count=8",
+        "--config=ggml.workload.token_capacity=2048"
       ],
       "link_module": "routed_gate_up_swiglu_q4k_linked"
     },
@@ -4138,7 +4023,14 @@
         "--config=qwen3_moe.routed_down.route_count=8",
         "--config=qwen3_moe.workload.token_capacity=512",
         "--dry-run",
-        "--output-format=jsonl"
+        "--output-format=jsonl",
+        "--config=ggml.moe_routing.descriptor_expert_mask=127",
+        "--config=ggml.moe_routing.descriptor_partition_shift=7",
+        "--config=ggml.moe_routing.descriptor_row_count_shift=13",
+        "--config=ggml.moe_routing.expert_count=128",
+        "--config=ggml.moe_routing.partition_workgroup_size=128",
+        "--config=ggml.moe_routing.route_count=8",
+        "--config=ggml.workload.token_capacity=2048"
       ],
       "link_module": "routed_down_weighted_reduce_next_rmsnorm_f32_linked"
     },
@@ -4153,7 +4045,14 @@
         "--config=qwen3_moe.routed_down.route_count=8",
         "--config=qwen3_moe.workload.token_capacity=512",
         "--dry-run",
-        "--output-format=jsonl"
+        "--output-format=jsonl",
+        "--config=ggml.moe_routing.descriptor_expert_mask=127",
+        "--config=ggml.moe_routing.descriptor_partition_shift=7",
+        "--config=ggml.moe_routing.descriptor_row_count_shift=13",
+        "--config=ggml.moe_routing.expert_count=128",
+        "--config=ggml.moe_routing.partition_workgroup_size=128",
+        "--config=ggml.moe_routing.route_count=8",
+        "--config=ggml.workload.token_capacity=2048"
       ],
       "link_module": "routed_down_weighted_reduce_next_rmsnorm_q8_1_x4_linked"
     },
@@ -4167,7 +4066,14 @@
         "--config=qwen3_moe.routed_down.route_count=8",
         "--config=qwen3_moe.workload.token_capacity=512",
         "--dry-run",
-        "--output-format=jsonl"
+        "--output-format=jsonl",
+        "--config=ggml.moe_routing.descriptor_expert_mask=127",
+        "--config=ggml.moe_routing.descriptor_partition_shift=7",
+        "--config=ggml.moe_routing.descriptor_row_count_shift=13",
+        "--config=ggml.moe_routing.expert_count=128",
+        "--config=ggml.moe_routing.partition_workgroup_size=128",
+        "--config=ggml.moe_routing.route_count=8",
+        "--config=ggml.workload.token_capacity=2048"
       ],
       "link_module": "routed_down_quantized_f16_wmma_linked"
     },
@@ -4182,7 +4088,14 @@
         "--config=qwen3_moe.routed_down.route_count=8",
         "--config=qwen3_moe.workload.token_capacity=512",
         "--dry-run",
-        "--output-format=jsonl"
+        "--output-format=jsonl",
+        "--config=ggml.moe_routing.descriptor_expert_mask=127",
+        "--config=ggml.moe_routing.descriptor_partition_shift=7",
+        "--config=ggml.moe_routing.descriptor_row_count_shift=13",
+        "--config=ggml.moe_routing.expert_count=128",
+        "--config=ggml.moe_routing.partition_workgroup_size=128",
+        "--config=ggml.moe_routing.route_count=8",
+        "--config=ggml.workload.token_capacity=2048"
       ],
       "link_module": "routed_down_q4k_linked"
     },
@@ -4218,7 +4131,14 @@
         "--config=qwen3_moe.routed_gate_up.route_count=8",
         "--config=qwen3_moe.workload.token_capacity=16",
         "--dry-run",
-        "--output-format=jsonl"
+        "--output-format=jsonl",
+        "--config=ggml.moe_routing.descriptor_expert_mask=127",
+        "--config=ggml.moe_routing.descriptor_partition_shift=7",
+        "--config=ggml.moe_routing.descriptor_row_count_shift=13",
+        "--config=ggml.moe_routing.expert_count=128",
+        "--config=ggml.moe_routing.partition_workgroup_size=128",
+        "--config=ggml.moe_routing.route_count=8",
+        "--config=ggml.workload.token_capacity=2048"
       ],
       "link_module": "batched_decode_gate_up_q4k_linked"
     },
@@ -4260,7 +4180,14 @@
         "$(location :expert_table_partition_fused_linked)",
         "--benchmark=@qwen3_moe_expert_table_partition_fused_prefill_512",
         "--dry-run",
-        "--output-format=jsonl"
+        "--output-format=jsonl",
+        "--config=ggml.moe_routing.descriptor_expert_mask=127",
+        "--config=ggml.moe_routing.descriptor_partition_shift=7",
+        "--config=ggml.moe_routing.descriptor_row_count_shift=13",
+        "--config=ggml.moe_routing.expert_count=128",
+        "--config=ggml.moe_routing.partition_workgroup_size=128",
+        "--config=ggml.moe_routing.route_count=8",
+        "--config=ggml.workload.token_capacity=2048"
       ],
       "link_module": "expert_table_partition_fused_linked"
     },
@@ -4274,7 +4201,14 @@
         "--config=qwen3_moe.dense_quantized.output_size=512",
         "--config=qwen3_moe.workload.token_capacity=128",
         "--dry-run",
-        "--output-format=jsonl"
+        "--output-format=jsonl",
+        "--config=ggml.moe_routing.descriptor_expert_mask=127",
+        "--config=ggml.moe_routing.descriptor_partition_shift=7",
+        "--config=ggml.moe_routing.descriptor_row_count_shift=13",
+        "--config=ggml.moe_routing.expert_count=128",
+        "--config=ggml.moe_routing.partition_workgroup_size=128",
+        "--config=ggml.moe_routing.route_count=8",
+        "--config=ggml.workload.token_capacity=2048"
       ],
       "link_module": "dense_linear_quantized_f16_wmma_linked"
     },
@@ -4288,7 +4222,14 @@
         "--config=qwen3_moe.dense_quantized.output_size=2048",
         "--config=qwen3_moe.workload.token_capacity=512",
         "--dry-run",
-        "--output-format=jsonl"
+        "--output-format=jsonl",
+        "--config=ggml.moe_routing.descriptor_expert_mask=127",
+        "--config=ggml.moe_routing.descriptor_partition_shift=7",
+        "--config=ggml.moe_routing.descriptor_row_count_shift=13",
+        "--config=ggml.moe_routing.expert_count=128",
+        "--config=ggml.moe_routing.partition_workgroup_size=128",
+        "--config=ggml.moe_routing.route_count=8",
+        "--config=ggml.workload.token_capacity=2048"
       ],
       "link_module": "dense_linear_quantized_f16_wmma_linked"
     },
@@ -4302,7 +4243,14 @@
         "--config=qwen3_moe.dense_quantized.output_size=512",
         "--config=qwen3_moe.workload.token_capacity=1",
         "--dry-run",
-        "--output-format=jsonl"
+        "--output-format=jsonl",
+        "--config=ggml.moe_routing.descriptor_expert_mask=127",
+        "--config=ggml.moe_routing.descriptor_partition_shift=7",
+        "--config=ggml.moe_routing.descriptor_row_count_shift=13",
+        "--config=ggml.moe_routing.expert_count=128",
+        "--config=ggml.moe_routing.partition_workgroup_size=128",
+        "--config=ggml.moe_routing.route_count=8",
+        "--config=ggml.workload.token_capacity=2048"
       ],
       "link_module": "dense_linear_quantized_f16_wmma_linked"
     },
@@ -4318,7 +4266,14 @@
         "--config=qwen3_moe.model.rms_epsilon=0.000001",
         "--config=qwen3_moe.workload.token_capacity=1",
         "--dry-run",
-        "--output-format=jsonl"
+        "--output-format=jsonl",
+        "--config=ggml.moe_routing.descriptor_expert_mask=127",
+        "--config=ggml.moe_routing.descriptor_partition_shift=7",
+        "--config=ggml.moe_routing.descriptor_row_count_shift=13",
+        "--config=ggml.moe_routing.expert_count=128",
+        "--config=ggml.moe_routing.partition_workgroup_size=128",
+        "--config=ggml.moe_routing.route_count=8",
+        "--config=ggml.workload.token_capacity=2048"
       ],
       "link_module": "dense_linear_quantized_f16_wmma_linked"
     },
@@ -4332,7 +4287,14 @@
         "--config=qwen3_moe.routed_gate_up.route_count=8",
         "--config=qwen3_moe.workload.token_capacity=2048",
         "--dry-run",
-        "--output-format=jsonl"
+        "--output-format=jsonl",
+        "--config=ggml.moe_routing.descriptor_expert_mask=127",
+        "--config=ggml.moe_routing.descriptor_partition_shift=7",
+        "--config=ggml.moe_routing.descriptor_row_count_shift=13",
+        "--config=ggml.moe_routing.expert_count=128",
+        "--config=ggml.moe_routing.partition_workgroup_size=128",
+        "--config=ggml.moe_routing.route_count=8",
+        "--config=ggml.workload.token_capacity=2048"
       ],
       "link_module": "routed_gate_up_swiglu_q4k_f16_wmma_linked"
     },
