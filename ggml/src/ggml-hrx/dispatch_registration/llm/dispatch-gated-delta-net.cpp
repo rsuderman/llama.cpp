@@ -27,7 +27,7 @@ static constexpr KernelCatalogRef kGatedDeltaNetPrefillKernel =
 static constexpr KernelCatalogRef kGatedDeltaNetRmsNormGateKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_gated_delta_net_f32_wmma_head128_rmsnorm_gate");
 static constexpr KernelCatalogRef kRmsNormGateKernel =
-    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_gate_f32_f16");
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_gate_f32_publish");
 static constexpr KernelCatalogRef kGatedDeltaNetPrefillProjectionEpilogueKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_gated_delta_net_f32_wmma_head128_projection_epilogue");
 static constexpr KernelCatalogRef kGatedDeltaNetInplaceKernel =
@@ -42,8 +42,6 @@ static constexpr KernelCatalogRef kGatedDeltaNetSelectedSnapshotKernel = GGML_HR
     "loom_libs", "llm_gated_delta_net_f32_wmma_head128_selected_snapshot_projection_epilogue");
 static constexpr KernelCatalogRef kGatedDeltaNetSelectedRmsQ8Kernel = GGML_HRX_KERNEL_REF(
     "loom_libs", "llm_gated_delta_net_f32_wmma_head128_selected_snapshot_projection_rms_gate_q8");
-static constexpr KernelCatalogRef kRmsNormGateQ8Kernel =
-    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_gate_f32_q8_1_x4");
 static constexpr KernelCatalogRef kCopyF32Kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_copy_f32");
 static constexpr KernelCatalogRef kMulMatSymmetricI4LowRowAdjacentDualWmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_symmetric_i4_lowrow_adjacent_dual_wmma");
@@ -739,6 +737,7 @@ static bool match_gated_delta_net_rmsnorm_gate(const DispatchMatchContext & cont
     const Dispatch & norm = match.dispatches.front();
     if (norm.kernel.kernel_id != kRmsNormGateKernel.id || norm.bindings.size() != 5 ||
         norm.kernel.compile_parameters.at("ggml.rmsnorm_gate_f32.hidden_size") != std::to_string(gdn.width) ||
+        norm.kernel.compile_parameters.at("ggml.rmsnorm_gate_f32.publish_q8") != "0" ||
         norm.kernel.compile_parameters.at("ggml.rmsnorm_gate_f32.f16_output_row_width") !=
             std::to_string(gdn.width * gdn.head_count)) {
         return false;
@@ -993,11 +992,12 @@ static bool match_gated_delta_net_rmsnorm_q8(const DispatchMatchContext & contex
         return false;
     }
     const Dispatch & norm = match.dispatches.front();
-    if (norm.kernel.kernel_id != kRmsNormGateQ8Kernel.id || norm.bindings.size() != 5 ||
+    if (norm.kernel.kernel_id != kRmsNormGateKernel.id || norm.bindings.size() != 5 ||
         norm.bindings[0].value != input->id ||
         norm.kernel.integer_parameters.at("token_count") != gdn.head_count * gdn.token_count ||
         norm.kernel.compile_parameters.at("ggml.rmsnorm_gate_f32.hidden_size") != "128" ||
         norm.kernel.compile_parameters.at("ggml.rmsnorm_gate_f32.gate_op") != "15" ||
+        norm.kernel.compile_parameters.at("ggml.rmsnorm_gate_f32.publish_q8") != "1" ||
         norm.kernel.compile_parameters.at("ggml.rmsnorm_gate_f32.f16_output_row_width") != "0") {
         return false;
     }

@@ -40,10 +40,8 @@ static constexpr KernelCatalogRef kRmsNormBinarySymmetricI4K32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_symmetric_i4_k32");
 static constexpr KernelCatalogRef kRmsNormGateSiluMulSymmetricI4K32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_gate_silu_mul_symmetric_i4_k32");
-static constexpr KernelCatalogRef kRmsNormGateF32F16Kernel =
-    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_gate_f32_f16");
-static constexpr KernelCatalogRef kRmsNormGateF32Q8_1X4Kernel =
-    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_gate_f32_q8_1_x4");
+static constexpr KernelCatalogRef kRmsNormGateF32PublishKernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_gate_f32_publish");
 
 static const Value * graph_value(const Graph & graph, ValueId id) {
     return graph.values().find(id);
@@ -880,8 +878,7 @@ static bool match_rmsnorm_gate_dispatch(const DispatchMatchContext & context, Di
             return false;
         }
         Dispatch dispatch;
-        dispatch.kernel =
-            make_kernel_specialization(q8_output ? kRmsNormGateF32Q8_1X4Kernel : kRmsNormGateF32F16Kernel);
+        dispatch.kernel = make_kernel_specialization(kRmsNormGateF32PublishKernel);
         dispatch.kernel.integer_parameters.emplace("token_count", fused.token_count);
         dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_gate_f32.hidden_size",
                                                    to_config_value(fused.hidden_size));
@@ -890,6 +887,7 @@ static bool match_rmsnorm_gate_dispatch(const DispatchMatchContext & context, Di
                                                    std::to_string(unary_kind_config_value(fused.gate_op)));
         dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_gate_f32.f16_output_row_width",
                                                    to_config_value(packed_output ? publication_demand->consumer_value->ne[0] : 0));
+        dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_gate_f32.publish_q8", q8_output ? "1" : "0");
         dispatch.bindings.push_back({ fused.input->id, 0, fused.input->byte_count });
         dispatch.bindings.push_back({ fused.weight->id, 0, fused.weight->byte_count });
         dispatch.bindings.push_back({ fused.raw_gate->id, 0, fused.raw_gate->byte_count });

@@ -84,10 +84,7 @@
       "path": "ops/normalization/rmsnorm_gate_silu_mul_symmetric_i4_k32.loom"
     },
     {
-      "path": "ops/normalization/rmsnorm_gate_publish_f16.loom"
-    },
-    {
-      "path": "ops/normalization/rmsnorm_gate_publish_q8_1_x4.loom"
+      "path": "ops/normalization/rmsnorm_gate_publish.loom"
     },
     {
       "path": "ops/normalization/rmsnorm_mul_rope_f32.loom"
@@ -1906,10 +1903,10 @@
       ]
     },
     {
-      "name": "ggml_rmsnorm_gate_f32_f16",
+      "name": "ggml_rmsnorm_gate_f32_publish",
       "family": "loom_libs",
-      "symbol": "ggml_rmsnorm_gate_f32_f16",
-      "source": "ops/normalization/rmsnorm_gate_publish_f16.loom",
+      "symbol": "ggml_rmsnorm_gate_f32_publish",
+      "source": "ops/normalization/rmsnorm_gate_publish.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -1927,7 +1924,7 @@
         "weight",
         "raw_gate",
         "output",
-        "f16_output"
+        "alternate_output"
       ],
       "binding_access": [
         "read",
@@ -1940,62 +1937,7 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/normalization/rmsnorm_gate_publish_f16.loom"
-        ],
-        "library_sources": [
-          "motifs/normalization/rmsnorm.loom",
-          "motifs/normalization/rmsnorm_gate.loom",
-          "motifs/normalization/publish_f16.loom",
-          "motifs/normalization/publish_q8.loom",
-          "motifs/elementwise/unary_apply.loom",
-          "motifs/quantize_q8_1_x4.loom"
-        ]
-      },
-      "compile_dependencies": [
-        "motifs/normalization/rmsnorm.loom",
-        "motifs/normalization/rmsnorm_gate.loom",
-        "motifs/normalization/publish_f16.loom",
-        "motifs/normalization/publish_q8.loom",
-        "motifs/elementwise/unary_apply.loom",
-        "motifs/quantize_q8_1_x4.loom"
-      ]
-    },
-    {
-      "name": "ggml_rmsnorm_gate_f32_q8_1_x4",
-      "family": "loom_libs",
-      "symbol": "ggml_rmsnorm_gate_f32_q8_1_x4",
-      "source": "ops/normalization/rmsnorm_gate_publish_q8_1_x4.loom",
-      "workload_parameters": [
-        {
-          "name": "token_count",
-          "type": "index"
-        }
-      ],
-      "launch_parameters": [
-        {
-          "name": "token_count",
-          "type": "index"
-        }
-      ],
-      "bindings": [
-        "input",
-        "weight",
-        "raw_gate",
-        "output",
-        "q8_output"
-      ],
-      "binding_access": [
-        "read",
-        "read",
-        "read",
-        "write",
-        "write"
-      ],
-      "target_selector": "",
-      "compile_recipe": {
-        "mode": "direct",
-        "primary_sources": [
-          "ops/normalization/rmsnorm_gate_publish_q8_1_x4.loom"
+          "ops/normalization/rmsnorm_gate_publish.loom"
         ],
         "library_sources": [
           "motifs/normalization/rmsnorm.loom",

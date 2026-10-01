@@ -6786,9 +6786,10 @@ static void run_rmsnorm_gate_packed_output_checks() {
         const auto & plan = scheduler.plan();
         REQUIRE(plan.valid());
         const auto producer = std::find_if(plan.dispatches.begin(), plan.dispatches.end(), [](const auto & dispatch) {
-            return kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_gate_f32_f16";
+            return kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_gate_f32_publish";
         });
         REQUIRE(producer != plan.dispatches.end());
+        require_compile_parameter(*producer, "ggml.rmsnorm_gate_f32.publish_q8", "0");
         require_compile_parameter(*producer, "ggml.rmsnorm_gate_f32.f16_output_row_width",
                                   std::to_string(test.packed ? test.channels : 0));
         const auto * output = imported.graph.values().find_tensor(gated);
@@ -6829,9 +6830,10 @@ static void run_rmsnorm_gate_packed_output_checks() {
         const auto & plan = scheduler.plan();
         REQUIRE(plan.valid());
         const auto producer = std::find_if(plan.dispatches.begin(), plan.dispatches.end(), [](const auto & dispatch) {
-            return kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_gate_f32_f16";
+            return kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_gate_f32_publish";
         });
         REQUIRE(producer != plan.dispatches.end());
+        require_compile_parameter(*producer, "ggml.rmsnorm_gate_f32.publish_q8", "0");
         REQUIRE(producer->bindings.size() == 5);
         const auto * output = imported.graph.values().find_tensor(gated);
         REQUIRE(output != nullptr);
@@ -6907,10 +6909,13 @@ static void run_rmsnorm_gate_q8_output_checks() {
         const auto & plan = scheduler.plan();
         REQUIRE(plan.valid());
         const auto producer = std::find_if(plan.dispatches.begin(), plan.dispatches.end(), [](const auto & dispatch) {
-            return kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_gate_f32_q8_1_x4";
+            const auto publish_q8 = dispatch.kernel.compile_parameters.find("ggml.rmsnorm_gate_f32.publish_q8");
+            return kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_gate_f32_publish" &&
+                   publish_q8 != dispatch.kernel.compile_parameters.end() && publish_q8->second == "1";
         });
         REQUIRE((producer != plan.dispatches.end()) == test.q8);
         if (test.q8) {
+            require_compile_parameter(*producer, "ggml.rmsnorm_gate_f32.publish_q8", "1");
             const auto * output = imported.graph.values().find_tensor(gated);
             REQUIRE(output != nullptr);
             const size_t bytes = static_cast<size_t>(test.tokens) * ggml_row_size(GGML_TYPE_Q8_1, test.channels);
@@ -7559,7 +7564,7 @@ static void run_gdn_rmsnorm_gate_dispatch_checks() {
         });
         REQUIRE((fused != plan.dispatches.end()) == test.fused);
         REQUIRE(std::count_if(plan.dispatches.begin(), plan.dispatches.end(), [](const auto & dispatch) {
-            return kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_gate_f32_f16";
+            return kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_gate_f32_publish";
         }) == (test.fused ? 0 : 1));
         if (test.fused) {
             REQUIRE(fused->bindings.size() == 11);
@@ -13408,7 +13413,7 @@ static void run_gdn_selected_rms_q8_dispatch_checks() {
             REQUIRE(std::none_of(plan.dispatches.begin(), plan.dispatches.end(), [](const auto & dispatch) {
                 const auto name = kernel_name_for_id(dispatch.kernel.kernel_id);
                 return name == "loom_libs:ggml_get_rows_f32" || name == "loom_libs:ggml_copy_f32" ||
-                       name == "loom_libs:ggml_rmsnorm_gate_f32_q8_1_x4";
+                       name == "loom_libs:ggml_rmsnorm_gate_f32_publish";
             }));
         }
         const auto commands =

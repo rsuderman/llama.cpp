@@ -1822,7 +1822,7 @@ static void run_rmsnorm_gate_cpu_reference_case(int64_t hidden_size,
     };
     Graph a = build(cpu_ctx);
     Graph b = build(hrx_ctx);
-    require_kernel_subsequence(scheduled_kernel_sequence(b.graph), { "loom_libs:ggml_rmsnorm_gate_f32_f16" });
+    require_kernel_subsequence(scheduled_kernel_sequence(b.graph), { "loom_libs:ggml_rmsnorm_gate_f32_publish" });
     ggml_backend_buffer_t a_buffer = ggml_backend_alloc_ctx_tensors(cpu_ctx, cpu);
     ggml_backend_buffer_t b_buffer = ggml_backend_alloc_ctx_tensors(hrx_ctx, hrx);
     REQUIRE(a_buffer != nullptr && b_buffer != nullptr);
