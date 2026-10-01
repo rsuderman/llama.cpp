@@ -465,7 +465,7 @@ static void run_loom_jit_compile_checks() {
     const ggml::hrx::KernelDefinition & binary          = find_kernel("ggml_binary_f32");
     const ggml::hrx::KernelDefinition & binary_bc       = find_kernel("ggml_binary_bc_f32");
     const ggml::hrx::KernelDefinition & gather_add      = find_kernel("ggml_gather_add_f32");
-    const ggml::hrx::KernelDefinition & rmsnorm         = find_kernel("qwen3_moe_rmsnorm_f32");
+    const ggml::hrx::KernelDefinition & rmsnorm         = find_kernel("ggml_rmsnorm_f32");
     const ggml::hrx::KernelDefinition & router_top8     = find_kernel("qwen3_moe_router_top8_f32");
     const ggml::hrx::KernelDefinition & expert_table    = find_kernel("ggml_moe_build_expert_table");
     const ggml::hrx::KernelDefinition & partition_table = find_kernel("ggml_moe_build_expert_partition_table");
@@ -522,10 +522,9 @@ static void run_loom_jit_compile_checks() {
                                       { "token_count", 1 }
     },
                                   {
-                                      { "qwen3_moe.model.hidden_size", "2048" },
-                                      { "qwen3_moe.model.rms_epsilon", "0.000001" },
-                                      { "qwen3_moe.workload.token_capacity", "1" },
-                                      { "ggml.quantize_q8_1_x4.group_capacity", "256" },
+                                      { "ggml.rmsnorm_f32.hidden_size", "2048" },
+                                      { "ggml.rmsnorm_f32.input_stride", "2048" },
+                                      { "ggml.rmsnorm_f32.rms_epsilon", "0.000001" },
                                   }));
     refs.push_back(compile_kernel(*async_jit, "async-router-top8-1", router_top8,
                                   {
