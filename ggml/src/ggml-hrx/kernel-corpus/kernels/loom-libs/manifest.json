@@ -12,6 +12,9 @@
       "path": "ops/elementwise/binary_bc_f32.loom"
     },
     {
+      "path": "ops/elementwise/binary_bc_publish_q8_1_x4.loom"
+    },
+    {
       "path": "ops/elementwise/scale_f32.loom"
     },
     {
@@ -43,6 +46,9 @@
     },
     {
       "path": "ops/elementwise/binary_f32.loom"
+    },
+    {
+      "path": "ops/elementwise/binary_publish_q8_1_x4.loom"
     },
     {
       "path": "ops/normalization/rmsnorm_f32.loom"
@@ -1096,6 +1102,51 @@
       ]
     },
     {
+      "name": "ggml_binary_f32_publish_q8_1_x4",
+      "family": "loom_libs",
+      "symbol": "ggml_binary_f32_publish_q8_1_x4",
+      "source": "ops/elementwise/binary_publish_q8_1_x4.loom",
+      "workload_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "lhs",
+        "rhs",
+        "output",
+        "q8_output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "write",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/elementwise/binary_publish_q8_1_x4.loom"
+        ],
+        "library_sources": [
+          "motifs/elementwise/binary_apply.loom",
+          "motifs/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "motifs/elementwise/binary_apply.loom",
+        "motifs/quantize_q8_1_x4.loom"
+      ]
+    },
+    {
       "name": "ggml_binary_swiglu_symmetric_i4_k32",
       "family": "loom_libs",
       "symbol": "ggml_binary_swiglu_symmetric_i4_k32",
@@ -1221,6 +1272,75 @@
       "compile_dependencies": [
         "motifs/elementwise/binary_apply.loom",
         "motifs/elementwise/broadcast_index.loom"
+      ]
+    },
+    {
+      "name": "ggml_binary_bc_f32_publish_q8_1_x4",
+      "family": "loom_libs",
+      "symbol": "ggml_binary_bc_f32_publish_q8_1_x4",
+      "source": "ops/elementwise/binary_bc_publish_q8_1_x4.loom",
+      "workload_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        },
+        {
+          "name": "hidden_size",
+          "type": "index"
+        },
+        {
+          "name": "src0_element_count",
+          "type": "index"
+        },
+        {
+          "name": "src1_element_count",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        },
+        {
+          "name": "hidden_size",
+          "type": "index"
+        },
+        {
+          "name": "src0_element_count",
+          "type": "index"
+        },
+        {
+          "name": "src1_element_count",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "lhs",
+        "rhs",
+        "output",
+        "q8_output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "write",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/elementwise/binary_bc_publish_q8_1_x4.loom"
+        ],
+        "library_sources": [
+          "motifs/elementwise/binary_apply.loom",
+          "motifs/quantize_q8_1_x4.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "motifs/elementwise/binary_apply.loom",
+        "motifs/quantize_q8_1_x4.loom"
       ]
     },
     {

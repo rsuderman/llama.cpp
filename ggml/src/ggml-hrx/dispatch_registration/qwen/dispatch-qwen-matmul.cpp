@@ -1,6 +1,8 @@
 #include "dispatch-qwen-matmul.h"
 
 #include "dispatch-llm-shapes.h"
+#include "dispatch_registration/common/dispatch-activation-publication.h"
+#include "dispatch_registration/common/dispatch-mul-mat-common.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
@@ -318,6 +320,22 @@ static QwenAttentionOutputNextQ8Match match_qwen_attention_output_next_q8(const 
 
 }  // namespace
 
+bool qwen_accepts_q6k_q8_input(const DispatchMatchContext & context,
+                               const GraphNode &            consumer,
+                               const Value &                input) {
+    if (consumer.op != GGML_OP_MUL_MAT || consumer.inputs.size() != 2 || consumer.inputs[1] != input.id) {
+        return false;
+    }
+    const Value * weight = graph_value(context.graph, consumer.inputs[0]);
+    const Value * output = graph_value(context.graph, consumer.output);
+    return weight != nullptr && output != nullptr && weight->type == GGML_TYPE_Q6_K &&
+           input.type == GGML_TYPE_F32 && output->type == GGML_TYPE_F32 && weight->contiguous && input.contiguous &&
+           output->contiguous && input.ne[0] == kQwenHiddenSize && input.ne[1] == 1 && input.ne[2] == 1 &&
+           input.ne[3] == 1 && weight->ne[0] == kQwenHiddenSize && weight->ne[1] == kQwenVocabularyCount &&
+           weight->ne[2] == 1 && weight->ne[3] == 1 && output->ne[0] == kQwenVocabularyCount && output->ne[1] == 1 &&
+           output->ne[2] == 1 && output->ne[3] == 1;
+}
+
 static void build_qwen_matmul_dispatch(const QwenMatmulMatch & match,
                                        DispatchMatch &         dispatch_match,
                                        size_t                  root_index) {
@@ -354,9 +372,31 @@ static bool match_qwen_attention_output_next_q8_dispatch(const DispatchMatchCont
         return false;
     }
 
+    const CommonActivationPublicationCapabilities capabilities = {
+        DispatchActivationInputQ8_1X4,
+        DispatchActivationInputQ8_1X4,
+    };
+    const CommonActivationPublicationPlan publication_plan =
+        common_select_activation_publication_plan(context, *match.normalized_output, capabilities);
+    const CommonActivationPublicationDemand q8_demand =
+        publication_plan.matched() ? publication_plan.preferred() : CommonActivationPublicationDemand{};
+    if (!q8_demand.matched()) {
+        return false;
+    }
+
     const ValueId completion_counter(context.next_plan_value.value);
-    const ValueId q8_output(context.next_plan_value.value + 1);
-    const size_t  q8_output_bytes = q8_1_x4_byte_count(match.token_count, match.output_size);
+    dispatch_match.completion_counter_requests.push_back({
+        completion_counter,
+        "qwen.decode.attention_output.completion_counter",
+        1,
+    });
+    CommonActivationPublication q8_publication;
+    constexpr const char * q8_publication_name = "qwen.decode.attention_output.next_q8_output";
+    if (!common_reserve_activation_publication(context, dispatch_match, *match.normalized_output, q8_demand,
+                                               q8_publication_name, q8_publication) ||
+        !common_append_activation_publication(dispatch_match, q8_publication, q8_publication_name)) {
+        return false;
+    }
 
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kQwenDenseLinearQ4KQ8NextQ8Kernel);
@@ -375,25 +415,9 @@ static bool match_qwen_attention_output_next_q8_dispatch(const DispatchMatchCont
     dispatch.bindings.push_back({ match.norm_weight->id, 0, match.norm_weight->byte_count });
     dispatch.bindings.push_back({ match.normalized_output->id, 0, match.normalized_output->byte_count });
     dispatch.bindings.push_back({ completion_counter, 0, sizeof(int32_t) });
-    dispatch.bindings.push_back({ q8_output, 0, q8_output_bytes });
+    dispatch.bindings.push_back(q8_publication.binding());
 
     dispatch_match.value_aliases.push_back({ match.residual_input->id, match.residual_output->id });
-    dispatch_match.completion_counter_requests.push_back({
-        completion_counter,
-        "qwen.decode.attention_output.completion_counter",
-        1,
-    });
-    dispatch_match.transients.push_back(
-        { q8_output, "qwen.decode.attention_output.next_q8_output", q8_output_bytes, 256 });
-    Status metadata_status;
-    if (!dispatch_match.metadata.append_alternate_value(
-            { match.normalized_output->id, q8_output, GGML_TYPE_Q8_1, q8_output_bytes,
-              "qwen.decode.attention_output.next_q8_output" },
-            metadata_status)) {
-        dispatch_match.status.append(metadata_status);
-        return false;
-    }
-
     if (!append_covered_node_index_once(context.graph, context.covered_nodes, context.root_node,
                                         dispatch_match.covered_nodes) ||
         (match.projection_get_rows != nullptr &&
@@ -415,6 +439,15 @@ static bool match_qwen_attention_output_next_q8_dispatch(const DispatchMatchCont
 }
 
 void register_qwen_matmul_dispatches(DispatchRegistryBuilder & registry) {
+    registry.add_activation_consumer({
+        "qwen.matmul.input.q8_1_x4.q6k_vocab",
+        GGML_OP_MUL_MAT,
+        DispatchActivationInputQ8_1X4,
+        DispatchActivationConsumerUse::BandwidthLimited,
+        DispatchActivationProducerRequirementNone,
+        DispatchSource::Qwen,
+        qwen_accepts_q6k_q8_input,
+    });
     registry.add({
         "qwen.matmul.attention_output_q4k_q8_1_x4_next_q8",
         GGML_OP_MUL_MAT,

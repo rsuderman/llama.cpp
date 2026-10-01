@@ -3,6 +3,7 @@
 #include "../dispatch-registry.h"
 #include "dispatch-binary-common.h"
 #include "dispatch-mul-mat-weight-format.h"
+#include "dispatch-symmetric-i4.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
@@ -302,41 +303,14 @@ inline const GraphNode * common_find_only_consumer_with_op(const Graph & graph, 
     return consumers.front();
 }
 
-inline bool common_has_direct_symmetric_i4_lowrow_consumer(const Graph & graph, const Value & value) {
-    if (!graph.has_index() || value.type != GGML_TYPE_F32 || !value.contiguous || value.ne[0] < 256 ||
-        value.ne[0] > 32768 || value.ne[0] % 64 != 0 || value.element_count <= 0 ||
-        value.element_count % value.ne[0] != 0) {
-        return false;
-    }
-
-    const int64_t token_count = value.element_count / value.ne[0];
-    if (token_count < 1 || token_count > 16) {
-        return false;
-    }
-
-    for (const GraphNode * consumer : graph.index().consumers(value.id)) {
-        if (consumer == nullptr || consumer->op != GGML_OP_MUL_MAT || consumer->inputs.size() != 2 ||
-            consumer->inputs[1] != value.id) {
-            continue;
-        }
-
-        const Value * weight = common_graph_value(graph, consumer->inputs[0]);
-        const Value * output = common_graph_value(graph, consumer->output);
-        if (weight == nullptr || output == nullptr ||
-            (weight->type != GGML_TYPE_Q5_K && weight->type != GGML_TYPE_IQ4_XS) || weight->alias_source.value >= 0 ||
-            !weight->contiguous || !output->contiguous || output->type != GGML_TYPE_F32 ||
-            weight->ne[0] != value.ne[0] || weight->ne[1] != output->ne[0] || output->ne[0] % 64 != 0 ||
-            output->ne[1] != token_count || output->ne[2] != 1 || output->ne[3] != 1) {
-            continue;
-        }
-        return true;
-    }
-    return false;
-}
-
 inline bool common_has_symmetric_i4_lowrow_consumer(const Graph & graph, const Value & value) {
-    if (common_has_direct_symmetric_i4_lowrow_consumer(graph, value)) {
-        return true;
+    if (!graph.has_index()) {
+        return false;
+    }
+    for (const GraphNode * consumer : graph.index().consumers(value.id)) {
+        if (consumer != nullptr && common_symmetric_i4_lowrow_mul_mat_eligible(graph, *consumer, value)) {
+            return true;
+        }
     }
 
     for (const GraphNode * consumer : graph.index().consumers(value.id)) {
@@ -348,9 +322,13 @@ inline bool common_has_symmetric_i4_lowrow_consumer(const Graph & graph, const V
         const Value * reshaped = common_graph_value(graph, consumer->output);
         if (reshaped != nullptr && reshaped->type == GGML_TYPE_F32 && reshaped->contiguous &&
             reshaped->storage_root == value.storage_root && reshaped->element_count == value.element_count &&
-            reshaped->byte_count == value.byte_count &&
-            common_has_direct_symmetric_i4_lowrow_consumer(graph, *reshaped)) {
-            return true;
+            reshaped->byte_count == value.byte_count) {
+            for (const GraphNode * reshaped_consumer : graph.index().consumers(reshaped->id)) {
+                if (reshaped_consumer != nullptr &&
+                    common_symmetric_i4_lowrow_mul_mat_eligible(graph, *reshaped_consumer, *reshaped)) {
+                    return true;
+                }
+            }
         }
     }
     return false;

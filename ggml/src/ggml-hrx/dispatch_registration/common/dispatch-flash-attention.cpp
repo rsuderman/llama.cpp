@@ -410,35 +410,6 @@ static DispatchBinding prepare_flash_attention_value(const DispatchMatchContext 
     return { transposed, 0, bytes };
 }
 
-static bool has_qualified_f16_consumer(const Graph & graph, const FlashAttentionMatch & match) {
-    if (!graph.has_index() || match.query_token_count < 128) {
-        return false;
-    }
-    const Value * published = match.output_layout != nullptr ? graph_value(graph, match.output_layout->output) :
-                                                               match.output;
-    if (published == nullptr || published->type != GGML_TYPE_F32 || !published->contiguous) {
-        return false;
-    }
-    for (const GraphNode * consumer : graph.index().consumers(published->id)) {
-        const CommonMulMatMatch projection =
-            common_match_mul_mat_any_format(graph, consumer, kFlashAttentionF32F16WmmaKernel, false);
-        if (!projection.matched() || projection.input->id != published->id ||
-            projection.input_size != published->ne[0] || projection.token_count != match.query_token_count ||
-            projection.input_size % 256 != 0 || projection.output_size % 64 != 0 ||
-            projection.weight->alias_source.value >= 0) {
-            continue;
-        }
-        if (projection.weight->type == GGML_TYPE_Q6_K && projection.token_count % 128 == 0) {
-            return true;
-        }
-        if (projection.weight->type == GGML_TYPE_Q4_K && projection.token_count % 256 == 0 &&
-            projection.output_size >= projection.input_size / 4) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static bool match_flash_attention_gate_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
     const FlashAttentionMatch match = match_flash_attention_f32_f16(context.graph, context.plan, context.root_node);
     if (!match.matched() || match.output_layout == nullptr || match.output_layout->op != GGML_OP_RESHAPE) {
@@ -529,7 +500,15 @@ static bool match_flash_attention_f32_f16_dispatch(const DispatchMatchContext & 
         return false;
     }
 
-    const bool publish_f16 = has_qualified_f16_consumer(context.graph, match);
+    const CommonActivationPublicationCapabilities capabilities = {
+        match.query_token_count >= 128 ? DispatchActivationInputF16Row : DispatchActivationInputNone,
+        DispatchActivationInputF16Row,
+    };
+    const CommonActivationPublicationPlan publication_plan =
+        common_select_activation_publication_plan(context, *match.output, capabilities);
+    const CommonActivationPublicationDemand * demand =
+        publication_plan.find(CommonActivationPublicationFormat::F16Row);
+    const bool publish_f16 = demand != nullptr;
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(publish_f16 ? kFlashAttentionF32F16WmmaPublishF16Kernel :
                                                                kFlashAttentionF32F16WmmaKernel);
@@ -546,18 +525,13 @@ static bool match_flash_attention_f32_f16_dispatch(const DispatchMatchContext & 
     dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
 
     if (publish_f16) {
-        const size_t  bytes = match.output->byte_count / 2;
-        const ValueId f16_output(context.next_plan_value.value +
-                                 static_cast<int32_t>(dispatch_match.transients.size()));
         constexpr const char * name = "common.flash_attention.f16";
-        Status status;
-        if (!dispatch_match.metadata.append_alternate_value(
-                { match.output->id, f16_output, GGML_TYPE_F16, bytes, name }, status)) {
-            dispatch_match.status.append(status);
+        CommonActivationPublication publication;
+        if (!common_reserve_activation_publication(context, dispatch_match, *match.output, *demand, name, publication) ||
+            !common_append_activation_publication(dispatch_match, publication, name)) {
             return false;
         }
-        dispatch.bindings.push_back({ f16_output, 0, bytes });
-        dispatch_match.transients.push_back({ f16_output, name, bytes, 256 });
+        dispatch.bindings.push_back(publication.binding());
     }
 
     dispatch_match.covered_nodes.push_back(context.root_index);
@@ -581,19 +555,19 @@ static bool match_flash_attention_decode_split_next_q8_dispatch(const DispatchMa
 
     const Value * publication_subject =
         match.output_layout != nullptr ? graph_value(context.graph, match.output_layout->output) : nullptr;
-    if (match.output_layout == nullptr || match.output_layout->op != GGML_OP_RESHAPE || publication_subject == nullptr ||
-        !same_full_ordered_value_range(*match.output, *publication_subject)) {
+    if (match.output_layout != nullptr &&
+        (match.output_layout->op != GGML_OP_RESHAPE || publication_subject == nullptr ||
+         !same_full_ordered_value_range(*match.output, *publication_subject))) {
         return false;
     }
-    const CommonActivationPublicationCandidate candidates[] = {
-        { CommonActivationPublicationFormat::Q8_1X4, common_accepts_q8_1_x4_decode_mul_mat,
-         CommonActivationConsumerTraversal::Direct, true },
+    const CommonActivationPublicationCapabilities capabilities = {
+        DispatchActivationInputQ8_1X4,
     };
-    const CommonActivationPublicationDemand demand = common_select_activation_publication(
-        context, *publication_subject, candidates, std::size(candidates));
-    if (!demand.matched()) {
-        return false;
-    }
+    const CommonActivationPublicationPlan publication_plan = publication_subject != nullptr ?
+        common_select_activation_publication_plan(context, *publication_subject, capabilities) :
+        CommonActivationPublicationPlan{};
+    const CommonActivationPublicationDemand * demand =
+        publication_plan.find(CommonActivationPublicationFormat::Q8_1X4);
 
     const int64_t key_value_block_count = ceil_div(match.key_value_capacity, kDecodeKvTileSize);
     const size_t  partial_scalar_count  = static_cast<size_t>(match.key_value_head_count) *
@@ -627,9 +601,18 @@ static bool match_flash_attention_decode_split_next_q8_dispatch(const DispatchMa
 
     CommonActivationPublication publication;
     constexpr const char * publication_name = "common.decode.flash_attention.next_q8_output";
-    if (!common_reserve_activation_publication(context, dispatch_match, *publication_subject, demand,
-                                               publication_name, publication) ||
-        !common_append_activation_publication(dispatch_match, publication, publication_name)) {
+    Value private_layout = publication_subject != nullptr ? *publication_subject : *match.output;
+    if (publication_subject == nullptr) {
+        private_layout.ne = { output_hidden_size * match.query_token_count, 1, 1, 1 };
+    }
+    const bool reserved = demand != nullptr ?
+        common_reserve_activation_publication(context, dispatch_match, *publication_subject, *demand,
+                                              publication_name, publication) :
+        common_reserve_private_activation_output(context, dispatch_match, private_layout,
+                                                 CommonActivationPublicationFormat::Q8_1X4,
+                                                 "common.decode.flash_attention.private_q8_1_x4", publication);
+    if (!reserved ||
+        (demand != nullptr && !common_append_activation_publication(dispatch_match, publication, publication_name))) {
         return false;
     }
     const size_t q8_row_bytes = publication.byte_count / static_cast<size_t>(match.query_token_count);

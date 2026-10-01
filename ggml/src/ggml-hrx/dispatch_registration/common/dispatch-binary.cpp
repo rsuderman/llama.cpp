@@ -1,5 +1,6 @@
 #include "dispatch-binary.h"
 
+#include "dispatch-activation-publication.h"
 #include "dispatch-layout-utils.h"
 #include "dispatch-mul-mat-common.h"
 #include "ggml.h"
@@ -15,6 +16,10 @@ namespace {
 
 static constexpr KernelCatalogRef kBinaryF32Kernel   = GGML_HRX_KERNEL_REF("loom_libs", "ggml_binary_f32");
 static constexpr KernelCatalogRef kBinaryBcF32Kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_binary_bc_f32");
+static constexpr KernelCatalogRef kBinaryF32PublishQ8_1X4Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_binary_f32_publish_q8_1_x4");
+static constexpr KernelCatalogRef kBinaryBcF32PublishQ8_1X4Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_binary_bc_f32_publish_q8_1_x4");
 static constexpr KernelCatalogRef kBinarySwiGluSymmetricI4K32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_binary_swiglu_symmetric_i4_k32");
 
@@ -128,6 +133,12 @@ static bool binary_kind_allows_broadcast(BinaryKind kind, const Value & lhs, con
     return false;
 }
 
+static bool binary_q8_publication_enabled(BinaryKind kind, const Value & output) {
+    return (kind == BinaryKind::Add || kind == BinaryKind::Mul) && output.ne[0] >= 128 && output.ne[0] <= 32768 &&
+           output.ne[0] % 128 == 0 && output.ne[1] >= 1 && output.ne[1] <= 5 && output.ne[2] == 1 &&
+           output.ne[3] == 1 && output.element_count == output.ne[0] * output.ne[1];
+}
+
 static uint32_t broadcast_dim_flag(const Value & source, const Value & output, int dim) {
     return source.ne[dim] == 1 && output.ne[dim] != 1 ? 1 : 0;
 }
@@ -216,8 +227,7 @@ static bool match_binary_swiglu_symmetric_i4_dispatch(const DispatchMatchContext
         !packed_f32_layout(*output) || output->alias_source.value >= 0 ||
         !supported_source_layout(context.graph, *lhs) || !supported_source_layout(context.graph, *rhs) ||
         !binary_noalias_storage_is_safe(*lhs, *rhs, *output) || output->ne[0] < 256 || output->ne[0] > 32768 ||
-        output->ne[0] % 64 != 0 || output->element_count <= 0 || output->element_count % output->ne[0] != 0 ||
-        !common_has_symmetric_i4_lowrow_consumer(context.graph, *output)) {
+        output->ne[0] % 64 != 0 || output->element_count <= 0 || output->element_count % output->ne[0] != 0) {
         return false;
     }
 
@@ -226,12 +236,20 @@ static bool match_binary_swiglu_symmetric_i4_dispatch(const DispatchMatchContext
     if (token_count < 1 || token_count > 16) {
         return false;
     }
-    const CommonSymmetricI4ActivationLayout activation_layout =
-        common_symmetric_i4_activation_layout(input_size, token_count);
-    if (activation_layout.total_bytes == 0) {
+    const CommonActivationPublicationCapabilities capabilities = {
+        DispatchActivationInputSymmetricI4K32,
+        DispatchActivationInputSymmetricI4K32,
+    };
+    const CommonActivationPublicationPlan publication_plan =
+        common_select_activation_publication_plan(context, *output, capabilities);
+    const CommonActivationPublicationDemand demand =
+        publication_plan.matched() ? publication_plan.preferred() : CommonActivationPublicationDemand{};
+    CommonActivationPublication publication;
+    if (!common_reserve_activation_publication(context, match, *output, demand,
+                                               kCommonSymmetricI4K32ActivationAlternateName, publication) ||
+        !common_append_activation_publication(match, publication, kCommonSymmetricI4K32ActivationAlternateName)) {
         return false;
     }
-    const ValueId activation = context.next_plan_value;
 
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kBinarySwiGluSymmetricI4K32Kernel);
@@ -240,22 +258,12 @@ static bool match_binary_swiglu_symmetric_i4_dispatch(const DispatchMatchContext
     dispatch.kernel.compile_parameters.emplace("ggml.binary_swiglu_symmetric_i4.token_count",
                                                std::to_string(token_count));
     bind_binary_buffers(dispatch, *lhs, lhs->byte_count, *rhs, rhs->byte_count, *output);
-    dispatch.bindings.push_back({ activation, 0, activation_layout.payload_bytes });
-    dispatch.bindings.push_back({ activation, activation_layout.scales_offset, activation_layout.metadata_bytes });
-    dispatch.bindings.push_back({ activation, activation_layout.sums_offset, activation_layout.metadata_bytes });
-
-    Status metadata_status;
-    if (!match.metadata.append_alternate_value({ output->id, activation, GGML_TYPE_COUNT, activation_layout.total_bytes,
-                                                 kCommonSymmetricI4K32ActivationAlternateName },
-                                               metadata_status)) {
-        match.status.append(metadata_status);
-        return false;
-    }
+    dispatch.bindings.push_back(publication.binding(0, publication.payload_bytes));
+    dispatch.bindings.push_back(publication.binding(publication.scales_offset, publication.scales_bytes));
+    dispatch.bindings.push_back(publication.binding(publication.sums_offset, publication.sums_bytes));
 
     match.covered_nodes.push_back(context.root_index);
     match.dispatches.push_back(std::move(dispatch));
-    match.transients.push_back(
-        { activation, kCommonSymmetricI4K32ActivationAlternateName, activation_layout.total_bytes, 256 });
     return match.status.success();
 }
 
@@ -289,10 +297,26 @@ static bool match_binary_f32_dispatch(const DispatchMatchContext & context, Disp
         return false;
     }
 
+    const bool same_shape_inputs = same_shape(*lhs, *output) && same_shape(*rhs, *output);
+    const CommonActivationPublicationCapabilities capabilities = {
+        binary_q8_publication_enabled(params->op, *output) ? DispatchActivationInputQ8_1X4 :
+                                                             DispatchActivationInputNone,
+        DispatchActivationInputQ8_1X4,
+    };
+    const CommonActivationPublicationPlan publication_plan =
+        common_select_activation_publication_plan(context, *output, capabilities);
+    const CommonActivationPublicationDemand * q8_demand =
+        publication_plan.find(CommonActivationPublicationFormat::Q8_1X4);
+    const bool publish_q8 = q8_demand != nullptr;
+
     Dispatch dispatch;
-    if (same_shape(*lhs, *output) && same_shape(*rhs, *output)) {
-        dispatch.kernel = make_kernel_specialization(kBinaryF32Kernel);
+    if (same_shape_inputs) {
+        dispatch.kernel = make_kernel_specialization(publish_q8 ? kBinaryF32PublishQ8_1X4Kernel : kBinaryF32Kernel);
         add_binary_strided_parameters(dispatch, *lhs, *rhs, *output, lhs_byte_count, rhs_byte_count);
+        if (publish_q8) {
+            dispatch.kernel.integer_parameters.erase("element_count");
+            dispatch.kernel.integer_parameters.emplace("token_count", output->ne[1]);
+        }
         dispatch.kernel.compile_parameters.emplace("ggml.binary_f32.op",
                                                    std::to_string(binary_kind_config_value(params->op)));
     } else {
@@ -302,18 +326,34 @@ static bool match_binary_f32_dispatch(const DispatchMatchContext & context, Disp
         if (!binary_kind_allows_broadcast(params->op, *lhs, *rhs, *output)) {
             return false;
         }
-        dispatch.kernel = make_kernel_specialization(kBinaryBcF32Kernel);
-        add_binary_shape_parameters(dispatch, *lhs, *rhs, *output);
+        dispatch.kernel = make_kernel_specialization(publish_q8 ? kBinaryBcF32PublishQ8_1X4Kernel : kBinaryBcF32Kernel);
+        if (publish_q8) {
+            dispatch.kernel.integer_parameters.emplace("token_count", output->ne[1]);
+            dispatch.kernel.integer_parameters.emplace("hidden_size", output->ne[0]);
+            dispatch.kernel.integer_parameters.emplace("src0_element_count", lhs->element_count);
+            dispatch.kernel.integer_parameters.emplace("src1_element_count", rhs->element_count);
+        } else {
+            add_binary_shape_parameters(dispatch, *lhs, *rhs, *output);
+        }
         dispatch.kernel.compile_parameters.emplace("ggml.binary_bc_f32.op",
                                                    std::to_string(binary_kind_config_value(params->op)));
         add_broadcast_config(dispatch, "ggml.binary_bc_f32.", "src0", *lhs, *output);
         add_broadcast_config(dispatch, "ggml.binary_bc_f32.", "src1", *rhs, *output);
     }
     bind_binary_buffers(dispatch, *lhs, lhs_byte_count, *rhs, rhs_byte_count, *output);
+    if (publish_q8) {
+        CommonActivationPublication publication;
+        if (!common_reserve_activation_publication(context, match, *output, *q8_demand, "common.binary.q8_1_x4",
+                                                   publication) ||
+            !common_append_activation_publication(match, publication, "common.binary.q8_1_x4")) {
+            return false;
+        }
+        dispatch.bindings.push_back(publication.binding());
+    }
 
     match.covered_nodes.push_back(context.root_index);
     match.dispatches.push_back(std::move(dispatch));
-    return true;
+    return match.status.success();
 }
 
 static void register_binary_dispatch_for(DispatchRegistryBuilder & registry, ggml_op root_op) {

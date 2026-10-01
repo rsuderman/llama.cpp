@@ -1069,6 +1069,19 @@ static void run_moe_routing_compile_checks() {
     const auto & partition_table = find_kernel("ggml_moe_build_expert_partition_table");
     require_compiled_kernel(compile_kernel(*jit, "moe-expert-partition-table", partition_table,
                                            partition_table_workload, moe_routing_config()));
+
+    const auto & weighted_reduce_publish_q8 =
+        find_kernel("qwen3_moe_routed_down_weighted_reduce_next_rmsnorm_f32_publish_q8");
+    REQUIRE(weighted_reduce_publish_q8.bindings.size() == 6);
+    require_compiled_kernel(compile_kernel(*jit, "moe-weighted-reduce-next-rmsnorm-publish-q8",
+                                           weighted_reduce_publish_q8, token_count_workload(2), {
+                                               { "qwen3_moe.model.hidden_size", "2048" },
+                                               { "qwen3_moe.model.rms_epsilon", "0.000001" },
+                                               { "qwen3_moe.routed_down.output_size", "2048" },
+                                               { "qwen3_moe.routed_down.route_count", "8" },
+                                               { "qwen3_moe.workload.token_capacity", "2" },
+                                               { "ggml.quantize_q8_1_x4.group_capacity", "32" },
+                                           }));
 }
 
 static void run_prefill_fusion_compile_checks() {
@@ -1326,6 +1339,39 @@ static void run_loom_jit_materialize_checks() {
     run_targeted_export_materialize_case(device);
 }
 
+static void run_binary_publication_compile_checks() {
+    std::string error;
+    std::unique_ptr<ggml::hrx::LoomJit> jit =
+        ggml::hrx::create_loom_jit("gfx1100", ggml::hrx::LoomJitMode::Sync, error);
+    REQUIRE(jit != nullptr);
+
+    const auto & binary_q8 = find_kernel("ggml_binary_f32_publish_q8_1_x4");
+    require_compiled_kernel(compile_kernel(*jit, "binary-mul-q8", binary_q8, {
+                                               { "token_count", 2 },
+                                           }, {
+                                               { "ggml.binary_f32.op", "2" },
+                                               { "ggml.binary_f32.ne0", "2048" },
+                                               { "ggml.binary_f32.src0_stride1", "2048" },
+                                               { "ggml.binary_f32.src1_stride1", "2048" },
+                                               { "ggml.binary_f32.src0_span", "4096" },
+                                               { "ggml.binary_f32.src1_span", "4096" },
+                                           }));
+
+    const auto & binary_bc_q8 = find_kernel("ggml_binary_bc_f32_publish_q8_1_x4");
+    require_compiled_kernel(compile_kernel(*jit, "binary-bc-mul-q8", binary_bc_q8, {
+                                               { "token_count", 2 },
+                                               { "hidden_size", 256 },
+                                               { "src0_element_count", 512 },
+                                               { "src1_element_count", 256 },
+                                           }, {
+                                               { "ggml.binary_bc_f32.op", "2" },
+                                               { "ggml.binary_bc_f32.src0_broadcast_dim0", "0" },
+                                               { "ggml.binary_bc_f32.src0_broadcast_dim1", "0" },
+                                               { "ggml.binary_bc_f32.src1_broadcast_dim0", "0" },
+                                               { "ggml.binary_bc_f32.src1_broadcast_dim1", "1" },
+                                           }));
+}
+
 static bool has_hrx_test_device() {
     HrxTestDevice device;
     return device.open();
@@ -1333,6 +1379,7 @@ static bool has_hrx_test_device() {
 
 static void register_hrx_loom_jit_cases(test_runner::Suite & suite) {
     suite.host_case("compile", [] { run_loom_jit_compile_checks(); });
+    suite.host_case("binary-publication", [] { run_binary_publication_compile_checks(); });
     suite.host_case("moe-routing", [] { run_moe_routing_compile_checks(); });
     suite.host_case("prefill-fusions", [] { run_prefill_fusion_compile_checks(); });
     suite.host_case("binary-fusions", [] { run_binary_fusion_compile_checks(); });

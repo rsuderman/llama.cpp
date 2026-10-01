@@ -3,6 +3,10 @@
 
 template.decl @ggml.routing.weighted_reduce_next_rmsnorm_f32(%token_count: index, %route_weights: buffer, %routed_output: buffer, %hidden_state: buffer, %next_norm_weight: buffer, %next_projection_input: buffer)
 
+template.decl @ggml.routing.weighted_reduce_next_rmsnorm_f32_publish_q8(%token_count: index, %route_weights: buffer, %routed_output: buffer, %hidden_state: buffer, %next_norm_weight: buffer, %next_projection_input: buffer, %q8_output: buffer)
+
+template.decl @ggml.quantize_q8_1_x4.publish_vector4_strict(%publish_word: i1, %token_output_byte_base: offset, %channel: index, %values: vector<4xf32>, %scratch_values: view<256xf32>, %scratch_d: view<32xf32>, %output: buffer)
+
 config.decl @qwen3_moe.model.hidden_size : %value: index where [range(%value, 128, 32768), mul(%value, 128)]
 
 config.decl @qwen3_moe.model.rms_epsilon : f32
@@ -99,6 +103,46 @@ template.def<@ggml.routing.weighted_reduce_next_rmsnorm_f32> device requires [#t
     %next_projection = vector.mulf<reassoc|nnan|ninf|nsz> %normalized, %learned_weight : vector<8xf32>
     vector.store %result, %hidden_state_view[%token, %channel] : vector<8xf32>, view<[%launch_token_count]x[%hidden_size]xf32>
     vector.store %next_projection, %next_projection_input_view[%token, %channel] : vector<8xf32>, view<[%launch_token_count]x[%hidden_size]xf32>
+  }
+  template.return
+}
+
+// Retains the F32 publication and packs the same normalized row for direct
+// Q8 consumers. The reload keeps the legacy reduction and RMSNorm motif exact.
+template.def<@ggml.routing.weighted_reduce_next_rmsnorm_f32_publish_q8> device requires [#target.subgroup.size<32>] @ggml_routing_weighted_reduce_next_rmsnorm_f32_publish_q8(%token_count: index, %route_weights: buffer, %routed_output: buffer, %hidden_state: buffer, %next_norm_weight: buffer, %next_projection_input: buffer, %q8_output: buffer) {
+  template.apply<@ggml.routing.weighted_reduce_next_rmsnorm_f32>(%token_count, %route_weights, %routed_output, %hidden_state, %next_norm_weight, %next_projection_input) : (index, buffer, buffer, buffer, buffer, buffer)
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
+
+  %workitem = kernel.workitem.id<x> : index
+  %token0 = kernel.workgroup.id<x> : index
+  %c0 = index.constant 0 : index
+  %c1 = index.constant 1 : index
+  %c2 = index.constant 2 : index
+  %c4 = index.constant 4 : index
+  %c1024 = index.constant 1024 : index
+  %row_bytes = index.constant 2304 : offset
+  %scratch_bytes = index.constant 1152 : offset
+  %scratch_d_byte_add = index.constant 1024 : offset
+  %c0_offset = index.constant 0 : offset
+  %channel_base = index.mul %workitem, %c4 : index
+  %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048)] : index
+  %active_token = index.cmp ult, %token0, %bounded_token_count : index
+  %safe_token0 = scf.select %active_token, %token0, %c0 : index
+  %token = index.assume %safe_token0 [lt(%safe_token0, %bounded_token_count)] : index
+  %token_output_byte_base = index.scale %token, %row_bytes : index, offset -> offset
+  %next_projection_input_noalias, %q8_output_noalias = buffer.assume.noalias %next_projection_input, %q8_output : buffer, buffer
+  %next_projection_input_view = buffer.view %next_projection_input_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x2048xf32>
+  %scratch = buffer.alloca<workgroup> align(16) %scratch_bytes : buffer
+  %scratch_values = buffer.view %scratch[%c0_offset] : buffer -> view<256xf32>
+  %scratch_d = buffer.view %scratch[%scratch_d_byte_add] : buffer -> view<32xf32>
+  %publish_word = scalar.constant true : i1
+
+  scf.if %active_token {
+    scf.for %stripe = [%c0 to %c2 step %c1] unroll {
+      %channel = index.madd %stripe, %c1024, %channel_base : index
+      %values = vector.load %next_projection_input_view[%token, %channel] : view<[%bounded_token_count]x2048xf32> -> vector<4xf32>
+      template.apply<@ggml.quantize_q8_1_x4.publish_vector4_strict>(%publish_word, %token_output_byte_base, %channel, %values, %scratch_values, %scratch_d, %q8_output_noalias) : (i1, offset, index, vector<4xf32>, view<256xf32>, view<32xf32>, buffer)
+    }
   }
   template.return
 }

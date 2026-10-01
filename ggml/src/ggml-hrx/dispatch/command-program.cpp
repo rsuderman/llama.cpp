@@ -491,6 +491,7 @@ CommandProgram build_command_program(const Graph &        graph,
             initialization.data,
         });
     }
+    result.activation_publication_diagnostics = plan.metadata.activation_publication_diagnostics();
     return result;
 }
 
