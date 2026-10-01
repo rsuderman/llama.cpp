@@ -201,6 +201,7 @@ ggml_add_backend_library(ggml-hrx
     dispatch/transient-allocator.h
     dispatch_registration/common/dispatch-binary.cpp
     dispatch_registration/common/dispatch-binary.h
+    dispatch_registration/common/dispatch-binary-common.h
     dispatch_registration/common/dispatch-common.cpp
     dispatch_registration/common/dispatch-common.h
     dispatch_registration/common/dispatch-copy.cpp

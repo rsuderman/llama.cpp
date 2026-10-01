@@ -182,7 +182,7 @@ config.decl @ggml.rmsnorm_mul_rope.section0 : %value: index where [range(%value,
 config.decl @ggml.rmsnorm_mul_rope.section1 : %value: index where [range(%value, 0, 65536)]
 config.decl @ggml.rmsnorm_mul_rope.section2 : %value: index where [range(%value, 0, 65536)]
 config.decl @ggml.rmsnorm_mul_rope.section3 : %value: index where [range(%value, 0, 65536)]
-config.decl @ggml.rmsnorm_mul_rope.mode : %value: index where [range(%value, 8, 40)]
+config.decl @ggml.rmsnorm_mul_rope.mode : %value: index where [range(%value, 2, 40)]
 config.decl @ggml.rmsnorm_mul_rope.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
 config.decl @ggml.rmsnorm_mul_rope.epsilon : f32
 config.decl @ggml.rmsnorm_mul_rope.freq_base : f32
@@ -195,6 +195,7 @@ template.def<@ggml.rmsnorm_mul_rope_f32.body> device @ggml_rmsnorm_mul_rope_f32_
   %c1 = index.constant 1 : index
   %c2 = index.constant 2 : index
   %c3 = index.constant 3 : index
+  %cneox = index.constant 2 : index
   %c40 = index.constant 40 : index
   %c0_f32 = scalar.constant 0.0 : f32
   %cneg2_f32 = scalar.constant -2.0 : f32
@@ -308,7 +309,9 @@ template.def<@ggml.rmsnorm_mul_rope_f32.body> device @ggml_rmsnorm_mul_rope_f32_
     %plane = scf.select %is_im, %plane_im, %plane_mr : index
 
     %plane_off = index.mul %plane, %ne2_b : index
-    %pos_i0 = index.add %i2, %plane_off : index
+    %sectioned_pos_i = index.add %i2, %plane_off : index
+    %is_neox = index.cmp eq, %mode, %cneox : index
+    %pos_i0 = scf.select %is_neox, %i2, %sectioned_pos_i : index
     %pos_i = index.assume %pos_i0 [range(%pos_i0, 0, 1073741823)] : index
     %pos_i32 = view.load %pos_view[%pos_i] : view<1073741824xi32> -> i32
     %pos_f = scalar.sitofp %pos_i32 : i32 to f32

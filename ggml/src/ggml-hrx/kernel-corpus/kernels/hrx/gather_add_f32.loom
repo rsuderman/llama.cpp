@@ -9,6 +9,8 @@
 // GGML GET_ROWS operations followed by ADD.
 amdgpu.target<gfx11-generic> @ggml_gather_add_gfx11_wave64 {subgroup_size = 64}
 
+config.decl @ggml.gather_add_f32.binary_op : %value: index where [range(%value, 0, 3)]
+
 kernel.def target(@ggml_gather_add_gfx11_wave64) export("ggml_gather_add_f32") @ggml_gather_add_f32(%source_token_count: index, %output_token_count: index, %hidden_size: index) {
   %one = index.constant 1 : index
   %twofiftysix = index.constant 256 : index
@@ -20,6 +22,7 @@ kernel.def target(@ggml_gather_add_gfx11_wave64) export("ggml_gather_add_f32") @
   %source_count = index.assume %source_token_count [range(%source_token_count, 1, 2048)] : index
   %output_count = index.assume %output_token_count [range(%output_token_count, 1, 2048)] : index
   %width = index.assume %hidden_size [range(%hidden_size, 1, 65536)] : index
+  %binary_op = config.get @ggml.gather_add_f32.binary_op : index
   %column_workgroup = kernel.workgroup.id<x> : index
   %output_row0 = kernel.workgroup.id<y> : index
   %workitem = kernel.workitem.id<x> : index
@@ -43,7 +46,19 @@ kernel.def target(@ggml_gather_add_gfx11_wave64) export("ggml_gather_add_f32") @
     %attention_value = view.load %attention_view[%source_row, %safe_column] : view<[%source_count]x[%width]xf32> -> f32
     %residual_value = view.load %residual_view[%source_row, %safe_column] : view<[%source_count]x[%width]xf32> -> f32
     %sum = scalar.addf %attention_value, %residual_value : f32
-    view.store %sum, %output_view[%output_row, %safe_column] : f32, view<[%launch_output_count]x[%width]xf32>
+    %difference = scalar.subf %attention_value, %residual_value : f32
+    %product = scalar.mulf %attention_value, %residual_value : f32
+    %quotient = scalar.divf %attention_value, %residual_value : f32
+    %op0 = index.constant 0 : index
+    %op1 = index.constant 1 : index
+    %op2 = index.constant 2 : index
+    %is_add = index.cmp eq, %binary_op, %op0 : index
+    %is_sub = index.cmp eq, %binary_op, %op1 : index
+    %is_mul = index.cmp eq, %binary_op, %op2 : index
+    %add_or_div = scf.select %is_add, %sum, %quotient : f32
+    %sub_or_other = scf.select %is_sub, %difference, %add_or_div : f32
+    %result = scf.select %is_mul, %product, %sub_or_other : f32
+    view.store %result, %output_view[%output_row, %safe_column] : f32, view<[%launch_output_count]x[%width]xf32>
   }
   kernel.return
 }

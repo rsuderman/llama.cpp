@@ -14,6 +14,8 @@ config.decl @llm.attention_qkv.output_size : %value: index where [range(%value, 
 
 config.decl @llm.attention_qkv.weight_format : %value: index where [range(%value, 4, 81)]
 
+config.decl @ggml.mul_mat.activation_format : %value: index where [range(%value, 0, 16)]
+
 config.decl @llm.attention_qkv.cache_row_count : %value: index where [range(%value, 1, 1048576)]
 
 config.decl @llm.attention_qkv.cache_output_format : %value: index where [range(%value, 16, 32)]

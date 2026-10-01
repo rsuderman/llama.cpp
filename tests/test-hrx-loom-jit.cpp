@@ -204,6 +204,18 @@ static std::map<std::string, int64_t> token_count_workload(int64_t token_count) 
     };
 }
 
+static std::map<std::string, std::string> moe_routing_config() {
+    return {
+        { "ggml.moe_routing.route_count", "8" },
+        { "ggml.moe_routing.expert_count", "128" },
+        { "ggml.moe_routing.descriptor_expert_mask", "127" },
+        { "ggml.moe_routing.descriptor_partition_shift", "7" },
+        { "ggml.moe_routing.descriptor_row_count_shift", "13" },
+        { "ggml.moe_routing.partition_workgroup_size", "128" },
+        { "ggml.workload.token_capacity", "1" },
+    };
+}
+
 static std::map<std::string, int64_t> flash_attention_workload(int64_t query_token_count,
                                                                int64_t key_value_token_count) {
     return {
@@ -455,8 +467,8 @@ static void run_loom_jit_compile_checks() {
     const ggml::hrx::KernelDefinition & gather_add      = find_kernel("ggml_gather_add_f32");
     const ggml::hrx::KernelDefinition & rmsnorm         = find_kernel("qwen3_moe_rmsnorm_f32");
     const ggml::hrx::KernelDefinition & router_top8     = find_kernel("qwen3_moe_router_top8_f32");
-    const ggml::hrx::KernelDefinition & expert_table    = find_kernel("qwen3_moe_build_expert_table");
-    const ggml::hrx::KernelDefinition & partition_table = find_kernel("qwen3_moe_build_expert_partition_table");
+    const ggml::hrx::KernelDefinition & expert_table    = find_kernel("ggml_moe_build_expert_table");
+    const ggml::hrx::KernelDefinition & partition_table = find_kernel("ggml_moe_build_expert_partition_table");
     const ggml::hrx::KernelDefinition & mul_mat_id_f16  = find_kernel("ggml_mul_mat_id_f16_f16_wmma");
     const ggml::hrx::KernelDefinition & swiglu_f16      = find_kernel("ggml_mul_mat_id_swiglu_f16_f16_wmma");
     const ggml::hrx::KernelDefinition & flash_prefill   = find_kernel("ggml_flash_attention_f32_f16_wmma");
@@ -532,28 +544,23 @@ static void run_loom_jit_compile_checks() {
                                       { "route_stride", 8   },
                                       { "expert_count", 128 },
     },
-                                  {
-                                      { "qwen3_moe.routed_gate_up.expert_count", "128" },
-                                      { "qwen3_moe.routed_gate_up.route_count", "8" },
-                                      { "qwen3_moe.workload.token_capacity", "1" },
-                                  }));
+                                  moe_routing_config()));
     refs.push_back(compile_kernel(*async_jit, "async-partition-table-1", partition_table,
                                   {
                                       { "token_count",  1   },
                                       { "route_count",  8   },
                                       { "expert_count", 128 },
     },
-                                  {
-                                      { "qwen3_moe.routed_gate_up.expert_count", "128" },
-                                      { "qwen3_moe.routed_gate_up.route_count", "8" },
-                                      { "qwen3_moe.workload.token_capacity", "1" },
-                                  }));
+                                  moe_routing_config()));
     // Exercise gather-add coverage in the async JIT path.
     refs.push_back(compile_kernel(*async_jit, "async-gather-add-2-to-1", gather_add,
                                   {
                                       { "source_token_count", 2    },
                                       { "output_token_count", 1    },
                                       { "hidden_size",        2048 },
+    },
+                                  {
+                                      { "ggml.gather_add_f32.binary_op", "3" },
     }));
     refs.push_back(compile_kernel(*async_jit, "async-mul-mat-id-f16-q4", mul_mat_id_f16, token_count_workload(4),
                                   mul_mat_id_f16_f16_config("4")));
@@ -609,6 +616,7 @@ static void run_loom_jit_compile_checks() {
     std::printf("async Loom JIT compiled %zu kernels\n", refs.size());
 
     const auto & q6_prefill = find_kernel("ggml_mul_mat_q6_k_f16_wmma_prefill_wave32");
+
     const struct {
         int64_t tokens;
         int64_t inputs;
@@ -635,11 +643,13 @@ static void run_loom_jit_compile_checks() {
         {1024,  5120,  1024, 0,  512, 2, 16 },
         {2048,  5120,  1024, 0,  512, 4, 16 },
     };
+
     for (const auto & test : q6_launch_cases) {
-        const std::string key = "q6-prefill-" + std::to_string(test.tokens) + "-" +
-                                std::to_string(test.inputs) + "-" + std::to_string(test.outputs) + "-" +
-                                std::to_string(test.accumulate);
-        auto ref = compile_kernel(*sync_jit, key, q6_prefill, token_count_workload(test.tokens), {
+        const std::string key = "q6-prefill-" + std::to_string(test.tokens) + "-" + std::to_string(test.inputs) + "-" +
+                                std::to_string(test.outputs) + "-" + std::to_string(test.accumulate);
+        auto ref =
+            compile_kernel(*sync_jit, key, q6_prefill, token_count_workload(test.tokens),
+                           {
             { "ggml.mul_mat_q6_k_packed.input_size",          std::to_string(test.inputs) },
             { "ggml.mul_mat_q6_k_packed.output_size",         std::to_string(test.outputs) },
             { "ggml.mul_mat_q6_k_packed.output_accumulation", std::to_string(test.accumulate) },
@@ -657,6 +667,7 @@ static void run_loom_jit_compile_checks() {
     }
 
     const auto & q4_prefill = find_kernel("ggml_mul_mat_q4_k_f16_wmma_prefill_wave32");
+
     const struct {
         int64_t tokens;
         int64_t inputs;
@@ -682,11 +693,12 @@ static void run_loom_jit_compile_checks() {
         {1024,  5120,  4096, 1024, 4,  16, 0 },
         { 512, 17408,  5120,  512, 1,  80, 1 },
     };
+
     for (const auto & test : q4_launch_cases) {
-        const std::string key = "q4-prefill-" + std::to_string(test.tokens) + "-" +
-                                std::to_string(test.inputs) + "-" + std::to_string(test.outputs) + "-" +
-                                std::to_string(test.input_layout);
-        auto ref = compile_kernel(*sync_jit, key, q4_prefill, token_count_workload(test.tokens), {
+        const std::string key = "q4-prefill-" + std::to_string(test.tokens) + "-" + std::to_string(test.inputs) + "-" +
+                                std::to_string(test.outputs) + "-" + std::to_string(test.input_layout);
+        auto ref = compile_kernel(*sync_jit, key, q4_prefill, token_count_workload(test.tokens),
+                                  {
             { "ggml.mul_mat.input_size",      std::to_string(test.inputs) },
             { "ggml.mul_mat.output_size",     std::to_string(test.outputs) },
             { "ggml.workload.token_capacity", std::to_string(test.tokens) },
@@ -704,8 +716,9 @@ static void run_loom_jit_compile_checks() {
 
     const auto & packed_f16 = find_kernel("ggml_copy_f16_k16_major");
     for (const auto * input_is_f16 : { "0", "1" }) {
-        auto ref = compile_kernel(*sync_jit, std::string("packed-f16-") + input_is_f16,
-                                  packed_f16, token_count_workload(512), {
+        auto ref =
+            compile_kernel(*sync_jit, std::string("packed-f16-") + input_is_f16, packed_f16, token_count_workload(512),
+                           {
             { "ggml.copy_f16_k16_major.input_size",   "256" },
             { "ggml.copy_f16_k16_major.token_count",  "512" },
             { "ggml.copy_f16_k16_major.input_is_f16", input_is_f16 },
@@ -714,19 +727,27 @@ static void run_loom_jit_compile_checks() {
     }
 
     const auto & transpose_f16 = find_kernel("ggml_copy_transpose_f16");
-    auto transpose_ref = compile_kernel(*sync_jit, "transpose-f16-8192x1024", transpose_f16, {}, {
+    auto         transpose_ref = compile_kernel(*sync_jit, "transpose-f16-8192x1024", transpose_f16,
+                                                {
+    },
+                                                {
         { "ggml.copy_transpose_f16.row_count", "8192" },
         { "ggml.copy_transpose_f16.column_count", "1024" },
     });
     require_compiled_kernel(transpose_ref);
     auto transposed_attention_config = flash_attention_config("24", "4", "256", "0.0625");
     transposed_attention_config.emplace("ggml.flash_attention.value_layout", "1");
-    auto transposed_attention_ref = compile_kernel(*sync_jit, "flash-transposed-value", flash_prefill,
-                                                   { { "query_token_count", 512 }, { "key_value_token_count", 8192 } },
+    auto transposed_attention_ref =
+        compile_kernel(*sync_jit, "flash-transposed-value", flash_prefill,
+                       {
+                           { "query_token_count",     512  },
+                           { "key_value_token_count", 8192 }
+    },
                                                    transposed_attention_config);
     require_compiled_kernel(transposed_attention_ref);
 
     const auto & paired_q4 = find_kernel("ggml_mul_mat_swiglu_q4_k_f16_wmma_prefill_wave32");
+
     const struct {
         int64_t tokens;
         int64_t outputs;
@@ -740,9 +761,11 @@ static void run_loom_jit_compile_checks() {
         {1024, 2048,  512, 2 },
         {2048,17408,  512, 4 },
     };
+
     for (const auto & test : paired_q4_cases) {
         const std::string key = "paired-q4-" + std::to_string(test.tokens) + "-" + std::to_string(test.outputs);
-        auto ref = compile_kernel(*sync_jit, key, paired_q4, token_count_workload(test.tokens), {
+        auto              ref = compile_kernel(*sync_jit, key, paired_q4, token_count_workload(test.tokens),
+                                               {
             { "ggml.mul_mat_swiglu.input_size",  "5120" },
             { "ggml.mul_mat_swiglu.output_size", std::to_string(test.outputs) },
             { "ggml.mul_mat_swiglu.op",          "4" },
@@ -761,8 +784,9 @@ static void run_loom_jit_compile_checks() {
     }
 
     for (const int64_t tokens : { 256, 512, 1024, 2048 }) {
-        auto ref = compile_kernel(*sync_jit, "paired-q4-packed-output-" + std::to_string(tokens),
-                                  paired_q4, token_count_workload(tokens), {
+        auto ref = compile_kernel(*sync_jit, "paired-q4-packed-output-" + std::to_string(tokens), paired_q4,
+                                  token_count_workload(tokens),
+                                  {
             { "ggml.mul_mat_swiglu.input_size",  "5120" },
             { "ggml.mul_mat_swiglu.output_size", "17408" },
             { "ggml.mul_mat_swiglu.op",          "4" },
@@ -772,8 +796,8 @@ static void run_loom_jit_compile_checks() {
         require_compiled_kernel(ref);
     }
 
-
     const auto & paired_q4_decode = find_kernel("ggml_mul_mat_swiglu_q4_q8_1_x4_lowtoken_dot");
+
     const struct {
         int64_t tokens;
         int64_t inputs;
@@ -801,10 +825,12 @@ static void run_loom_jit_compile_checks() {
         { 5, 5632,  4096, 512,  128 },
         { 5, 5888,  4096, 128,  512 },
     };
+
     for (const auto & test : paired_q4_decode_cases) {
-        const std::string key = "paired-q4-decode-" + std::to_string(test.tokens) + "-" +
-                                std::to_string(test.inputs) + "-" + std::to_string(test.outputs);
-        auto ref = compile_kernel(*sync_jit, key, paired_q4_decode, token_count_workload(test.tokens), {
+        const std::string key = "paired-q4-decode-" + std::to_string(test.tokens) + "-" + std::to_string(test.inputs) +
+                                "-" + std::to_string(test.outputs);
+        auto ref = compile_kernel(*sync_jit, key, paired_q4_decode, token_count_workload(test.tokens),
+                                  {
             { "ggml.mul_mat_swiglu.input_size",  std::to_string(test.inputs) },
             { "ggml.mul_mat_swiglu.output_size", std::to_string(test.outputs) },
             { "ggml.mul_mat_swiglu.op",          "4" },
@@ -820,9 +846,8 @@ static void run_loom_jit_compile_checks() {
         compiled.reset();
     }
 
-
-
     const auto & quant_decode = find_kernel("ggml_mul_mat_f32_f32_wmma");
+
     const struct {
         int64_t tokens;
         int64_t inputs;
@@ -878,11 +903,13 @@ static void run_loom_jit_compile_checks() {
         { 5,  8192, 4032, 44,  128, 504 },
         { 5,  8192, 8256, 44,  128, 1032 },
     };
+
     for (const auto & test : quant_decode_cases) {
-        const std::string key = "quant-decode-" + std::to_string(test.tokens) + "-" +
-                                std::to_string(test.inputs) + "-" + std::to_string(test.outputs) + "-" +
-                                std::to_string(test.format);
-        auto ref = compile_kernel(*sync_jit, key, quant_decode, token_count_workload(test.tokens), {
+        const std::string key = "quant-decode-" + std::to_string(test.tokens) + "-" + std::to_string(test.inputs) +
+                                "-" + std::to_string(test.outputs) + "-" + std::to_string(test.format);
+        auto ref =
+            compile_kernel(*sync_jit, key, quant_decode, token_count_workload(test.tokens),
+                           {
             { "ggml.mul_mat.input_size",          std::to_string(test.inputs) },
             { "ggml.mul_mat.output_size",         std::to_string(test.outputs) },
             { "ggml.mul_mat.weight_format",       std::to_string(test.format) },
@@ -929,7 +956,10 @@ static void run_loom_jit_compile_checks() {
     const auto & conv_finish = find_kernel("llm_ssm_conv_dconv4_silu_prefill_finish_f32");
     REQUIRE(conv_finish.bindings.size() == 5);
     for (const int64_t channels : { 2112, 8192, 8256, 10240 }) {
-        auto ref = compile_kernel(*sync_jit, "conv-finish-" + std::to_string(channels), conv_finish, {}, {
+        auto ref = compile_kernel(*sync_jit, "conv-finish-" + std::to_string(channels), conv_finish,
+                                  {
+        },
+                                  {
             { "llm.ssm_conv.generic.d_inner", std::to_string(channels) },
         });
         REQUIRE(ref != nullptr);
@@ -942,7 +972,10 @@ static void run_loom_jit_compile_checks() {
 
     const auto & ssm_prefill = find_kernel("llm_ssm_conv_dconv4_silu_prefill_512_wg1024");
     for (const int64_t channels : { 8192, 8224, 8256, 10208, 10240 }) {
-        auto ref = compile_kernel(*sync_jit, "ssm-prefill-" + std::to_string(channels), ssm_prefill, {}, {
+        auto ref = compile_kernel(*sync_jit, "ssm-prefill-" + std::to_string(channels), ssm_prefill,
+                                  {
+        },
+                                  {
             { "llm.ssm_conv.prefill.d_conv",           "4" },
             { "llm.ssm_conv.prefill.d_inner",          std::to_string(channels) },
             { "llm.ssm_conv.prefill.n_t",              "512" },
@@ -973,10 +1006,14 @@ static void run_loom_jit_compile_checks() {
         { "llm_gated_delta_net_f32_wmma_head128_snapshot", 5, 8 },
         { "llm_gated_delta_net_f32_wmma_head128_snapshot_projection_epilogue", 5, 10 },
     };
+
     for (const auto & test : gdn_cases) {
         const auto & definition = find_kernel(test.name);
         REQUIRE(definition.bindings.size() == test.bindings);
-        auto ref = compile_kernel(*sync_jit, test.name, definition, {}, {
+        auto ref = compile_kernel(*sync_jit, test.name, definition,
+                                  {
+        },
+                                  {
             { "llm.gated_delta_net.head_width", "128" },
             { "llm.gated_delta_net.head_count", "3" },
             { "llm.gated_delta_net.token_count", std::to_string(test.tokens) },
@@ -1006,41 +1043,74 @@ static void run_loom_jit_compile_checks() {
         REQUIRE(compiled.launch_config.workgroup_count[1] == 1);
         compiled.reset();
     }
+}
 
+static void run_moe_routing_compile_checks() {
+    static constexpr const char * kTarget = "gfx1100";
+
+    std::string                         error;
+    std::unique_ptr<ggml::hrx::LoomJit> jit = ggml::hrx::create_loom_jit(kTarget, ggml::hrx::LoomJitMode::Sync, error);
+    REQUIRE(jit != nullptr);
+
+    const std::map<std::string, int64_t> expert_table_workload = {
+        { "token_count", 1 },
+        { "route_count", 8 },
+        { "route_stride", 8 },
+        { "expert_count", 128 },
+    };
+    const auto & expert_table = find_kernel("ggml_moe_build_expert_table");
+    require_compiled_kernel(
+        compile_kernel(*jit, "moe-expert-table", expert_table, expert_table_workload, moe_routing_config()));
+
+    const std::map<std::string, int64_t> partition_table_workload = {
+        { "token_count", 1 },
+        { "route_count", 8 },
+        { "expert_count", 128 },
+    };
+    const auto & partition_table = find_kernel("ggml_moe_build_expert_partition_table");
+    require_compiled_kernel(compile_kernel(*jit, "moe-expert-partition-table", partition_table,
+                                           partition_table_workload, moe_routing_config()));
 }
 
 static void run_prefill_fusion_compile_checks() {
     static constexpr const char * kTarget = "gfx1100";
 
     std::string                         error;
-    std::unique_ptr<ggml::hrx::LoomJit> jit =
-        ggml::hrx::create_loom_jit(kTarget, ggml::hrx::LoomJitMode::Sync, error);
+    std::unique_ptr<ggml::hrx::LoomJit> jit = ggml::hrx::create_loom_jit(kTarget, ggml::hrx::LoomJitMode::Sync, error);
     REQUIRE(jit != nullptr);
 
     const auto & rmsnorm_f32_f16 = find_kernel("ggml_rmsnorm_binary_f32_f16");
-    require_compiled_kernel(compile_kernel(*jit, "prefill-rmsnorm-f32-f16", rmsnorm_f32_f16,
-                                           token_count_workload(512), {
+    require_compiled_kernel(compile_kernel(*jit, "prefill-rmsnorm-f32-f16", rmsnorm_f32_f16, token_count_workload(512),
+                                           {
                                                { "ggml.rmsnorm_binary_f32.hidden_size", "2048" },
                                                { "ggml.rmsnorm_binary_f32.rms_epsilon", "0.00001" },
                                                { "ggml.rmsnorm_binary_f32.op", "2" },
                                            }));
 
+    const auto & rmsnorm_strided = find_kernel("ggml_rmsnorm_binary_strided_f32");
+    require_compiled_kernel(compile_kernel(*jit, "prefill-rmsnorm-strided", rmsnorm_strided, token_count_workload(64),
+                                           {
+                                               { "ggml.rmsnorm_binary_f32.hidden_size", "256" },
+                                               { "ggml.rmsnorm_binary_f32.input_stride", "288" },
+                                               { "ggml.rmsnorm_binary_f32.rms_epsilon", "0.00001" },
+                                               { "ggml.rmsnorm_binary_f32.op", "2" },
+                                           }));
+
     const auto & rmsnorm_q8_f16 = find_kernel("ggml_rmsnorm_binary_q8_1_x4_f16");
-    require_compiled_kernel(compile_kernel(*jit, "prefill-rmsnorm-q8-f16", rmsnorm_q8_f16,
-                                           token_count_workload(512), {
+    require_compiled_kernel(compile_kernel(*jit, "prefill-rmsnorm-q8-f16", rmsnorm_q8_f16, token_count_workload(512),
+                                           {
                                                { "ggml.rmsnorm_binary_q8_1_x4.hidden_size", "2048" },
                                                { "ggml.rmsnorm_binary_q8_1_x4.rms_epsilon", "0.00001" },
                                                { "ggml.rmsnorm_binary_q8_1_x4.op", "2" },
                                            }));
 
     const auto & flash_f16 = find_kernel("ggml_flash_attention_f32_f16_wmma_publish_f16");
-    require_compiled_kernel(compile_kernel(*jit, "prefill-flash-f16", flash_f16,
-                                           flash_attention_workload(512, 512),
+    require_compiled_kernel(compile_kernel(*jit, "prefill-flash-f16", flash_f16, flash_attention_workload(512, 512),
                                            flash_attention_config("32", "8", "64", "0.125")));
 
     const auto & swiglu_k16 = find_kernel("ggml_mul_mat_tiled_pair_input_f32_binary_publish_f32_k16");
-    require_compiled_kernel(compile_kernel(*jit, "prefill-swiglu-k16", swiglu_k16,
-                                           token_count_workload(512), {
+    require_compiled_kernel(compile_kernel(*jit, "prefill-swiglu-k16", swiglu_k16, token_count_workload(512),
+                                           {
                                                { "ggml.mul_mat_swiglu.input_size", "2048" },
                                                { "ggml.mul_mat_swiglu.output_size", "8192" },
                                                { "ggml.mul_mat_swiglu.gate_weight_format", "4" },
@@ -1050,16 +1120,201 @@ static void run_prefill_fusion_compile_checks() {
                                            }));
 
     const auto & get_rows_rmsnorm = find_kernel("ggml_get_rows_rmsnorm_binary_q8_1_x4_f16");
-    require_compiled_kernel(compile_kernel(*jit, "prefill-get-rows-rmsnorm", get_rows_rmsnorm, {
+    require_compiled_kernel(compile_kernel(*jit, "prefill-get-rows-rmsnorm", get_rows_rmsnorm,
+                                           {
                                                { "token_count", 512 },
                                                { "row_count", 128256 },
                                                { "hidden_size", 2048 },
-                                           }, {
+    },
+                                           {
                                                { "ggml.get_rows_f32.token_capacity", "512" },
                                                { "ggml.get_rows_f32.hidden_capacity", "2048" },
                                                { "ggml.get_rows_f32.weight_format", "6" },
                                                { "ggml.get_rows_rmsnorm.rms_epsilon", "0.00001" },
                                            }));
+
+    const auto & get_rows_scale = find_kernel("ggml_get_rows_scale_f32");
+    require_compiled_kernel(compile_kernel(*jit, "prefill-get-rows-scale", get_rows_scale,
+                                           {
+                                               { "token_count", 64 },
+                                               { "row_count", 122753 },
+                                               { "hidden_size", 2560 },
+    },
+                                           {
+                                               { "ggml.get_rows_f32.token_capacity", "64" },
+                                               { "ggml.get_rows_f32.hidden_capacity", "2560" },
+                                               { "ggml.get_rows_f32.weight_format", "32" },
+                                               { "ggml.get_rows_scale_f32.scale", "0.177800179" },
+                                               { "ggml.get_rows_scale_f32.bias", "0" },
+                                           }));
+    require_compiled_kernel(compile_kernel(*jit, "gemma-prefill-get-rows-scale-q5_1", get_rows_scale,
+                                           {
+                                               { "token_count", 64 },
+                                               { "row_count", 262144 },
+                                               { "hidden_size", 640 },
+    },
+                                           {
+                                               { "ggml.get_rows_f32.token_capacity", "64" },
+                                               { "ggml.get_rows_f32.hidden_capacity", "640" },
+                                               { "ggml.get_rows_f32.weight_format", "51" },
+                                               { "ggml.get_rows_scale_f32.scale", "25.2982216" },
+                                               { "ggml.get_rows_scale_f32.bias", "0" },
+                                           }));
+    require_compiled_kernel(compile_kernel(*jit, "gemma-decode-get-rows-scale-q5_1", get_rows_scale,
+                                           {
+                                               { "token_count", 1 },
+                                               { "row_count", 262144 },
+                                               { "hidden_size", 640 },
+    },
+                                           {
+                                               { "ggml.get_rows_f32.token_capacity", "1" },
+                                               { "ggml.get_rows_f32.hidden_capacity", "640" },
+                                               { "ggml.get_rows_f32.weight_format", "51" },
+                                               { "ggml.get_rows_scale_f32.scale", "25.2982216" },
+                                               { "ggml.get_rows_scale_f32.bias", "0" },
+                                           }));
+
+    const auto & lfm_dconv3 = find_kernel("llm_ssm_conv_lfm_dconv3_state_f32");
+    REQUIRE(lfm_dconv3.bindings.size() == 5);
+    for (const int64_t tokens : {1, 64}) {
+        auto ref = compile_kernel(*jit, "lfm-dconv3-" + std::to_string(tokens), lfm_dconv3, {}, {
+            {"llm.ssm_conv.lfm_dconv3.n_t", std::to_string(tokens)},
+        });
+        REQUIRE(ref != nullptr);
+        REQUIRE(resolve_with_timeout(ref, std::chrono::seconds(120)));
+        auto compiled = ref->take_result();
+        REQUIRE(compiled.hsaco_data != nullptr);
+        REQUIRE(compiled.launch_config.workgroup_size[0] == 256);
+        REQUIRE(compiled.launch_config.workgroup_count[0] == static_cast<uint32_t>(8 * tokens));
+    }
+}
+
+static void run_binary_fusion_compile_checks() {
+    std::string                         error;
+    std::unique_ptr<ggml::hrx::LoomJit> jit =
+        ggml::hrx::create_loom_jit("gfx1100", ggml::hrx::LoomJitMode::Sync, error);
+    REQUIRE(jit != nullptr);
+
+    const auto & gather = find_kernel("ggml_gather_add_f32");
+    require_compiled_kernel(compile_kernel(*jit, "binary-fusion-gather-div", gather,
+                                           {
+                                               { "source_token_count", 2    },
+                                               { "output_token_count", 1    },
+                                               { "hidden_size",        2048 },
+    },
+                                           {
+                                               { "ggml.gather_add_f32.binary_op", "3" },
+                                           }));
+
+    const auto & scale = find_kernel("ggml_scale_add_f32");
+    require_compiled_kernel(compile_kernel(*jit, "binary-fusion-scale-sub", scale,
+                                           {
+                                               { "element_count", 128 },
+    },
+                                           {
+                                               { "ggml.scale_add_f32.ne0", "128" },
+                                               { "ggml.scale_add_f32.ne1", "1" },
+                                               { "ggml.scale_add_f32.ne2", "1" },
+                                               { "ggml.scale_add_f32.input_stride1", "128" },
+                                               { "ggml.scale_add_f32.input_stride2", "128" },
+                                               { "ggml.scale_add_f32.input_stride3", "128" },
+                                               { "ggml.scale_add_f32.input_span", "128" },
+                                               { "ggml.scale_add_f32.residual_stride1", "128" },
+                                               { "ggml.scale_add_f32.residual_stride2", "128" },
+                                               { "ggml.scale_add_f32.residual_stride3", "128" },
+                                               { "ggml.scale_add_f32.residual_span", "128" },
+                                               { "ggml.scale_add_f32.scale", "0.5" },
+                                               { "ggml.scale_add_f32.bias", "0" },
+                                               { "ggml.scale_add_f32.binary_op", "1" },
+                                               { "ggml.scale_add_f32.scaled_lhs", "0" },
+                                           }));
+
+    const auto & rms = find_kernel("ggml_rmsnorm_mul_add_f32");
+    require_compiled_kernel(compile_kernel(*jit, "binary-fusion-rms-div-sub", rms,
+                                           {
+                                               { "token_count", 1 },
+    },
+                                           {
+                                               { "ggml.rmsnorm_mul_add_f32.hidden_size", "128" },
+                                               { "ggml.rmsnorm_mul_add_f32.rms_epsilon", "0.000001" },
+                                               { "ggml.rmsnorm_mul_add_f32.normalized_op", "3" },
+                                               { "ggml.rmsnorm_mul_add_f32.output_op", "1" },
+                                               { "ggml.rmsnorm_mul_add_f32.binary_lhs", "0" },
+                                           }));
+
+    const auto & gather_rms = find_kernel("ggml_gather_add_rmsnorm_binary_f32");
+    require_compiled_kernel(compile_kernel(*jit, "binary-fusion-gather-rms-mul", gather_rms,
+                                           {
+                                               { "source_token_count", 2 },
+                                               { "output_token_count", 1 },
+    },
+                                           {
+                                               { "ggml.gather_add_rmsnorm_binary_f32.hidden_size", "128" },
+                                               { "ggml.gather_add_rmsnorm_binary_f32.rms_epsilon", "0.000001" },
+                                               { "ggml.gather_add_rmsnorm_binary_f32.gather_op", "2" },
+                                           }));
+
+    const auto & ssm = find_kernel("llm_ssm_conv_binary_f32");
+    require_compiled_kernel(compile_kernel(*jit, "binary-fusion-ssm-rhs-div", ssm,
+                                           {
+    },
+                                           {
+                                               { "llm.ssm_conv.generic.d_conv", "4" },
+                                               { "llm.ssm_conv.generic.d_inner", "64" },
+                                               { "llm.ssm_conv.generic.n_t", "8" },
+                                               { "llm.ssm_conv.generic.n_s", "1" },
+                                               { "llm.ssm_conv.generic.unary_op", "23" },
+                                               { "llm.ssm_conv.generic.binary_op", "3" },
+                                               { "llm.ssm_conv.generic.binary_lhs", "0" },
+                                               { "llm.ssm_conv.generic.workgroup_size", "256" },
+                                           }));
+
+    const auto & vector_postops = find_kernel("ggml_mul_mat_vector_bias_residual_f32_f32");
+    for (const int64_t epilogue : { int64_t{ 1 }, int64_t{ 2 }, int64_t{ 3 } }) {
+        require_compiled_kernel(compile_kernel(
+            *jit, "binary-fusion-vector-postops-" + std::to_string(epilogue), vector_postops, token_count_workload(1),
+            {
+                { "ggml.matmul.vector_postops.input_size",     "2048"                   },
+                { "ggml.matmul.vector_postops.output_size",    "2048"                   },
+                { "ggml.matmul.vector_postops.weight_format",  "4"                      },
+                { "ggml.matmul.vector_postops.apply_bias",     epilogue & 1 ? "1" : "0" },
+                { "ggml.matmul.vector_postops.apply_residual", epilogue & 2 ? "1" : "0" },
+                { "ggml.workload.token_capacity",              "1"                      },
+        }));
+    }
+
+    const auto compile_postops = [&](const char * kernel_name, const char * key_prefix, int64_t token_count,
+                                     int64_t token_capacity) {
+        const auto & kernel = find_kernel(kernel_name);
+        for (const int64_t epilogue : { int64_t{ 1 }, int64_t{ 2 }, int64_t{ 3 } }) {
+            require_compiled_kernel(compile_kernel(
+                *jit, std::string(key_prefix) + std::to_string(epilogue), kernel, token_count_workload(token_count),
+                {
+                    { "ggml.mul_mat_postops.input_size",    "2048"                         },
+                    { "ggml.mul_mat_postops.output_size",   "2048"                         },
+                    { "ggml.mul_mat_postops.weight_format", "4"                            },
+                    { "ggml.mul_mat_postops.epilogue",      std::to_string(epilogue)       },
+                    { "ggml.workload.token_capacity",       std::to_string(token_capacity) },
+            }));
+        }
+    };
+    compile_postops("ggml_mul_mat_skinny_input_f32_bias_residual_publish_f32", "binary-fusion-skinny-postops-", 2, 2);
+    compile_postops("ggml_mul_mat_tiled_input_f32_bias_residual_publish_f32", "binary-fusion-tiled-postops-", 32, 32);
+
+    const auto & pair_postops = find_kernel("ggml_mul_mat_tiled_pair_input_f32_binary_bias_residual_publish_f32");
+    for (const int64_t epilogue : { int64_t{ 1 }, int64_t{ 2 }, int64_t{ 3 } }) {
+        require_compiled_kernel(compile_kernel(*jit, "binary-fusion-pair-postops-" + std::to_string(epilogue),
+                                               pair_postops, token_count_workload(32),
+                                               {
+                                                   { "ggml.mul_mat_swiglu.input_size",         "2048"                   },
+                                                   { "ggml.mul_mat_swiglu.output_size",        "2048"                   },
+                                                   { "ggml.mul_mat_swiglu.gate_weight_format", "4"                      },
+                                                   { "ggml.mul_mat_swiglu.up_weight_format",   "4"                      },
+                                                   { "ggml.mul_mat_swiglu.op",                 "4"                      },
+                                                   { "ggml.mul_mat_swiglu.epilogue",           std::to_string(epilogue) },
+                                                   { "ggml.workload.token_capacity",           "32"                     },
+        }));
+    }
 }
 
 static void run_loom_jit_materialize_checks() {
@@ -1079,13 +1334,15 @@ static bool has_hrx_test_device() {
 
 static void register_hrx_loom_jit_cases(test_runner::Suite & suite) {
     suite.host_case("compile", [] { run_loom_jit_compile_checks(); });
+    suite.host_case("moe-routing", [] { run_moe_routing_compile_checks(); });
     suite.host_case("prefill-fusions", [] { run_prefill_fusion_compile_checks(); });
+    suite.host_case("binary-fusions", [] { run_binary_fusion_compile_checks(); });
     suite.device_case("materialize", [] { run_loom_jit_materialize_checks(); });
 }
 
 int main(int argc, char ** argv) {
-    test_runner::Suite suite(test_runner::Config::with_prefix(
-        "HRX Loom JIT test", "hrx-loom-jit", "GGML_HRX_LOOM_JIT_TEST", 2));
+    test_runner::Suite suite(
+        test_runner::Config::with_prefix("HRX Loom JIT test", "hrx-loom-jit", "GGML_HRX_LOOM_JIT_TEST", 2));
     register_hrx_loom_jit_cases(suite);
 
     const bool has_device = has_hrx_test_device();

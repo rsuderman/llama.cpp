@@ -78,7 +78,7 @@ kernel.def target(@qwen_attention_metadata_gfx11_wave64) export("qwen_attention_
 // Publishes the single position and cache row needed by one decode issue.
 // Decode attention bounds itself with the same request control word and does
 // not need a materialized causal mask: every prior row is visible.
-kernel.def target(@qwen_attention_metadata_gfx11_wave64) export("qwen_decode_attention_metadata") @qwen_decode_attention_metadata() {
+kernel.def target(@qwen_attention_metadata_gfx11_wave64) @qwen_decode_attention_metadata() {
   %c1 = index.constant 1 : index
   kernel.launch.config workgroups(%c1, %c1, %c1) workgroup_size(%c1, %c1, %c1) : index
 } launch(%control: buffer, %positions: buffer, %key_cache_indices: buffer, %value_cache_indices: buffer) {
@@ -182,3 +182,5 @@ check.benchmark<@qwen_attention_metadata_benchmark_case> @qwen_attention_metadat
 check.benchmark<@qwen_attention_metadata_benchmark_case> @qwen_attention_metadata_prefill_128 {token_count = 128}
 
 check.benchmark<@qwen_attention_metadata_benchmark_case> @qwen_attention_metadata_prefill_512 {token_count = 512}
+
+check.benchmark<@qwen_decode_attention_metadata_sequence_case> @qwen_decode_attention_metadata_sequence
