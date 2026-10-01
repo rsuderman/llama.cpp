@@ -1,5 +1,6 @@
 #include "dispatch-flash-attention.h"
 
+#include "dispatch-activation-publication.h"
 #include "dispatch-mul-mat-common.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
@@ -112,15 +113,6 @@ static size_t attention_mask_byte_count(int64_t query_token_count, int64_t key_v
 
 static std::string to_config_value(int64_t value) {
     return std::to_string(value);
-}
-
-static size_t q8_1_x4_byte_count(int64_t row_count, int64_t hidden_size) {
-    if (row_count <= 0 || hidden_size <= 0) {
-        return 0;
-    }
-    // Packed Q8 stores four 32-element blocks in each physical group.
-    const int64_t padded_hidden_size = (hidden_size + 127) / 128 * 128;
-    return static_cast<size_t>(row_count) * ggml_row_size(GGML_TYPE_Q8_1, padded_hidden_size);
 }
 
 static int64_t ceil_div(int64_t value, int64_t divisor) {
@@ -587,6 +579,22 @@ static bool match_flash_attention_decode_split_next_q8_dispatch(const DispatchMa
         return false;
     }
 
+    const Value * publication_subject =
+        match.output_layout != nullptr ? graph_value(context.graph, match.output_layout->output) : nullptr;
+    if (match.output_layout == nullptr || match.output_layout->op != GGML_OP_RESHAPE || publication_subject == nullptr ||
+        !same_full_ordered_value_range(*match.output, *publication_subject)) {
+        return false;
+    }
+    const CommonActivationPublicationCandidate candidates[] = {
+        { CommonActivationPublicationFormat::Q8_1X4, common_accepts_q8_1_x4_decode_mul_mat,
+         CommonActivationConsumerTraversal::Direct, true },
+    };
+    const CommonActivationPublicationDemand demand = common_select_activation_publication(
+        context, *publication_subject, candidates, std::size(candidates));
+    if (!demand.matched()) {
+        return false;
+    }
+
     const int64_t key_value_block_count = ceil_div(match.key_value_capacity, kDecodeKvTileSize);
     const size_t  partial_scalar_count  = static_cast<size_t>(match.key_value_head_count) *
                                         static_cast<size_t>(key_value_block_count) *
@@ -596,9 +604,7 @@ static bool match_flash_attention_decode_split_next_q8_dispatch(const DispatchMa
     const size_t  partial_output_bytes = partial_value_count * sizeof(ggml_fp16_t);
     const int64_t query_hidden_size    = match.query_head_count * match.qk_head_size;
     const int64_t output_hidden_size   = match.query_head_count * match.value_head_size;
-    const size_t  q8_row_bytes         = q8_1_x4_byte_count(1, output_hidden_size);
-    const size_t  q8_output_bytes      = q8_1_x4_byte_count(match.query_token_count, output_hidden_size);
-    if (partial_scalar_bytes == 0 || partial_output_bytes == 0 || q8_row_bytes == 0 || q8_output_bytes == 0) {
+    if (partial_scalar_bytes == 0 || partial_output_bytes == 0) {
         return false;
     }
 
@@ -606,7 +612,6 @@ static bool match_flash_attention_decode_split_next_q8_dispatch(const DispatchMa
     const ValueId partial_sum        = match_value(context, dispatch_match, 1);
     const ValueId partial_output     = match_value(context, dispatch_match, 2);
     const ValueId completion_counter = match_value(context, dispatch_match, 3);
-    const ValueId q8_output          = match_value(context, dispatch_match, 4);
 
     dispatch_match.transients.push_back(
         { partial_max, "common.decode.flash_attention.partial_max", partial_scalar_bytes, 256 });
@@ -614,21 +619,20 @@ static bool match_flash_attention_decode_split_next_q8_dispatch(const DispatchMa
         { partial_sum, "common.decode.flash_attention.partial_sum", partial_scalar_bytes, 256 });
     dispatch_match.transients.push_back(
         { partial_output, "common.decode.flash_attention.partial_output", partial_output_bytes, 256 });
-    dispatch_match.transients.push_back(
-        { q8_output, "common.decode.flash_attention.next_q8_output", q8_output_bytes, 256 });
     dispatch_match.completion_counter_requests.push_back({
         completion_counter,
         "common.decode.flash_attention.completion_counter",
         static_cast<uint32_t>(match.key_value_head_count),
     });
 
-    Status metadata_status;
-    if (!dispatch_match.metadata.append_alternate_value({ match.output->id, q8_output, GGML_TYPE_Q8_1, q8_output_bytes,
-                                                          "common.decode.flash_attention.next_q8_output" },
-                                                        metadata_status)) {
-        dispatch_match.status.append(metadata_status);
+    CommonActivationPublication publication;
+    constexpr const char * publication_name = "common.decode.flash_attention.next_q8_output";
+    if (!common_reserve_activation_publication(context, dispatch_match, *publication_subject, demand,
+                                               publication_name, publication) ||
+        !common_append_activation_publication(dispatch_match, publication, publication_name)) {
         return false;
     }
+    const size_t q8_row_bytes = publication.byte_count / static_cast<size_t>(match.query_token_count);
 
     const size_t query_row_bytes  = static_cast<size_t>(query_hidden_size) * sizeof(float);
     const size_t mask_row_bytes   = static_cast<size_t>(match.key_value_token_count) * sizeof(ggml_fp16_t);
@@ -654,7 +658,7 @@ static bool match_flash_attention_decode_split_next_q8_dispatch(const DispatchMa
             { completion_counter, 0, static_cast<size_t>(match.key_value_head_count) * sizeof(int32_t) });
         dispatch.bindings.push_back(
             { match.output->id, static_cast<size_t>(row) * match.output->nb[2], output_row_bytes });
-        dispatch.bindings.push_back({ q8_output, static_cast<size_t>(row) * q8_row_bytes, q8_row_bytes });
+        dispatch.bindings.push_back(publication.binding(static_cast<size_t>(row) * q8_row_bytes, q8_row_bytes));
         dispatch_match.dispatches.push_back(std::move(dispatch));
     }
 

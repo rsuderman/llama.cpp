@@ -1,6 +1,7 @@
 #include "dispatch-rmsnorm.h"
 
 #include "dispatch-binary-common.h"
+#include "dispatch-activation-publication.h"
 #include "dispatch-layout-utils.h"
 #include "dispatch-mul-mat-common.h"
 #include "ggml.h"
@@ -10,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -99,37 +101,21 @@ static bool supported_rmsnorm_input_layout(const Value & input,
 }
 
 static bool is_packed_q8_consumer(const Graph & graph, const GraphNode * consumer, const Value & input) {
-    if (consumer == nullptr || consumer->op != GGML_OP_MUL_MAT || consumer->inputs.size() != 2 ||
-        consumer->inputs[1] != input.id) {
+    if (common_accepts_q8_1_x4_prefill_mul_mat(graph, consumer, input)) {
+        return true;
+    }
+    if (!common_accepts_q8_1_x4_decode_mul_mat(graph, consumer, input)) {
         return false;
     }
     const Value * weight = graph_value(graph, consumer->inputs[0]);
     const Value * output = graph_value(graph, consumer->output);
-    if (weight == nullptr || output == nullptr || input.type != GGML_TYPE_F32 || output->type != GGML_TYPE_F32 ||
-        !input.contiguous || !weight->contiguous || !output->contiguous) {
-        return false;
-    }
-    const bool prefill = (weight->type == GGML_TYPE_Q5_K || weight->type == GGML_TYPE_IQ4_XS) && input.ne[1] >= 256 &&
-                         input.ne[1] <= 2048 && input.ne[1] % 256 == 0;
-    const bool decode = input.ne[1] >= 1 && input.ne[1] <= 5 && weight->alias_source.value < 0 &&
-                        (weight->type == GGML_TYPE_Q4_K ||
-                         (weight->type == GGML_TYPE_Q6_K && !graph.index().consumers(output->id).empty()));
-    return (prefill || decode) && input.ne[0] >= 256 && input.ne[0] <= 32768 && input.ne[0] % 256 == 0 &&
-           input.ne[2] == 1 && input.ne[3] == 1 && weight->ne[0] == input.ne[0] && weight->ne[1] >= 64 &&
-           weight->ne[1] <= 262144 && weight->ne[1] % 64 == 0 && weight->ne[2] == 1 && weight->ne[3] == 1 &&
-           output->ne[0] == weight->ne[1] && output->ne[1] == input.ne[1] && output->ne[2] == 1 && output->ne[3] == 1;
+    return weight->type == GGML_TYPE_Q4_K || !graph.index().consumers(output->id).empty();
 }
 
-static bool has_packed_q8_consumer(const Graph & graph, const Value & value) {
-    if (!graph.has_index()) {
-        return false;
-    }
-    for (const GraphNode * consumer : graph.index().consumers(value.id)) {
-        if (is_packed_q8_consumer(graph, consumer, value)) {
-            return true;
-        }
-    }
-    return false;
+static bool rmsnorm_q8_consumer_accepts(const DispatchMatchContext & context,
+                                        const GraphNode &            consumer,
+                                        const Value &                input) {
+    return is_packed_q8_consumer(context.graph, &consumer, input);
 }
 
 static size_t q8_1_x4_byte_count(int64_t token_count, int64_t hidden_size) {
@@ -972,52 +958,19 @@ static bool match_rmsnorm_gate_dispatch(const DispatchMatchContext & context, Di
     return match.status.success();
 }
 
-static bool has_qualified_rmsnorm_k16_consumer(const Graph & graph, const RmsNormBinaryMatch & rms) {
+static bool rmsnorm_k16_publication_enabled(const RmsNormBinaryMatch & rms) {
     const bool qualified_shape =
-        (rms.token_count == 512 && (rms.hidden_size == 2048 || rms.hidden_size == 4096 || rms.hidden_size == 5120 ||
-                                   rms.hidden_size == 6144 || rms.hidden_size == 8192)) ||
+        (rms.token_count == 512 && (rms.hidden_size == 2048 || rms.hidden_size == 3072 || rms.hidden_size == 4096 ||
+                                   rms.hidden_size == 5120 || rms.hidden_size == 6144 || rms.hidden_size == 8192)) ||
         (rms.token_count == 1024 && rms.hidden_size == 5120);
-    if (!qualified_shape || rms.op != BinaryKind::Mul || rms.output->ne[1] != rms.token_count ||
-        rms.output->ne[2] != 1 || rms.output->ne[3] != 1 ||
-        !pairwise_distinct_storage_roots(std::array<const Value *, 3>{ rms.input, rms.rhs, rms.output })) {
-        return false;
-    }
-    for (const GraphNode * consumer : graph.index().consumers(rms.output->id)) {
-        const CommonMulMatMatch projection =
-            common_match_mul_mat_any_format(graph, consumer, kRmsNormBinaryF32K16Kernel, false);
-        if (projection.matched() && projection.input->id == rms.output->id &&
-            projection.weight->alias_source.value < 0 &&
-            common_mul_mat_uses_k16_major_f16(projection.weight_format, projection.input_size, projection.output_size,
-                                              projection.token_count)) {
-            return true;
-        }
-    }
-    return false;
+    return qualified_shape && rms.op == BinaryKind::Mul && rms.output->ne[1] == rms.token_count &&
+           rms.output->ne[2] == 1 && rms.output->ne[3] == 1 &&
+           pairwise_distinct_storage_roots(std::array<const Value *, 3>{ rms.input, rms.rhs, rms.output });
 }
 
-static bool has_qualified_rmsnorm_f16_consumer(const Graph & graph, const RmsNormBinaryMatch & rms) {
-    if (!graph.has_index() || rms.token_count < 128 || rms.output->ne[1] != rms.token_count || rms.output->ne[2] != 1 ||
-        rms.output->ne[3] != 1) {
-        return false;
-    }
-    for (const GraphNode * consumer : graph.index().consumers(rms.output->id)) {
-        const CommonMulMatMatch projection =
-            common_match_mul_mat_any_format(graph, consumer, kRmsNormBinaryF32F16Kernel, false);
-        if (!projection.matched() || projection.input->id != rms.output->id ||
-            projection.input_size != rms.hidden_size || projection.token_count != rms.token_count ||
-            projection.input_size % 256 != 0 || projection.output_size % 64 != 0 ||
-            projection.weight->alias_source.value >= 0) {
-            continue;
-        }
-        if (projection.weight->type == GGML_TYPE_Q6_K && projection.token_count % 128 == 0) {
-            return true;
-        }
-        if (projection.weight->type == GGML_TYPE_Q4_K && projection.token_count % 256 == 0 &&
-            projection.output_size >= projection.input_size / 4) {
-            return true;
-        }
-    }
-    return false;
+static bool rmsnorm_f16_publication_enabled(const RmsNormBinaryMatch & rms) {
+    return rms.token_count >= 128 && rms.output->ne[1] == rms.token_count && rms.output->ne[2] == 1 &&
+           rms.output->ne[3] == 1;
 }
 
 static bool match_rmsnorm_binary_f32_dispatch(const DispatchMatchContext & context, DispatchMatch & match) {
@@ -1034,9 +987,16 @@ static bool match_rmsnorm_binary_f32_dispatch(const DispatchMatchContext & conte
     }
 
     const bool strided_input = rms_match.input_stride != rms_match.hidden_size;
-    const bool packed_output = !strided_input && has_qualified_rmsnorm_k16_consumer(context.graph, rms_match);
-    const bool f16_output =
-        !strided_input && !packed_output && has_qualified_rmsnorm_f16_consumer(context.graph, rms_match);
+    const CommonActivationPublicationCandidate publication_candidates[] = {
+        { CommonActivationPublicationFormat::F16K16Major, common_accepts_f16_k16_major_mul_mat,
+          CommonActivationConsumerTraversal::Direct, !strided_input && rmsnorm_k16_publication_enabled(rms_match) },
+        { CommonActivationPublicationFormat::F16Row, common_accepts_f16_row_prefill_mul_mat,
+          CommonActivationConsumerTraversal::Direct, !strided_input && rmsnorm_f16_publication_enabled(rms_match) },
+    };
+    const CommonActivationPublicationDemand publication_demand = common_select_activation_publication(
+        context, *rms_match.output, publication_candidates, std::size(publication_candidates));
+    const bool packed_output = publication_demand.format == CommonActivationPublicationFormat::F16K16Major;
+    const bool f16_output    = publication_demand.format == CommonActivationPublicationFormat::F16Row;
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(strided_input ? kRmsNormBinaryStridedF32Kernel :
                                                   packed_output ? kRmsNormBinaryF32K16Kernel :
@@ -1060,34 +1020,22 @@ static bool match_rmsnorm_binary_f32_dispatch(const DispatchMatchContext & conte
     dispatch.bindings.push_back({ rms_match.rhs->id, 0, rms_match.rhs->byte_count });
     dispatch.bindings.push_back({ rms_match.output->id, 0, rms_match.output->byte_count });
 
-    if (packed_output) {
-        const ValueId packed = context.next_plan_value;
-        const size_t bytes = rms_match.output->byte_count / 2;
-        Status status;
-        if (!match.metadata.append_generated_resource(
-                { rms_match.output->id, GeneratedResourceRole::F16K16Major, packed, bytes, {} }, status)) {
-            match.status.append(status);
+    if (publication_demand.matched()) {
+        const char * publication_name = packed_output ? "common.rmsnorm_binary.k16_major_f16" :
+                                                        "common.rmsnorm_binary.f16";
+        CommonActivationPublication publication;
+        if (!common_reserve_activation_publication(context, match, *rms_match.output, publication_demand,
+                                                   publication_name, publication) ||
+            !common_append_activation_publication(match, publication, publication_name)) {
             return false;
         }
-        dispatch.bindings.push_back({ packed, 0, bytes });
-        match.transients.push_back({ packed, "common.rmsnorm_binary.k16_major_f16", bytes, 256 });
-    } else if (f16_output) {
-        const ValueId f16 = context.next_plan_value;
-        const size_t bytes = rms_match.output->byte_count / 2;
-        Status status;
-        if (!match.metadata.append_alternate_value(
-                { rms_match.output->id, f16, GGML_TYPE_F16, bytes, "common.rmsnorm_binary.f16" }, status)) {
-            match.status.append(status);
-            return false;
-        }
-        dispatch.bindings.push_back({ f16, 0, bytes });
-        match.transients.push_back({ f16, "common.rmsnorm_binary.f16", bytes, 256 });
+        dispatch.bindings.push_back(publication.binding());
     }
 
     match.covered_nodes.push_back(rms_match.rms_node_index);
     match.covered_nodes.push_back(rms_match.binary_node_index);
     match.dispatches.push_back(std::move(dispatch));
-    return true;
+    return match.status.success();
 }
 
 static bool match_rmsnorm_mul_add_f32_dispatch(const DispatchMatchContext & context, DispatchMatch & match) {
@@ -1125,10 +1073,19 @@ static bool match_rmsnorm_binary_q8_1_x4_dispatch(const DispatchMatchContext & c
     }
     const RmsNormBinaryMatch rms_match =
         match_rmsnorm_binary_f32(context.graph, &nodes[context.root_index], context.root_index);
+    const CommonActivationPublicationCandidate q8_candidate = {
+        CommonActivationPublicationFormat::Q8_1X4,
+        rmsnorm_q8_consumer_accepts,
+        CommonActivationConsumerTraversal::FullRangeOrderedAliases,
+        true,
+    };
+    const CommonActivationPublicationDemand q8_demand =
+        rms_match.matched() ? common_select_activation_publication(context, *rms_match.output, &q8_candidate, 1) :
+                              CommonActivationPublicationDemand{};
     if (!rms_match.matched() || rms_match.rms_node_index >= context.covered_nodes.size() ||
         rms_match.binary_node_index >= context.covered_nodes.size() ||
         context.covered_nodes[rms_match.rms_node_index] || context.covered_nodes[rms_match.binary_node_index] ||
-        !has_packed_q8_consumer(context.graph, *rms_match.output)) {
+        !q8_demand.matched()) {
         return false;
     }
 

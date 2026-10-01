@@ -1,5 +1,6 @@
 #include "backend-context.h"
 #include "dispatch/dispatch-scheduler.h"
+#include "dispatch_registration/common/dispatch-activation-publication.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-hrx.h"
@@ -16,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -499,10 +501,11 @@ static void require_kernel_subsequence(const std::vector<std::string> & sequence
 }
 
 static void run_alternate_value_alias_lookup_checks() {
-    constexpr int64_t element_count = 2048;
-    const size_t      full_bytes    = ggml_row_size(GGML_TYPE_F32, element_count);
-    const size_t      f16_bytes     = ggml_row_size(GGML_TYPE_F16, element_count);
-    const size_t      q8_bytes      = ggml_row_size(GGML_TYPE_Q8_1, element_count);
+    constexpr int64_t element_count   = 2048;
+    const size_t      full_bytes      = ggml_row_size(GGML_TYPE_F32, element_count);
+    const size_t      f16_bytes       = ggml_row_size(GGML_TYPE_F16, element_count);
+    const size_t      q8_bytes        = ggml_row_size(GGML_TYPE_Q8_1, element_count);
+    const size_t      symmetric_bytes = 1536;
 
     ggml::hrx::Graph       graph;
     ggml::hrx::Status      status;
@@ -511,6 +514,10 @@ static void run_alternate_value_alias_lookup_checks() {
     const ggml::hrx::ValueId        root(0);
     const ggml::hrx::ValueId        full_alias(1);
     const ggml::hrx::ValueId        partial_alias(2);
+    const ggml::hrx::ValueId        reordered_alias(3);
+    const ggml::hrx::ValueId        unrelated_same_storage(4);
+    const ggml::hrx::ValueId        different_shape_alias(5);
+    const ggml::hrx::ValueId        incompatible_q8_shape_alias(6);
     const ggml::hrx::ValueId        f16_alternate(99);
     const ggml::hrx::ValueId        q8_alternate(100);
     const ggml::hrx::ValueStorageId storage(0);
@@ -526,9 +533,41 @@ static void run_alternate_value_alias_lookup_checks() {
     status = graph.values().add_snapshot_value(
         make_test_value(partial_alias, storage, root, root, 0, full_bytes, GGML_TYPE_F32, element_count / 2));
     REQUIRE(status.success());
+    ggml::hrx::Value reordered =
+        make_test_value(reordered_alias, storage, root, root, 0, full_bytes, GGML_TYPE_F32, element_count);
+    reordered.contiguous = false;
+    status               = graph.values().add_snapshot_value(std::move(reordered));
+    REQUIRE(status.success());
+    status = graph.values().add_snapshot_value(
+        make_test_value(unrelated_same_storage, storage, root, root, 0, full_bytes, GGML_TYPE_F32, element_count));
+    REQUIRE(status.success());
+    ggml::hrx::Value different_shape =
+        make_test_value(different_shape_alias, storage, root, root, 0, full_bytes, GGML_TYPE_F32, element_count);
+    different_shape.ne = { element_count / 2, 2, 1, 1 };
+    different_shape.nb = { sizeof(float), static_cast<size_t>(element_count / 2) * sizeof(float), full_bytes,
+                           full_bytes };
+    status             = graph.values().add_snapshot_value(std::move(different_shape));
+    REQUIRE(status.success());
+    ggml::hrx::Value incompatible_q8_shape =
+        make_test_value(incompatible_q8_shape_alias, storage, root, root, 0, full_bytes, GGML_TYPE_F32, element_count);
+    incompatible_q8_shape.ne = { 64, element_count / 64, 1, 1 };
+    incompatible_q8_shape.nb = { sizeof(float), 64 * sizeof(float), full_bytes, full_bytes };
+    status = graph.values().add_snapshot_value(std::move(incompatible_q8_shape));
+    REQUIRE(status.success());
+
+    graph.add_node(GGML_OP_RESHAPE, full_alias, { root });
+    graph.add_node(GGML_OP_VIEW, partial_alias, { root });
+    graph.add_node(GGML_OP_TRANSPOSE, reordered_alias, { root });
+    graph.add_node(GGML_OP_CPY, unrelated_same_storage, { root });
+    graph.add_node(GGML_OP_RESHAPE, different_shape_alias, { root });
+    graph.add_node(GGML_OP_RESHAPE, incompatible_q8_shape_alias, { root });
+    status = graph.build_index();
+    REQUIRE(status.success());
 
     REQUIRE(plan.metadata.append_alternate_value({ root, q8_alternate, GGML_TYPE_Q8_1, q8_bytes, "q8" }, status));
     REQUIRE(plan.metadata.append_alternate_value({ root, f16_alternate, GGML_TYPE_F16, f16_bytes, "f16" }, status));
+    REQUIRE(plan.metadata.append_alternate_value(
+        { root, ggml::hrx::ValueId(104), GGML_TYPE_COUNT, symmetric_bytes, "symmetric-i4" }, status));
 
     const ggml::hrx::CommandPlanAlternateValue * exact =
         ggml::hrx::find_alternate_value(graph, plan, root, GGML_TYPE_Q8_1, q8_bytes);
@@ -544,14 +583,280 @@ static void run_alternate_value_alias_lookup_checks() {
         ggml::hrx::find_alternate_value(graph, plan, partial_alias, GGML_TYPE_Q8_1, q8_bytes);
     REQUIRE(through_partial_alias == nullptr);
 
+    const ggml::hrx::CommandPlanAlternateValue * through_reordered_alias =
+        ggml::hrx::find_alternate_value(graph, plan, reordered_alias, GGML_TYPE_Q8_1, q8_bytes);
+    REQUIRE(through_reordered_alias == nullptr);
+
+    REQUIRE(ggml::hrx::find_alternate_value(graph, plan, unrelated_same_storage, GGML_TYPE_Q8_1, q8_bytes) == nullptr);
+    REQUIRE(ggml::hrx::find_alternate_value(graph, plan, different_shape_alias, GGML_TYPE_Q8_1, q8_bytes) != nullptr);
+    REQUIRE(ggml::hrx::find_alternate_value(graph, plan, incompatible_q8_shape_alias, GGML_TYPE_Q8_1, q8_bytes) ==
+            nullptr);
+
     const ggml::hrx::CommandPlanAlternateValue * f16_exact =
         ggml::hrx::find_alternate_value(graph, plan, root, GGML_TYPE_F16, f16_bytes);
     REQUIRE(f16_exact != nullptr);
     REQUIRE(f16_exact->alternate_value == f16_alternate);
+    REQUIRE(ggml::hrx::find_alternate_value(graph, plan, different_shape_alias, GGML_TYPE_F16, f16_bytes) != nullptr);
+    REQUIRE(ggml::hrx::find_alternate_value(graph, plan, full_alias, GGML_TYPE_COUNT, symmetric_bytes) != nullptr);
+    REQUIRE(ggml::hrx::find_alternate_value(graph, plan, different_shape_alias, GGML_TYPE_COUNT, symmetric_bytes) ==
+            nullptr);
 
     ggml::hrx::Status conflict_status;
     REQUIRE(!plan.metadata.append_alternate_value(
         { root, ggml::hrx::ValueId(101), GGML_TYPE_Q8_1, q8_bytes, "q8-conflict" }, conflict_status));
+
+    ggml::hrx::Status        generated_status;
+    const ggml::hrx::ValueId k16_value(102);
+    REQUIRE(plan.metadata.append_generated_resource(
+        { root, ggml::hrx::GeneratedResourceRole::F16K16Major, k16_value, f16_bytes, {} }, generated_status));
+    const ggml::hrx::CommandPlanGeneratedResource * generated_through_alias = ggml::hrx::find_generated_resource(
+        graph, plan, full_alias, ggml::hrx::GeneratedResourceRole::F16K16Major, f16_bytes);
+    REQUIRE(generated_through_alias != nullptr);
+    REQUIRE(generated_through_alias->generated_value == k16_value);
+    REQUIRE(ggml::hrx::find_generated_resource(graph, plan, partial_alias,
+                                               ggml::hrx::GeneratedResourceRole::F16K16Major, f16_bytes) == nullptr);
+    REQUIRE(ggml::hrx::find_generated_resource(graph, plan, reordered_alias,
+                                               ggml::hrx::GeneratedResourceRole::F16K16Major, f16_bytes) == nullptr);
+    REQUIRE(ggml::hrx::find_generated_resource(graph, plan, different_shape_alias,
+                                               ggml::hrx::GeneratedResourceRole::F16K16Major, f16_bytes) == nullptr);
+}
+
+static bool publication_accepts_add(const ggml::hrx::DispatchMatchContext &,
+                                    const ggml::hrx::GraphNode & consumer,
+                                    const ggml::hrx::Value &     input) {
+    return consumer.op == GGML_OP_ADD &&
+           std::find(consumer.inputs.begin(), consumer.inputs.end(), input.id) != consumer.inputs.end();
+}
+
+static bool publication_accepts_mul(const ggml::hrx::DispatchMatchContext &,
+                                    const ggml::hrx::GraphNode & consumer,
+                                    const ggml::hrx::Value &     input) {
+    return consumer.op == GGML_OP_MUL &&
+           std::find(consumer.inputs.begin(), consumer.inputs.end(), input.id) != consumer.inputs.end();
+}
+
+static bool publication_accepts_mul_1024(const ggml::hrx::DispatchMatchContext & context,
+                                         const ggml::hrx::GraphNode &            consumer,
+                                         const ggml::hrx::Value &                input) {
+    return input.ne[0] == 1024 && publication_accepts_mul(context, consumer, input);
+}
+
+static bool publication_accepts_mul_64(const ggml::hrx::DispatchMatchContext & context,
+                                       const ggml::hrx::GraphNode &            consumer,
+                                       const ggml::hrx::Value &                input) {
+    return input.ne[0] == 64 && publication_accepts_mul(context, consumer, input);
+}
+
+static void run_activation_publication_contract_checks() {
+    constexpr int64_t row_size  = 2048;
+    constexpr int64_t row_count = 2;
+    constexpr int64_t elements  = row_size * row_count;
+    const size_t      f32_bytes = ggml_row_size(GGML_TYPE_F32, elements);
+
+    auto make_activation = [&](ggml::hrx::ValueId id, ggml::hrx::ValueStorageId storage, ggml::hrx::ValueId root,
+                               ggml::hrx::ValueId alias, int64_t element_count = elements) {
+        ggml::hrx::Value value = make_test_value(id, storage, root, alias, 0, f32_bytes, GGML_TYPE_F32, element_count);
+        if (element_count == elements) {
+            value.ne = { row_size, row_count, 1, 1 };
+            value.nb = { sizeof(float), static_cast<size_t>(row_size) * sizeof(float), f32_bytes, f32_bytes };
+        }
+        return value;
+    };
+
+    ggml::hrx::Graph         graph;
+    ggml::hrx::Status        status;
+    const ggml::hrx::ValueId root(0);
+    const ggml::hrx::ValueId reshaped(1);
+    const ggml::hrx::ValueId partial(2);
+    const ggml::hrx::ValueId transposed(3);
+    const ggml::hrx::ValueId different_shape(8);
+    const ggml::hrx::ValueId incompatible_q8_shape(10);
+    status = graph.values().add_snapshot_storage({ ggml::hrx::ValueStorageId(0), root, f32_bytes });
+    REQUIRE(status.success());
+    status = graph.values().add_snapshot_value(
+        make_activation(root, ggml::hrx::ValueStorageId(0), root, ggml::hrx::ValueId()));
+    REQUIRE(status.success());
+    status = graph.values().add_snapshot_value(make_activation(reshaped, ggml::hrx::ValueStorageId(0), root, root));
+    REQUIRE(status.success());
+    status = graph.values().add_snapshot_value(
+        make_activation(partial, ggml::hrx::ValueStorageId(0), root, root, elements / 2));
+    REQUIRE(status.success());
+    ggml::hrx::Value reordered = make_activation(transposed, ggml::hrx::ValueStorageId(0), root, root);
+    reordered.contiguous       = false;
+    status                     = graph.values().add_snapshot_value(std::move(reordered));
+    REQUIRE(status.success());
+
+    for (int32_t value = 4; value < 8; ++value) {
+        const ggml::hrx::ValueStorageId storage(value - 3);
+        const ggml::hrx::ValueId        id(value);
+        status = graph.values().add_snapshot_storage({ storage, id, f32_bytes });
+        REQUIRE(status.success());
+        status = graph.values().add_snapshot_value(make_activation(id, storage, id, ggml::hrx::ValueId()));
+        REQUIRE(status.success());
+    }
+    ggml::hrx::Value different = make_activation(different_shape, ggml::hrx::ValueStorageId(0), root, root);
+    different.ne               = { row_size / 2, row_count * 2, 1, 1 };
+    different.nb = { sizeof(float), static_cast<size_t>(row_size / 2) * sizeof(float), f32_bytes, f32_bytes };
+    status       = graph.values().add_snapshot_value(std::move(different));
+    REQUIRE(status.success());
+    status = graph.values().add_snapshot_storage({ ggml::hrx::ValueStorageId(5), ggml::hrx::ValueId(9), f32_bytes });
+    REQUIRE(status.success());
+    status = graph.values().add_snapshot_value(make_activation(ggml::hrx::ValueId(9), ggml::hrx::ValueStorageId(5),
+                                                               ggml::hrx::ValueId(9), ggml::hrx::ValueId()));
+    REQUIRE(status.success());
+    ggml::hrx::Value incompatible = make_activation(incompatible_q8_shape, ggml::hrx::ValueStorageId(0), root, root);
+    incompatible.ne               = { 64, elements / 64, 1, 1 };
+    incompatible.nb               = { sizeof(float), 64 * sizeof(float), f32_bytes, f32_bytes };
+    status                        = graph.values().add_snapshot_value(std::move(incompatible));
+    REQUIRE(status.success());
+    status = graph.values().add_snapshot_storage({ ggml::hrx::ValueStorageId(6), ggml::hrx::ValueId(11), f32_bytes });
+    REQUIRE(status.success());
+    status = graph.values().add_snapshot_value(make_activation(ggml::hrx::ValueId(11), ggml::hrx::ValueStorageId(6),
+                                                               ggml::hrx::ValueId(11), ggml::hrx::ValueId()));
+    REQUIRE(status.success());
+
+    graph.add_node(GGML_OP_RESHAPE, reshaped, { root });
+    graph.add_node(GGML_OP_VIEW, partial, { root });
+    graph.add_node(GGML_OP_TRANSPOSE, transposed, { root });
+    graph.add_node(GGML_OP_ADD, ggml::hrx::ValueId(4), { root, root });
+    graph.add_node(GGML_OP_MUL, ggml::hrx::ValueId(5), { reshaped, reshaped });
+    graph.add_node(GGML_OP_MUL, ggml::hrx::ValueId(6), { partial, partial });
+    graph.add_node(GGML_OP_MUL, ggml::hrx::ValueId(7), { transposed, transposed });
+    graph.add_node(GGML_OP_RESHAPE, different_shape, { root });
+    graph.add_node(GGML_OP_MUL, ggml::hrx::ValueId(9), { different_shape, different_shape });
+    graph.add_node(GGML_OP_RESHAPE, incompatible_q8_shape, { root });
+    graph.add_node(GGML_OP_MUL, ggml::hrx::ValueId(11), { incompatible_q8_shape, incompatible_q8_shape });
+    status = graph.build_index();
+    REQUIRE(status.success());
+
+    const std::vector<bool>               covered(graph.nodes().size(), false);
+    ggml::hrx::CommandPlan                plan;
+    const ggml::hrx::DispatchMatchContext context = {
+        graph, &graph.nodes().front(), 0, covered, plan, ggml::hrx::ValueId(100),
+    };
+    const ggml::hrx::Value * produced = graph.values().find(root);
+    REQUIRE(produced != nullptr);
+
+    const ggml::hrx::CommonActivationPublicationCandidate direct_only[] = {
+        { ggml::hrx::CommonActivationPublicationFormat::Q8_1X4, publication_accepts_mul,
+         ggml::hrx::CommonActivationConsumerTraversal::Direct, true },
+    };
+    REQUIRE(!ggml::hrx::common_select_activation_publication(context, *produced, direct_only, std::size(direct_only))
+                 .matched());
+
+    const ggml::hrx::CommonActivationPublicationCandidate compatible_reshaped_q8[] = {
+        { ggml::hrx::CommonActivationPublicationFormat::Q8_1X4, publication_accepts_mul_1024,
+         ggml::hrx::CommonActivationConsumerTraversal::FullRangeOrderedAliases, true },
+    };
+    REQUIRE(ggml::hrx::common_select_activation_publication(context, *produced, compatible_reshaped_q8,
+                                                            std::size(compatible_reshaped_q8))
+                .matched());
+    const ggml::hrx::CommonActivationPublicationCandidate incompatible_q8[] = {
+        { ggml::hrx::CommonActivationPublicationFormat::Q8_1X4, publication_accepts_mul_64,
+         ggml::hrx::CommonActivationConsumerTraversal::FullRangeOrderedAliases, true },
+    };
+    REQUIRE(!ggml::hrx::common_select_activation_publication(context, *produced, incompatible_q8,
+                                                             std::size(incompatible_q8)).matched());
+    const ggml::hrx::CommonActivationPublicationCandidate compatible_f16[] = {
+        { ggml::hrx::CommonActivationPublicationFormat::F16Row, publication_accepts_mul_1024,
+         ggml::hrx::CommonActivationConsumerTraversal::FullRangeOrderedAliases, true },
+    };
+    const ggml::hrx::CommonActivationPublicationDemand reshaped_f16 =
+        ggml::hrx::common_select_activation_publication(context, *produced, compatible_f16, std::size(compatible_f16));
+    REQUIRE(reshaped_f16.matched());
+    REQUIRE(reshaped_f16.consumer_value->id == different_shape);
+
+    const ggml::hrx::CommonActivationPublicationCandidate q8_first[] = {
+        { ggml::hrx::CommonActivationPublicationFormat::Q8_1X4, publication_accepts_mul,
+         ggml::hrx::CommonActivationConsumerTraversal::FullRangeOrderedAliases, true },
+        { ggml::hrx::CommonActivationPublicationFormat::F16Row, publication_accepts_add,
+         ggml::hrx::CommonActivationConsumerTraversal::Direct,                  true },
+    };
+    const ggml::hrx::CommonActivationPublicationDemand q8_demand =
+        ggml::hrx::common_select_activation_publication(context, *produced, q8_first, std::size(q8_first));
+    REQUIRE(q8_demand.matched());
+    REQUIRE(q8_demand.format == ggml::hrx::CommonActivationPublicationFormat::Q8_1X4);
+    REQUIRE(q8_demand.consumer_value->id == reshaped);
+
+    const ggml::hrx::CommonActivationPublicationCandidate f16_first[] = {
+        { ggml::hrx::CommonActivationPublicationFormat::F16Row, publication_accepts_add,
+         ggml::hrx::CommonActivationConsumerTraversal::Direct, true },
+        q8_first[0],
+    };
+    const ggml::hrx::CommonActivationPublicationDemand f16_demand =
+        ggml::hrx::common_select_activation_publication(context, *produced, f16_first, std::size(f16_first));
+    REQUIRE(f16_demand.matched());
+    REQUIRE(f16_demand.format == ggml::hrx::CommonActivationPublicationFormat::F16Row);
+    REQUIRE(f16_demand.consumer_value->id == root);
+
+    const ggml::hrx::CommonActivationPublicationCandidate disabled[] = {
+        { ggml::hrx::CommonActivationPublicationFormat::F16K16Major, publication_accepts_add,
+         ggml::hrx::CommonActivationConsumerTraversal::Direct, false },
+    };
+    REQUIRE(
+        !ggml::hrx::common_select_activation_publication(context, *produced, disabled, std::size(disabled)).matched());
+
+    ggml::hrx::DispatchMatch match;
+    match.completion_counter_requests.push_back({ ggml::hrx::ValueId(100), "existing.counter", 1 });
+    const ggml::hrx::CommonActivationPublicationDemand symmetric_demand = {
+        ggml::hrx::CommonActivationPublicationFormat::SymmetricI4K32,
+        produced,
+        &graph.nodes()[3],
+    };
+    ggml::hrx::CommonActivationPublication symmetric;
+    ggml::hrx::CommonActivationPublication q8;
+    ggml::hrx::CommonActivationPublication f16;
+    ggml::hrx::CommonActivationPublication k16;
+    REQUIRE(ggml::hrx::common_reserve_activation_publication(context, match, *produced, symmetric_demand,
+                                                             "test.symmetric_i4", symmetric));
+    REQUIRE(ggml::hrx::common_append_activation_publication(match, symmetric, "test.symmetric_i4"));
+    REQUIRE(ggml::hrx::common_reserve_activation_publication(context, match, *produced, q8_demand, "test.q8", q8));
+    REQUIRE(ggml::hrx::common_append_activation_publication(match, q8, "test.q8"));
+    REQUIRE(ggml::hrx::common_reserve_activation_publication(context, match, *produced, f16_demand, "test.f16", f16));
+    REQUIRE(ggml::hrx::common_append_activation_publication(match, f16, "test.f16"));
+    const ggml::hrx::CommonActivationPublicationDemand k16_demand = {
+        ggml::hrx::CommonActivationPublicationFormat::F16K16Major,
+        q8_demand.consumer_value,
+        q8_demand.consumer,
+    };
+    REQUIRE(ggml::hrx::common_reserve_activation_publication(context, match, *produced, k16_demand, "test.k16", k16));
+    REQUIRE(ggml::hrx::common_append_activation_publication(match, k16, "test.k16"));
+
+    ggml::hrx::DispatchMatch              invalid_id_match;
+    const ggml::hrx::DispatchMatchContext invalid_id_context = {
+        graph, &graph.nodes().front(), 0, covered, plan, ggml::hrx::ValueId(-1),
+    };
+    ggml::hrx::CommonActivationPublication invalid_id_publication;
+    REQUIRE(!ggml::hrx::common_reserve_activation_publication(invalid_id_context, invalid_id_match, *produced,
+                                                              f16_demand, "test.invalid_id", invalid_id_publication));
+    REQUIRE(invalid_id_match.transients.empty());
+
+    ggml::hrx::DispatchMatch conflict_match;
+    REQUIRE(ggml::hrx::common_append_activation_publication(conflict_match, q8, "test.q8"));
+    ggml::hrx::CommonActivationPublication conflicting_q8 = q8;
+    conflicting_q8.alternate_value                        = ggml::hrx::ValueId(200);
+    REQUIRE(!ggml::hrx::common_append_activation_publication(conflict_match, conflicting_q8, "test.q8.conflict"));
+    REQUIRE(!conflict_match.status.success());
+
+    REQUIRE(match.status.success());
+    REQUIRE(match.transients.size() == 4);
+    REQUIRE(symmetric.alternate_value == ggml::hrx::ValueId(101));
+    REQUIRE(q8.alternate_value == ggml::hrx::ValueId(102));
+    REQUIRE(f16.alternate_value == ggml::hrx::ValueId(103));
+    REQUIRE(k16.alternate_value == ggml::hrx::ValueId(104));
+    REQUIRE(symmetric.payload_bytes == static_cast<size_t>(elements) / 2);
+    REQUIRE(symmetric.scales_offset % 256 == 0);
+    REQUIRE(symmetric.sums_offset % 256 == 0);
+    REQUIRE(q8.byte_count == static_cast<size_t>(row_count) * ggml_row_size(GGML_TYPE_Q8_1, row_size));
+    REQUIRE(f16.byte_count == static_cast<size_t>(elements) * sizeof(ggml_fp16_t));
+    REQUIRE(symmetric.binding(symmetric.scales_offset, symmetric.scales_bytes).value == symmetric.alternate_value);
+
+    ggml::hrx::CommandPlan recorded;
+    recorded.metadata = std::move(match.metadata);
+    REQUIRE(ggml::hrx::find_alternate_value(graph, recorded, reshaped, GGML_TYPE_Q8_1, q8.byte_count) != nullptr);
+    REQUIRE(ggml::hrx::find_alternate_value(graph, recorded, reshaped, GGML_TYPE_F16, f16.byte_count) != nullptr);
+    REQUIRE(ggml::hrx::find_generated_resource(graph, recorded, reshaped, ggml::hrx::GeneratedResourceRole::F16K16Major,
+                                               k16.byte_count) != nullptr);
 }
 
 static std::vector<float> make_pattern_f32(size_t element_count, int seed, float scale = 0.01f) {
@@ -5242,6 +5547,7 @@ using test_runner::Suite;
 static void register_basic_ops_cases(Suite & suite) {
     suite.host_case("support.rmsnorm", [] { run_rmsnorm_support_checks(); });
     suite.host_case("support.alternate_value_alias_lookup", [] { run_alternate_value_alias_lookup_checks(); });
+    suite.host_case("support.activation_publication_contract", [] { run_activation_publication_contract_checks(); });
     suite.device_case("add_f32.cpu_reference", [] { run_add_f32_cpu_reference_case(); });
     for (const ggml_type type : { GGML_TYPE_Q4_K, GGML_TYPE_Q6_K }) {
         suite.device_case("ssm_conv_prefill_recurrent." + type_name(type) + ".plain",

@@ -1,5 +1,6 @@
 #include "dispatch-gated-mul-mat.h"
 
+#include "dispatch-activation-publication.h"
 #include "dispatch-mul-mat-common.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
@@ -721,22 +722,19 @@ static bool common_mul_mat_swiglu_is_generic_tiled_pair_route(const MulMatSwiGLU
     return !use_q8 && !use_direct_dot && match.token_count >= 2;
 }
 
-static bool has_qualified_swiglu_k16_consumer(const Graph & graph, const MulMatSwiGLUMatch & match) {
-    if (!graph.has_index() || match.op != BinaryKind::SwiGLU || match.output == nullptr ||
-        match.output->ne[1] != match.token_count || match.output->ne[2] != 1 || match.output->ne[3] != 1) {
-        return false;
+static CommonActivationPublicationDemand select_swiglu_k16_publication(const DispatchMatchContext & context,
+                                                                       const MulMatSwiGLUMatch &    match) {
+    if (match.op != BinaryKind::SwiGLU || match.output == nullptr || match.output->ne[1] != match.token_count ||
+        match.output->ne[2] != 1 || match.output->ne[3] != 1) {
+        return {};
     }
-    for (const GraphNode * consumer : graph.index().consumers(match.output->id)) {
-        const CommonMulMatMatch projection =
-            common_match_mul_mat_any_format(graph, consumer, kMulMatTiledPairF32BinaryPublishF32Kernel, false);
-        if (projection.matched() && projection.input->id == match.output->id &&
-            projection.weight->alias_source.value < 0 &&
-            common_mul_mat_uses_k16_major_f16(projection.weight_format, projection.input_size, projection.output_size,
-                                              projection.token_count, true)) {
-            return true;
-        }
-    }
-    return false;
+    const CommonActivationPublicationCandidate candidate = {
+        CommonActivationPublicationFormat::F16K16Major,
+        common_accepts_f16_k16_major_packed_producer_mul_mat,
+        CommonActivationConsumerTraversal::Direct,
+        true,
+    };
+    return common_select_activation_publication(context, *match.output, &candidate, 1);
 }
 
 static MulMatSwiGLUPostOpsMatch match_mul_mat_swiglu_postops(const DispatchMatchContext & context) {
@@ -799,19 +797,21 @@ static MulMatSwiGLUPostOpsMatch match_mul_mat_swiglu_postops(const DispatchMatch
     return match;
 }
 
-static bool build_tiled_pair_mul_mat_swiglu_dispatch(const DispatchMatchContext & context,
+static bool build_tiled_pair_mul_mat_swiglu_dispatch(const DispatchMatchContext &     context,
                                                      const MulMatSwiGLUPostOpsMatch * postops,
-                                                     DispatchMatch & dispatch_match) {
+                                                     DispatchMatch &                  dispatch_match) {
     const MulMatSwiGLUMatch & match = postops != nullptr ? postops->root : match_mul_mat_swiglu(context);
     if (!common_mul_mat_swiglu_is_generic_tiled_pair_route(match)) {
         return false;
     }
 
-    const bool publish_k16 = postops == nullptr && has_qualified_swiglu_k16_consumer(context.graph, match);
-    Dispatch dispatch;
+    const CommonActivationPublicationDemand k16_demand =
+        postops == nullptr ? select_swiglu_k16_publication(context, match) : CommonActivationPublicationDemand{};
+    const bool publish_k16 = k16_demand.matched();
+    Dispatch   dispatch;
     dispatch.kernel = make_kernel_specialization(postops != nullptr ? postops->kernel :
-                                                  publish_k16 ? kMulMatTiledPairF32BinaryPublishF32K16Kernel :
-                                                                kMulMatTiledPairF32BinaryPublishF32Kernel);
+                                                 publish_k16        ? kMulMatTiledPairF32BinaryPublishF32K16Kernel :
+                                                                      kMulMatTiledPairF32BinaryPublishF32Kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
     dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
                                                common_to_config_value(match.token_count));
@@ -850,16 +850,13 @@ static bool build_tiled_pair_mul_mat_swiglu_dispatch(const DispatchMatchContext 
     dispatch.bindings.push_back({ output->id, 0, output->byte_count });
 
     if (publish_k16) {
-        const size_t  bytes = output->byte_count / 2;
-        const ValueId packed(context.next_plan_value.value + static_cast<int32_t>(dispatch_match.transients.size()));
-        Status        status;
-        if (!dispatch_match.metadata.append_generated_resource(
-                { output->id, GeneratedResourceRole::F16K16Major, packed, bytes, {} }, status)) {
-            dispatch_match.status.append(status);
+        CommonActivationPublication publication;
+        if (!common_reserve_activation_publication(context, dispatch_match, *output, k16_demand,
+                                                   "common.mul_mat_swiglu.k16_major_f16", publication) ||
+            !common_append_activation_publication(dispatch_match, publication, "common.mul_mat_swiglu.k16_major_f16")) {
             return false;
         }
-        dispatch.bindings.push_back({ packed, 0, bytes });
-        dispatch_match.transients.push_back({ packed, "common.mul_mat_swiglu.k16_major_f16", bytes, 256 });
+        dispatch.bindings.push_back(publication.binding());
     }
 
     if (!append_covered_node_index_once(context.graph, context.covered_nodes, match.gate_node,

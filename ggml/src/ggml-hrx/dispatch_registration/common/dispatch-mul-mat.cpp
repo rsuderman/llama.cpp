@@ -1314,59 +1314,16 @@ static size_t vector_publish_byte_count(ggml_type type, int64_t token_count, int
     return static_cast<size_t>(token_count) * ggml_row_size(type, output_size);
 }
 
-static bool is_vector_packed_q8_consumer(const Graph & graph, const GraphNode * consumer, const Value & input) {
-    if (consumer == nullptr || consumer->op != GGML_OP_MUL_MAT || consumer->inputs.size() != 2 ||
-        consumer->inputs[1] != input.id) {
-        return false;
-    }
-
-    const Value * weight = common_graph_value(graph, consumer->inputs[0]);
-    const Value * output = common_graph_value(graph, consumer->output);
-    if (weight == nullptr || output == nullptr || input.type != GGML_TYPE_F32 || output->type != GGML_TYPE_F32 ||
-        !input.contiguous || !weight->contiguous || !output->contiguous || weight->alias_source.value >= 0) {
-        return false;
-    }
-
-    const bool supported_weight = weight->type == GGML_TYPE_Q4_K || weight->type == GGML_TYPE_Q6_K;
-    return supported_weight && input.ne[1] >= 1 && input.ne[1] <= 5 && input.ne[0] >= 256 && input.ne[0] <= 32768 &&
-           input.ne[0] % 256 == 0 && input.ne[2] == 1 && input.ne[3] == 1 && weight->ne[0] == input.ne[0] &&
-           weight->ne[1] >= 64 && weight->ne[1] <= 262144 && weight->ne[1] % 64 == 0 && weight->ne[2] == 1 &&
-           weight->ne[3] == 1 && output->ne[0] == weight->ne[1] && output->ne[1] == input.ne[1] && output->ne[2] == 1 &&
-           output->ne[3] == 1;
-}
-
 static bool has_vector_packed_q8_consumer(const Graph & graph, const Value & value) {
     if (!graph.has_index()) {
         return false;
     }
     for (const GraphNode * consumer : graph.index().consumers(value.id)) {
-        if (is_vector_packed_q8_consumer(graph, consumer, value)) {
+        if (common_accepts_q8_1_x4_decode_mul_mat(graph, consumer, value)) {
             return true;
         }
     }
     return false;
-}
-
-static bool is_vector_f16_consumer(const Graph & graph, const GraphNode * consumer, const Value & input) {
-    if (consumer == nullptr || consumer->op != GGML_OP_MUL_MAT || consumer->inputs.size() != 2 ||
-        consumer->inputs[1] != input.id) {
-        return false;
-    }
-
-    const Value * weight = common_graph_value(graph, consumer->inputs[0]);
-    const Value * output = common_graph_value(graph, consumer->output);
-    if (weight == nullptr || output == nullptr || input.type != GGML_TYPE_F32 || output->type != GGML_TYPE_F32 ||
-        !input.contiguous || !weight->contiguous || !output->contiguous || weight->alias_source.value >= 0) {
-        return false;
-    }
-
-    CommonMulMatWeightFormat format;
-    if (!common_mul_mat_format_for_type(weight->type, format)) {
-        return false;
-    }
-    return input.ne[0] == weight->ne[0] && output->ne[0] == weight->ne[1] && output->ne[1] == input.ne[1] &&
-           input.ne[2] == 1 && input.ne[3] == 1 && weight->ne[2] == 1 && weight->ne[3] == 1 && output->ne[2] == 1 &&
-           output->ne[3] == 1 && common_mul_mat_uses_k16_major_f16(format, input.ne[0], output->ne[0], input.ne[1]);
 }
 
 static bool has_vector_f16_consumer(const Graph & graph, const Value & value) {
@@ -1374,7 +1331,7 @@ static bool has_vector_f16_consumer(const Graph & graph, const Value & value) {
         return false;
     }
     for (const GraphNode * consumer : graph.index().consumers(value.id)) {
-        if (is_vector_f16_consumer(graph, consumer, value)) {
+        if (common_accepts_f16_k16_major_mul_mat(graph, consumer, value)) {
             return true;
         }
     }

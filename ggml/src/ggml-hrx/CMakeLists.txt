@@ -185,6 +185,8 @@ ggml_add_backend_library(ggml-hrx
     dispatch/dispatch.h
     dispatch/transient-allocator.cpp
     dispatch/transient-allocator.h
+    dispatch_registration/common/dispatch-activation-publication.cpp
+    dispatch_registration/common/dispatch-activation-publication.h
     dispatch_registration/common/dispatch-binary.cpp
     dispatch_registration/common/dispatch-binary.h
     dispatch_registration/common/dispatch-binary-common.h

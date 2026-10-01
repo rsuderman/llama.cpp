@@ -428,6 +428,118 @@ inline CommonMulMatMatch common_match_mul_mat_any_format(const Graph &     graph
     return match;
 }
 
+struct CommonMulMatActivationConsumerMatch {
+    const Value *            input         = nullptr;
+    const Value *            weight        = nullptr;
+    const Value *            output        = nullptr;
+    int64_t                  input_size    = 0;
+    int64_t                  output_size   = 0;
+    int64_t                  token_count   = 0;
+    CommonMulMatWeightFormat weight_format = CommonMulMatWeightFormat::Q4K;
+
+    bool matched() const { return input != nullptr && weight != nullptr && output != nullptr; }
+};
+
+inline CommonMulMatActivationConsumerMatch common_match_mul_mat_activation_consumer(const Graph &     graph,
+                                                                                     const GraphNode * consumer,
+                                                                                     const Value &     input) {
+    if (consumer == nullptr || consumer->op != GGML_OP_MUL_MAT || consumer->inputs.size() != 2 ||
+        consumer->inputs[1] != input.id) {
+        return {};
+    }
+
+    const Value * weight = common_graph_value(graph, consumer->inputs[0]);
+    const Value * output = common_graph_value(graph, consumer->output);
+    if (weight == nullptr || output == nullptr || input.type != GGML_TYPE_F32 || output->type != GGML_TYPE_F32 ||
+        !input.contiguous || !weight->contiguous || !output->contiguous || !common_is_2d(input) ||
+        !common_is_2d(*weight) || !common_is_2d(*output)) {
+        return {};
+    }
+
+    CommonMulMatWeightFormat format;
+    if (!common_mul_mat_format_for_type(weight->type, format)) {
+        return {};
+    }
+
+    const int64_t input_size  = weight->ne[0];
+    const int64_t output_size = weight->ne[1];
+    const int64_t token_count = input.ne[1];
+    if (input.ne[0] != input_size || output->ne[0] != output_size || output->ne[1] != token_count ||
+        !common_is_supported_dense_input_size(input_size) || !common_is_supported_dense_output_size(output_size) ||
+        output_size % 64 != 0) {
+        return {};
+    }
+
+    return { &input, weight, output, input_size, output_size, token_count, format };
+}
+
+inline bool common_accepts_q8_1_x4_decode_mul_mat(const Graph &     graph,
+                                                   const GraphNode * consumer,
+                                                   const Value &     input) {
+    const CommonMulMatActivationConsumerMatch match =
+        common_match_mul_mat_activation_consumer(graph, consumer, input);
+    return match.matched() && match.weight->alias_source.value < 0 && match.token_count >= 1 &&
+           match.token_count <= 5 &&
+           (match.weight_format == CommonMulMatWeightFormat::Q4K ||
+            match.weight_format == CommonMulMatWeightFormat::Q6K);
+}
+
+inline bool common_accepts_q8_1_x4_decode_mul_mat(const DispatchMatchContext & context,
+                                                   const GraphNode &            consumer,
+                                                   const Value &                input) {
+    return common_accepts_q8_1_x4_decode_mul_mat(context.graph, &consumer, input);
+}
+
+inline bool common_accepts_q8_1_x4_prefill_mul_mat(const Graph &     graph,
+                                                    const GraphNode * consumer,
+                                                    const Value &     input) {
+    const CommonMulMatActivationConsumerMatch match =
+        common_match_mul_mat_activation_consumer(graph, consumer, input);
+    return match.matched() && match.token_count >= 256 && match.token_count <= 2048 &&
+           match.token_count % 256 == 0 &&
+           (match.weight_format == CommonMulMatWeightFormat::Q5K ||
+            match.weight_format == CommonMulMatWeightFormat::IQ4_XS);
+}
+
+inline bool common_accepts_f16_k16_major_mul_mat(const Graph &     graph,
+                                                  const GraphNode * consumer,
+                                                  const Value &     input,
+                                                  bool              packed_producer = false) {
+    const CommonMulMatActivationConsumerMatch match =
+        common_match_mul_mat_activation_consumer(graph, consumer, input);
+    return match.matched() && match.weight->alias_source.value < 0 &&
+           common_mul_mat_uses_k16_major_f16(match.weight_format, match.input_size, match.output_size,
+                                             match.token_count, packed_producer);
+}
+
+inline bool common_accepts_f16_k16_major_mul_mat(const DispatchMatchContext & context,
+                                                  const GraphNode &            consumer,
+                                                  const Value &                input) {
+    return common_accepts_f16_k16_major_mul_mat(context.graph, &consumer, input);
+}
+
+inline bool common_accepts_f16_k16_major_packed_producer_mul_mat(const DispatchMatchContext & context,
+                                                                  const GraphNode &            consumer,
+                                                                  const Value &                input) {
+    return common_accepts_f16_k16_major_mul_mat(context.graph, &consumer, input, true);
+}
+
+inline bool common_accepts_f16_row_prefill_mul_mat(const DispatchMatchContext & context,
+                                                    const GraphNode &            consumer,
+                                                    const Value &                input) {
+    const CommonMulMatActivationConsumerMatch match =
+        common_match_mul_mat_activation_consumer(context.graph, &consumer, input);
+    if (!match.matched() || match.weight->alias_source.value >= 0 ||
+        !common_is_supported_prefill_token_count(match.token_count)) {
+        return false;
+    }
+    if (match.weight_format == CommonMulMatWeightFormat::Q6K && match.token_count % 128 == 0) {
+        return true;
+    }
+    return match.weight_format == CommonMulMatWeightFormat::Q4K && match.token_count % 256 == 0 &&
+           match.output_size >= match.input_size / 4;
+}
+
 // Share the conversion used by F16-operand matmuls.
 inline bool common_prepare_f16_input(const DispatchMatchContext & context,
                                     const Value &                input,
