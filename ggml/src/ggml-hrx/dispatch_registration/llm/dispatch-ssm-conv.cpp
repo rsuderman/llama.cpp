@@ -7,6 +7,7 @@
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -32,6 +33,8 @@ static constexpr KernelCatalogRef kSsmConvRollbackKernel =
 static constexpr KernelCatalogRef kSsmConvGenericKernel = GGML_HRX_KERNEL_REF("loom_libs", "llm_ssm_conv_f32");
 static constexpr KernelCatalogRef kSsmConvGenericBinaryKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "llm_ssm_conv_binary_f32");
+static constexpr KernelCatalogRef kLfmDconv3Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "llm_ssm_conv_lfm_dconv3_state_f32");
 
 static const Value * graph_value(const Graph & graph, ValueId id) {
     return graph.values().find(id);
@@ -152,6 +155,153 @@ struct SsmConvCoreMatch {
 
     bool has_binary_fusion() const { return binary != nullptr; }
 };
+
+struct LfmDconv3Match {
+    const GraphNode * concat     = nullptr;
+    const GraphNode * transpose  = nullptr;
+    const GraphNode * ssm        = nullptr;
+    const GraphNode * tail_view  = nullptr;
+    const GraphNode * cache_view = nullptr;
+    const GraphNode * cache_copy = nullptr;
+    const Value * state          = nullptr;
+    const Value * x              = nullptr;
+    const Value * filter         = nullptr;
+    const Value * output         = nullptr;
+    const Value * cache          = nullptr;
+    int64_t token_count          = 0;
+
+    bool matched() const {
+        return concat != nullptr && transpose != nullptr && ssm != nullptr && tail_view != nullptr &&
+               cache_view != nullptr && cache_copy != nullptr && state != nullptr && x != nullptr &&
+               filter != nullptr && output != nullptr && cache != nullptr;
+    }
+};
+
+static bool lfm_dconv3_disabled() {
+    return std::getenv("GGML_HRX_DISABLE_LFM_DCONV3_FUSION") != nullptr;
+}
+
+static LfmDconv3Match match_lfm_dconv3(const Graph & graph, const GraphNode * node) {
+    LfmDconv3Match match;
+    if (lfm_dconv3_disabled() || node == nullptr || node->op != GGML_OP_CONCAT || node->inputs.size() != 2 ||
+        !graph.has_index()) {
+        return match;
+    }
+
+    const Value * state        = graph_value(graph, node->inputs[0]);
+    const Value * x_transposed = graph_value(graph, node->inputs[1]);
+    const Value * window       = graph_value(graph, node->output);
+    if (!is_f32(state) || !is_f32(x_transposed) || !is_f32(window)) {
+        return {};
+    }
+    const GraphNode * transpose = graph.index().producer(x_transposed->id);
+    if (transpose == nullptr || transpose->op != GGML_OP_TRANSPOSE || transpose->inputs.size() != 1) {
+        return {};
+    }
+    const Value * x_layout = graph_value(graph, transpose->inputs[0]);
+    const Value * x        = root_alias_value(graph, x_layout);
+    if (!is_f32(x_layout) || !x_layout->contiguous || !is_f32(x) || !x->contiguous) {
+        return {};
+    }
+
+    const int64_t token_count = x_layout->ne[1];
+    if ((token_count != 1 && token_count != 64) ||
+        !is_shape(*state, 2, 2048, 1, 1) || !is_shape(*x_layout, 2048, token_count, 1, 1) ||
+        !is_shape(*x_transposed, token_count, 2048, 1, 1) || !is_shape(*window, token_count + 2, 2048, 1, 1) ||
+        state->nb[0] != sizeof(float) || state->nb[1] != 2 * sizeof(float) ||
+        x_layout->nb[0] != sizeof(float) || x_layout->nb[1] != 2048 * sizeof(float) ||
+        x_transposed->nb[0] != 2048 * sizeof(float) || x_transposed->nb[1] != sizeof(float) ||
+        window->nb[0] != sizeof(float) || window->nb[1] != static_cast<size_t>(token_count + 2) * sizeof(float)) {
+        return {};
+    }
+
+    const GraphNode * ssm       = nullptr;
+    const GraphNode * tail_view = nullptr;
+    const auto & consumers = graph.index().consumers(window->id);
+    if (consumers.size() != 2) {
+        return {};
+    }
+    for (const GraphNode * consumer : consumers) {
+        if (consumer != nullptr && consumer->op == GGML_OP_SSM_CONV && ssm == nullptr) {
+            ssm = consumer;
+        } else if (consumer != nullptr && consumer->op == GGML_OP_VIEW && tail_view == nullptr) {
+            tail_view = consumer;
+        } else {
+            return {};
+        }
+    }
+    if (ssm == nullptr || tail_view == nullptr || ssm->inputs.size() != 2 || ssm->inputs[0] != window->id ||
+        tail_view->inputs.size() != 1) {
+        return {};
+    }
+    const Value * filter = graph_value(graph, ssm->inputs[1]);
+    const Value * output = graph_value(graph, ssm->output);
+    const Value * tail   = graph_value(graph, tail_view->output);
+    if (!is_f32(filter) || !is_f32(output) || !is_f32(tail) || !filter->contiguous || !output->contiguous ||
+        !is_shape(*filter, 3, 2048, 1, 1) || !is_shape(*output, 2048, token_count, 1, 1) ||
+        !is_shape(*tail, 2, 2048, 1, 1) || tail->alias_source != window->id ||
+        tail->storage_offset < window->storage_offset ||
+        tail->storage_offset - window->storage_offset != static_cast<size_t>(token_count) * sizeof(float)) {
+        return {};
+    }
+    const auto & tail_consumers = graph.index().consumers(tail->id);
+    if (tail_consumers.size() != 1 || tail_consumers.front() == nullptr ||
+        tail_consumers.front()->op != GGML_OP_CPY || tail_consumers.front()->inputs.size() != 2 ||
+        tail_consumers.front()->inputs[0] != tail->id) {
+        return {};
+    }
+    const GraphNode * cache_copy   = tail_consumers.front();
+    const Value * cache_target     = graph_value(graph, cache_copy->inputs[1]);
+    const Value * cache            = graph_value(graph, cache_copy->output);
+    const GraphNode * cache_view   = cache_target != nullptr ? graph.index().producer(cache_target->id) : nullptr;
+    if (!is_f32(cache_target) || !is_f32(cache) || cache_view == nullptr || cache_view->op != GGML_OP_VIEW ||
+        cache_view->inputs.size() != 1 || !same_full_value_range(*cache_target, *cache) ||
+        cache->byte_count != static_cast<size_t>(4096) * sizeof(float)) {
+        return {};
+    }
+    if (!distinct_storage(*state, *x) || !distinct_storage(*state, *filter) ||
+        !distinct_storage(*state, *output) || !distinct_storage(*state, *cache) ||
+        !distinct_storage(*x, *filter) || !distinct_storage(*x, *output) ||
+        !distinct_storage(*x, *cache) || !distinct_storage(*filter, *output) ||
+        !distinct_storage(*filter, *cache) || !distinct_storage(*output, *cache)) {
+        return {};
+    }
+
+    match.concat = node;
+    match.transpose = transpose;
+    match.ssm = ssm;
+    match.tail_view = tail_view;
+    match.cache_view = cache_view;
+    match.cache_copy = cache_copy;
+    match.state = state;
+    match.x = x;
+    match.filter = filter;
+    match.output = output;
+    match.cache = cache;
+    match.token_count = token_count;
+    return match;
+}
+
+static bool match_lfm_dconv3_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
+    const LfmDconv3Match match = match_lfm_dconv3(context.graph, context.root_node);
+    if (!match.matched() || !append_covered_node(context, match.concat, dispatch_match) ||
+        !append_covered_node(context, match.ssm, dispatch_match) ||
+        !append_covered_node(context, match.tail_view, dispatch_match) ||
+        !append_covered_node(context, match.cache_view, dispatch_match) ||
+        !append_covered_node(context, match.cache_copy, dispatch_match)) {
+        return false;
+    }
+    Dispatch dispatch;
+    dispatch.kernel = make_kernel_specialization(kLfmDconv3Kernel);
+    set_compile_parameter(dispatch.kernel, "llm.ssm_conv.lfm_dconv3.n_t", match.token_count);
+    dispatch.bindings.push_back({match.state->id, 0, match.state->byte_count});
+    dispatch.bindings.push_back({match.x->id, 0, match.x->byte_count});
+    dispatch.bindings.push_back({match.filter->id, 0, match.filter->byte_count});
+    dispatch.bindings.push_back({match.output->id, 0, match.output->byte_count});
+    dispatch.bindings.push_back({match.cache->id, 0, match.cache->byte_count});
+    dispatch_match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
 
 static SsmConvPrefillMatch match_ssm_conv_prefill(const Graph & graph, const GraphNode * node) {
     SsmConvPrefillMatch match;
@@ -712,6 +862,14 @@ void register_llm_ssm_conv_dispatch(DispatchRegistryBuilder & registry) {
         200,
         DispatchSource::Llm,
         match_ssm_conv_prefill_dispatch,
+    });
+    registry.add({
+        "llm.ssm_conv.lfm_dconv3",
+        GGML_OP_CONCAT,
+        DispatchMatchKind::Fused,
+        201,
+        DispatchSource::Llm,
+        match_lfm_dconv3_dispatch,
     });
     registry.add({
         "llm.ssm_conv.generic_f32",

@@ -6254,6 +6254,70 @@ static void run_quantized_conv4_dispatch_checks() {
     ggml_free(ctx);
 }
 
+static void run_lfm_dconv3_dispatch_checks() {
+    const struct {
+        int64_t tokens;
+        int64_t hidden;
+        int64_t state_rows;
+        int64_t filter_rows;
+        bool disabled;
+        bool fused;
+    } cases[] = {
+        {1, 2048, 2, 3, false, true},
+        {64, 2048, 2, 3, false, true},
+        {2, 2048, 2, 3, false, false},
+        {64, 2016, 2, 3, false, false},
+        {64, 2048, 3, 3, false, false},
+        {64, 2048, 2, 4, false, false},
+        {64, 2048, 2, 3, true, false},
+    };
+    for (const auto & test : cases) {
+        ggml_init_params params = {};
+        params.mem_size = 4 * 1024 * 1024;
+        params.no_alloc = true;
+        ggml_context * ctx = ggml_init(params);
+        REQUIRE(ctx != nullptr);
+        ggml_tensor * x = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, test.hidden, test.tokens, 1);
+        ggml_tensor * state = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, test.state_rows, test.hidden, 1);
+        ggml_tensor * filter = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, test.filter_rows, test.hidden);
+        ggml_tensor * window = ggml_concat(ctx, state, ggml_transpose(ctx, x), 0);
+        ggml_tensor * tail = ggml_view_3d(ctx, window, test.state_rows, test.hidden, 1,
+                                         window->nb[1], window->nb[2], test.tokens * sizeof(float));
+        ggml_tensor * cache = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, test.state_rows * test.hidden, 1);
+        ggml_tensor * target = ggml_view_2d(ctx, cache, test.state_rows * test.hidden, 1, cache->nb[1], 0);
+        ggml_tensor * output = ggml_ssm_conv(ctx, window, filter);
+        ggml_cgraph * graph = ggml_new_graph(ctx);
+        ggml_build_forward_expand(graph, ggml_cpy(ctx, tail, target));
+        ggml_build_forward_expand(graph, output);
+        if (test.disabled) {
+            REQUIRE(setenv("GGML_HRX_DISABLE_LFM_DCONV3_FUSION", "1", 1) == 0);
+        }
+        auto imported = ggml::hrx::import_ggml_graph(*graph);
+        REQUIRE(imported.valid());
+        ggml::hrx::DispatchScheduler scheduler;
+        REQUIRE(scheduler.schedule_graph(imported.graph, test_dispatch_target()));
+        const auto & plan = scheduler.plan();
+        REQUIRE(plan.valid());
+        const auto fused = std::find_if(plan.dispatches.begin(), plan.dispatches.end(), [](const auto & dispatch) {
+            return kernel_name_for_id(dispatch.kernel.kernel_id) ==
+                   "loom_libs:llm_ssm_conv_lfm_dconv3_state_f32";
+        });
+        REQUIRE((fused != plan.dispatches.end()) == test.fused);
+        if (test.fused) {
+            REQUIRE(fused->bindings.size() == 5);
+            require_compile_parameter(*fused, "llm.ssm_conv.lfm_dconv3.n_t", std::to_string(test.tokens));
+        }
+        const auto commands = ggml::hrx::build_command_program(
+            imported.graph, plan, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");
+        REQUIRE(commands.valid());
+        REQUIRE(command_program_verifies(commands));
+        if (test.disabled) {
+            REQUIRE(unsetenv("GGML_HRX_DISABLE_LFM_DCONV3_FUSION") == 0);
+        }
+        ggml_free(ctx);
+    }
+}
+
 static void run_gdn_native_projection_pair_dispatch_checks() {
     ggml_init_params params = {};
     params.mem_size = 8 * 1024 * 1024;
@@ -12034,6 +12098,7 @@ static void register_hrx_backend_host_cases(test_runner::Suite & suite) {
     suite.host_case("lowtoken_residual_dispatch", [] { run_lowtoken_residual_dispatch_checks(); });
     suite.host_case("lowtoken_bias_dispatch", [] { run_lowtoken_bias_dispatch_checks(); });
     suite.host_case("quantized_conv4_dispatch", [] { run_quantized_conv4_dispatch_checks(); });
+    suite.host_case("lfm_dconv3_dispatch", [] { run_lfm_dconv3_dispatch_checks(); });
     suite.host_case("gdn_rmsnorm_gate_dispatch", [] { run_gdn_rmsnorm_gate_dispatch_checks(); });
     suite.host_case("gdn_native_projection_pair_dispatch", [] { run_gdn_native_projection_pair_dispatch_checks(); });
     suite.host_case("gdn_selected_snapshot_dispatch", [] { run_gdn_selected_snapshot_dispatch_checks(); });

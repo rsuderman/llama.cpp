@@ -20,6 +20,7 @@ namespace {
 static constexpr KernelCatalogRef kRmsNormBinaryF32Kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_f32");
 static constexpr KernelCatalogRef kRmsNormBinaryStridedF32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_strided_f32");
+static constexpr KernelCatalogRef kRmsNormMulAddF32Kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_mul_add_f32");
 static constexpr KernelCatalogRef kRmsNormBinaryF32F16Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_f32_f16");
 static constexpr KernelCatalogRef kRmsNormBinaryF32K16Kernel =
@@ -178,6 +179,18 @@ struct RmsNormBinaryMatch {
     }
 };
 
+struct RmsNormMulAddMatch {
+    RmsNormBinaryMatch rms_binary;
+    const GraphNode *  add_node       = nullptr;
+    const Value *      residual       = nullptr;
+    const Value *      output         = nullptr;
+    size_t             add_node_index = 0;
+
+    bool matched() const {
+        return rms_binary.matched() && add_node != nullptr && residual != nullptr && output != nullptr;
+    }
+};
+
 struct RmsNormMatch {
     const GraphNode * rms_node       = nullptr;
     const Value *     input          = nullptr;
@@ -249,6 +262,34 @@ template <size_t N> static bool pairwise_distinct_storage_roots(const std::array
     return true;
 }
 
+static bool rope_has_set_rows_consumer(const Graph & graph, const GraphNode & rope) {
+    std::vector<ValueId> pending = { rope.output };
+    for (size_t i = 0; i < pending.size(); ++i) {
+        for (const GraphNode * consumer : graph.index().consumers(pending[i])) {
+            if (consumer == nullptr) {
+                continue;
+            }
+            if (consumer->op == GGML_OP_SET_ROWS) {
+                return true;
+            }
+            if (is_layout_alias_node(graph, *consumer)) {
+                pending.push_back(consumer->output);
+            }
+        }
+    }
+    return false;
+}
+
+static bool fused_input_is_available(const Graph & graph, ValueId value, const std::vector<bool> & covered_nodes) {
+    const GraphNode * producer = graph.index().producer(value);
+    if (producer == nullptr) {
+        return true;
+    }
+    size_t producer_index = 0;
+    return graph.index().node_index(producer, producer_index) && producer_index < covered_nodes.size() &&
+           covered_nodes[producer_index];
+}
+
 static RmsNormMulRopeMatch match_rmsnorm_mul_rope_f32(const Graph & graph, const GraphNode * rms) {
     RmsNormMulRopeMatch match;
     if (rms == nullptr || rms->op != GGML_OP_RMS_NORM || rms->inputs.size() != 1 || !graph.has_index()) {
@@ -294,8 +335,7 @@ static RmsNormMulRopeMatch match_rmsnorm_mul_rope_f32(const Graph & graph, const
         !positions->contiguous || weight->ne[0] != input->ne[0] || weight->ne[1] != 1 || weight->ne[2] != 1 ||
         weight->ne[3] != 1 || input->ne[0] < 2 || input->ne[0] > 512 || input->ne[0] % 2 != 0 || input->ne[1] < 1 ||
         input->ne[1] > 1048576 || input->ne[2] < 1 || input->ne[2] > 1048576 || input->ne[3] < 1 ||
-        input->ne[3] > 1024 || input->nb[0] != sizeof(float) || output->nb[0] != sizeof(float) ||
-        input->ne[2] > std::numeric_limits<int64_t>::max() / 4 || positions->element_count < 4 * input->ne[2]) {
+        input->ne[3] > 1024 || input->nb[0] != sizeof(float) || output->nb[0] != sizeof(float)) {
         return {};
     }
     for (int i = 1; i < GGML_MAX_DIMS; ++i) {
@@ -305,15 +345,21 @@ static RmsNormMulRopeMatch match_rmsnorm_mul_rope_f32(const Graph & graph, const
     }
 
     const bool sectioned_mode = rope_params->mode == GGML_ROPE_TYPE_MROPE || rope_params->mode == GGML_ROPE_TYPE_IMROPE;
+    const bool lfm_neox_mode  = rope_params->mode == GGML_ROPE_TYPE_NEOX && input->ne[0] == 64 &&
+                               rope_params->n_dims == 64 && !rope_has_set_rows_consumer(graph, *rope);
     int64_t    section_count  = 0;
-    for (int section : rope_params->sections) {
-        if (section < 0) {
-            return {};
+    if (sectioned_mode) {
+        for (int section : rope_params->sections) {
+            if (section < 0) {
+                return {};
+            }
+            section_count += section;
         }
-        section_count += section;
     }
-    if (!sectioned_mode || rope_params->n_dims < 2 || rope_params->n_dims > input->ne[0] ||
-        rope_params->n_dims % 2 != 0 || section_count != rope_params->n_dims / 2 || !std::isfinite(rms_params->eps) ||
+    const int64_t required_positions = sectioned_mode ? 4 * input->ne[2] : input->ne[2];
+    if ((!sectioned_mode && !lfm_neox_mode) || positions->element_count < required_positions ||
+        rope_params->n_dims < 2 || rope_params->n_dims > input->ne[0] || rope_params->n_dims % 2 != 0 ||
+        (sectioned_mode && section_count != rope_params->n_dims / 2) || !std::isfinite(rms_params->eps) ||
         rms_params->eps <= 0.0f || !std::isfinite(rope_params->freq_base) || rope_params->freq_base <= 0.0f ||
         !std::isfinite(rope_params->freq_scale) || rope_params->freq_scale <= 0.0f ||
         !std::isfinite(rope_params->attn_factor) || rope_params->attn_factor <= 0.0f ||
@@ -478,6 +524,70 @@ static RmsNormBinaryMatch match_rmsnorm_binary_f32(const Graph &     graph,
     return match;
 }
 
+static RmsNormMulAddMatch match_rmsnorm_mul_add_f32(const DispatchMatchContext & context) {
+    RmsNormMulAddMatch match;
+    match.rms_binary = match_rmsnorm_binary_f32(context.graph, context.root_node, context.root_index);
+    if (!match.rms_binary.matched() || match.rms_binary.op != BinaryKind::Mul) {
+        return {};
+    }
+
+    const std::vector<const GraphNode *> & consumers = context.graph.index().consumers(match.rms_binary.output->id);
+    if (consumers.size() != 1) {
+        return {};
+    }
+    const GraphNode * add = consumers.front();
+    size_t            add_index = 0;
+    if (add == nullptr || add->op != GGML_OP_ADD || add->inputs.size() != 2 ||
+        !context.graph.index().node_index(add, add_index)) {
+        return {};
+    }
+    const BinaryParams * add_params = op_params_as<BinaryParams>(add->params);
+    if (add_params == nullptr || add_params->op != BinaryKind::Add) {
+        return {};
+    }
+    const bool scaled_lhs = add->inputs[0] == match.rms_binary.output->id;
+    const bool scaled_rhs = add->inputs[1] == match.rms_binary.output->id;
+    if (scaled_lhs == scaled_rhs) {
+        return {};
+    }
+    const ValueId residual_id = scaled_lhs ? add->inputs[1] : add->inputs[0];
+    const Value * residual = graph_value(context.graph, residual_id);
+    const Value * output   = graph_value(context.graph, add->output);
+    const Value * rms_output = graph_value(context.graph, match.rms_binary.rms_node->output);
+    if (residual == nullptr || output == nullptr || rms_output == nullptr || residual->type != GGML_TYPE_F32 ||
+        output->type != GGML_TYPE_F32 || !residual->contiguous || !output->contiguous ||
+        !same_shape(*residual, *match.rms_binary.input) || !same_shape(*output, *match.rms_binary.input) ||
+        !pairwise_distinct_storage_roots(std::array<const Value *, 6>{ match.rms_binary.input, match.rms_binary.rhs,
+                                                                         rms_output, match.rms_binary.output, residual,
+                                                                         output })) {
+        return {};
+    }
+    const size_t nodes_size = context.covered_nodes.size();
+    if (match.rms_binary.rms_node_index >= nodes_size || match.rms_binary.binary_node_index >= nodes_size ||
+        add_index >= nodes_size || context.covered_nodes[match.rms_binary.rms_node_index] ||
+        context.covered_nodes[match.rms_binary.binary_node_index] || context.covered_nodes[add_index]) {
+        return {};
+    }
+    const auto available = [&](const Value & value) {
+        const GraphNode * producer = context.graph.index().producer(value.id);
+        if (producer == nullptr) {
+            return true;
+        }
+        size_t producer_index = 0;
+        return context.graph.index().node_index(producer, producer_index) && producer_index < nodes_size &&
+               context.covered_nodes[producer_index];
+    };
+    if (!available(*match.rms_binary.input) || !available(*match.rms_binary.rhs) || !available(*residual)) {
+        return {};
+    }
+
+    match.add_node       = add;
+    match.residual       = residual;
+    match.output         = output;
+    match.add_node_index = add_index;
+    return match;
+}
+
 static AddRmsNormBinarySymmetricI4Match match_add_rmsnorm_binary_symmetric_i4(const Graph &     graph,
                                                                               const GraphNode * node,
                                                                               size_t            node_index) {
@@ -604,6 +714,12 @@ static bool match_rmsnorm_mul_rope_f32_dispatch(const DispatchMatchContext & con
     if (!fused.matched()) {
         return false;
     }
+    if (fused.rope_params->mode == GGML_ROPE_TYPE_NEOX &&
+        (!fused_input_is_available(context.graph, fused.input->id, context.covered_nodes) ||
+         !fused_input_is_available(context.graph, fused.weight->id, context.covered_nodes) ||
+         !fused_input_is_available(context.graph, fused.positions->id, context.covered_nodes))) {
+        return false;
+    }
 
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kRmsNormMulRopeF32Kernel);
@@ -625,8 +741,10 @@ static bool match_rmsnorm_mul_rope_f32_dispatch(const DispatchMatchContext & con
     config.emplace("ggml.rmsnorm_mul_rope.output_stride3",
                    to_config_value(static_cast<int64_t>(fused.output->nb[3] / sizeof(float))));
     config.emplace("ggml.rmsnorm_mul_rope.n_dims", to_config_value(static_cast<int64_t>(fused.rope_params->n_dims)));
+    const bool neox_mode = fused.rope_params->mode == GGML_ROPE_TYPE_NEOX;
     config.emplace("ggml.rmsnorm_mul_rope.section0",
-                   to_config_value(static_cast<int64_t>(fused.rope_params->sections[0])));
+                   to_config_value(neox_mode ? static_cast<int64_t>(fused.rope_params->n_dims / 2) :
+                                               static_cast<int64_t>(fused.rope_params->sections[0])));
     config.emplace("ggml.rmsnorm_mul_rope.section1",
                    to_config_value(static_cast<int64_t>(fused.rope_params->sections[1])));
     config.emplace("ggml.rmsnorm_mul_rope.section2",
@@ -992,6 +1110,30 @@ static bool match_rmsnorm_binary_f32_dispatch(const DispatchMatchContext & conte
     return true;
 }
 
+static bool match_rmsnorm_mul_add_f32_dispatch(const DispatchMatchContext & context, DispatchMatch & match) {
+    const RmsNormMulAddMatch fused = match_rmsnorm_mul_add_f32(context);
+    if (!fused.matched()) {
+        return false;
+    }
+
+    Dispatch dispatch;
+    dispatch.kernel = make_kernel_specialization(kRmsNormMulAddF32Kernel);
+    dispatch.kernel.integer_parameters.emplace("token_count", fused.rms_binary.token_count);
+    dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_mul_add_f32.hidden_size",
+                                               to_config_value(fused.rms_binary.hidden_size));
+    dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_mul_add_f32.rms_epsilon",
+                                               to_config_value(fused.rms_binary.epsilon));
+    dispatch.bindings.push_back({ fused.rms_binary.input->id, 0, fused.rms_binary.input->byte_count });
+    dispatch.bindings.push_back({ fused.rms_binary.rhs->id, 0, fused.rms_binary.rhs->byte_count });
+    dispatch.bindings.push_back({ fused.residual->id, 0, fused.residual->byte_count });
+    dispatch.bindings.push_back({ fused.output->id, 0, fused.output->byte_count });
+    match.covered_nodes.push_back(fused.rms_binary.rms_node_index);
+    match.covered_nodes.push_back(fused.rms_binary.binary_node_index);
+    match.covered_nodes.push_back(fused.add_node_index);
+    match.dispatches.push_back(std::move(dispatch));
+    return true;
+}
+
 static bool match_rmsnorm_binary_q8_1_x4_dispatch(const DispatchMatchContext & context, DispatchMatch & match) {
     const std::vector<GraphNode> & nodes = context.graph.nodes();
     if (context.root_index >= nodes.size()) {
@@ -1112,6 +1254,14 @@ void register_rmsnorm_dispatches(DispatchRegistryBuilder & registry) {
         300,
         DispatchSource::Common,
         match_rmsnorm_mul_rope_f32_dispatch,
+    });
+    registry.add({
+        "common.rmsnorm_mul_add_f32",
+        GGML_OP_RMS_NORM,
+        DispatchMatchKind::Fused,
+        250,
+        DispatchSource::Common,
+        match_rmsnorm_mul_add_f32_dispatch,
     });
     registry.add({
         "common.rmsnorm_binary_q8_1_x4",

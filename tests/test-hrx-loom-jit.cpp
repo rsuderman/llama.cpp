@@ -1136,6 +1136,20 @@ static void run_prefill_fusion_compile_checks() {
                                                { "ggml.get_rows_scale_f32.scale", "25.2982216" },
                                                { "ggml.get_rows_scale_f32.bias", "0" },
                                            }));
+
+    const auto & lfm_dconv3 = find_kernel("llm_ssm_conv_lfm_dconv3_state_f32");
+    REQUIRE(lfm_dconv3.bindings.size() == 5);
+    for (const int64_t tokens : {1, 64}) {
+        auto ref = compile_kernel(*jit, "lfm-dconv3-" + std::to_string(tokens), lfm_dconv3, {}, {
+            {"llm.ssm_conv.lfm_dconv3.n_t", std::to_string(tokens)},
+        });
+        REQUIRE(ref != nullptr);
+        REQUIRE(resolve_with_timeout(ref, std::chrono::seconds(120)));
+        auto compiled = ref->take_result();
+        REQUIRE(compiled.hsaco_data != nullptr);
+        REQUIRE(compiled.launch_config.workgroup_size[0] == 256);
+        REQUIRE(compiled.launch_config.workgroup_count[0] == static_cast<uint32_t>(8 * tokens));
+    }
 }
 
 static void run_loom_jit_materialize_checks() {
