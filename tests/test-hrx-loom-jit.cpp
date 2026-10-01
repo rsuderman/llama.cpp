@@ -1060,6 +1060,19 @@ static void run_prefill_fusion_compile_checks() {
                                                { "ggml.get_rows_f32.weight_format", "6" },
                                                { "ggml.get_rows_rmsnorm.rms_epsilon", "0.00001" },
                                            }));
+
+    const auto & get_rows_scale = find_kernel("ggml_get_rows_scale_f32");
+    require_compiled_kernel(compile_kernel(*jit, "prefill-get-rows-scale", get_rows_scale, {
+                                               { "token_count", 64 },
+                                               { "row_count", 122753 },
+                                               { "hidden_size", 2560 },
+                                           }, {
+                                               { "ggml.get_rows_f32.token_capacity", "64" },
+                                               { "ggml.get_rows_f32.hidden_capacity", "2560" },
+                                               { "ggml.get_rows_f32.weight_format", "32" },
+                                               { "ggml.get_rows_scale_f32.scale", "0.177800179" },
+                                               { "ggml.get_rows_scale_f32.bias", "0" },
+                                           }));
 }
 
 static void run_loom_jit_materialize_checks() {
