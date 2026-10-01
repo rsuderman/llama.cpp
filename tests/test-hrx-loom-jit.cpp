@@ -204,6 +204,18 @@ static std::map<std::string, int64_t> token_count_workload(int64_t token_count) 
     };
 }
 
+static std::map<std::string, std::string> moe_routing_config() {
+    return {
+        { "ggml.moe_routing.route_count", "8" },
+        { "ggml.moe_routing.expert_count", "128" },
+        { "ggml.moe_routing.descriptor_expert_mask", "127" },
+        { "ggml.moe_routing.descriptor_partition_shift", "7" },
+        { "ggml.moe_routing.descriptor_row_count_shift", "13" },
+        { "ggml.moe_routing.partition_workgroup_size", "128" },
+        { "ggml.workload.token_capacity", "1" },
+    };
+}
+
 static std::map<std::string, int64_t> flash_attention_workload(int64_t query_token_count,
                                                                int64_t key_value_token_count) {
     return {
@@ -455,8 +467,8 @@ static void run_loom_jit_compile_checks() {
     const ggml::hrx::KernelDefinition & gather_add      = find_kernel("ggml_gather_add_f32");
     const ggml::hrx::KernelDefinition & rmsnorm         = find_kernel("qwen3_moe_rmsnorm_f32");
     const ggml::hrx::KernelDefinition & router_top8     = find_kernel("qwen3_moe_router_top8_f32");
-    const ggml::hrx::KernelDefinition & expert_table    = find_kernel("qwen3_moe_build_expert_table");
-    const ggml::hrx::KernelDefinition & partition_table = find_kernel("qwen3_moe_build_expert_partition_table");
+    const ggml::hrx::KernelDefinition & expert_table    = find_kernel("ggml_moe_build_expert_table");
+    const ggml::hrx::KernelDefinition & partition_table = find_kernel("ggml_moe_build_expert_partition_table");
     const ggml::hrx::KernelDefinition & mul_mat_id_f16  = find_kernel("ggml_mul_mat_id_f16_f16_wmma");
     const ggml::hrx::KernelDefinition & swiglu_f16      = find_kernel("ggml_mul_mat_id_swiglu_f16_f16_wmma");
     const ggml::hrx::KernelDefinition & flash_prefill   = find_kernel("ggml_flash_attention_f32_f16_wmma");
@@ -532,22 +544,14 @@ static void run_loom_jit_compile_checks() {
                                       { "route_stride", 8   },
                                       { "expert_count", 128 },
     },
-                                  {
-                                      { "qwen3_moe.routed_gate_up.expert_count", "128" },
-                                      { "qwen3_moe.routed_gate_up.route_count", "8" },
-                                      { "qwen3_moe.workload.token_capacity", "1" },
-                                  }));
+                                  moe_routing_config()));
     refs.push_back(compile_kernel(*async_jit, "async-partition-table-1", partition_table,
                                   {
                                       { "token_count",  1   },
                                       { "route_count",  8   },
                                       { "expert_count", 128 },
     },
-                                  {
-                                      { "qwen3_moe.routed_gate_up.expert_count", "128" },
-                                      { "qwen3_moe.routed_gate_up.route_count", "8" },
-                                      { "qwen3_moe.workload.token_capacity", "1" },
-                                  }));
+                                  moe_routing_config()));
     // Exercise gather-add coverage in the async JIT path.
     refs.push_back(compile_kernel(*async_jit, "async-gather-add-2-to-1", gather_add,
                                   {
@@ -1009,6 +1013,34 @@ static void run_loom_jit_compile_checks() {
 
 }
 
+static void run_moe_routing_compile_checks() {
+    static constexpr const char * kTarget = "gfx1100";
+
+    std::string                         error;
+    std::unique_ptr<ggml::hrx::LoomJit> jit =
+        ggml::hrx::create_loom_jit(kTarget, ggml::hrx::LoomJitMode::Sync, error);
+    REQUIRE(jit != nullptr);
+
+    const std::map<std::string, int64_t> expert_table_workload = {
+        { "token_count", 1 },
+        { "route_count", 8 },
+        { "route_stride", 8 },
+        { "expert_count", 128 },
+    };
+    const auto & expert_table = find_kernel("ggml_moe_build_expert_table");
+    require_compiled_kernel(
+        compile_kernel(*jit, "moe-expert-table", expert_table, expert_table_workload, moe_routing_config()));
+
+    const std::map<std::string, int64_t> partition_table_workload = {
+        { "token_count", 1 },
+        { "route_count", 8 },
+        { "expert_count", 128 },
+    };
+    const auto & partition_table = find_kernel("ggml_moe_build_expert_partition_table");
+    require_compiled_kernel(compile_kernel(*jit, "moe-expert-partition-table", partition_table,
+                                           partition_table_workload, moe_routing_config()));
+}
+
 static void run_prefill_fusion_compile_checks() {
     static constexpr const char * kTarget = "gfx1100";
 
@@ -1092,6 +1124,7 @@ static bool has_hrx_test_device() {
 
 static void register_hrx_loom_jit_cases(test_runner::Suite & suite) {
     suite.host_case("compile", [] { run_loom_jit_compile_checks(); });
+    suite.host_case("moe-routing", [] { run_moe_routing_compile_checks(); });
     suite.host_case("prefill-fusions", [] { run_prefill_fusion_compile_checks(); });
     suite.device_case("materialize", [] { run_loom_jit_materialize_checks(); });
 }
