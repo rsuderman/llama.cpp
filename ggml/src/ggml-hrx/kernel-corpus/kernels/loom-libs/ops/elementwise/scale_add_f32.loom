@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 template.decl @ggml.elementwise.scale_apply(%value: f32, %scale: f32, %bias: f32) -> (f32)
+template.decl @ggml.binary_f32.apply(%op: index, %lhs: f32, %rhs: f32) -> (f32)
 
 amdgpu.target<gfx11-generic> @ggml_scale_add_f32_gfx11_wave64 {subgroup_size = 64}
 
@@ -18,6 +19,8 @@ config.decl @ggml.scale_add_f32.residual_stride3 : %value: index where [range(%v
 config.decl @ggml.scale_add_f32.residual_span : %value: index where [range(%value, 1, 134217728)]
 config.decl @ggml.scale_add_f32.scale : f32
 config.decl @ggml.scale_add_f32.bias : f32
+config.decl @ggml.scale_add_f32.binary_op : %value: index where [range(%value, 0, 3)]
+config.decl @ggml.scale_add_f32.scaled_lhs : %value: index where [range(%value, 0, 1)]
 
 kernel.def target(@ggml_scale_add_f32_gfx11_wave64) export("ggml_scale_add_f32") @ggml_scale_add_f32(%element_count: index) {
   %c1 = index.constant 1 : index
@@ -41,6 +44,8 @@ kernel.def target(@ggml_scale_add_f32_gfx11_wave64) export("ggml_scale_add_f32")
   %residual_count = config.get @ggml.scale_add_f32.residual_span : index
   %scale = config.get @ggml.scale_add_f32.scale : f32
   %bias = config.get @ggml.scale_add_f32.bias : f32
+  %binary_op = config.get @ggml.scale_add_f32.binary_op : index
+  %scaled_lhs = config.get @ggml.scale_add_f32.scaled_lhs : index
   %workgroup = kernel.workgroup.id<x> : index
   %workitem = kernel.workitem.id<x> : index
   %c256 = index.constant 256 : index
@@ -78,7 +83,11 @@ kernel.def target(@ggml_scale_add_f32_gfx11_wave64) export("ggml_scale_add_f32")
         %input_value = view.load %input_view[%input_linear] : view<[%input_count]xf32> -> f32
         %scaled = template.apply<@ggml.elementwise.scale_apply>(%input_value, %scale, %bias) : (f32, f32, f32) -> (f32)
         %residual_value = view.load %residual_view[%residual_linear] : view<[%residual_count]xf32> -> f32
-        %result = scalar.addf %scaled, %residual_value : f32
+        %c1 = index.constant 1 : index
+        %is_scaled_lhs = index.cmp eq, %scaled_lhs, %c1 : index
+        %lhs = scf.select %is_scaled_lhs, %scaled, %residual_value : f32
+        %rhs = scf.select %is_scaled_lhs, %residual_value, %scaled : f32
+        %result = template.apply<@ggml.binary_f32.apply>(%binary_op, %lhs, %rhs) : (index, f32, f32) -> (f32)
         view.store %result, %output_view[%linear] : f32, view<[%count]xf32>
       }
     }

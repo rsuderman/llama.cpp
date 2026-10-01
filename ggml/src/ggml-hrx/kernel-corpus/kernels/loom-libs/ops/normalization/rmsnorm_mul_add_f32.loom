@@ -4,12 +4,16 @@
 template.decl @ggml.rmsnorm_f32.row_scale(%token_count: index, %token: index, %hidden_size: index, %input_stride: index, %epsilon: f32, %input: buffer) -> (f32, index, index, i1)
 
 template.decl @ggml.rmsnorm_f32.apply(%value: f32, %scale: f32) -> (f32)
+template.decl @ggml.binary_f32.apply(%op: index, %lhs: f32, %rhs: f32) -> (f32)
 
 amdgpu.target<gfx11-generic> @ggml_rmsnorm_mul_add_gfx11_wave32 {subgroup_size = 32}
 
 config.decl @ggml.rmsnorm_mul_add_f32.hidden_size : %value: index where [range(%value, 128, 32768), mul(%value, 128)]
 
 config.decl @ggml.rmsnorm_mul_add_f32.rms_epsilon : f32
+config.decl @ggml.rmsnorm_mul_add_f32.normalized_op : %value: index where [range(%value, 0, 3)]
+config.decl @ggml.rmsnorm_mul_add_f32.output_op : %value: index where [range(%value, 0, 3)]
+config.decl @ggml.rmsnorm_mul_add_f32.binary_lhs : %value: index where [range(%value, 0, 1)]
 
 kernel.def target(@ggml_rmsnorm_mul_add_gfx11_wave32) export("ggml_rmsnorm_mul_add_f32") @ggml_rmsnorm_mul_add_f32(%token_count: index) {
   %c1 = index.constant 1 : index
@@ -19,6 +23,9 @@ kernel.def target(@ggml_rmsnorm_mul_add_gfx11_wave32) export("ggml_rmsnorm_mul_a
   %hidden0 = config.get @ggml.rmsnorm_mul_add_f32.hidden_size : index
   %hidden = index.assume %hidden0 [range(%hidden0, 128, 32768), mul(%hidden0, 128)] : index
   %epsilon = config.get @ggml.rmsnorm_mul_add_f32.rms_epsilon : f32
+  %normalized_op = config.get @ggml.rmsnorm_mul_add_f32.normalized_op : index
+  %output_op = config.get @ggml.rmsnorm_mul_add_f32.output_op : index
+  %binary_lhs = config.get @ggml.rmsnorm_mul_add_f32.binary_lhs : index
   %token0 = kernel.workgroup.id<x> : index
   %workitem = kernel.workitem.id<x> : index
   %c0_offset = index.constant 0 : offset
@@ -35,8 +42,12 @@ kernel.def target(@ggml_rmsnorm_mul_add_gfx11_wave32) export("ggml_rmsnorm_mul_a
       %weight_value = view.load %weight_view[%channel] : view<[%hidden]xf32> -> f32
       %residual_value = view.load %residual_view[%token, %channel] : view<[%launch_token_count]x[%hidden]xf32> -> f32
       %normalized = template.apply<@ggml.rmsnorm_f32.apply>(%value, %row_scale) : (f32, f32) -> (f32)
-      %scaled = scalar.mulf %normalized, %weight_value : f32
-      %result = scalar.addf %scaled, %residual_value : f32
+      %scaled = template.apply<@ggml.binary_f32.apply>(%normalized_op, %normalized, %weight_value) : (index, f32, f32) -> (f32)
+      %c1 = index.constant 1 : index
+      %is_binary_lhs = index.cmp eq, %binary_lhs, %c1 : index
+      %lhs = scf.select %is_binary_lhs, %scaled, %residual_value : f32
+      %rhs = scf.select %is_binary_lhs, %residual_value, %scaled : f32
+      %result = template.apply<@ggml.binary_f32.apply>(%output_op, %lhs, %rhs) : (index, f32, f32) -> (f32)
       view.store %result, %output_view[%token, %channel] : f32, view<[%launch_token_count]x[%hidden]xf32>
     }
   }

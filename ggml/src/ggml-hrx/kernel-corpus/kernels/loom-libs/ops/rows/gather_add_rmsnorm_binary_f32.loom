@@ -3,10 +3,13 @@
 
 // Publishes both the indexed residual and its RMS-normalized learned-scale
 // output. Each output row may select any valid source row independently.
+template.decl @ggml.binary_f32.apply(%op: index, %lhs: f32, %rhs: f32) -> (f32)
+
 amdgpu.target<gfx11-generic> @ggml_gather_add_rmsnorm_gfx11_wave32 {subgroup_size = 32}
 
 config.decl @ggml.gather_add_rmsnorm_binary_f32.hidden_size : %value: index where [range(%value, 128, 32768), mul(%value, 128)]
 config.decl @ggml.gather_add_rmsnorm_binary_f32.rms_epsilon : f32
+config.decl @ggml.gather_add_rmsnorm_binary_f32.gather_op : %value: index where [range(%value, 0, 3)]
 
 kernel.def target(@ggml_gather_add_rmsnorm_gfx11_wave32) export("ggml_gather_add_rmsnorm_binary_f32") @ggml_gather_add_rmsnorm_binary_f32(%source_token_count: index, %output_token_count: index) {
   %c1 = index.constant 1 : index
@@ -18,6 +21,7 @@ kernel.def target(@ggml_gather_add_rmsnorm_gfx11_wave32) export("ggml_gather_add
   %hidden0 = config.get @ggml.gather_add_rmsnorm_binary_f32.hidden_size : index
   %hidden = index.assume %hidden0 [range(%hidden0, 128, 32768), mul(%hidden0, 128)] : index
   %epsilon = config.get @ggml.gather_add_rmsnorm_binary_f32.rms_epsilon : f32
+  %gather_op = config.get @ggml.gather_add_rmsnorm_binary_f32.gather_op : index
   %output_row0 = kernel.workgroup.id<x> : index
   %output_row = index.assume %output_row0 [lt(%output_row0, %output_count)] : index
   %workitem = kernel.workitem.id<x> : index
@@ -45,9 +49,9 @@ kernel.def target(@ggml_gather_add_rmsnorm_gfx11_wave32) export("ggml_gather_add
   %thread_sum = scf.for %channel = [%workitem to %hidden step %c256](%running_sum = %c0_f32 : f32) -> (f32) {
     %attention_value = view.load %attention_view[%source_row, %channel] : view<[%source_count]x[%hidden]xf32> -> f32
     %residual_value = view.load %residual_view[%source_row, %channel] : view<[%source_count]x[%hidden]xf32> -> f32
-    %sum = scalar.addf %attention_value, %residual_value : f32
-    view.store %sum, %raw_view[%output_row, %channel] : f32, view<[%output_count]x[%hidden]xf32>
-    %square = scalar.mulf<reassoc|nnan|ninf|nsz> %sum, %sum : f32
+    %combined = template.apply<@ggml.binary_f32.apply>(%gather_op, %attention_value, %residual_value) : (index, f32, f32) -> (f32)
+    view.store %combined, %raw_view[%output_row, %channel] : f32, view<[%output_count]x[%hidden]xf32>
+    %square = scalar.mulf<reassoc|nnan|ninf|nsz> %combined, %combined : f32
     %next_sum = scalar.addf<reassoc|nnan|ninf|nsz> %running_sum, %square : f32
     scf.yield %next_sum : f32
   }

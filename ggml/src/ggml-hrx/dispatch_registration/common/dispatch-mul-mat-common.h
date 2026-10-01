@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../dispatch-registry.h"
+#include "dispatch-binary-common.h"
 #include "dispatch-mul-mat-weight-format.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
@@ -146,8 +147,8 @@ inline bool common_mul_mat_uses_k16_major_f16(CommonMulMatWeightFormat format,
                                                int64_t output_size,
                                                int64_t token_count,
                                                bool packed_producer = false) {
-    if (token_count < 512 || token_count > 2048 || token_count % 512 != 0 ||
-        input_size % 256 != 0 || output_size % 64 != 0) {
+    if (token_count < 512 || token_count > 2048 || token_count % 512 != 0 || input_size % 256 != 0 ||
+        output_size % 64 != 0) {
         return false;
     }
     if (format == CommonMulMatWeightFormat::Q4K) {
@@ -381,39 +382,6 @@ inline bool common_is_swiglu_params(const OpParams & params) {
     return glu_params != nullptr && glu_params->op == GGML_GLU_OP_SWIGLU;
 }
 
-inline bool common_fused_binary_kind_from_params(const OpParams & params, BinaryKind & kind) {
-    const BinaryParams * binary_params = op_params_as<BinaryParams>(params);
-    if (binary_params != nullptr && binary_kind_supported(binary_params->op)) {
-        kind = binary_params->op;
-        return true;
-    }
-
-    const GluParams * glu_params = op_params_as<GluParams>(params);
-    if (glu_params == nullptr) {
-        return false;
-    }
-
-    switch (glu_params->op) {
-        case GGML_GLU_OP_REGLU:
-            kind = BinaryKind::RegLU;
-            return true;
-        case GGML_GLU_OP_SWIGLU:
-            kind = BinaryKind::SwiGLU;
-            return true;
-        case GGML_GLU_OP_GEGLU:
-            kind = BinaryKind::GeGLU;
-            return true;
-        case GGML_GLU_OP_GEGLU_ERF:
-            kind = BinaryKind::GeGLUErf;
-            return true;
-        case GGML_GLU_OP_GEGLU_QUICK:
-            kind = BinaryKind::GeGLUQuick;
-            return true;
-        default:
-            return false;
-    }
-}
-
 inline CommonMulMatMatch common_match_mul_mat_any_format(const Graph &     graph,
                                                          const GraphNode * node,
                                                          KernelCatalogRef  kernel,
@@ -525,8 +493,8 @@ inline bool common_prepare_k16_major_f16_input(const DispatchMatchContext & cont
     copy.bindings.push_back({ packed, 0, bytes });
     match.dispatches.push_back(std::move(copy));
     Status status;
-    if (!match.metadata.append_generated_resource(
-            { input.id, GeneratedResourceRole::F16K16Major, packed, bytes, {} }, status)) {
+    if (!match.metadata.append_generated_resource({ input.id, GeneratedResourceRole::F16K16Major, packed, bytes, {} },
+                                                  status)) {
         match.status.append(status);
         return false;
     }

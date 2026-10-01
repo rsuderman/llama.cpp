@@ -1,5 +1,6 @@
 #include "dispatch-scale.h"
 
+#include "dispatch-binary-common.h"
 #include "dispatch-layout-utils.h"
 #include "ggml.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
@@ -133,32 +134,23 @@ static bool match_scale_add_f32_dispatch(const DispatchMatchContext & context, D
     if (scale_params == nullptr || !context.graph.index().has_single_consumer(scale_node->output)) {
         return false;
     }
-    const GraphNode * add_node = context.graph.index().consumers(scale_node->output).front();
-    if (add_node == nullptr || add_node->op != GGML_OP_ADD || add_node->inputs.size() != 2) {
-        return false;
-    }
-    const BinaryParams * add_params = op_params_as<BinaryParams>(add_node->params);
-    if (add_params == nullptr || add_params->op != BinaryKind::Add) {
-        return false;
-    }
-
-    size_t add_index = 0;
-    if (!context.graph.index().node_index(add_node, add_index) || add_index >= context.covered_nodes.size() ||
-        context.covered_nodes[add_index]) {
+    const GraphNode *       binary_node = context.graph.index().consumers(scale_node->output).front();
+    const CommonBinaryMatch binary =
+        common_match_binary_consumer(binary_node, scale_node->output, kCommonArithmeticBinaryKinds);
+    if (!binary.matched()) {
         return false;
     }
 
-    const ValueId residual_id = add_node->inputs[0] == scale_node->output ? add_node->inputs[1] :
-                                add_node->inputs[1] == scale_node->output ? add_node->inputs[0] :
-                                                                            ValueId(-1);
-    if (residual_id.value < 0) {
+    size_t binary_index = 0;
+    if (!context.graph.index().node_index(binary_node, binary_index) || binary_index >= context.covered_nodes.size() ||
+        context.covered_nodes[binary_index]) {
         return false;
     }
 
     const Value * input    = graph_value(context.graph, scale_node->inputs[0]);
     const Value * scaled   = graph_value(context.graph, scale_node->output);
-    const Value * residual = graph_value(context.graph, residual_id);
-    const Value * output   = graph_value(context.graph, add_node->output);
+    const Value * residual = graph_value(context.graph, binary.operand);
+    const Value * output   = graph_value(context.graph, binary_node->output);
     if (input == nullptr || scaled == nullptr || residual == nullptr || output == nullptr ||
         input->type != GGML_TYPE_F32 || scaled->type != GGML_TYPE_F32 || residual->type != GGML_TYPE_F32 ||
         output->type != GGML_TYPE_F32 || !same_shape(*input, *scaled) || !same_shape(*input, *residual) ||
@@ -187,6 +179,8 @@ static bool match_scale_add_f32_dispatch(const DispatchMatchContext & context, D
     dispatch.kernel.compile_parameters.emplace("ggml.scale_add_f32.ne2", std::to_string(output->ne[2]));
     dispatch.kernel.compile_parameters.emplace("ggml.scale_add_f32.scale", format_float_config(scale_params->scale));
     dispatch.kernel.compile_parameters.emplace("ggml.scale_add_f32.bias", format_float_config(scale_params->bias));
+    common_set_binary_compile_parameters(dispatch.kernel, "ggml.scale_add_f32.binary_op",
+                                         "ggml.scale_add_f32.scaled_lhs", binary.kind, binary.producer_is_lhs);
     add_strided_source_config(dispatch, "ggml.scale_add_f32.input_", *input, input_byte_count);
     add_strided_source_config(dispatch, "ggml.scale_add_f32.residual_", *residual, residual_byte_count);
     dispatch.bindings.push_back({ input->storage_root, input->storage_offset, input_byte_count });
@@ -194,7 +188,7 @@ static bool match_scale_add_f32_dispatch(const DispatchMatchContext & context, D
     dispatch.bindings.push_back({ output->id, 0, output->byte_count });
 
     match.covered_nodes.push_back(context.root_index);
-    match.covered_nodes.push_back(add_index);
+    match.covered_nodes.push_back(binary_index);
     match.dispatches.push_back(std::move(dispatch));
     return true;
 }

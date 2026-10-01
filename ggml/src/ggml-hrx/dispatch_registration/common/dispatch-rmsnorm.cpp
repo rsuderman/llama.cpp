@@ -1,5 +1,6 @@
 #include "dispatch-rmsnorm.h"
 
+#include "dispatch-binary-common.h"
 #include "dispatch-layout-utils.h"
 #include "dispatch-mul-mat-common.h"
 #include "ggml.h"
@@ -20,7 +21,8 @@ namespace {
 static constexpr KernelCatalogRef kRmsNormBinaryF32Kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_f32");
 static constexpr KernelCatalogRef kRmsNormBinaryStridedF32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_strided_f32");
-static constexpr KernelCatalogRef kRmsNormMulAddF32Kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_mul_add_f32");
+static constexpr KernelCatalogRef kRmsNormMulAddF32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_mul_add_f32");
 static constexpr KernelCatalogRef kRmsNormBinaryF32F16Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_f32_f16");
 static constexpr KernelCatalogRef kRmsNormBinaryF32K16Kernel =
@@ -85,8 +87,7 @@ static bool supported_rmsnorm_input_layout(const Value & input,
         return true;
     }
 
-    if (input.ne[1] != token_count || input.ne[2] != 1 || input.ne[3] != 1 ||
-        input.nb[1] % sizeof(float) != 0) {
+    if (input.ne[1] != token_count || input.ne[2] != 1 || input.ne[3] != 1 || input.nb[1] % sizeof(float) != 0) {
         return false;
     }
     input_stride = static_cast<int64_t>(input.nb[1] / sizeof(float));
@@ -97,14 +98,6 @@ static bool supported_rmsnorm_input_layout(const Value & input,
     return strided_f32_storage_span_bytes(input, input_span_bytes);
 }
 
-static bool is_binary_op(ggml_op op) {
-    return op == GGML_OP_ADD || op == GGML_OP_SUB || op == GGML_OP_MUL || op == GGML_OP_DIV;
-}
-
-static bool binary_kind_requires_order(BinaryKind kind) {
-    return kind == BinaryKind::Sub || kind == BinaryKind::Div;
-}
-
 static bool is_packed_q8_consumer(const Graph & graph, const GraphNode * consumer, const Value & input) {
     if (consumer == nullptr || consumer->op != GGML_OP_MUL_MAT || consumer->inputs.size() != 2 ||
         consumer->inputs[1] != input.id) {
@@ -112,20 +105,19 @@ static bool is_packed_q8_consumer(const Graph & graph, const GraphNode * consume
     }
     const Value * weight = graph_value(graph, consumer->inputs[0]);
     const Value * output = graph_value(graph, consumer->output);
-    if (weight == nullptr || output == nullptr || input.type != GGML_TYPE_F32 ||
-        output->type != GGML_TYPE_F32 || !input.contiguous || !weight->contiguous || !output->contiguous) {
+    if (weight == nullptr || output == nullptr || input.type != GGML_TYPE_F32 || output->type != GGML_TYPE_F32 ||
+        !input.contiguous || !weight->contiguous || !output->contiguous) {
         return false;
     }
-    const bool prefill = (weight->type == GGML_TYPE_Q5_K || weight->type == GGML_TYPE_IQ4_XS) &&
-                         input.ne[1] >= 256 && input.ne[1] <= 2048 && input.ne[1] % 256 == 0;
+    const bool prefill = (weight->type == GGML_TYPE_Q5_K || weight->type == GGML_TYPE_IQ4_XS) && input.ne[1] >= 256 &&
+                         input.ne[1] <= 2048 && input.ne[1] % 256 == 0;
     const bool decode = input.ne[1] >= 1 && input.ne[1] <= 5 && weight->alias_source.value < 0 &&
                         (weight->type == GGML_TYPE_Q4_K ||
                          (weight->type == GGML_TYPE_Q6_K && !graph.index().consumers(output->id).empty()));
     return (prefill || decode) && input.ne[0] >= 256 && input.ne[0] <= 32768 && input.ne[0] % 256 == 0 &&
-           input.ne[2] == 1 && input.ne[3] == 1 &&
-           weight->ne[0] == input.ne[0] && weight->ne[1] >= 64 && weight->ne[1] <= 262144 && weight->ne[1] % 64 == 0 &&
-           weight->ne[2] == 1 && weight->ne[3] == 1 && output->ne[0] == weight->ne[1] && output->ne[1] == input.ne[1] &&
-           output->ne[2] == 1 && output->ne[3] == 1;
+           input.ne[2] == 1 && input.ne[3] == 1 && weight->ne[0] == input.ne[0] && weight->ne[1] >= 64 &&
+           weight->ne[1] <= 262144 && weight->ne[1] % 64 == 0 && weight->ne[2] == 1 && weight->ne[3] == 1 &&
+           output->ne[0] == weight->ne[1] && output->ne[1] == input.ne[1] && output->ne[2] == 1 && output->ne[3] == 1;
 }
 
 static bool has_packed_q8_consumer(const Graph & graph, const Value & value) {
@@ -185,6 +177,8 @@ struct RmsNormMulAddMatch {
     const Value *      residual       = nullptr;
     const Value *      output         = nullptr;
     size_t             add_node_index = 0;
+    BinaryKind         output_op      = BinaryKind::Add;
+    bool               binary_lhs     = true;
 
     bool matched() const {
         return rms_binary.matched() && add_node != nullptr && residual != nullptr && output != nullptr;
@@ -452,28 +446,18 @@ static RmsNormBinaryMatch match_rmsnorm_binary_f32(const Graph &     graph,
     }
     const GraphNode * binary_node = consumers.front();
     size_t            binary_node_index;
-    if (binary_node == nullptr || !is_binary_op(binary_node->op) || binary_node->inputs.size() != 2 ||
-        !graph.index().node_index(binary_node, binary_node_index)) {
+    const CommonBinaryMatch binary_match =
+        common_match_binary_consumer(binary_node, node->output, kCommonArithmeticBinaryKinds);
+    if (!binary_match.matched() || !graph.index().node_index(binary_node, binary_node_index)) {
         return {};
     }
-    const BinaryParams * binary_params = op_params_as<BinaryParams>(binary_node->params);
-    if (binary_params == nullptr || !binary_kind_supported(binary_params->op)) {
-        return {};
-    }
-
-    const bool rms_is_lhs = binary_node->inputs[0] == node->output;
-    const bool rms_is_rhs = binary_node->inputs[1] == node->output;
-    if (!rms_is_lhs && !rms_is_rhs) {
-        return {};
-    }
-    if (rms_is_rhs && binary_kind_requires_order(binary_params->op)) {
+    if (!binary_match.producer_is_lhs && common_binary_kind_requires_order(binary_match.kind)) {
         return {};
     }
 
-    const ValueId rhs_id = rms_is_lhs ? binary_node->inputs[1] : binary_node->inputs[0];
     const Value * input  = graph_value(graph, node->inputs[0]);
     const Value * rms    = graph_value(graph, node->output);
-    const Value * rhs    = graph_value(graph, rhs_id);
+    const Value * rhs    = graph_value(graph, binary_match.operand);
     const Value * output = graph_value(graph, binary_node->output);
     if (input == nullptr || rms == nullptr || rhs == nullptr || output == nullptr) {
         return {};
@@ -519,7 +503,7 @@ static RmsNormBinaryMatch match_rmsnorm_binary_f32(const Graph &     graph,
     match.token_count       = token_count;
     match.input_stride      = input_stride;
     match.input_span        = input_span;
-    match.op                = binary_params->op;
+    match.op                = binary_match.kind;
     match.epsilon           = rms_params->eps;
     return match;
 }
@@ -527,7 +511,7 @@ static RmsNormBinaryMatch match_rmsnorm_binary_f32(const Graph &     graph,
 static RmsNormMulAddMatch match_rmsnorm_mul_add_f32(const DispatchMatchContext & context) {
     RmsNormMulAddMatch match;
     match.rms_binary = match_rmsnorm_binary_f32(context.graph, context.root_node, context.root_index);
-    if (!match.rms_binary.matched() || match.rms_binary.op != BinaryKind::Mul) {
+    if (!match.rms_binary.matched()) {
         return {};
     }
 
@@ -537,29 +521,19 @@ static RmsNormMulAddMatch match_rmsnorm_mul_add_f32(const DispatchMatchContext &
     }
     const GraphNode * add = consumers.front();
     size_t            add_index = 0;
-    if (add == nullptr || add->op != GGML_OP_ADD || add->inputs.size() != 2 ||
-        !context.graph.index().node_index(add, add_index)) {
+    const CommonBinaryMatch output_binary =
+        common_match_binary_consumer(add, match.rms_binary.output->id, kCommonArithmeticBinaryKinds);
+    if (!output_binary.matched() || !context.graph.index().node_index(add, add_index)) {
         return {};
     }
-    const BinaryParams * add_params = op_params_as<BinaryParams>(add->params);
-    if (add_params == nullptr || add_params->op != BinaryKind::Add) {
-        return {};
-    }
-    const bool scaled_lhs = add->inputs[0] == match.rms_binary.output->id;
-    const bool scaled_rhs = add->inputs[1] == match.rms_binary.output->id;
-    if (scaled_lhs == scaled_rhs) {
-        return {};
-    }
-    const ValueId residual_id = scaled_lhs ? add->inputs[1] : add->inputs[0];
-    const Value * residual = graph_value(context.graph, residual_id);
+    const Value * residual   = graph_value(context.graph, output_binary.operand);
     const Value * output   = graph_value(context.graph, add->output);
     const Value * rms_output = graph_value(context.graph, match.rms_binary.rms_node->output);
     if (residual == nullptr || output == nullptr || rms_output == nullptr || residual->type != GGML_TYPE_F32 ||
         output->type != GGML_TYPE_F32 || !residual->contiguous || !output->contiguous ||
         !same_shape(*residual, *match.rms_binary.input) || !same_shape(*output, *match.rms_binary.input) ||
-        !pairwise_distinct_storage_roots(std::array<const Value *, 6>{ match.rms_binary.input, match.rms_binary.rhs,
-                                                                         rms_output, match.rms_binary.output, residual,
-                                                                         output })) {
+        !pairwise_distinct_storage_roots(std::array<const Value *, 6>{
+            match.rms_binary.input, match.rms_binary.rhs, rms_output, match.rms_binary.output, residual, output })) {
         return {};
     }
     const size_t nodes_size = context.covered_nodes.size();
@@ -585,6 +559,8 @@ static RmsNormMulAddMatch match_rmsnorm_mul_add_f32(const DispatchMatchContext &
     match.residual       = residual;
     match.output         = output;
     match.add_node_index = add_index;
+    match.output_op      = output_binary.kind;
+    match.binary_lhs     = output_binary.producer_is_lhs;
     return match;
 }
 
@@ -638,9 +614,7 @@ static AddRmsNormBinarySymmetricI4Match match_add_rmsnorm_binary_symmetric_i4(co
     return match;
 }
 
-static RmsNormGateMatch match_rmsnorm_gate(const Graph &     graph,
-                                         const GraphNode * node,
-                                         size_t            node_index) {
+static RmsNormGateMatch match_rmsnorm_gate(const Graph & graph, const GraphNode * node, size_t node_index) {
     RmsNormGateMatch match;
     const RmsNormBinaryMatch rms_binary = match_rmsnorm_binary_f32(graph, node, node_index);
     if (!rms_binary.matched() || rms_binary.op != BinaryKind::Mul || rms_binary.hidden_size % 64 != 0) {
@@ -831,9 +805,8 @@ static bool match_rmsnorm_binary_symmetric_i4_dispatch(const DispatchMatchContex
     }
     const RmsNormBinaryMatch fused =
         match_rmsnorm_binary_f32(context.graph, &nodes[context.root_index], context.root_index);
-    if (!fused.matched() || fused.op != BinaryKind::Mul ||
-        !is_supported_symmetric_i4_hidden_size(fused.hidden_size) || fused.token_count > 16 ||
-        fused.rms_node_index >= context.covered_nodes.size() ||
+    if (!fused.matched() || fused.op != BinaryKind::Mul || !is_supported_symmetric_i4_hidden_size(fused.hidden_size) ||
+        fused.token_count > 16 || fused.rms_node_index >= context.covered_nodes.size() ||
         fused.binary_node_index >= context.covered_nodes.size() || context.covered_nodes[fused.rms_node_index] ||
         context.covered_nodes[fused.binary_node_index] ||
         !common_has_symmetric_i4_lowrow_consumer(context.graph, *fused.output) ||
@@ -885,16 +858,18 @@ static bool match_rmsnorm_gate_dispatch(const DispatchMatchContext & context, Di
         return false;
     }
 
-    const bool use_i4 = fused.gate_op == UnaryKind::Silu &&
-                        common_has_symmetric_i4_lowrow_consumer(context.graph, *fused.output);
+    const bool use_i4 =
+        fused.gate_op == UnaryKind::Silu && common_has_symmetric_i4_lowrow_consumer(context.graph, *fused.output);
     if (!use_i4) {
         if (fused.hidden_size > 1024) {
             return false;
         }
         const Value * packed_input = fused.output;
-        const GraphNode * consumer = common_find_only_consumer_with_op(context.graph, packed_input->id, GGML_OP_MUL_MAT);
+        const GraphNode * consumer =
+            common_find_only_consumer_with_op(context.graph, packed_input->id, GGML_OP_MUL_MAT);
         if (consumer == nullptr) {
-            const GraphNode * reshape = common_find_only_consumer_with_op(context.graph, packed_input->id, GGML_OP_RESHAPE);
+            const GraphNode * reshape =
+                common_find_only_consumer_with_op(context.graph, packed_input->id, GGML_OP_RESHAPE);
             const Value * reshaped = reshape != nullptr ? graph_value(context.graph, reshape->output) : nullptr;
             if (reshaped != nullptr && is_layout_alias_node(context.graph, *reshape) && reshaped->contiguous &&
                 same_full_value_range(*packed_input, *reshaped)) {
@@ -908,20 +883,21 @@ static bool match_rmsnorm_gate_dispatch(const DispatchMatchContext & context, Di
                                    projection.weight->alias_source.value < 0 &&
                                    common_mul_mat_uses_k16_major_f16(projection.weight_format, projection.input_size,
                                                                      projection.output_size, projection.token_count);
-        const bool q8_output = !packed_output && packed_input->ne[1] <= 5 &&
-                               is_packed_q8_consumer(context.graph, consumer, *packed_input);
-        const size_t activation_bytes = q8_output ? q8_1_x4_byte_count(fused.token_count, fused.hidden_size) :
-                                                   fused.output->byte_count / 2;
+        const bool q8_output =
+            !packed_output && packed_input->ne[1] <= 5 && is_packed_q8_consumer(context.graph, consumer, *packed_input);
+        const size_t activation_bytes =
+            q8_output ? q8_1_x4_byte_count(fused.token_count, fused.hidden_size) : fused.output->byte_count / 2;
         const ValueId          activation = context.next_plan_value;
         const char * activation_name = q8_output ? "common.rmsnorm_gate.q8_1_x4" :
-                                       packed_output ? "common.rmsnorm_gate.k16_major_f16" : "common.rmsnorm_gate.f16";
+                                        packed_output ? "common.rmsnorm_gate.k16_major_f16" :
+                                                        "common.rmsnorm_gate.f16";
         Dispatch dispatch;
-        dispatch.kernel = make_kernel_specialization(q8_output ? kRmsNormGateF32Q8_1X4Kernel : kRmsNormGateF32F16Kernel);
+        dispatch.kernel =
+            make_kernel_specialization(q8_output ? kRmsNormGateF32Q8_1X4Kernel : kRmsNormGateF32F16Kernel);
         dispatch.kernel.integer_parameters.emplace("token_count", fused.token_count);
         dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_gate_f32.hidden_size",
                                                    to_config_value(fused.hidden_size));
-        dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_gate_f32.rms_epsilon",
-                                                   to_config_value(fused.epsilon));
+        dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_gate_f32.rms_epsilon", to_config_value(fused.epsilon));
         dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_gate_f32.gate_op",
                                                    std::to_string(unary_kind_config_value(fused.gate_op)));
         dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_gate_f32.f16_output_row_width",
@@ -932,12 +908,15 @@ static bool match_rmsnorm_gate_dispatch(const DispatchMatchContext & context, Di
         dispatch.bindings.push_back({ fused.output->id, 0, fused.output->byte_count });
         dispatch.bindings.push_back({ activation, 0, activation_bytes });
         Status status;
-        const bool recorded = packed_output ?
+        const bool recorded =
+            packed_output ?
             match.metadata.append_generated_resource(
-                { packed_input->id, GeneratedResourceRole::F16K16Major, activation, activation_bytes, {} }, status) :
+                    { packed_input->id, GeneratedResourceRole::F16K16Major, activation, activation_bytes, {} },
+                    status) :
             match.metadata.append_alternate_value(
-                { fused.output->id, activation, q8_output ? GGML_TYPE_Q8_1 : GGML_TYPE_F16,
-                  activation_bytes, activation_name }, status);
+                    { fused.output->id, activation, q8_output ? GGML_TYPE_Q8_1 : GGML_TYPE_F16, activation_bytes,
+                      activation_name },
+                    status);
         if (!recorded) {
             match.status.append(status);
             return false;
@@ -1008,8 +987,8 @@ static bool has_qualified_rmsnorm_k16_consumer(const Graph & graph, const RmsNor
             common_match_mul_mat_any_format(graph, consumer, kRmsNormBinaryF32K16Kernel, false);
         if (projection.matched() && projection.input->id == rms.output->id &&
             projection.weight->alias_source.value < 0 &&
-            common_mul_mat_uses_k16_major_f16(projection.weight_format, projection.input_size,
-                                              projection.output_size, projection.token_count)) {
+            common_mul_mat_uses_k16_major_f16(projection.weight_format, projection.input_size, projection.output_size,
+                                              projection.token_count)) {
             return true;
         }
     }
@@ -1017,8 +996,8 @@ static bool has_qualified_rmsnorm_k16_consumer(const Graph & graph, const RmsNor
 }
 
 static bool has_qualified_rmsnorm_f16_consumer(const Graph & graph, const RmsNormBinaryMatch & rms) {
-    if (!graph.has_index() || rms.token_count < 128 || rms.output->ne[1] != rms.token_count ||
-        rms.output->ne[2] != 1 || rms.output->ne[3] != 1) {
+    if (!graph.has_index() || rms.token_count < 128 || rms.output->ne[1] != rms.token_count || rms.output->ne[2] != 1 ||
+        rms.output->ne[3] != 1) {
         return false;
     }
     for (const GraphNode * consumer : graph.index().consumers(rms.output->id)) {
@@ -1056,7 +1035,8 @@ static bool match_rmsnorm_binary_f32_dispatch(const DispatchMatchContext & conte
 
     const bool strided_input = rms_match.input_stride != rms_match.hidden_size;
     const bool packed_output = !strided_input && has_qualified_rmsnorm_k16_consumer(context.graph, rms_match);
-    const bool f16_output    = !strided_input && !packed_output && has_qualified_rmsnorm_f16_consumer(context.graph, rms_match);
+    const bool f16_output =
+        !strided_input && !packed_output && has_qualified_rmsnorm_f16_consumer(context.graph, rms_match);
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(strided_input ? kRmsNormBinaryStridedF32Kernel :
                                                   packed_output ? kRmsNormBinaryF32K16Kernel :
@@ -1073,9 +1053,9 @@ static bool match_rmsnorm_binary_f32_dispatch(const DispatchMatchContext & conte
         dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_binary_f32.input_stride",
                                                    to_config_value(rms_match.input_stride));
     }
-    dispatch.bindings.push_back(strided_input ?
-                                    DispatchBinding{ rms_match.input->storage_root, rms_match.input->storage_offset,
-                                                     rms_match.input_span } :
+    dispatch.bindings.push_back(
+        strided_input ?
+            DispatchBinding{ rms_match.input->storage_root, rms_match.input->storage_offset, rms_match.input_span } :
                                     DispatchBinding{ rms_match.input->id, 0, rms_match.input->byte_count });
     dispatch.bindings.push_back({ rms_match.rhs->id, 0, rms_match.rhs->byte_count });
     dispatch.bindings.push_back({ rms_match.output->id, 0, rms_match.output->byte_count });
@@ -1123,6 +1103,10 @@ static bool match_rmsnorm_mul_add_f32_dispatch(const DispatchMatchContext & cont
                                                to_config_value(fused.rms_binary.hidden_size));
     dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_mul_add_f32.rms_epsilon",
                                                to_config_value(fused.rms_binary.epsilon));
+    common_set_binary_compile_parameters(dispatch.kernel, "ggml.rmsnorm_mul_add_f32.normalized_op", nullptr,
+                                         fused.rms_binary.op, true);
+    common_set_binary_compile_parameters(dispatch.kernel, "ggml.rmsnorm_mul_add_f32.output_op",
+                                         "ggml.rmsnorm_mul_add_f32.binary_lhs", fused.output_op, fused.binary_lhs);
     dispatch.bindings.push_back({ fused.rms_binary.input->id, 0, fused.rms_binary.input->byte_count });
     dispatch.bindings.push_back({ fused.rms_binary.rhs->id, 0, fused.rms_binary.rhs->byte_count });
     dispatch.bindings.push_back({ fused.residual->id, 0, fused.residual->byte_count });
