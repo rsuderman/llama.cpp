@@ -168,10 +168,40 @@
       "path": "ops/matmul_id/vector_weighted.loom"
     },
     {
-      "path": "../qwen_moe/qwen3_moe/attention_prepare_quantized.loom"
+      "path": "motifs/normalization/rmsnorm_q8_1_x4.loom"
+    },
+    {
+      "path": "motifs/matmul/q4_q8_1_x4_decode.loom"
+    },
+    {
+      "path": "motifs/matmul/q4_q8_1_x4_dense.loom"
+    },
+    {
+      "path": "motifs/matmul/q4_q6_q8_1_x4_qkv.loom"
     },
     {
       "path": "motifs/matmul/q6_f32_decode.loom"
+    },
+    {
+      "path": "motifs/matmul/q6_q8_1_x4_decode.loom"
+    },
+    {
+      "path": "motifs/routing/router_projection_storage.loom"
+    },
+    {
+      "path": "motifs/routing/router_topk_row.loom"
+    },
+    {
+      "path": "motifs/routing/router_projection_fused.loom"
+    },
+    {
+      "path": "motifs/routing/weighted_reduce_f16_f32.loom"
+    },
+    {
+      "path": "motifs/routing/weighted_reduce_next_rmsnorm_f32.loom"
+    },
+    {
+      "path": "motifs/attention/rmsnorm_neox_cache_f16.loom"
     },
     {
       "path": "motifs/matmul_id/pair_input_f32_dequant_accumulate_f32.loom"
@@ -463,6 +493,12 @@
     },
     {
       "path": "motifs/quantize_q8_1_x4.loom"
+    },
+    {
+      "path": "motifs/normalization/rmsnorm_q8_1_x4.loom"
+    },
+    {
+      "path": "motifs/quantize_q8_1_x4_group.loom"
     },
     {
       "path": "motifs/publish_f32.loom"
@@ -3804,14 +3840,14 @@
           "motifs/matmul_id/vector_weighted.loom",
           "motifs/matmul_id/vector_q4k_q8.loom",
           "motifs/matmul/q6_f32_decode.loom",
-          "../qwen_moe/qwen3_moe/attention_prepare_quantized.loom"
+          "motifs/normalization/rmsnorm_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
         "motifs/matmul_id/vector_weighted.loom",
         "motifs/matmul_id/vector_q4k_q8.loom",
         "motifs/matmul/q6_f32_decode.loom",
-        "../qwen_moe/qwen3_moe/attention_prepare_quantized.loom"
+        "motifs/normalization/rmsnorm_q8_1_x4.loom"
       ]
     },
     {
@@ -3901,14 +3937,14 @@
           "motifs/matmul_id/vector_weighted.loom",
           "motifs/matmul_id/vector_q4k_q8.loom",
           "motifs/matmul/q6_f32_decode.loom",
-          "../qwen_moe/qwen3_moe/attention_prepare_quantized.loom"
+          "motifs/normalization/rmsnorm_q8_1_x4.loom"
         ]
       },
       "compile_dependencies": [
         "motifs/matmul_id/vector_weighted.loom",
         "motifs/matmul_id/vector_q4k_q8.loom",
         "motifs/matmul/q6_f32_decode.loom",
-        "../qwen_moe/qwen3_moe/attention_prepare_quantized.loom"
+        "motifs/normalization/rmsnorm_q8_1_x4.loom"
       ]
     },
     {
