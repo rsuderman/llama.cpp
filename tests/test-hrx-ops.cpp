@@ -10,6 +10,7 @@
 #include "testing_suite.h"
 
 #include <algorithm>
+#include <array>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
@@ -1401,6 +1402,80 @@ static void run_strided_rmsnorm_cpu_reference_case(int64_t token_count) {
     ggml_backend_synchronize(hrx_backend);
     require_close(get_f32_tensor(cpu_backend, cpu_output), expected, 5.0e-4f);
     require_close(get_f32_tensor(hrx_backend, hrx_output), expected, 5.0e-4f);
+
+    ggml_backend_buffer_free(cpu_buffer);
+    ggml_backend_buffer_free(hrx_buffer);
+    ggml_free(cpu_ctx);
+    ggml_free(hrx_ctx);
+    ggml_backend_free(cpu_backend);
+    ggml_backend_free(hrx_backend);
+}
+
+static void run_strided_rmsnorm_binary_cpu_reference_case() {
+    ggml_backend_t cpu_backend = init_cpu_backend();
+    ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
+    REQUIRE(hrx_backend != nullptr);
+
+    constexpr int64_t hidden_size  = 256;
+    constexpr int64_t token_count  = 64;
+    constexpr int64_t input_stride = 288;
+    constexpr float   epsilon      = 1.0e-5f;
+    const size_t      storage_elements =
+        static_cast<size_t>((token_count - 1) * input_stride + hidden_size);
+
+    ggml_init_params params = {};
+    params.mem_size         = 2 * 1024 * 1024;
+    params.no_alloc         = true;
+    ggml_context * cpu_ctx  = ggml_init(params);
+    ggml_context * hrx_ctx  = ggml_init(params);
+    REQUIRE(cpu_ctx != nullptr);
+    REQUIRE(hrx_ctx != nullptr);
+
+    ggml_tensor * cpu_storage = ggml_new_tensor_1d(cpu_ctx, GGML_TYPE_F32, storage_elements);
+    ggml_tensor * cpu_input =
+        ggml_view_2d(cpu_ctx, cpu_storage, hidden_size, token_count, input_stride * sizeof(float), 0);
+    ggml_tensor * cpu_scale   = ggml_new_tensor_1d(cpu_ctx, GGML_TYPE_F32, hidden_size);
+    ggml_tensor * cpu_output  = ggml_mul(cpu_ctx, ggml_rms_norm(cpu_ctx, cpu_input, epsilon), cpu_scale);
+    ggml_tensor * hrx_storage = ggml_new_tensor_1d(hrx_ctx, GGML_TYPE_F32, storage_elements);
+    ggml_tensor * hrx_input =
+        ggml_view_2d(hrx_ctx, hrx_storage, hidden_size, token_count, input_stride * sizeof(float), 0);
+    ggml_tensor * hrx_scale  = ggml_new_tensor_1d(hrx_ctx, GGML_TYPE_F32, hidden_size);
+    ggml_tensor * hrx_output = ggml_mul(hrx_ctx, ggml_rms_norm(hrx_ctx, hrx_input, epsilon), hrx_scale);
+    REQUIRE(cpu_output != nullptr);
+    REQUIRE(hrx_output != nullptr);
+
+    ggml_cgraph * cpu_graph = ggml_new_graph(cpu_ctx);
+    ggml_cgraph * hrx_graph = ggml_new_graph(hrx_ctx);
+    REQUIRE(cpu_graph != nullptr);
+    REQUIRE(hrx_graph != nullptr);
+    ggml_build_forward_expand(cpu_graph, cpu_output);
+    ggml_build_forward_expand(hrx_graph, hrx_output);
+    require_kernel_subsequence(
+        scheduled_kernel_sequence(hrx_graph), { "loom_libs:ggml_rmsnorm_binary_strided_f32" });
+
+    ggml_backend_buffer_t cpu_buffer = ggml_backend_alloc_ctx_tensors(cpu_ctx, cpu_backend);
+    ggml_backend_buffer_t hrx_buffer = ggml_backend_alloc_ctx_tensors(hrx_ctx, hrx_backend);
+    REQUIRE(cpu_buffer != nullptr);
+    REQUIRE(hrx_buffer != nullptr);
+
+    const std::vector<float> rows  = make_pattern_f32(hidden_size * token_count, 54, 0.015f);
+    const std::vector<float> scale = make_pattern_f32(hidden_size, 55, 0.03f);
+    std::vector<float>       storage(storage_elements, -19.0f);
+    for (int64_t token = 0; token < token_count; ++token) {
+        std::memcpy(storage.data() + static_cast<size_t>(token * input_stride),
+                    rows.data() + static_cast<size_t>(token * hidden_size),
+                    static_cast<size_t>(hidden_size) * sizeof(float));
+    }
+    set_tensor_pair_bytes(cpu_backend, cpu_storage, hrx_backend, hrx_storage, storage.data(),
+                          storage.size() * sizeof(float));
+    set_tensor_pair_bytes(cpu_backend, cpu_scale, hrx_backend, hrx_scale, scale.data(),
+                          scale.size() * sizeof(float));
+
+    REQUIRE(ggml_backend_graph_compute(cpu_backend, cpu_graph) == GGML_STATUS_SUCCESS);
+    REQUIRE(ggml_backend_graph_compute(hrx_backend, hrx_graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(cpu_backend);
+    ggml_backend_synchronize(hrx_backend);
+    require_close(get_f32_tensor(hrx_backend, hrx_output), get_f32_tensor(cpu_backend, cpu_output), 5.0e-4f);
 
     ggml_backend_buffer_free(cpu_buffer);
     ggml_backend_buffer_free(hrx_buffer);
@@ -2991,7 +3066,10 @@ static void run_get_rows_q8_1_zero_weight_case() {
     ggml_backend_free(hrx_backend);
 }
 
-static void run_get_rows_scale_f32_cpu_reference_case() {
+static void run_get_rows_scale_f32_cpu_reference_case(ggml_type weight_type = GGML_TYPE_F32,
+                                                      int64_t   hidden_size = 256,
+                                                      int64_t   row_count   = 8,
+                                                      int64_t   token_count = 6) {
     ggml_backend_t cpu_backend = init_cpu_backend();
     ggml_backend_t hrx_backend = ggml_backend_hrx_init(0);
     REQUIRE(hrx_backend != nullptr);
@@ -3004,15 +3082,12 @@ static void run_get_rows_scale_f32_cpu_reference_case() {
     REQUIRE(cpu_ctx != nullptr);
     REQUIRE(hrx_ctx != nullptr);
 
-    constexpr int64_t hidden_size = 256;
-    constexpr int64_t row_count   = 8;
-    constexpr int64_t token_count = 6;
-    constexpr float   scale       = 0.177800179f;
-    ggml_tensor * cpu_weight = ggml_new_tensor_2d(cpu_ctx, GGML_TYPE_F32, hidden_size, row_count);
+    const float scale = weight_type == GGML_TYPE_Q5_1 ? 25.2982216f : 0.177800179f;
+    ggml_tensor * cpu_weight = ggml_new_tensor_2d(cpu_ctx, weight_type, hidden_size, row_count);
     ggml_tensor * cpu_ids    = ggml_new_tensor_1d(cpu_ctx, GGML_TYPE_I32, token_count);
     ggml_tensor * cpu_rows   = ggml_get_rows(cpu_ctx, cpu_weight, cpu_ids);
     ggml_tensor * cpu_output = ggml_scale(cpu_ctx, cpu_rows, scale);
-    ggml_tensor * hrx_weight = ggml_new_tensor_2d(hrx_ctx, GGML_TYPE_F32, hidden_size, row_count);
+    ggml_tensor * hrx_weight = ggml_new_tensor_2d(hrx_ctx, weight_type, hidden_size, row_count);
     ggml_tensor * hrx_ids    = ggml_new_tensor_1d(hrx_ctx, GGML_TYPE_I32, token_count);
     ggml_tensor * hrx_rows   = ggml_get_rows(hrx_ctx, hrx_weight, hrx_ids);
     ggml_tensor * hrx_output = ggml_scale(hrx_ctx, hrx_rows, scale);
@@ -3034,18 +3109,20 @@ static void run_get_rows_scale_f32_cpu_reference_case() {
     REQUIRE(cpu_buffer != nullptr);
     REQUIRE(hrx_buffer != nullptr);
 
-    const std::vector<float> weight = make_pattern_f32(hidden_size * row_count, 9, 0.03125f);
-    const std::vector<int32_t> ids = { 0, 7, 2, 2, 6, 1 };
+    const std::vector<uint8_t> weight = make_matmul_weight_bytes(weight_type, hidden_size, row_count, 9);
+    const std::vector<int32_t> ids = { 0, static_cast<int32_t>(row_count - 1), 2, 2,
+                                       static_cast<int32_t>(row_count - 2), 1 };
     set_tensor_pair_bytes(cpu_backend, cpu_weight, hrx_backend, hrx_weight, weight.data(),
-                          weight.size() * sizeof(float));
+                          weight.size());
     set_tensor_pair_bytes(cpu_backend, cpu_ids, hrx_backend, hrx_ids, ids.data(), ids.size() * sizeof(int32_t));
 
     REQUIRE(ggml_backend_graph_compute(cpu_backend, cpu_graph) == GGML_STATUS_SUCCESS);
     REQUIRE(ggml_backend_graph_compute(hrx_backend, hrx_graph) == GGML_STATUS_SUCCESS);
     ggml_backend_synchronize(cpu_backend);
     ggml_backend_synchronize(hrx_backend);
-    require_close(get_f32_tensor(hrx_backend, hrx_rows), get_f32_tensor(cpu_backend, cpu_rows), 0.0f);
-    require_close(get_f32_tensor(hrx_backend, hrx_output), get_f32_tensor(cpu_backend, cpu_output), 1.0e-6f);
+    const float tolerance = weight_type == GGML_TYPE_F32 ? 0.0f : 5.0e-4f;
+    require_close(get_f32_tensor(hrx_backend, hrx_rows), get_f32_tensor(cpu_backend, cpu_rows), tolerance);
+    require_close(get_f32_tensor(hrx_backend, hrx_output), get_f32_tensor(cpu_backend, cpu_output), tolerance);
 
     ggml_backend_buffer_free(cpu_buffer);
     ggml_backend_buffer_free(hrx_buffer);
@@ -3189,6 +3266,111 @@ static void run_dense_matmul_cpu_reference_case(ggml_type    weight_type,
     ggml_free(hrx_ctx);
     ggml_backend_free(cpu_backend);
     ggml_backend_free(hrx_backend);
+}
+
+static void run_prefill_value_cache_repeated_indices_case() {
+    static constexpr const char * disable_env = "GGML_HRX_DISABLE_PREFILL_V_CACHE_FUSION";
+    const char *                  old_env     = std::getenv(disable_env);
+    const bool                    had_env     = old_env != nullptr;
+    const std::string             old_value   = had_env ? old_env : "";
+    REQUIRE(unsetenv(disable_env) == 0);
+
+    constexpr int64_t input_size       = 1536;
+    constexpr int64_t output_size      = 256;
+    constexpr int64_t token_count      = 64;
+    constexpr int64_t vocabulary_count = 128;
+    constexpr int64_t cache_row_count  = 512;
+
+    ggml_backend_t fused_backend = ggml_backend_hrx_init(0);
+    ggml_backend_t split_backend = ggml_backend_hrx_init(0);
+    REQUIRE(fused_backend != nullptr);
+    REQUIRE(split_backend != nullptr);
+
+    ggml_init_params params = {};
+    params.mem_size         = static_cast<size_t>(32 * 1024 * 1024);
+    params.no_alloc         = true;
+    ggml_context * fused_ctx = ggml_init(params);
+    ggml_context * split_ctx = ggml_init(params);
+    REQUIRE(fused_ctx != nullptr);
+    REQUIRE(split_ctx != nullptr);
+
+    auto build_graph = [](ggml_context * ctx) {
+        ggml_tensor * embedding = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, input_size, vocabulary_count);
+        ggml_tensor * tokens    = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, token_count);
+        ggml_tensor * norm      = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, input_size);
+        ggml_tensor * weight    = ggml_new_tensor_2d(ctx, GGML_TYPE_Q6_K, input_size, output_size);
+        ggml_tensor * indices   = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, token_count);
+        ggml_tensor * cache     = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, output_size, cache_row_count);
+        ggml_tensor * rows      = ggml_get_rows(ctx, embedding, tokens);
+        ggml_tensor * input     = build_rmsnorm_mul_graph(ctx, rows, norm);
+        ggml_tensor * projected = ggml_mul_mat(ctx, weight, input);
+        ggml_tensor * output    = ggml_set_rows(ctx, cache, projected, indices);
+        return std::array<ggml_tensor *, 7>{ embedding, tokens, norm, weight, indices, cache, output };
+    };
+
+    const auto fused = build_graph(fused_ctx);
+    const auto split = build_graph(split_ctx);
+    auto       fused_embedding_buffer  = allocate_test_weight(fused_backend, fused[0]);
+    auto       fused_projection_buffer = allocate_test_weight(fused_backend, fused[3]);
+    auto       split_embedding_buffer  = allocate_test_weight(split_backend, split[0]);
+    auto       split_projection_buffer = allocate_test_weight(split_backend, split[3]);
+
+    ggml_cgraph * fused_graph = ggml_new_graph(fused_ctx);
+    ggml_cgraph * split_graph = ggml_new_graph(split_ctx);
+    REQUIRE(fused_graph != nullptr);
+    REQUIRE(split_graph != nullptr);
+    ggml_build_forward_expand(fused_graph, fused[6]);
+    ggml_build_forward_expand(split_graph, split[6]);
+    require_kernel_subsequence(
+        scheduled_kernel_sequence(fused_graph),
+        { "loom_libs:ggml_get_rows_rmsnorm_binary_q8_1_x4_f16",
+          "loom_libs:llm_attention_v_matmul_set_rows_tiled_f32_f32" });
+    REQUIRE(setenv(disable_env, "1", 1) == 0);
+    require_kernel_subsequence(scheduled_kernel_sequence(split_graph),
+                               { "loom_libs:ggml_get_rows_rmsnorm_binary_q8_1_x4_f16",
+                                 "loom_libs:ggml_mul_mat_tiled_input_f32_publish_f32", "loom_libs:ggml_set_rows" });
+
+    ggml_backend_buffer_t fused_buffer = ggml_backend_alloc_ctx_tensors(fused_ctx, fused_backend);
+    ggml_backend_buffer_t split_buffer = ggml_backend_alloc_ctx_tensors(split_ctx, split_backend);
+    REQUIRE(fused_buffer != nullptr);
+    REQUIRE(split_buffer != nullptr);
+
+    const std::vector<uint8_t> embedding = make_matmul_weight_bytes(GGML_TYPE_Q4_K, input_size, vocabulary_count, 5);
+    const std::vector<uint8_t> projection = make_matmul_weight_bytes(GGML_TYPE_Q6_K, input_size, output_size, 11);
+    const std::vector<float>   norm       = make_weight(input_size);
+    const std::vector<int32_t> tokens(static_cast<size_t>(token_count), 3);
+    std::vector<int64_t>       indices(static_cast<size_t>(token_count));
+    for (int64_t token = 0; token < token_count; ++token) {
+        indices[static_cast<size_t>(token)] = (token * 37 + 11) % 31;
+    }
+    const std::vector<ggml_fp16_t> cache(static_cast<size_t>(output_size * cache_row_count),
+                                          ggml_fp32_to_fp16(-2.5f));
+
+    set_tensor_pair_bytes(fused_backend, fused[0], split_backend, split[0], embedding.data(), embedding.size());
+    set_tensor_pair_bytes(fused_backend, fused[1], split_backend, split[1], tokens.data(),
+                          tokens.size() * sizeof(int32_t));
+    set_tensor_pair_bytes(fused_backend, fused[2], split_backend, split[2], norm.data(), norm.size() * sizeof(float));
+    set_tensor_pair_bytes(fused_backend, fused[3], split_backend, split[3], projection.data(), projection.size());
+    set_tensor_pair_bytes(fused_backend, fused[4], split_backend, split[4], indices.data(),
+                          indices.size() * sizeof(int64_t));
+    set_tensor_pair_bytes(fused_backend, fused[5], split_backend, split[5], cache.data(),
+                          cache.size() * sizeof(ggml_fp16_t));
+
+    REQUIRE(unsetenv(disable_env) == 0);
+    REQUIRE(ggml_backend_graph_compute(fused_backend, fused_graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(fused_backend);
+    REQUIRE(setenv(disable_env, "1", 1) == 0);
+    REQUIRE(ggml_backend_graph_compute(split_backend, split_graph) == GGML_STATUS_SUCCESS);
+    ggml_backend_synchronize(split_backend);
+    require_close(get_f32_tensor(fused_backend, fused[6]), get_f32_tensor(split_backend, split[6]), 0.0f);
+
+    ggml_backend_buffer_free(fused_buffer);
+    ggml_backend_buffer_free(split_buffer);
+    ggml_free(fused_ctx);
+    ggml_free(split_ctx);
+    ggml_backend_free(fused_backend);
+    ggml_backend_free(split_backend);
+    restore_environment_value(disable_env, had_env, old_value);
 }
 
 static void run_dense_matmul_unary_cpu_reference_case(ggml_type    weight_type,
@@ -4813,6 +4995,8 @@ static void register_basic_ops_cases(Suite & suite) {
     suite.device_case("get_rows_f32.q5_1.rows640", [] { run_get_rows_f32_cpu_reference_case(GGML_TYPE_Q5_1, 640); });
     suite.device_case("get_rows_q8_1.zero_weight", [] { run_get_rows_q8_1_zero_weight_case(); });
     suite.device_case("get_rows_scale_f32.cpu_reference", [] { run_get_rows_scale_f32_cpu_reference_case(); });
+    suite.device_case("get_rows_scale_f32.q5_1.cpu_reference",
+                      [] { run_get_rows_scale_f32_cpu_reference_case(GGML_TYPE_Q5_1, 640); });
 }
 
 static void register_dense_matmul_cases(Suite & suite) {
@@ -4878,6 +5062,9 @@ static void register_dense_matmul_cases(Suite & suite) {
                 });
         }
     }
+    suite.device_case("attention_v_matmul.q6_k.prefill_f16.repeated_indices", [] {
+        run_prefill_value_cache_repeated_indices_case();
+    });
     for (const ggml_type type :
          { GGML_TYPE_Q1_0, GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_IQ2_S,
            GGML_TYPE_Q6_K, GGML_TYPE_Q8_0, GGML_TYPE_IQ4_NL, GGML_TYPE_F16, GGML_TYPE_BF16 }) {
@@ -5157,6 +5344,8 @@ static void register_rmsnorm_and_scheduling_cases(Suite & suite) {
         suite.device_case("strided_rmsnorm.tokens" + std::to_string(token_count),
                           [token_count] { run_strided_rmsnorm_cpu_reference_case(token_count); });
     }
+    suite.device_case("strided_rmsnorm_binary.minicpm_pp512_witness",
+                      [] { run_strided_rmsnorm_binary_cpu_reference_case(); });
     suite.device_case("rmsnorm_binary_add.cpu_reference", [] { run_rmsnorm_binary_add_cpu_reference_case(); });
     suite.device_case("rmsnorm_gate.silu.hidden128.tokens1.stride7",
                       [] { run_rmsnorm_gate_cpu_reference_case(128, 1, 7, GGML_UNARY_OP_SILU); });

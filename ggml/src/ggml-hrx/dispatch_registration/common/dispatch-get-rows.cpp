@@ -249,7 +249,13 @@ static GetRowsMatch match_get_rows_f32(const Graph & graph, const GraphNode * no
 static GetRowsScaleMatch match_get_rows_scale_f32(const DispatchMatchContext & context) {
     GetRowsScaleMatch match;
     match.rows = match_get_rows_f32(context.graph, context.root_node);
-    if (!match.rows.matched() || match.rows.weight->type != GGML_TYPE_F32 || !context.graph.has_index()) {
+    if (!match.rows.matched() || !context.graph.has_index()) {
+        return {};
+    }
+
+    const bool supported_weight = match.rows.weight->type == GGML_TYPE_F32 ||
+                                  (match.rows.weight->type == GGML_TYPE_Q5_1 && match.rows.token_count > 1);
+    if (!supported_weight) {
         return {};
     }
 

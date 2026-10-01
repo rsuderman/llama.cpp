@@ -6,6 +6,7 @@
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -259,9 +260,43 @@ struct AttentionQkvMatch {
     std::vector<const GraphNode *> layout_nodes;
     KernelCatalogRef               kernel = {};
     AttentionQkvProjectionKind     kind   = AttentionQkvProjectionKind::Query;
+    bool                           use_f16_activation = false;
 
     bool matched() const { return root.matched() && kernel.id != kUncatalogedKernelId; }
 };
+
+static bool prefill_v_cache_fusion_disabled() {
+    const char * value = std::getenv("GGML_HRX_DISABLE_PREFILL_V_CACHE_FUSION");
+    if (value == nullptr || value[0] == '\0') {
+        return false;
+    }
+    return std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0 && std::strcmp(value, "FALSE") != 0 &&
+           std::strcmp(value, "off") != 0 && std::strcmp(value, "OFF") != 0;
+}
+
+static bool distinct_storage(const Graph & graph, const Value & lhs, const Value & rhs) {
+    return !graph.values().same_storage(lhs.id, rhs.id);
+}
+
+static bool can_fuse_q6_f16_prefill_v_cache_cell(const DispatchMatchContext & context,
+                                                 const AttentionMatMulMatch & root,
+                                                 const AttentionSetRowsMatch & set_rows) {
+    if (prefill_v_cache_fusion_disabled() || root.weight->type != GGML_TYPE_Q6_K || root.input_size != 1536 ||
+        root.output_size != 256 || root.token_count != 64 || set_rows.output_format != 16 ||
+        set_rows.cache_row_count != 512 || root.output->kind != ValueKind::Transient ||
+        root.weight->alias_source.value >= 0 || !distinct_storage(context.graph, *root.input, *root.weight) ||
+        !distinct_storage(context.graph, *root.input, *set_rows.indices) ||
+        !distinct_storage(context.graph, *root.input, *set_rows.output) ||
+        !distinct_storage(context.graph, *root.weight, *set_rows.indices) ||
+        !distinct_storage(context.graph, *root.weight, *set_rows.output) ||
+        !distinct_storage(context.graph, *set_rows.indices, *set_rows.output)) {
+        return false;
+    }
+
+    const size_t activation_bytes = static_cast<size_t>(root.input_size * root.token_count) * sizeof(ggml_fp16_t);
+    return find_alternate_value(context.graph, context.plan, root.input->id, GGML_TYPE_F16, activation_bytes) !=
+           nullptr;
+}
 
 static bool can_use_packed_lowtoken_attention_matmul(const AttentionMatMulMatch & root) {
     if (root.token_count < 1 || root.token_count > 5 || root.output_size % 64 != 0 ||
@@ -483,13 +518,14 @@ static AttentionQkvMatch match_attention_qkv_projection(const DispatchMatchConte
     }
 
     if (consumer->op == GGML_OP_SET_ROWS) {
-        if (!is_supported_decode_token_count(root.token_count) &&
-            !common_mul_mat_dense_float_format(root.weight_format)) {
-            return {};
-        }
         match.set_rows = match_attention_set_rows(context.graph, consumer, after_projection);
         if (!match.set_rows.matched() || match.set_rows.token_count != root.token_count ||
             match.set_rows.output_size != root.output_size) {
+            return {};
+        }
+        const bool quantized_prefill = !is_supported_decode_token_count(root.token_count) &&
+                                       !common_mul_mat_dense_float_format(root.weight_format);
+        if (quantized_prefill && !can_fuse_q6_f16_prefill_v_cache_cell(context, root, match.set_rows)) {
             return {};
         }
         match.root   = root;
@@ -500,6 +536,7 @@ static AttentionQkvMatch match_attention_qkv_projection(const DispatchMatchConte
             match.kernel = kAttentionVMatMulSetRowsLegacyF32F32Kernel;
         }
         match.kind   = AttentionQkvProjectionKind::Value;
+        match.use_f16_activation = quantized_prefill;
         return match;
     }
 
@@ -595,6 +632,16 @@ static bool match_attention_qkv_dispatch(const DispatchMatchContext & context, D
     bool pack_q6 = match.root.weight_format == CommonMulMatWeightFormat::Q6KRow64;
     bool use_q8_activation = false;
     DispatchBinding activation = { match.root.input->id, 0, match.root.input->byte_count };
+    if (match.use_f16_activation) {
+        const size_t activation_bytes =
+            static_cast<size_t>(match.root.input_size * match.root.token_count) * sizeof(ggml_fp16_t);
+        const CommandPlanAlternateValue * alternate =
+            find_alternate_value(context.graph, context.plan, match.root.input->id, GGML_TYPE_F16, activation_bytes);
+        if (alternate == nullptr) {
+            return false;
+        }
+        activation = { alternate->alternate_value, 0, activation_bytes };
+    }
     if (pack_q4 || pack_q6) {
         if (common_prepare_q8_1_x4_input(context, *match.root.input, match.root.input_size, match.root.token_count,
                                          dispatch_match, activation,
@@ -632,6 +679,8 @@ static bool match_attention_qkv_dispatch(const DispatchMatchContext & context, D
     add_attention_qkv_compile_parameters(dispatch, match);
     if (use_q8_activation) {
         dispatch.kernel.compile_parameters.emplace("ggml.mul_mat.activation_format", std::to_string(GGML_TYPE_Q8_1));
+    } else if (match.use_f16_activation) {
+        dispatch.kernel.compile_parameters.emplace("ggml.mul_mat.activation_format", std::to_string(GGML_TYPE_F16));
     }
     dispatch.bindings.push_back(activation);
     if (pack_q4 || pack_q6) {

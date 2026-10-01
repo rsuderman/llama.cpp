@@ -1057,6 +1057,15 @@ static void run_prefill_fusion_compile_checks() {
                                                { "ggml.rmsnorm_binary_f32.op", "2" },
                                            }));
 
+    const auto & rmsnorm_strided = find_kernel("ggml_rmsnorm_binary_strided_f32");
+    require_compiled_kernel(compile_kernel(*jit, "prefill-rmsnorm-strided", rmsnorm_strided,
+                                           token_count_workload(64), {
+                                               { "ggml.rmsnorm_binary_f32.hidden_size", "256" },
+                                               { "ggml.rmsnorm_binary_f32.input_stride", "288" },
+                                               { "ggml.rmsnorm_binary_f32.rms_epsilon", "0.00001" },
+                                               { "ggml.rmsnorm_binary_f32.op", "2" },
+                                           }));
+
     const auto & rmsnorm_q8_f16 = find_kernel("ggml_rmsnorm_binary_q8_1_x4_f16");
     require_compiled_kernel(compile_kernel(*jit, "prefill-rmsnorm-q8-f16", rmsnorm_q8_f16,
                                            token_count_workload(512), {
@@ -1103,6 +1112,28 @@ static void run_prefill_fusion_compile_checks() {
                                                { "ggml.get_rows_f32.hidden_capacity", "2560" },
                                                { "ggml.get_rows_f32.weight_format", "32" },
                                                { "ggml.get_rows_scale_f32.scale", "0.177800179" },
+                                               { "ggml.get_rows_scale_f32.bias", "0" },
+                                           }));
+    require_compiled_kernel(compile_kernel(*jit, "gemma-prefill-get-rows-scale-q5_1", get_rows_scale, {
+                                               { "token_count", 64 },
+                                               { "row_count", 262144 },
+                                               { "hidden_size", 640 },
+                                           }, {
+                                               { "ggml.get_rows_f32.token_capacity", "64" },
+                                               { "ggml.get_rows_f32.hidden_capacity", "640" },
+                                               { "ggml.get_rows_f32.weight_format", "51" },
+                                               { "ggml.get_rows_scale_f32.scale", "25.2982216" },
+                                               { "ggml.get_rows_scale_f32.bias", "0" },
+                                           }));
+    require_compiled_kernel(compile_kernel(*jit, "gemma-decode-get-rows-scale-q5_1", get_rows_scale, {
+                                               { "token_count", 1 },
+                                               { "row_count", 262144 },
+                                               { "hidden_size", 640 },
+                                           }, {
+                                               { "ggml.get_rows_f32.token_capacity", "1" },
+                                               { "ggml.get_rows_f32.hidden_capacity", "640" },
+                                               { "ggml.get_rows_f32.weight_format", "51" },
+                                               { "ggml.get_rows_scale_f32.scale", "25.2982216" },
                                                { "ggml.get_rows_scale_f32.bias", "0" },
                                            }));
 }

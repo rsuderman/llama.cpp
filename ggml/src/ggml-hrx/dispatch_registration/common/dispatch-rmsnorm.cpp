@@ -18,6 +18,8 @@ namespace ggml::hrx {
 namespace {
 
 static constexpr KernelCatalogRef kRmsNormBinaryF32Kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_f32");
+static constexpr KernelCatalogRef kRmsNormBinaryStridedF32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_strided_f32");
 static constexpr KernelCatalogRef kRmsNormBinaryF32F16Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_f32_f16");
 static constexpr KernelCatalogRef kRmsNormBinaryF32K16Kernel =
@@ -166,6 +168,8 @@ struct RmsNormBinaryMatch {
     size_t            binary_node_index = 0;
     int64_t           hidden_size       = 0;
     int64_t           token_count       = 0;
+    int64_t           input_stride      = 0;
+    size_t            input_span        = 0;
     BinaryKind        op                = BinaryKind::Add;
     float             epsilon           = 0.0f;
 
@@ -383,7 +387,10 @@ static RmsNormMatch match_rmsnorm_f32(const Graph & graph, const GraphNode * nod
     return match;
 }
 
-static RmsNormBinaryMatch match_rmsnorm_binary_f32(const Graph & graph, const GraphNode * node, size_t node_index) {
+static RmsNormBinaryMatch match_rmsnorm_binary_f32(const Graph &     graph,
+                                                   const GraphNode * node,
+                                                   size_t            node_index,
+                                                   bool              allow_strided_input = false) {
     RmsNormBinaryMatch match;
     if (node == nullptr || node->op != GGML_OP_RMS_NORM || node->inputs.size() != 1 || !graph.has_index()) {
         return match;
@@ -429,7 +436,7 @@ static RmsNormBinaryMatch match_rmsnorm_binary_f32(const Graph & graph, const Gr
         output->type != GGML_TYPE_F32) {
         return {};
     }
-    if (!input->contiguous || !rms->contiguous || !rhs->contiguous || !output->contiguous) {
+    if (!rms->contiguous || !rhs->contiguous || !output->contiguous) {
         return {};
     }
     if (!same_shape(*input, *rms) || !same_shape(*input, *output)) {
@@ -447,6 +454,13 @@ static RmsNormBinaryMatch match_rmsnorm_binary_f32(const Graph & graph, const Gr
     if (!is_supported_token_count(token_count)) {
         return {};
     }
+    int64_t input_stride = 0;
+    size_t  input_span   = 0;
+    if (!supported_rmsnorm_input_layout(*input, hidden_size, token_count, input_stride, input_span) ||
+        (!allow_strided_input && input_stride != hidden_size) ||
+        !pairwise_distinct_storage_roots(std::array<const Value *, 3>{ input, rhs, output })) {
+        return {};
+    }
 
     match.rms_node          = node;
     match.binary_node       = binary_node;
@@ -457,6 +471,8 @@ static RmsNormBinaryMatch match_rmsnorm_binary_f32(const Graph & graph, const Gr
     match.binary_node_index = binary_node_index;
     match.hidden_size       = hidden_size;
     match.token_count       = token_count;
+    match.input_stride      = input_stride;
+    match.input_span        = input_span;
     match.op                = binary_params->op;
     match.epsilon           = rms_params->eps;
     return match;
@@ -913,17 +929,19 @@ static bool match_rmsnorm_binary_f32_dispatch(const DispatchMatchContext & conte
         return false;
     }
     const RmsNormBinaryMatch rms_match =
-        match_rmsnorm_binary_f32(context.graph, &nodes[context.root_index], context.root_index);
+        match_rmsnorm_binary_f32(context.graph, &nodes[context.root_index], context.root_index, true);
     if (!rms_match.matched() || rms_match.rms_node_index >= context.covered_nodes.size() ||
         rms_match.binary_node_index >= context.covered_nodes.size() ||
         context.covered_nodes[rms_match.rms_node_index] || context.covered_nodes[rms_match.binary_node_index]) {
         return false;
     }
 
-    const bool packed_output = has_qualified_rmsnorm_k16_consumer(context.graph, rms_match);
-    const bool f16_output    = !packed_output && has_qualified_rmsnorm_f16_consumer(context.graph, rms_match);
+    const bool strided_input = rms_match.input_stride != rms_match.hidden_size;
+    const bool packed_output = !strided_input && has_qualified_rmsnorm_k16_consumer(context.graph, rms_match);
+    const bool f16_output    = !strided_input && !packed_output && has_qualified_rmsnorm_f16_consumer(context.graph, rms_match);
     Dispatch dispatch;
-    dispatch.kernel = make_kernel_specialization(packed_output ? kRmsNormBinaryF32K16Kernel :
+    dispatch.kernel = make_kernel_specialization(strided_input ? kRmsNormBinaryStridedF32Kernel :
+                                                  packed_output ? kRmsNormBinaryF32K16Kernel :
                                                   f16_output ? kRmsNormBinaryF32F16Kernel :
                                                                kRmsNormBinaryF32Kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", rms_match.token_count);
@@ -933,7 +951,14 @@ static bool match_rmsnorm_binary_f32_dispatch(const DispatchMatchContext & conte
                                                to_config_value(rms_match.epsilon));
     dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_binary_f32.op",
                                                std::to_string(binary_kind_config_value(rms_match.op)));
-    dispatch.bindings.push_back({ rms_match.input->id, 0, rms_match.input->byte_count });
+    if (strided_input) {
+        dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_binary_f32.input_stride",
+                                                   to_config_value(rms_match.input_stride));
+    }
+    dispatch.bindings.push_back(strided_input ?
+                                    DispatchBinding{ rms_match.input->storage_root, rms_match.input->storage_offset,
+                                                     rms_match.input_span } :
+                                    DispatchBinding{ rms_match.input->id, 0, rms_match.input->byte_count });
     dispatch.bindings.push_back({ rms_match.rhs->id, 0, rms_match.rhs->byte_count });
     dispatch.bindings.push_back({ rms_match.output->id, 0, rms_match.output->byte_count });
 
