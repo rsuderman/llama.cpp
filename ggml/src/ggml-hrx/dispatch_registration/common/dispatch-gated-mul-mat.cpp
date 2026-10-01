@@ -19,6 +19,8 @@ static constexpr KernelCatalogRef kMulMatSwiGLUF32F32WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_f32_f32_wmma");
 static constexpr KernelCatalogRef kMulMatTiledPairF32BinaryPublishF32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_pair_input_f32_binary_publish_f32");
+static constexpr KernelCatalogRef kMulMatTiledPairF32BinaryPublishF32K16Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_pair_input_f32_binary_publish_f32_k16");
 static constexpr KernelCatalogRef kMulMatTiledPairF32BinaryBiasPublishF32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_pair_input_f32_binary_bias_publish_f32");
 static constexpr KernelCatalogRef kMulMatTiledPairF32BinaryAddPublishF32Kernel =
@@ -724,6 +726,24 @@ static bool common_mul_mat_swiglu_is_generic_tiled_pair_route(const MulMatSwiGLU
     return !use_q8 && !use_direct_dot && match.token_count >= 2;
 }
 
+static bool has_qualified_swiglu_k16_consumer(const Graph & graph, const MulMatSwiGLUMatch & match) {
+    if (!graph.has_index() || match.op != BinaryKind::SwiGLU || match.output == nullptr ||
+        match.output->ne[1] != match.token_count || match.output->ne[2] != 1 || match.output->ne[3] != 1) {
+        return false;
+    }
+    for (const GraphNode * consumer : graph.index().consumers(match.output->id)) {
+        const CommonMulMatMatch projection =
+            common_match_mul_mat_any_format(graph, consumer, kMulMatTiledPairF32BinaryPublishF32Kernel, false);
+        if (projection.matched() && projection.input->id == match.output->id &&
+            projection.weight->alias_source.value < 0 &&
+            common_mul_mat_uses_k16_major_f16(projection.weight_format, projection.input_size,
+                                              projection.output_size, projection.token_count, true)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static MulMatSwiGLUPostOpsMatch match_mul_mat_swiglu_postops(const DispatchMatchContext & context) {
     MulMatSwiGLUPostOpsMatch match;
     match.root = match_mul_mat_swiglu(context);
@@ -798,9 +818,11 @@ static bool build_tiled_pair_mul_mat_swiglu_dispatch(const DispatchMatchContext 
         return false;
     }
 
+    const bool publish_k16 = postops == nullptr && has_qualified_swiglu_k16_consumer(context.graph, match);
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(postops != nullptr ? postops->kernel :
-                                                                    kMulMatTiledPairF32BinaryPublishF32Kernel);
+                                                  publish_k16 ? kMulMatTiledPairF32BinaryPublishF32K16Kernel :
+                                                                kMulMatTiledPairF32BinaryPublishF32Kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
     dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
                                                common_to_config_value(match.token_count));
@@ -827,6 +849,19 @@ static bool build_tiled_pair_mul_mat_swiglu_dispatch(const DispatchMatchContext 
     }
     const Value * output = postops != nullptr ? postops->residual_output : match.output;
     dispatch.bindings.push_back({ output->id, 0, output->byte_count });
+
+    if (publish_k16) {
+        const size_t  bytes = output->byte_count / 2;
+        const ValueId packed(context.next_plan_value.value + static_cast<int32_t>(dispatch_match.transients.size()));
+        Status        status;
+        if (!dispatch_match.metadata.append_generated_resource(
+                { output->id, GeneratedResourceRole::F16K16Major, packed, bytes, {} }, status)) {
+            dispatch_match.status.append(status);
+            return false;
+        }
+        dispatch.bindings.push_back({ packed, 0, bytes });
+        dispatch_match.transients.push_back({ packed, "common.mul_mat_swiglu.k16_major_f16", bytes, 256 });
+    }
 
     if (!append_covered_node_index_once(context.graph, context.covered_nodes, match.gate_node,
                                         dispatch_match.covered_nodes) ||

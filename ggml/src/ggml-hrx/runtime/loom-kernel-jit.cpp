@@ -50,11 +50,20 @@ class LoomAmdgpuJit {
 };
 
 static size_t default_worker_count() {
+    const char * configured = std::getenv("GGML_HRX_JIT_WORKERS");
+    if (configured != nullptr && configured[0] != '\0') {
+        char *              end   = nullptr;
+        const unsigned long count = std::strtoul(configured, &end, 10);
+        if (end != configured && *end == '\0' && count >= 1 && count <= 64) {
+            return static_cast<size_t>(count);
+        }
+        GGML_LOG_WARN("%s: ignoring invalid GGML_HRX_JIT_WORKERS=%s\n", __func__, configured);
+    }
     const unsigned int hardware_threads = std::thread::hardware_concurrency();
     if (hardware_threads == 0) {
         return 1;
     }
-    return std::min<size_t>(hardware_threads, 4);
+    return std::min<size_t>(hardware_threads, 8);
 }
 
 static bool compile_kernel(ggml_hrx_loom_jit_amdgpu *         jit,

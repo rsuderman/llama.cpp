@@ -30,9 +30,6 @@ kernel.decl target(@ggml_set_rows_gfx11_wave64) @ggml_set_rows(%token_count: ind
 kernel.decl @llm_gated_delta_net_f32_wmma_head128_snapshot() launch(%q: buffer, %k: buffer, %v: buffer, %g: buffer, %beta: buffer, %state_in: buffer, %snapshot_cache: buffer, %dst: buffer, %rms_scales: buffer)
 kernel.decl @llm_gated_delta_net_projection_epilogue_f32() launch(%alpha_raw: buffer, %beta_raw: buffer, %bias: buffer, %a_scale: buffer, %gate_dst: buffer, %beta_dst: buffer)
 kernel.decl @llm_ssm_conv_dconv4_silu_rollback_f32() launch(%state: buffer, %x: buffer, %filter: buffer, %output: buffer, %cache0: buffer, %cache1: buffer, %cache2: buffer, %cache3: buffer, %cache4: buffer)
-kernel.decl target(@qwen3_moe_dense_gfx11_wave64) @qwen3_moe_dense_linear_q6k_f16_wmma(%token_count: index) launch(%token_count: index, %input: buffer, %weight: buffer, %output: buffer)
-
-
 // Scenario: tg_c5
 
 check.case public @qwen38_27b_udq4kxl_recurrent_tg_c5_000_ggml_get_rows_f32_case {
@@ -273,17 +270,6 @@ check.case public @qwen38_27b_udq4kxl_recurrent_tg_c5_016_ggml_mul_mat_symmetric
 
 check.benchmark<@qwen38_27b_udq4kxl_recurrent_tg_c5_016_ggml_mul_mat_symmetric_i4_lowrow_wmma_case> @qwen38_27b_udq4kxl_recurrent_tg_c5_016_ggml_mul_mat_symmetric_i4_lowrow_wmma
 
-check.case public @qwen38_27b_udq4kxl_recurrent_tg_c5_017_qwen3_moe_dense_linear_q6k_f16_wmma_case {
-  %token_count = check.literal value(2) : index
-  %input = check.generate.fill value(0) : tensor<40960xi8>
-  %weight = check.generate.fill value(0) : tensor<4300800xi8>
-  %output = check.generate.fill value(0) : tensor<8192xi8>
-  kernel.launch @qwen3_moe_dense_linear_q6k_f16_wmma[%token_count](%token_count, %input, %weight, %output) : [index](index, tensor<40960xi8>, tensor<4300800xi8>, tensor<8192xi8>)
-  check.return
-}
-
-check.benchmark<@qwen38_27b_udq4kxl_recurrent_tg_c5_017_qwen3_moe_dense_linear_q6k_f16_wmma_case> @qwen38_27b_udq4kxl_recurrent_tg_c5_017_qwen3_moe_dense_linear_q6k_f16_wmma
-
 check.case public @qwen38_27b_udq4kxl_recurrent_tg_c5_018_ggml_mul_mat_symmetric_i4_lowrow_wmma_case {
   %weight = check.generate.fill value(0) : tensor<2703360xi8>
   %input = check.generate.fill value(0) : tensor<40960xi8>
@@ -392,17 +378,6 @@ check.case public @qwen38_27b_udq4kxl_recurrent_tg_c5_026_ggml_get_rows_f32_case
 
 check.benchmark<@qwen38_27b_udq4kxl_recurrent_tg_c5_026_ggml_get_rows_f32_case> @qwen38_27b_udq4kxl_recurrent_tg_c5_026_ggml_get_rows_f32
 
-check.case public @qwen38_27b_udq4kxl_recurrent_tg_c5_027_qwen3_moe_dense_linear_q6k_f16_wmma_case {
-  %token_count = check.literal value(2) : index
-  %input = check.generate.fill value(0) : tensor<40960xi8>
-  %weight = check.generate.fill value(0) : tensor<1042944000xi8>
-  %output = check.generate.fill value(0) : tensor<1986560xi8>
-  kernel.launch @qwen3_moe_dense_linear_q6k_f16_wmma[%token_count](%token_count, %input, %weight, %output) : [index](index, tensor<40960xi8>, tensor<1042944000xi8>, tensor<1986560xi8>)
-  check.return
-}
-
-check.benchmark<@qwen38_27b_udq4kxl_recurrent_tg_c5_027_qwen3_moe_dense_linear_q6k_f16_wmma_case> @qwen38_27b_udq4kxl_recurrent_tg_c5_027_qwen3_moe_dense_linear_q6k_f16_wmma
-
 check.case public @qwen38_27b_udq4kxl_recurrent_tg_c5_028_ggml_concat_dim0_f32_case {
   %lhs = check.generate.fill value(0) : tensor<40960xi8>
   %rhs = check.generate.fill value(0) : tensor<40960xi8>
@@ -412,14 +387,3 @@ check.case public @qwen38_27b_udq4kxl_recurrent_tg_c5_028_ggml_concat_dim0_f32_c
 }
 
 check.benchmark<@qwen38_27b_udq4kxl_recurrent_tg_c5_028_ggml_concat_dim0_f32_case> @qwen38_27b_udq4kxl_recurrent_tg_c5_028_ggml_concat_dim0_f32
-
-check.case public @qwen38_27b_udq4kxl_recurrent_tg_c5_029_qwen3_moe_dense_linear_q6k_f16_wmma_case {
-  %token_count = check.literal value(2) : index
-  %input = check.generate.fill value(0) : tensor<81920xi8>
-  %weight = check.generate.fill value(0) : tensor<43008000xi8>
-  %output = check.generate.fill value(0) : tensor<40960xi8>
-  kernel.launch @qwen3_moe_dense_linear_q6k_f16_wmma[%token_count](%token_count, %input, %weight, %output) : [index](index, tensor<81920xi8>, tensor<43008000xi8>, tensor<40960xi8>)
-  check.return
-}
-
-check.benchmark<@qwen38_27b_udq4kxl_recurrent_tg_c5_029_qwen3_moe_dense_linear_q6k_f16_wmma_case> @qwen38_27b_udq4kxl_recurrent_tg_c5_029_qwen3_moe_dense_linear_q6k_f16_wmma

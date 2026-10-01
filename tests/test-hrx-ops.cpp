@@ -4453,10 +4453,10 @@ static void run_decode_routed_moe_scheduling_case(ggml_type down_weight_type, bo
     std::vector<std::string> expected = {
         "qwen3_moe:qwen3_moe_rmsnorm_f32_quantize_q8_1_x4",
         "qwen3_moe:qwen3_moe_router_projection_top8_fused_decode_f32",
-        down_weight_type == GGML_TYPE_Q4_K ? "qwen3_moe:qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8" :
-                                             "qwen3_moe:qwen3_moe_routed_gate_up_swiglu_q4k_q8",
-        down_weight_type == GGML_TYPE_Q4_K ? "qwen3_moe:qwen3_moe_routed_down_q4k_q8_1_x4_next_q8" :
-                                             "qwen3_moe:qwen3_moe_routed_down_q6k_f32_wave64_next_q8",
+        down_weight_type == GGML_TYPE_Q4_K ? "loom_libs:ggml_mul_mat_id_vector_pair_binary_publish_q8" :
+                                             "loom_libs:ggml_mul_mat_id_vector_pair_binary_publish_f32",
+        down_weight_type == GGML_TYPE_Q4_K ? "loom_libs:ggml_mul_mat_id_vector_weighted_wave32_publish_q8" :
+                                             "loom_libs:ggml_mul_mat_id_vector_weighted_wave64_publish_q8",
     };
     require_kernel_subsequence(scheduled_kernel_sequence(graph), expected);
     ggml_free(ctx);
@@ -4697,6 +4697,12 @@ static void register_dense_matmul_cases(Suite & suite) {
          { GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_Q8_0, GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_F32 }) {
         suite.device_case("dense_matmul." + type_name(type) + ".tokens3.outputs47", [type] {
             run_dense_matmul_cpu_reference_case(type, "loom_libs:ggml_mul_mat_skinny_input_f32_publish_f32", 3, 47);
+        });
+    }
+    for (const ggml_type type : { GGML_TYPE_Q4_K, GGML_TYPE_Q6_K }) {
+        suite.device_case("dense_matmul." + type_name(type) + ".tiled.tokens33.outputs65.input512", [type] {
+            run_dense_matmul_cpu_reference_case(type, "loom_libs:ggml_mul_mat_tiled_input_f32_publish_f32", 33, 65,
+                                                512);
         });
     }
     suite.device_case("dense_matmul_unary.f32.tokens3.outputs47", [] {
@@ -5000,6 +5006,10 @@ static void register_dense_matmul_cases(Suite & suite) {
     }
     suite.device_case("dense_matmul.q6_k.vector_q6.tokens1.outputs256.input5120", [] {
         run_dense_matmul_cpu_reference_case(GGML_TYPE_Q6_K, "loom_libs:ggml_mul_mat_vector_q6_f32_f32", 1, 256, 5120,
+                                            true);
+    });
+    suite.device_case("dense_matmul.q6_k.vector_q6.tokens1.outputs320.input512", [] {
+        run_dense_matmul_cpu_reference_case(GGML_TYPE_Q6_K, "loom_libs:ggml_mul_mat_vector_q6_f32_f32", 1, 320, 512,
                                             true);
     });
 }

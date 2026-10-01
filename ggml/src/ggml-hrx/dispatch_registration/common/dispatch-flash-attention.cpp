@@ -1,5 +1,6 @@
 #include "dispatch-flash-attention.h"
 
+#include "dispatch-mul-mat-common.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
@@ -15,6 +16,8 @@ namespace {
 
 static constexpr KernelCatalogRef kFlashAttentionF32F16WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_flash_attention_f32_f16_wmma");
+static constexpr KernelCatalogRef kFlashAttentionF32F16WmmaPublishF16Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_flash_attention_f32_f16_wmma_publish_f16");
 static constexpr KernelCatalogRef kFlashAttentionDecodeSplitNextQ8Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_flash_attention_decode_split_f32_f16_wmma_next_q8");
 static constexpr KernelCatalogRef kCopyTransposeF16Kernel =
@@ -415,6 +418,35 @@ static DispatchBinding prepare_flash_attention_value(const DispatchMatchContext 
     return { transposed, 0, bytes };
 }
 
+static bool has_qualified_f16_consumer(const Graph & graph, const FlashAttentionMatch & match) {
+    if (!graph.has_index() || match.query_token_count < 128) {
+        return false;
+    }
+    const Value * published = match.output_layout != nullptr ? graph_value(graph, match.output_layout->output) :
+                                                               match.output;
+    if (published == nullptr || published->type != GGML_TYPE_F32 || !published->contiguous) {
+        return false;
+    }
+    for (const GraphNode * consumer : graph.index().consumers(published->id)) {
+        const CommonMulMatMatch projection =
+            common_match_mul_mat_any_format(graph, consumer, kFlashAttentionF32F16WmmaKernel, false);
+        if (!projection.matched() || projection.input->id != published->id ||
+            projection.input_size != published->ne[0] || projection.token_count != match.query_token_count ||
+            projection.input_size % 256 != 0 || projection.output_size % 64 != 0 ||
+            projection.weight->alias_source.value >= 0) {
+            continue;
+        }
+        if (projection.weight->type == GGML_TYPE_Q6_K && projection.token_count % 128 == 0) {
+            return true;
+        }
+        if (projection.weight->type == GGML_TYPE_Q4_K && projection.token_count % 256 == 0 &&
+            projection.output_size >= projection.input_size / 4) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool match_flash_attention_gate_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
     const FlashAttentionMatch match = match_flash_attention_f32_f16(context.graph, context.plan, context.root_node);
     if (!match.matched() || match.output_layout == nullptr || match.output_layout->op != GGML_OP_RESHAPE) {
@@ -505,8 +537,10 @@ static bool match_flash_attention_f32_f16_dispatch(const DispatchMatchContext & 
         return false;
     }
 
+    const bool publish_f16 = has_qualified_f16_consumer(context.graph, match);
     Dispatch dispatch;
-    dispatch.kernel = make_kernel_specialization(kFlashAttentionF32F16WmmaKernel);
+    dispatch.kernel = make_kernel_specialization(publish_f16 ? kFlashAttentionF32F16WmmaPublishF16Kernel :
+                                                               kFlashAttentionF32F16WmmaKernel);
     dispatch.kernel.integer_parameters.emplace("query_token_count", match.query_token_count);
     dispatch.kernel.integer_parameters.emplace("key_value_token_count", match.key_value_token_count);
     add_flash_attention_compile_parameters(dispatch.kernel, match.query_head_count, match.key_value_head_count,
@@ -518,6 +552,21 @@ static bool match_flash_attention_f32_f16_dispatch(const DispatchMatchContext & 
     dispatch.bindings.push_back({ match.mask_binding_value, 0, match.mask_binding_bytes });
     dispatch.bindings.push_back({ match.query->id, 0, match.query->byte_count });
     dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
+
+    if (publish_f16) {
+        const size_t  bytes = match.output->byte_count / 2;
+        const ValueId f16_output(context.next_plan_value.value +
+                                 static_cast<int32_t>(dispatch_match.transients.size()));
+        constexpr const char * name = "common.flash_attention.f16";
+        Status status;
+        if (!dispatch_match.metadata.append_alternate_value(
+                { match.output->id, f16_output, GGML_TYPE_F16, bytes, name }, status)) {
+            dispatch_match.status.append(status);
+            return false;
+        }
+        dispatch.bindings.push_back({ f16_output, 0, bytes });
+        dispatch_match.transients.push_back({ f16_output, name, bytes, 256 });
+    }
 
     dispatch_match.covered_nodes.push_back(context.root_index);
     if (match.output_layout != nullptr) {

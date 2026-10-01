@@ -12,8 +12,6 @@
 namespace ggml::hrx {
 namespace {
 
-static constexpr KernelCatalogRef kQwenDenseLinearQ6KF16WmmaKernel =
-    GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_dense_linear_q6k_f16_wmma");
 static constexpr KernelCatalogRef kQwenDenseLinearQ4KQ8NextQ8Kernel =
     GGML_HRX_KERNEL_REF("qwen3_moe", "qwen3_moe_dense_linear_q4k_q8_1_x4_next_q8");
 static constexpr KernelCatalogRef kGgmlLinearQ6KQ8_1X4Kernel =
@@ -38,10 +36,6 @@ static bool is_supported_dense_output_size(int64_t output_size) {
     return output_size >= 1 && output_size <= 262144;
 }
 
-static bool is_qwen_endpoint_projection(int64_t input_size, int64_t output_size) {
-    return input_size == kQwenHiddenSize && output_size == kQwenVocabularyCount;
-}
-
 static std::string to_config_value(int64_t value) {
     return std::to_string(value);
 }
@@ -56,7 +50,6 @@ struct QwenMatmulMatch {
     int64_t          input_size  = 0;
     int64_t          output_size = 0;
     int64_t          token_count = 0;
-    bool             dense       = false;
 
     bool matched() const {
         return input != nullptr && weight != nullptr && output != nullptr && kernel.id != kUncatalogedKernelId;
@@ -203,43 +196,6 @@ static QwenMatmulMatch match_qwen_q6k_q8_matmul(const Graph & graph, const Graph
     return match;
 }
 
-static QwenMatmulMatch match_qwen_decode_endpoint_q6k_matmul(const Graph & graph, const GraphNode * node) {
-    QwenMatmulMatch match;
-    if (node == nullptr || node->op != GGML_OP_MUL_MAT || node->inputs.size() != 2) {
-        return match;
-    }
-
-    const Value * weight = graph_value(graph, node->inputs[0]);
-    const Value * input  = graph_value(graph, node->inputs[1]);
-    const Value * output = graph_value(graph, node->output);
-    if (weight == nullptr || input == nullptr || output == nullptr || !is_2d(*weight) || !is_2d(*input) ||
-        !is_2d(*output) || !weight->contiguous || !input->contiguous || !output->contiguous ||
-        weight->type != GGML_TYPE_Q6_K || input->type != GGML_TYPE_F32 || output->type != GGML_TYPE_F32) {
-        return {};
-    }
-
-    const int64_t input_size  = weight->ne[0];
-    const int64_t output_size = weight->ne[1];
-    const int64_t token_count = input->ne[1];
-    if (input->ne[0] != input_size || output->ne[0] != output_size || output->ne[1] != token_count ||
-        !is_qwen_decode_query_length(token_count) || !is_qwen_endpoint_projection(input_size, output_size) ||
-        !is_supported_dense_input_size(input_size) || !is_supported_dense_output_size(output_size)) {
-        return {};
-    }
-
-    match.input       = input;
-    match.weight      = weight;
-    match.output      = output;
-    match.input_value = input->id;
-    match.input_bytes = input->byte_count;
-    match.kernel      = kQwenDenseLinearQ6KF16WmmaKernel;
-    match.input_size  = input_size;
-    match.output_size = output_size;
-    match.token_count = token_count;
-    match.dense       = true;
-    return match;
-}
-
 static QwenAttentionOutputNextQ8Match match_qwen_attention_output_next_q8(const DispatchMatchContext & context) {
     QwenAttentionOutputNextQ8Match match;
     const Graph &                  graph = context.graph;
@@ -368,24 +324,12 @@ static void build_qwen_matmul_dispatch(const QwenMatmulMatch & match,
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(match.kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
-    if (match.kernel.id == kGgmlLinearQ6KQ8_1X4Kernel.id) {
-        dispatch.kernel.integer_parameters.emplace("input_size", match.input_size);
-        dispatch.kernel.integer_parameters.emplace("output_size", match.output_size);
-        dispatch.kernel.compile_parameters.emplace("ggml.linear_q6k_q8_1_x4.token_capacity",
-                                                   to_config_value(match.token_count));
-        dispatch.kernel.compile_parameters.emplace("ggml.linear_q6k_q8_1_x4.output_capacity",
-                                                   to_config_value(match.output_size));
-    } else {
-        dispatch.kernel.compile_parameters.emplace("qwen3_moe.workload.token_capacity",
-                                                   to_config_value(match.token_count));
-    }
-    if (match.dense) {
-        dispatch.kernel.compile_parameters.emplace("qwen3_moe.dense_quantized.input_size",
-                                                   to_config_value(match.input_size));
-        dispatch.kernel.compile_parameters.emplace("qwen3_moe.dense_quantized.output_size",
-                                                   to_config_value(match.output_size));
-        dispatch.kernel.compile_parameters.emplace("qwen3_moe.dense_quantized.output_accumulation", "0");
-    }
+    dispatch.kernel.integer_parameters.emplace("input_size", match.input_size);
+    dispatch.kernel.integer_parameters.emplace("output_size", match.output_size);
+    dispatch.kernel.compile_parameters.emplace("ggml.linear_q6k_q8_1_x4.token_capacity",
+                                               to_config_value(match.token_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.linear_q6k_q8_1_x4.output_capacity",
+                                               to_config_value(match.output_size));
     dispatch.bindings.push_back({ match.input_value, 0, match.input_bytes });
     dispatch.bindings.push_back({ match.weight->id, 0, match.weight->byte_count });
     dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
@@ -396,16 +340,6 @@ static void build_qwen_matmul_dispatch(const QwenMatmulMatch & match,
 
 static bool match_qwen_q6k_q8_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
     const QwenMatmulMatch match = match_qwen_q6k_q8_matmul(context.graph, context.root_node, context.plan);
-    if (!match.matched()) {
-        return false;
-    }
-    build_qwen_matmul_dispatch(match, dispatch_match, context.root_index);
-    return true;
-}
-
-static bool match_qwen_decode_endpoint_q6k_dispatch(const DispatchMatchContext & context,
-                                                    DispatchMatch &              dispatch_match) {
-    const QwenMatmulMatch match = match_qwen_decode_endpoint_q6k_matmul(context.graph, context.root_node);
     if (!match.matched()) {
         return false;
     }
@@ -496,14 +430,6 @@ void register_qwen_matmul_dispatches(DispatchRegistryBuilder & registry) {
         305,
         DispatchSource::Qwen,
         match_qwen_q6k_q8_dispatch,
-    });
-    registry.add({
-        "qwen.matmul.decode_endpoint_q6k_f16_wmma",
-        GGML_OP_MUL_MAT,
-        DispatchMatchKind::Fused,
-        100,
-        DispatchSource::Qwen,
-        match_qwen_decode_endpoint_q6k_dispatch,
     });
 }
 
