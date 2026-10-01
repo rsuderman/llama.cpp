@@ -1,4 +1,5 @@
 set(HRX_SOURCE_DIR "" CACHE PATH "Optional HRX source tree to build instead of using installed hrx and loomc packages")
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 if(HRX_SOURCE_DIR)
     include(ExternalProject)
@@ -8,6 +9,21 @@ if(HRX_SOURCE_DIR)
     if(NOT EXISTS "${HRX_SOURCE_DIR}/CMakeLists.txt")
         message(FATAL_ERROR "HRX_SOURCE_DIR does not contain a CMakeLists.txt: ${HRX_SOURCE_DIR}")
     endif()
+
+    # Enforce the HRX compatibility floor before building dependencies; rerun configure when the pin or checker changes.
+    set(GGML_HRX_REVISION_CHECK "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_hrx_revision.py")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/hrx-minimum-commit.txt" "${GGML_HRX_REVISION_CHECK}")
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${GGML_HRX_REVISION_CHECK}" "${HRX_SOURCE_DIR}"
+        RESULT_VARIABLE GGML_HRX_REVISION_RESULT
+        OUTPUT_VARIABLE GGML_HRX_REVISION_OUTPUT
+        ERROR_VARIABLE GGML_HRX_REVISION_ERROR
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT GGML_HRX_REVISION_RESULT EQUAL 0)
+        message(FATAL_ERROR "${GGML_HRX_REVISION_ERROR}")
+    endif()
+    message(STATUS "${GGML_HRX_REVISION_OUTPUT}")
 
     set(GGML_HRX_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/hrx")
     set(GGML_HRX_BUILD_DIR "${GGML_HRX_PREFIX}/src/ggml-hrx-deps-build")
@@ -68,8 +84,6 @@ else()
     find_program(GGML_HRX_LOOM_FORMAT NAMES loom-format)
     find_program(GGML_HRX_IREE_BENCHMARK_LOOM NAMES iree-benchmark-loom)
 endif()
-
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 set(GGML_HRX_KERNEL_CORPUS_SOURCE_FORMAT "binary" CACHE STRING "Embedded Loom corpus source format: text or binary")
 set_property(CACHE GGML_HRX_KERNEL_CORPUS_SOURCE_FORMAT PROPERTY STRINGS text binary)
