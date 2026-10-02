@@ -106,6 +106,7 @@ static bool match_unary_f32_dispatch(const DispatchMatchContext & context, Dispa
 
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kUnaryF32Kernel);
+    dispatch.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
     dispatch.kernel.integer_parameters.emplace("element_count", output->element_count);
     dispatch.kernel.compile_parameters.emplace("ggml.unary_f32.op",
                                                std::to_string(unary_kind_config_value(params->op)));

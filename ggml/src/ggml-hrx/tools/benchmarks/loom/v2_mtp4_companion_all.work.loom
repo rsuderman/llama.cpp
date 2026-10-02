@@ -43,7 +43,7 @@ kernel.decl @ggml_top_k8_f32_partitions_register(%element_count: index) launch(%
 kernel.decl @llm_gated_delta_net_f32_wmma_head128() launch(%q: buffer, %k: buffer, %v: buffer, %g: buffer, %beta: buffer, %state_in: buffer, %dst: buffer, %rms_scales: buffer)
 kernel.decl @llm_gated_delta_net_f32_wmma_head128_inplace() launch(%q: buffer, %k: buffer, %v: buffer, %g: buffer, %beta: buffer, %state_inout: buffer, %dst: buffer, %rms_scales: buffer)
 kernel.decl @llm_gated_delta_net_f32_wmma_head128_snapshot() launch(%q: buffer, %k: buffer, %v: buffer, %g: buffer, %beta: buffer, %state_in: buffer, %snapshot_cache: buffer, %dst: buffer, %rms_scales: buffer)
-kernel.decl @llm_gated_delta_net_projection_epilogue_f32() launch(%alpha_raw: buffer, %beta_raw: buffer, %bias: buffer, %a_scale: buffer, %gate_dst: buffer, %beta_dst: buffer)
+kernel.decl @llm_gated_delta_net_projection_epilogue_f32(%element_count: index) launch(%element_count: index, %alpha_raw: buffer, %beta_raw: buffer, %bias: buffer, %a_scale: buffer, %gate_dst: buffer, %beta_dst: buffer)
 kernel.decl @llm_ssm_conv_dconv4_silu_rollback_f32() launch(%state: buffer, %x: buffer, %filter: buffer, %output: buffer, %cache0: buffer, %cache1: buffer, %cache2: buffer, %cache3: buffer, %cache4: buffer)
 
 
@@ -181,13 +181,14 @@ check.case public @qwen38_27b_udq4kxl_companion_tg_c5_009_ggml_get_rows_f32_case
 check.benchmark<@qwen38_27b_udq4kxl_companion_tg_c5_009_ggml_get_rows_f32_case> @qwen38_27b_udq4kxl_companion_tg_c5_009_ggml_get_rows_f32
 
 check.case public @qwen38_27b_udq4kxl_companion_tg_c5_010_llm_gated_delta_net_projection_epilogue_f32_case {
+  %element_count = check.literal value(96) : index
   %alpha_raw = check.generate.fill value(0) : tensor<384xi8>
   %beta_raw = check.generate.fill value(0) : tensor<384xi8>
   %bias = check.generate.fill value(0) : tensor<192xi8>
   %a_scale = check.generate.fill value(0) : tensor<192xi8>
   %gate_dst = check.generate.fill value(0) : tensor<384xi8>
   %beta_dst = check.generate.fill value(0) : tensor<384xi8>
-  kernel.launch @llm_gated_delta_net_projection_epilogue_f32[](%alpha_raw, %beta_raw, %bias, %a_scale, %gate_dst, %beta_dst) : [](tensor<384xi8>, tensor<384xi8>, tensor<192xi8>, tensor<192xi8>, tensor<384xi8>, tensor<384xi8>)
+  kernel.launch @llm_gated_delta_net_projection_epilogue_f32[%element_count](%element_count, %alpha_raw, %beta_raw, %bias, %a_scale, %gate_dst, %beta_dst) : [index](index, tensor<384xi8>, tensor<384xi8>, tensor<192xi8>, tensor<192xi8>, tensor<384xi8>, tensor<384xi8>)
   check.return
 }
 
@@ -545,13 +546,14 @@ check.case public @qwen38_27b_udq4kxl_companion_tg_c5_037_llm_ssm_conv_dconv4_si
 check.benchmark<@qwen38_27b_udq4kxl_companion_tg_c5_037_llm_ssm_conv_dconv4_silu_rollback_f32_case> @qwen38_27b_udq4kxl_companion_tg_c5_037_llm_ssm_conv_dconv4_silu_rollback_f32
 
 check.case public @qwen38_27b_udq4kxl_companion_tg_c5_038_llm_gated_delta_net_projection_epilogue_f32_case {
+  %element_count = check.literal value(192) : index
   %alpha_raw = check.generate.fill value(0) : tensor<768xi8>
   %beta_raw = check.generate.fill value(0) : tensor<768xi8>
   %bias = check.generate.fill value(0) : tensor<192xi8>
   %a_scale = check.generate.fill value(0) : tensor<192xi8>
   %gate_dst = check.generate.fill value(0) : tensor<768xi8>
   %beta_dst = check.generate.fill value(0) : tensor<768xi8>
-  kernel.launch @llm_gated_delta_net_projection_epilogue_f32[](%alpha_raw, %beta_raw, %bias, %a_scale, %gate_dst, %beta_dst) : [](tensor<768xi8>, tensor<768xi8>, tensor<192xi8>, tensor<192xi8>, tensor<768xi8>, tensor<768xi8>)
+  kernel.launch @llm_gated_delta_net_projection_epilogue_f32[%element_count](%element_count, %alpha_raw, %beta_raw, %bias, %a_scale, %gate_dst, %beta_dst) : [index](index, tensor<768xi8>, tensor<768xi8>, tensor<192xi8>, tensor<192xi8>, tensor<768xi8>, tensor<768xi8>)
   check.return
 }
 
@@ -888,13 +890,14 @@ check.case public @qwen38_27b_udq4kxl_companion_tg_c5_063_llm_ssm_conv_dconv4_si
 check.benchmark<@qwen38_27b_udq4kxl_companion_tg_c5_063_llm_ssm_conv_dconv4_silu_rollback_f32_case> @qwen38_27b_udq4kxl_companion_tg_c5_063_llm_ssm_conv_dconv4_silu_rollback_f32
 
 check.case public @qwen38_27b_udq4kxl_companion_tg_c5_064_llm_gated_delta_net_projection_epilogue_f32_case {
+  %element_count = check.literal value(240) : index
   %alpha_raw = check.generate.fill value(0) : tensor<960xi8>
   %beta_raw = check.generate.fill value(0) : tensor<960xi8>
   %bias = check.generate.fill value(0) : tensor<192xi8>
   %a_scale = check.generate.fill value(0) : tensor<192xi8>
   %gate_dst = check.generate.fill value(0) : tensor<960xi8>
   %beta_dst = check.generate.fill value(0) : tensor<960xi8>
-  kernel.launch @llm_gated_delta_net_projection_epilogue_f32[](%alpha_raw, %beta_raw, %bias, %a_scale, %gate_dst, %beta_dst) : [](tensor<960xi8>, tensor<960xi8>, tensor<192xi8>, tensor<192xi8>, tensor<960xi8>, tensor<960xi8>)
+  kernel.launch @llm_gated_delta_net_projection_epilogue_f32[%element_count](%element_count, %alpha_raw, %beta_raw, %bias, %a_scale, %gate_dst, %beta_dst) : [index](index, tensor<960xi8>, tensor<960xi8>, tensor<192xi8>, tensor<192xi8>, tensor<960xi8>, tensor<960xi8>)
   check.return
 }
 
@@ -1252,13 +1255,14 @@ check.case public @qwen38_27b_udq4kxl_companion_tg_c5_091_llm_ssm_conv_dconv4_si
 check.benchmark<@qwen38_27b_udq4kxl_companion_tg_c5_091_llm_ssm_conv_dconv4_silu_rollback_f32_case> @qwen38_27b_udq4kxl_companion_tg_c5_091_llm_ssm_conv_dconv4_silu_rollback_f32
 
 check.case public @qwen38_27b_udq4kxl_companion_tg_c5_092_llm_gated_delta_net_projection_epilogue_f32_case {
+  %element_count = check.literal value(144) : index
   %alpha_raw = check.generate.fill value(0) : tensor<576xi8>
   %beta_raw = check.generate.fill value(0) : tensor<576xi8>
   %bias = check.generate.fill value(0) : tensor<192xi8>
   %a_scale = check.generate.fill value(0) : tensor<192xi8>
   %gate_dst = check.generate.fill value(0) : tensor<576xi8>
   %beta_dst = check.generate.fill value(0) : tensor<576xi8>
-  kernel.launch @llm_gated_delta_net_projection_epilogue_f32[](%alpha_raw, %beta_raw, %bias, %a_scale, %gate_dst, %beta_dst) : [](tensor<576xi8>, tensor<576xi8>, tensor<192xi8>, tensor<192xi8>, tensor<576xi8>, tensor<576xi8>)
+  kernel.launch @llm_gated_delta_net_projection_epilogue_f32[%element_count](%element_count, %alpha_raw, %beta_raw, %bias, %a_scale, %gate_dst, %beta_dst) : [index](index, tensor<576xi8>, tensor<576xi8>, tensor<192xi8>, tensor<192xi8>, tensor<576xi8>, tensor<576xi8>)
   check.return
 }
 
@@ -1616,13 +1620,14 @@ check.case public @qwen38_27b_udq4kxl_companion_tg_c5_119_llm_ssm_conv_dconv4_si
 check.benchmark<@qwen38_27b_udq4kxl_companion_tg_c5_119_llm_ssm_conv_dconv4_silu_rollback_f32_case> @qwen38_27b_udq4kxl_companion_tg_c5_119_llm_ssm_conv_dconv4_silu_rollback_f32
 
 check.case public @qwen38_27b_udq4kxl_companion_tg_c5_120_llm_gated_delta_net_projection_epilogue_f32_case {
+  %element_count = check.literal value(768) : index
   %alpha_raw = check.generate.fill value(0) : tensor<3072xi8>
   %beta_raw = check.generate.fill value(0) : tensor<3072xi8>
   %bias = check.generate.fill value(0) : tensor<192xi8>
   %a_scale = check.generate.fill value(0) : tensor<192xi8>
   %gate_dst = check.generate.fill value(0) : tensor<3072xi8>
   %beta_dst = check.generate.fill value(0) : tensor<3072xi8>
-  kernel.launch @llm_gated_delta_net_projection_epilogue_f32[](%alpha_raw, %beta_raw, %bias, %a_scale, %gate_dst, %beta_dst) : [](tensor<3072xi8>, tensor<3072xi8>, tensor<192xi8>, tensor<192xi8>, tensor<3072xi8>, tensor<3072xi8>)
+  kernel.launch @llm_gated_delta_net_projection_epilogue_f32[%element_count](%element_count, %alpha_raw, %beta_raw, %bias, %a_scale, %gate_dst, %beta_dst) : [index](index, tensor<3072xi8>, tensor<3072xi8>, tensor<192xi8>, tensor<192xi8>, tensor<3072xi8>, tensor<3072xi8>)
   check.return
 }
 
@@ -2319,13 +2324,14 @@ check.case public @qwen38_27b_udq4kxl_companion_tg_c5_175_llm_ssm_conv_dconv4_si
 check.benchmark<@qwen38_27b_udq4kxl_companion_tg_c5_175_llm_ssm_conv_dconv4_silu_rollback_f32_case> @qwen38_27b_udq4kxl_companion_tg_c5_175_llm_ssm_conv_dconv4_silu_rollback_f32
 
 check.case public @qwen38_27b_udq4kxl_companion_tg_c5_176_llm_gated_delta_net_projection_epilogue_f32_case {
+  %element_count = check.literal value(48) : index
   %alpha_raw = check.generate.fill value(0) : tensor<192xi8>
   %beta_raw = check.generate.fill value(0) : tensor<192xi8>
   %bias = check.generate.fill value(0) : tensor<192xi8>
   %a_scale = check.generate.fill value(0) : tensor<192xi8>
   %gate_dst = check.generate.fill value(0) : tensor<192xi8>
   %beta_dst = check.generate.fill value(0) : tensor<192xi8>
-  kernel.launch @llm_gated_delta_net_projection_epilogue_f32[](%alpha_raw, %beta_raw, %bias, %a_scale, %gate_dst, %beta_dst) : [](tensor<192xi8>, tensor<192xi8>, tensor<192xi8>, tensor<192xi8>, tensor<192xi8>, tensor<192xi8>)
+  kernel.launch @llm_gated_delta_net_projection_epilogue_f32[%element_count](%element_count, %alpha_raw, %beta_raw, %bias, %a_scale, %gate_dst, %beta_dst) : [index](index, tensor<192xi8>, tensor<192xi8>, tensor<192xi8>, tensor<192xi8>, tensor<192xi8>, tensor<192xi8>)
   check.return
 }
 

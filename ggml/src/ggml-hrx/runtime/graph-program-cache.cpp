@@ -267,7 +267,8 @@ static std::string command_program_shape_key(const CommandProgram & commands) {
     out << "hrx-command-program-v1|commands=" << commands.commands.size();
     for (const Command & command : commands.commands) {
         out << "|ordinal=" << command.ordinal << "|kind=" << static_cast<int>(command.kind)
-            << "|kernel=" << command.kernel.kernel_id;
+            << "|kernel=" << command.kernel.kernel_id
+            << "|workload=" << static_cast<int>(command.kernel.workload_specialization);
         for (const auto & parameter : command.kernel.integer_parameters) {
             out << "|ip:" << parameter.first << '=' << parameter.second;
         }

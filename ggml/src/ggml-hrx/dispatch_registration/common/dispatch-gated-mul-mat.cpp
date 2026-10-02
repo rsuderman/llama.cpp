@@ -1,5 +1,6 @@
 #include "dispatch-gated-mul-mat.h"
 
+#include "dispatch-activation-publication.h"
 #include "dispatch-mul-mat-common.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
@@ -19,14 +20,20 @@ static constexpr KernelCatalogRef kMulMatSwiGLUF32F32WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_f32_f32_wmma");
 static constexpr KernelCatalogRef kMulMatTiledPairF32BinaryPublishF32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_pair_input_f32_binary_publish_f32");
+static constexpr KernelCatalogRef kMulMatTiledPairAlignedF32BinaryPublishF32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_pair_input_f32_binary_publish_f32_aligned");
 static constexpr KernelCatalogRef kMulMatTiledPairF32BinaryPublishF32K16Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_pair_input_f32_binary_publish_f32_k16");
 static constexpr KernelCatalogRef kMulMatTiledPairF32BinaryBiasAddPublishF32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_pair_input_f32_binary_bias_residual_publish_f32");
+static constexpr KernelCatalogRef kMulMatTiledPairAlignedF32BinaryBiasAddPublishF32Kernel = GGML_HRX_KERNEL_REF(
+    "loom_libs", "ggml_mul_mat_tiled_pair_input_f32_binary_bias_residual_publish_f32_aligned");
 static constexpr KernelCatalogRef kMulMatSwiGLUF32F32DecodeWave64Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_f32_f32_decode_wave64");
 static constexpr KernelCatalogRef kMulMatSwiGLUF32F32LowTokenDotKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_f32_f32_lowtoken_dot");
+static constexpr KernelCatalogRef kMulMatSwiGLUQ1_0Q8_1X4Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_q1_0_q8_1_x4_f32");
 static constexpr KernelCatalogRef kMulMatSwiGLUQ4Q8LowTokenDotKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_q4_q8_1_x4_lowtoken_dot");
 static constexpr KernelCatalogRef kMulMatSwiGLUQ4Q8OutputKernel =
@@ -350,11 +357,18 @@ static bool match_packed_mul_mat_glu_dispatch(const DispatchMatchContext & conte
         return false;
     }
 
-    Dispatch dispatch;
-    dispatch.kernel = make_kernel_specialization(kMulMatTiledPairF32BinaryPublishF32Kernel);
+    const bool use_aligned_dynamic = match.token_count % 32 == 0;
+    Dispatch   dispatch;
+    dispatch.kernel = make_kernel_specialization(use_aligned_dynamic ? kMulMatTiledPairAlignedF32BinaryPublishF32Kernel :
+                                                                       kMulMatTiledPairF32BinaryPublishF32Kernel);
+    if (use_aligned_dynamic) {
+        dispatch.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
+    }
     dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
-    dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
-                                               common_to_config_value(match.token_count));
+    if (!use_aligned_dynamic) {
+        dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
+                                                   common_to_config_value(match.token_count));
+    }
     dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_swiglu.input_size",
                                                common_to_config_value(match.input_size));
     dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_swiglu.output_size",
@@ -624,13 +638,19 @@ static bool match_mul_mat_swiglu_q4_q8_prefill_dispatch(const DispatchMatchConte
         return false;
     }
 
-    const GraphNode * consumer = common_find_only_consumer_with_op(context.graph, match.output->id, GGML_OP_MUL_MAT);
-    const CommonMulMatMatch projection =
-        common_match_mul_mat_any_format(context.graph, consumer, kMulMatSwiGLUQ4Q8PrefillKernel, false);
-    const bool packed_output = projection.matched() && projection.input->id == match.output->id &&
-                               projection.weight->alias_source.value < 0 &&
-                               common_mul_mat_uses_k16_major_f16(projection.weight_format, projection.input_size,
-                                                                 projection.output_size, projection.token_count, true);
+    const bool has_only_projection =
+        common_find_only_consumer_with_op(context.graph, match.output->id, GGML_OP_MUL_MAT) != nullptr;
+    const CommonActivationPublicationCapabilities capabilities = {
+        DispatchActivationInputF16Row |
+            (has_only_projection ? DispatchActivationInputF16K16Major : DispatchActivationInputNone),
+        DispatchActivationInputNone,
+        DispatchActivationProducerRequirementPackedK16Economy,
+    };
+    const CommonActivationPublicationPlan publication_plan =
+        common_select_activation_publication_plan(context, *match.output, capabilities);
+    const CommonActivationPublicationDemand output_demand =
+        publication_plan.matched() ? publication_plan.preferred() : CommonActivationPublicationDemand{};
+    const bool packed_output = output_demand.format == CommonActivationPublicationFormat::F16K16Major;
 
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kMulMatSwiGLUQ4Q8PrefillKernel);
@@ -650,21 +670,21 @@ static bool match_mul_mat_swiglu_q4_q8_prefill_dispatch(const DispatchMatchConte
                                       match.input_size, match.output_size, weight->byte_count });
     }
     dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
-    const size_t f16_bytes = match.output->byte_count / 2;
-    const ValueId f16_output(context.next_plan_value.value + static_cast<int32_t>(dispatch_match.transients.size()));
     const char * f16_name = packed_output ? "common.mul_mat_swiglu.k16_major_f16" : "common.mul_mat_swiglu.f16";
-    dispatch_match.transients.push_back({ f16_output, f16_name, f16_bytes, 256 });
-    dispatch.bindings.push_back({ f16_output, 0, f16_bytes });
-    Status status;
-    const bool recorded =
-        packed_output ?
-        dispatch_match.metadata.append_generated_resource(
-            { match.output->id, GeneratedResourceRole::F16K16Major, f16_output, f16_bytes, {} }, status) :
-        dispatch_match.metadata.append_alternate_value(
-            { match.output->id, f16_output, GGML_TYPE_F16, f16_bytes, f16_name }, status);
-    if (!recorded) {
-        dispatch_match.status.append(status);
-        return false;
+    if (output_demand.matched()) {
+        CommonActivationPublication publication;
+        if (!common_reserve_activation_publication(
+                context, dispatch_match, *match.output, output_demand, f16_name, publication) ||
+            !common_append_activation_publication(dispatch_match, publication, f16_name)) {
+            return false;
+        }
+        dispatch.bindings.push_back(publication.binding());
+    } else {
+        const size_t  f16_bytes = match.output->byte_count / 2;
+        const ValueId f16_output(context.next_plan_value.value +
+                                 static_cast<int32_t>(dispatch_match.transients.size()));
+        dispatch_match.transients.push_back({ f16_output, f16_name, f16_bytes, 256 });
+        dispatch.bindings.push_back({ f16_output, 0, f16_bytes });
     }
     for (const GraphNode * node : { match.gate_node, match.up_node, match.glu_node }) {
         if (!append_covered_node_index_once(context.graph, context.covered_nodes, node, dispatch_match.covered_nodes)) {
@@ -681,30 +701,21 @@ static bool supports_swiglu_q8_output_shape(const MulMatSwiGLUMatch & match) {
            common_is_supported_dense_output_size(match.output_size) && match.output_size % 128 == 0;
 }
 
-static bool has_qualified_swiglu_q8_consumer(const Graph & graph, const MulMatSwiGLUMatch & match) {
-    if (!supports_swiglu_q8_output_shape(match) || !distinct_storage(graph, *match.input, *match.gate_weight) ||
-        !distinct_storage(graph, *match.input, *match.up_weight) ||
-        !distinct_storage(graph, *match.input, *match.output) ||
-        !distinct_storage(graph, *match.gate_weight, *match.up_weight) ||
-        !distinct_storage(graph, *match.gate_weight, *match.output) ||
-        !distinct_storage(graph, *match.up_weight, *match.output)) {
-        return false;
-    }
-    for (const GraphNode * consumer : graph.index().consumers(match.output->id)) {
-        CommonMulMatMatch projection =
-            common_match_mul_mat_any_format(graph, consumer, kMulMatSwiGLUQ4Q8OutputKernel, true);
-        if (!projection.matched()) {
-            projection = common_match_mul_mat_any_format(graph, consumer, kMulMatSwiGLUQ4Q8OutputKernel, false);
-        }
-        if (projection.matched() && projection.input->id == match.output->id &&
-            projection.weight->alias_source.value < 0 && projection.output_size >= 64 &&
-            projection.output_size % 64 == 0 &&
-            (projection.weight_format == CommonMulMatWeightFormat::Q4K ||
-             projection.weight_format == CommonMulMatWeightFormat::Q6K)) {
-            return true;
-        }
-    }
-    return false;
+static CommonActivationPublicationDemand select_swiglu_q8_publication(const DispatchMatchContext & context,
+                                                                       const MulMatSwiGLUMatch &    match) {
+    const bool eligible = supports_swiglu_q8_output_shape(match) &&
+                          distinct_storage(context.graph, *match.input, *match.gate_weight) &&
+                          distinct_storage(context.graph, *match.input, *match.up_weight) &&
+                          distinct_storage(context.graph, *match.input, *match.output) &&
+                          distinct_storage(context.graph, *match.gate_weight, *match.up_weight) &&
+                          distinct_storage(context.graph, *match.gate_weight, *match.output) &&
+                          distinct_storage(context.graph, *match.up_weight, *match.output);
+    const CommonActivationPublicationCapabilities capabilities = {
+        eligible ? DispatchActivationInputQ8_1X4 : DispatchActivationInputNone,
+    };
+    const CommonActivationPublicationPlan publication_plan =
+        common_select_activation_publication_plan(context, *match.output, capabilities);
+    return publication_plan.matched() ? publication_plan.preferred() : CommonActivationPublicationDemand{};
 }
 
 static bool common_mul_mat_swiglu_is_generic_tiled_pair_route(const MulMatSwiGLUMatch & match) {
@@ -721,22 +732,20 @@ static bool common_mul_mat_swiglu_is_generic_tiled_pair_route(const MulMatSwiGLU
     return !use_q8 && !use_direct_dot && match.token_count >= 2;
 }
 
-static bool has_qualified_swiglu_k16_consumer(const Graph & graph, const MulMatSwiGLUMatch & match) {
-    if (!graph.has_index() || match.op != BinaryKind::SwiGLU || match.output == nullptr ||
-        match.output->ne[1] != match.token_count || match.output->ne[2] != 1 || match.output->ne[3] != 1) {
-        return false;
+static CommonActivationPublicationDemand select_swiglu_k16_publication(const DispatchMatchContext & context,
+                                                                       const MulMatSwiGLUMatch &    match) {
+    if (match.op != BinaryKind::SwiGLU || match.output == nullptr || match.output->ne[1] != match.token_count ||
+        match.output->ne[2] != 1 || match.output->ne[3] != 1) {
+        return {};
     }
-    for (const GraphNode * consumer : graph.index().consumers(match.output->id)) {
-        const CommonMulMatMatch projection =
-            common_match_mul_mat_any_format(graph, consumer, kMulMatTiledPairF32BinaryPublishF32Kernel, false);
-        if (projection.matched() && projection.input->id == match.output->id &&
-            projection.weight->alias_source.value < 0 &&
-            common_mul_mat_uses_k16_major_f16(projection.weight_format, projection.input_size, projection.output_size,
-                                              projection.token_count, true)) {
-            return true;
-        }
-    }
-    return false;
+    const CommonActivationPublicationCapabilities capabilities = {
+        DispatchActivationInputF16K16Major,
+        DispatchActivationInputNone,
+        DispatchActivationProducerRequirementPackedK16Economy,
+    };
+    const CommonActivationPublicationPlan publication_plan =
+        common_select_activation_publication_plan(context, *match.output, capabilities);
+    return publication_plan.matched() ? publication_plan.preferred() : CommonActivationPublicationDemand{};
 }
 
 static MulMatSwiGLUPostOpsMatch match_mul_mat_swiglu_postops(const DispatchMatchContext & context) {
@@ -799,22 +808,35 @@ static MulMatSwiGLUPostOpsMatch match_mul_mat_swiglu_postops(const DispatchMatch
     return match;
 }
 
-static bool build_tiled_pair_mul_mat_swiglu_dispatch(const DispatchMatchContext & context,
+static bool build_tiled_pair_mul_mat_swiglu_dispatch(const DispatchMatchContext &     context,
                                                      const MulMatSwiGLUPostOpsMatch * postops,
-                                                     DispatchMatch & dispatch_match) {
+                                                     DispatchMatch &                  dispatch_match) {
     const MulMatSwiGLUMatch & match = postops != nullptr ? postops->root : match_mul_mat_swiglu(context);
     if (!common_mul_mat_swiglu_is_generic_tiled_pair_route(match)) {
         return false;
     }
 
-    const bool publish_k16 = postops == nullptr && has_qualified_swiglu_k16_consumer(context.graph, match);
-    Dispatch dispatch;
-    dispatch.kernel = make_kernel_specialization(postops != nullptr ? postops->kernel :
-                                                  publish_k16 ? kMulMatTiledPairF32BinaryPublishF32K16Kernel :
-                                                                kMulMatTiledPairF32BinaryPublishF32Kernel);
+    const CommonActivationPublicationDemand k16_demand =
+        postops == nullptr ? select_swiglu_k16_publication(context, match) : CommonActivationPublicationDemand{};
+    const bool publish_k16 = k16_demand.matched();
+    const bool use_aligned_dynamic = match.token_count % 32 == 0 && !publish_k16;
+    const KernelCatalogRef selected_kernel =
+        use_aligned_dynamic ?
+            (postops != nullptr ? kMulMatTiledPairAlignedF32BinaryBiasAddPublishF32Kernel :
+                                  kMulMatTiledPairAlignedF32BinaryPublishF32Kernel) :
+            (postops != nullptr ? postops->kernel :
+             publish_k16        ? kMulMatTiledPairF32BinaryPublishF32K16Kernel :
+                                  kMulMatTiledPairF32BinaryPublishF32Kernel);
+    Dispatch   dispatch;
+    dispatch.kernel = make_kernel_specialization(selected_kernel);
+    if (use_aligned_dynamic) {
+        dispatch.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
+    }
     dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
-    dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
-                                               common_to_config_value(match.token_count));
+    if (!use_aligned_dynamic) {
+        dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
+                                                   common_to_config_value(match.token_count));
+    }
     dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_swiglu.input_size",
                                                common_to_config_value(match.input_size));
     dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_swiglu.output_size",
@@ -850,16 +872,13 @@ static bool build_tiled_pair_mul_mat_swiglu_dispatch(const DispatchMatchContext 
     dispatch.bindings.push_back({ output->id, 0, output->byte_count });
 
     if (publish_k16) {
-        const size_t  bytes = output->byte_count / 2;
-        const ValueId packed(context.next_plan_value.value + static_cast<int32_t>(dispatch_match.transients.size()));
-        Status        status;
-        if (!dispatch_match.metadata.append_generated_resource(
-                { output->id, GeneratedResourceRole::F16K16Major, packed, bytes, {} }, status)) {
-            dispatch_match.status.append(status);
+        CommonActivationPublication publication;
+        if (!common_reserve_activation_publication(context, dispatch_match, *output, k16_demand,
+                                                   "common.mul_mat_swiglu.k16_major_f16", publication) ||
+            !common_append_activation_publication(dispatch_match, publication, "common.mul_mat_swiglu.k16_major_f16")) {
             return false;
         }
-        dispatch.bindings.push_back({ packed, 0, bytes });
-        dispatch_match.transients.push_back({ packed, "common.mul_mat_swiglu.k16_major_f16", bytes, 256 });
+        dispatch.bindings.push_back(publication.binding());
     }
 
     if (!append_covered_node_index_once(context.graph, context.covered_nodes, match.gate_node,
@@ -905,12 +924,48 @@ static bool match_mul_mat_swiglu_dispatch(const DispatchMatchContext & context, 
         return false;
     }
 
+    const bool use_q1_0 = match.token_count == 1 && match.input_size % 128 == 0 &&
+                          match.op == BinaryKind::SwiGLU && match.gate_weight->alias_source.value < 0 &&
+                          match.up_weight->alias_source.value < 0 &&
+                          match.gate_format == CommonMulMatWeightFormat::Q1_0 &&
+                          match.up_format == CommonMulMatWeightFormat::Q1_0 &&
+                          distinct_storage(context.graph, *match.gate_weight, *match.up_weight);
+    if (use_q1_0) {
+        DispatchBinding activation;
+        if (common_prepare_q8_1_x4_input(context, *match.input, match.input_size, match.token_count, dispatch_match,
+                                         activation, CommonQ8ActivationPolicy::ExistingAlternateOnly)) {
+            Dispatch dispatch;
+            dispatch.kernel = make_kernel_specialization(kMulMatSwiGLUQ1_0Q8_1X4Kernel);
+            dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
+            dispatch.kernel.compile_parameters.emplace("ggml.matmul.q1_0_q8_1_x4.input_size",
+                                                       common_to_config_value(match.input_size));
+            dispatch.kernel.compile_parameters.emplace("ggml.matmul.q1_0_q8_1_x4.output_size",
+                                                       common_to_config_value(match.output_size));
+            dispatch.bindings.push_back(activation);
+            dispatch.bindings.push_back({ match.gate_weight->id, 0, match.gate_weight->byte_count });
+            dispatch.bindings.push_back({ match.up_weight->id, 0, match.up_weight->byte_count });
+            dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
+            if (!append_covered_node_index_once(context.graph, context.covered_nodes, match.gate_node,
+                                                dispatch_match.covered_nodes) ||
+                !append_covered_node_index_once(context.graph, context.covered_nodes, match.up_node,
+                                                dispatch_match.covered_nodes) ||
+                !append_covered_node_index_once(context.graph, context.covered_nodes, match.glu_node,
+                                                dispatch_match.covered_nodes)) {
+                return false;
+            }
+            dispatch_match.dispatches.push_back(std::move(dispatch));
+            return true;
+        }
+    }
+
     const bool pack_q4 = match.token_count <= 5 && match.output_size % 64 == 0 &&
                          match.gate_weight->alias_source.value < 0 && match.up_weight->alias_source.value < 0 &&
                          match.gate_format == CommonMulMatWeightFormat::Q4K &&
                          match.up_format == CommonMulMatWeightFormat::Q4K;
     const bool use_q8 = pack_q4;
-    const bool publish_q8 = use_q8 && has_qualified_swiglu_q8_consumer(context.graph, match);
+    const CommonActivationPublicationDemand q8_demand =
+        use_q8 ? select_swiglu_q8_publication(context, match) : CommonActivationPublicationDemand{};
+    const bool publish_q8 = q8_demand.matched();
     DispatchBinding activation = { match.input->id, 0, match.input->byte_count };
     if (use_q8 &&
         !common_prepare_q8_1_x4_input(context, *match.input, match.input_size, match.token_count, dispatch_match,
@@ -956,17 +1011,14 @@ static bool match_mul_mat_swiglu_dispatch(const DispatchMatchContext & context, 
     dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
 
     if (publish_q8) {
-        const ValueId q8_output(context.next_plan_value.value + static_cast<int32_t>(dispatch_match.transients.size()));
-        const size_t bytes = static_cast<size_t>(match.token_count) * ggml_row_size(GGML_TYPE_Q8_1, match.output_size);
         constexpr const char * name = "common.mul_mat_swiglu.q8_1_x4";
-        Status status;
-        if (!dispatch_match.metadata.append_alternate_value(
-                { match.output->id, q8_output, GGML_TYPE_Q8_1, bytes, name }, status)) {
-            dispatch_match.status.append(status);
+        CommonActivationPublication publication;
+        if (!common_reserve_activation_publication(context, dispatch_match, *match.output, q8_demand, name,
+                                                   publication) ||
+            !common_append_activation_publication(dispatch_match, publication, name)) {
             return false;
         }
-        dispatch.bindings.push_back({ q8_output, 0, bytes });
-        dispatch_match.transients.push_back({ q8_output, name, bytes, 256 });
+        dispatch.bindings.push_back(publication.binding());
     }
 
     if (!append_covered_node_index_once(context.graph, context.covered_nodes, match.gate_node,

@@ -1,11 +1,12 @@
 #include "dispatch-get-rows.h"
 
 #include "../qwen/dispatch-llm-profiles.h"
+#include "dispatch-activation-publication.h"
+#include "dispatch-mul-mat-common.h"
 #include "dispatch-mul-mat-weight-format.h"
 #include "ggml.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
-#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -25,8 +26,6 @@ static constexpr KernelCatalogRef kGetRowsRmsNormBinaryQ8_1X4F16Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_get_rows_rmsnorm_binary_q8_1_x4_f16");
 static constexpr int64_t          kMaximumHiddenElements = int64_t{ 1 } << 30;
 static constexpr int64_t          kQ1_0GetRowsFormat    = 10;
-static constexpr int64_t          kQwenHiddenSize       = kQwen30BMoeDispatchProfile.hidden_size;
-static constexpr int64_t          kQwenVocabularyCount  = 151936;
 static constexpr int64_t          kMaxGetRowsRowCount   = 262208;
 
 static const Value * graph_value(const Graph & graph, ValueId id) {
@@ -54,6 +53,14 @@ static bool is_supported_token_count(int64_t token_count) {
     return token_count >= 1 && token_count <= 2048;
 }
 
+static int64_t token_capacity_class(int64_t token_count) {
+    int64_t capacity = 1;
+    while (capacity < token_count) {
+        capacity *= 2;
+    }
+    return capacity;
+}
+
 static bool is_supported_row_count(int64_t row_count) {
     return row_count >= 1 && row_count <= kMaxGetRowsRowCount;
 }
@@ -67,66 +74,6 @@ static std::string to_config_value(float value) {
     out.precision(9);
     out << value;
     return out.str();
-}
-
-static size_t row_byte_count(ggml_type type, int64_t token_count, int64_t hidden_size) {
-    if (token_count <= 0 || hidden_size <= 0) {
-        return 0;
-    }
-    return static_cast<size_t>(token_count) * ggml_row_size(type, hidden_size);
-}
-
-static bool is_qwen_q6k_q8_consumer(const Graph & graph, const GraphNode * consumer, const Value & input) {
-    if (consumer == nullptr || consumer->op != GGML_OP_MUL_MAT || consumer->inputs.size() != 2 ||
-        consumer->inputs[1] != input.id) {
-        return false;
-    }
-
-    const Value * weight = graph_value(graph, consumer->inputs[0]);
-    const Value * output = graph_value(graph, consumer->output);
-    if (weight == nullptr || output == nullptr || weight->type != GGML_TYPE_Q6_K || output->type != GGML_TYPE_F32 ||
-        !weight->contiguous || !output->contiguous) {
-        return false;
-    }
-
-    return input.ne[0] == kQwenHiddenSize && input.ne[1] == 1 && input.ne[2] == 1 && input.ne[3] == 1 &&
-           weight->ne[0] == kQwenHiddenSize && weight->ne[1] == kQwenVocabularyCount && weight->ne[2] == 1 &&
-           weight->ne[3] == 1 && output->ne[0] == kQwenVocabularyCount && output->ne[1] == 1 && output->ne[2] == 1 &&
-           output->ne[3] == 1;
-}
-
-static void append_unique_demand(std::vector<ggml_type> & demands, ggml_type type) {
-    if (std::find(demands.begin(), demands.end(), type) == demands.end()) {
-        demands.push_back(type);
-    }
-}
-
-static std::vector<ggml_type> collect_alternate_demands(const Graph & graph, const Value & value) {
-    std::vector<ggml_type> demands;
-    if (!graph.has_index()) {
-        return demands;
-    }
-
-    const std::vector<const GraphNode *> & consumers = graph.index().consumers(value.id);
-    for (const GraphNode * consumer : consumers) {
-        if (is_qwen_q6k_q8_consumer(graph, consumer, value)) {
-            append_unique_demand(demands, GGML_TYPE_Q8_1);
-        }
-    }
-    return demands;
-}
-
-static const char * alternate_name(ggml_type type) {
-    switch (type) {
-        case GGML_TYPE_Q8_1:
-            return "common.get_rows.q8_1_x4";
-        case GGML_TYPE_F16:
-            return "common.get_rows.f16";
-        case GGML_TYPE_F32:
-            return "common.get_rows.f32";
-        default:
-            return "common.get_rows.next";
-    }
 }
 
 static bool get_rows_format_for_type(ggml_type type, int64_t & format) {
@@ -356,8 +303,13 @@ static GetRowsRmsNormMatch match_get_rows_rmsnorm_binary(const DispatchMatchCont
 static Dispatch make_get_rows_dispatch(const GetRowsMatch & match) {
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kGetRowsF32Kernel);
+    dispatch.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
     add_common_integer_parameters(dispatch, match);
-    add_common_compile_parameters(dispatch, match);
+    dispatch.kernel.compile_parameters.emplace("ggml.get_rows_f32.token_capacity",
+                                               to_config_value(token_capacity_class(match.token_count)));
+    dispatch.kernel.compile_parameters.emplace("ggml.get_rows_f32.hidden_capacity", to_config_value(match.hidden_size));
+    dispatch.kernel.compile_parameters.emplace("ggml.get_rows_f32.weight_format",
+                                               to_config_value(match.weight_format_value));
     add_primary_bindings(dispatch, match);
     return dispatch;
 }
@@ -375,20 +327,6 @@ static Dispatch make_get_rows_next_dispatch(const GetRowsMatch &     match,
     add_primary_bindings(dispatch, match);
     dispatch.bindings.push_back({ next_value, 0, next_byte_count });
     return dispatch;
-}
-
-static bool append_alternate_metadata(DispatchMatch & dispatch_match,
-                                      const Value &   output,
-                                      ValueId         alternate_value,
-                                      ggml_type       type,
-                                      size_t          byte_count) {
-    Status metadata_status;
-    if (!dispatch_match.metadata.append_alternate_value(
-            { output.id, alternate_value, type, byte_count, alternate_name(type) }, metadata_status)) {
-        dispatch_match.status.append(metadata_status);
-        return false;
-    }
-    return true;
 }
 
 static bool match_get_rows_f32_dispatch(const DispatchMatchContext & context, DispatchMatch & dispatch_match) {
@@ -433,42 +371,33 @@ static bool match_get_rows_f32_next_dispatch(const DispatchMatchContext & contex
         return false;
     }
 
-    const std::vector<ggml_type> demands = collect_alternate_demands(context.graph, *match.output);
-    if (demands.empty()) {
+    const CommonActivationPublicationCapabilities capabilities = {
+        DispatchActivationInputQ8_1X4,
+        DispatchActivationInputNone,
+        DispatchActivationProducerRequirementNone,
+        DispatchActivationInputNone,
+        DispatchActivationConsumerSourceQwen,
+    };
+    const CommonActivationPublicationPlan publication_plan =
+        common_select_activation_publication_plan(context, *match.output, capabilities);
+    if (!publication_plan.matched()) {
         return false;
     }
+    const CommonActivationPublicationDemand & demand = publication_plan.preferred();
 
-    for (ggml_type type : demands) {
-        CommonMulMatWeightFormat next_format;
-        if (!common_mul_mat_alternate_format_for_type(type, next_format)) {
-            return false;
-        }
-
-        const size_t next_byte_count = row_byte_count(type, match.token_count, match.hidden_size);
-        if (next_byte_count == 0) {
-            return false;
-        }
-
-        if (type == GGML_TYPE_F32 && next_byte_count == match.output->byte_count) {
-            if (!append_alternate_metadata(dispatch_match, *match.output, match.output->id, type, next_byte_count)) {
-                return false;
-            }
-            continue;
-        }
-
-        const ValueId next_value(context.next_plan_value.value +
-                                 static_cast<int32_t>(dispatch_match.transients.size()));
-        dispatch_match.dispatches.push_back(
-            make_get_rows_next_dispatch(match, next_format, next_value, next_byte_count));
-        dispatch_match.transients.push_back({ next_value, alternate_name(type), next_byte_count, 256 });
-        if (!append_alternate_metadata(dispatch_match, *match.output, next_value, type, next_byte_count)) {
-            return false;
-        }
+    CommonMulMatWeightFormat next_format;
+    if (!common_mul_mat_alternate_format_for_type(GGML_TYPE_Q8_1, next_format)) {
+        return false;
     }
-
-    if (dispatch_match.dispatches.empty()) {
-        dispatch_match.dispatches.push_back(make_get_rows_dispatch(match));
+    CommonActivationPublication publication;
+    constexpr const char * publication_name = "common.get_rows.q8_1_x4";
+    if (!common_reserve_activation_publication(context, dispatch_match, *match.output, demand,
+                                               publication_name, publication) ||
+        !common_append_activation_publication(dispatch_match, publication, publication_name)) {
+        return false;
     }
+    dispatch_match.dispatches.push_back(
+        make_get_rows_next_dispatch(match, next_format, publication.alternate_value, publication.byte_count));
     dispatch_match.covered_nodes.push_back(context.root_index);
     return dispatch_match.status.success();
 }
@@ -482,13 +411,43 @@ static bool match_get_rows_rmsnorm_binary_dispatch(const DispatchMatchContext & 
         return false;
     }
 
-    const size_t q8_bytes  = row_byte_count(GGML_TYPE_Q8_1, match.rows.token_count, match.rows.hidden_size);
-    const size_t f16_bytes = row_byte_count(GGML_TYPE_F16, match.rows.token_count, match.rows.hidden_size);
-    if (q8_bytes == 0 || f16_bytes == 0) {
+    const CommonActivationPublicationCapabilities capabilities = {
+        DispatchActivationInputQ8_1X4 | DispatchActivationInputF16Row,
+        DispatchActivationInputQ8_1X4 | DispatchActivationInputF16Row,
+        DispatchActivationProducerRequirementNone,
+        DispatchActivationInputQ8_1X4 | DispatchActivationInputF16Row,
+    };
+    const CommonActivationPublicationPlan publication_plan =
+        common_select_activation_publication_plan(context, *match.normalized_output, capabilities);
+    const CommonActivationPublicationDemand * q8_demand =
+        publication_plan.find(CommonActivationPublicationFormat::Q8_1X4);
+    const CommonActivationPublicationDemand * f16_demand =
+        publication_plan.find(CommonActivationPublicationFormat::F16Row);
+    const bool publish = publication_plan.matched();
+    if (publish && (q8_demand == nullptr || f16_demand == nullptr)) {
         return false;
     }
-    const ValueId q8_value = context.next_plan_value;
-    const ValueId f16_value(context.next_plan_value.value + 1);
+    CommonActivationPublication q8_publication;
+    CommonActivationPublication f16_publication;
+    const bool q8_reserved = publish ?
+        common_reserve_activation_publication(context, dispatch_match, *match.normalized_output, *q8_demand,
+                                              "common.get_rows_rmsnorm.q8_1_x4", q8_publication) :
+        common_reserve_private_activation_output(context, dispatch_match, *match.normalized_output,
+                                                 CommonActivationPublicationFormat::Q8_1X4,
+                                                 "common.get_rows_rmsnorm.private_q8_1_x4", q8_publication);
+    const bool f16_reserved = publish ?
+        common_reserve_activation_publication(context, dispatch_match, *match.normalized_output, *f16_demand,
+                                              "common.get_rows_rmsnorm.f16", f16_publication) :
+        common_reserve_private_activation_output(context, dispatch_match, *match.normalized_output,
+                                                 CommonActivationPublicationFormat::F16Row,
+                                                 "common.get_rows_rmsnorm.private_f16", f16_publication);
+    if (!q8_reserved || !f16_reserved ||
+        (publish && (!common_append_activation_publication(dispatch_match, q8_publication,
+                                                           "common.get_rows_rmsnorm.q8_1_x4") ||
+                     !common_append_activation_publication(dispatch_match, f16_publication,
+                                                           "common.get_rows_rmsnorm.f16")))) {
+        return false;
+    }
 
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kGetRowsRmsNormBinaryQ8_1X4F16Kernel);
@@ -500,25 +459,12 @@ static bool match_get_rows_rmsnorm_binary_dispatch(const DispatchMatchContext & 
     dispatch.bindings.push_back({ match.norm_weight->id, 0, match.norm_weight->byte_count });
     dispatch.bindings.push_back({ match.rows.output->id, 0, match.rows.output->byte_count });
     dispatch.bindings.push_back({ match.normalized_output->id, 0, match.normalized_output->byte_count });
-    dispatch.bindings.push_back({ q8_value, 0, q8_bytes });
-    dispatch.bindings.push_back({ f16_value, 0, f16_bytes });
-
-    Status status;
-    if (!dispatch_match.metadata.append_alternate_value(
-            { match.normalized_output->id, q8_value, GGML_TYPE_Q8_1, q8_bytes, "common.get_rows_rmsnorm.q8_1_x4" },
-            status) ||
-        !dispatch_match.metadata.append_alternate_value(
-            { match.normalized_output->id, f16_value, GGML_TYPE_F16, f16_bytes, "common.get_rows_rmsnorm.f16" },
-            status)) {
-        dispatch_match.status.append(status);
-        return false;
-    }
+    dispatch.bindings.push_back(q8_publication.binding());
+    dispatch.bindings.push_back(f16_publication.binding());
 
     dispatch_match.covered_nodes.push_back(context.root_index);
     dispatch_match.covered_nodes.push_back(match.rms_node_index);
     dispatch_match.covered_nodes.push_back(match.binary_node_index);
-    dispatch_match.transients.push_back({ q8_value, "common.get_rows_rmsnorm.q8_1_x4", q8_bytes, 256 });
-    dispatch_match.transients.push_back({ f16_value, "common.get_rows_rmsnorm.f16", f16_bytes, 256 });
     dispatch_match.dispatches.push_back(std::move(dispatch));
     return dispatch_match.status.success();
 }

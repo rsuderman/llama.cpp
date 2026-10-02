@@ -72,6 +72,7 @@ static bool make_copy_f32_dispatch(const Value & source, const Value & output, D
     size_t source_span = source.byte_count;
     if (packed_f32_layout(source)) {
         dispatch.kernel = make_kernel_specialization(kCopyF32Kernel);
+        dispatch.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
     } else {
         if (!strided_f32_storage_span_bytes(source, source_span)) {
             return false;
@@ -174,9 +175,12 @@ static bool match_concat_dim0_f32_dispatch(const DispatchMatchContext & context,
     Dispatch dispatch;
     if (packed_f32_layout(*lhs) && packed_f32_layout(*rhs)) {
         dispatch.kernel = make_kernel_specialization(kConcatDim0F32Kernel);
+        dispatch.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
+        dispatch.kernel.integer_parameters.emplace("row_count", row_count);
+        dispatch.kernel.integer_parameters.emplace("lhs_span", lhs->element_count);
+        dispatch.kernel.integer_parameters.emplace("rhs_span", rhs->element_count);
         dispatch.kernel.compile_parameters.emplace("ggml.concat_dim0_f32.lhs_width", std::to_string(lhs->ne[0]));
         dispatch.kernel.compile_parameters.emplace("ggml.concat_dim0_f32.rhs_width", std::to_string(rhs->ne[0]));
-        dispatch.kernel.compile_parameters.emplace("ggml.concat_dim0_f32.row_count", std::to_string(row_count));
     } else {
         const size_t lhs_span = lhs->byte_count / sizeof(float);
         const size_t rhs_span = rhs->byte_count / sizeof(float);

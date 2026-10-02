@@ -272,6 +272,24 @@ static std::string format_kernel_json(const CommandProgram & program,
     out << "    \"byte_count\": " << program.completion_counters.byte_count << ",\n";
     out << "    \"count\": " << program.completion_counters.count << "\n";
     out << "  },\n";
+    out << "  \"activation_publications\": [\n";
+    for (size_t i = 0; i < program.activation_publication_diagnostics.size(); ++i) {
+        const CommandPlanActivationPublicationDiagnostic & diagnostic =
+            program.activation_publication_diagnostics[i];
+        if (i > 0) {
+            out << ",\n";
+        }
+        out << "    {\"source_value\": " << diagnostic.source_value.value
+            << ", \"alternate_value\": " << diagnostic.alternate_value.value
+            << ", \"consumer_value\": " << diagnostic.consumer_value.value
+            << ", \"requested_format\": \"" << json_escape(diagnostic.requested_format)
+            << "\", \"publication_name\": \"" << json_escape(diagnostic.publication_name)
+            << "\", \"publication_stage\": \"" << json_escape(diagnostic.publication_stage)
+            << "\", \"alias_depth\": " << diagnostic.alias_depth
+            << ", \"mixed_fanout\": " << (diagnostic.mixed_fanout ? "true" : "false")
+            << ", \"fallback_reason\": \"" << json_escape(diagnostic.fallback_reason) << "\"}";
+    }
+    out << "\n  ],\n";
     out << "  \"commands\": [\n";
     bool wrote_any = false;
     if (!program.initialization_commands.empty()) {

@@ -278,9 +278,9 @@ static bool distinct_storage(const Graph & graph, const Value & lhs, const Value
     return !graph.values().same_storage(lhs.id, rhs.id);
 }
 
-static bool can_fuse_q6_f16_prefill_v_cache_cell(const DispatchMatchContext & context,
-                                                 const AttentionMatMulMatch & root,
-                                                 const AttentionSetRowsMatch & set_rows) {
+static bool is_q6_f16_prefill_v_cache_cell(const DispatchMatchContext & context,
+                                           const AttentionMatMulMatch & root,
+                                           const AttentionSetRowsMatch & set_rows) {
     if (prefill_v_cache_fusion_disabled() || root.weight->type != GGML_TYPE_Q6_K || root.input_size != 1536 ||
         root.output_size != 256 || root.token_count != 64 || set_rows.output_format != 16 ||
         set_rows.cache_row_count != 512 || root.output->kind != ValueKind::Transient ||
@@ -290,6 +290,16 @@ static bool can_fuse_q6_f16_prefill_v_cache_cell(const DispatchMatchContext & co
         !distinct_storage(context.graph, *root.weight, *set_rows.indices) ||
         !distinct_storage(context.graph, *root.weight, *set_rows.output) ||
         !distinct_storage(context.graph, *set_rows.indices, *set_rows.output)) {
+        return false;
+    }
+
+    return true;
+}
+
+static bool can_fuse_q6_f16_prefill_v_cache_cell(const DispatchMatchContext & context,
+                                                 const AttentionMatMulMatch & root,
+                                                 const AttentionSetRowsMatch & set_rows) {
+    if (!is_q6_f16_prefill_v_cache_cell(context, root, set_rows)) {
         return false;
     }
 
@@ -460,6 +470,26 @@ static AttentionSetRowsMatch match_attention_set_rows(const Graph &     graph,
     match.cache_row_count = cache_row_count;
     match.output_size     = output_size;
     return match;
+}
+
+static bool accepts_q6_f16_prefill_v_cache_cell(const DispatchMatchContext & context,
+                                                const GraphNode &            consumer,
+                                                const Value &                input) {
+    AttentionMatMulMatch root = match_attention_matmul_any_format(context.graph, &consumer);
+    if (!root.matched() || root.input->id != input.id || !context.graph.has_index()) {
+        return false;
+    }
+
+    std::vector<const GraphNode *> layouts;
+    const Value *     after_projection = nullptr;
+    const GraphNode * set_rows_node =
+        find_only_consumer_after_layout_aliases(context, root.output, layouts, after_projection, 2);
+    if (set_rows_node == nullptr || set_rows_node->op != GGML_OP_SET_ROWS) {
+        return false;
+    }
+    const AttentionSetRowsMatch set_rows = match_attention_set_rows(context.graph, set_rows_node, after_projection);
+    return set_rows.matched() && set_rows.token_count == root.token_count &&
+           set_rows.output_size == root.output_size && is_q6_f16_prefill_v_cache_cell(context, root, set_rows);
 }
 
 static AttentionQkvMatch match_attention_qkv_projection(const DispatchMatchContext & context) {
@@ -717,6 +747,15 @@ static bool match_attention_qkv_dispatch(const DispatchMatchContext & context, D
 }  // namespace
 
 void register_llm_attention_qkv_dispatches(DispatchRegistryBuilder & registry) {
+    registry.add_activation_consumer({
+        "llm.attention_v_cache.input.f16_row.prefill",
+        GGML_OP_MUL_MAT,
+        DispatchActivationInputF16Row,
+        DispatchActivationConsumerUse::Tiled,
+        DispatchActivationProducerRequirementNone,
+        DispatchSource::Llm,
+        accepts_q6_f16_prefill_v_cache_cell,
+    });
     registry.add({
         "llm.attention_qkv_matmul_postprocess.tiled_vector_f32_f32",
         GGML_OP_MUL_MAT,

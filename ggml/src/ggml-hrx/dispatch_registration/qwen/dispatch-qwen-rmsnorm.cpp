@@ -1,6 +1,8 @@
 #include "dispatch-qwen-rmsnorm.h"
 
 #include "dispatch-llm-profiles.h"
+#include "../common/dispatch-activation-publication.h"
+#include "../common/dispatch-mul-mat-common.h"
 #include "ggml.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
@@ -44,18 +46,6 @@ static bool is_supported_hidden_size(int64_t hidden_size) {
 
 static bool is_supported_token_count(int64_t token_count) {
     return is_llm_supported_query_length(kQwen30BMoeDispatchProfile, token_count);
-}
-
-static bool has_decode_q8_consumer(const Graph & graph, ValueId value) {
-    if (!graph.has_index()) {
-        return false;
-    }
-    for (const GraphNode * consumer : graph.index().consumers(value)) {
-        if (consumer != nullptr && (consumer->op == GGML_OP_MUL_MAT || consumer->op == GGML_OP_MUL_MAT_ID)) {
-            return true;
-        }
-    }
-    return false;
 }
 
 static size_t q8_1_x4_byte_count(int64_t token_count, int64_t hidden_size) {
@@ -330,16 +320,25 @@ static bool match_qwen_decode_rmsnorm_f32_quantize_q8_1_x4_dispatch(const Dispat
         context.covered_nodes[rms_match.mul_node_index]) {
         return false;
     }
-    if (!has_decode_q8_consumer(context.graph, rms_match.output->id)) {
+    const CommonActivationPublicationCapabilities capabilities = {
+        DispatchActivationInputQ8_1X4,
+        DispatchActivationInputQ8_1X4,
+    };
+    const CommonActivationPublicationPlan publication_plan =
+        common_select_activation_publication_plan(context, *rms_match.output, capabilities);
+    const CommonActivationPublicationDemand demand =
+        publication_plan.matched() ? publication_plan.preferred() : CommonActivationPublicationDemand{};
+    if (!demand.matched()) {
         return false;
     }
 
-    const size_t q8_byte_count = q8_1_x4_byte_count(rms_match.token_count, rms_match.hidden_size);
-    if (q8_byte_count == 0) {
+    CommonActivationPublication publication;
+    constexpr const char * publication_name = "qwen.decode.q8_hidden";
+    if (!common_reserve_activation_publication(context, match, *rms_match.output, demand, publication_name,
+                                               publication) ||
+        !common_append_activation_publication(match, publication, publication_name)) {
         return false;
     }
-
-    const ValueId q8_value = context.next_plan_value;
 
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kQwenRmsNormF32QuantizeQ8_1X4Kernel);
@@ -353,20 +352,11 @@ static bool match_qwen_decode_rmsnorm_f32_quantize_q8_1_x4_dispatch(const Dispat
     dispatch.bindings.push_back({ rms_match.input->id, 0, rms_match.input->byte_count });
     dispatch.bindings.push_back({ rms_match.weight->id, 0, rms_match.weight->byte_count });
     dispatch.bindings.push_back({ rms_match.output->id, 0, rms_match.output->byte_count });
-    dispatch.bindings.push_back({ q8_value, 0, q8_byte_count });
-
-    Status metadata_status;
-    if (!match.metadata.append_alternate_value(
-            { rms_match.output->id, q8_value, GGML_TYPE_Q8_1, q8_byte_count, "qwen.decode.q8_hidden" },
-            metadata_status)) {
-        match.status.append(metadata_status);
-        return false;
-    }
+    dispatch.bindings.push_back(publication.binding());
 
     match.covered_nodes.push_back(rms_match.rms_node_index);
     match.covered_nodes.push_back(rms_match.mul_node_index);
     match.dispatches.push_back(std::move(dispatch));
-    match.transients.push_back({ q8_value, "qwen.decode.q8_hidden", q8_byte_count, 256 });
     return match.status.success();
 }
 

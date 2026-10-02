@@ -17,6 +17,7 @@ namespace {
 static constexpr size_t kOpCount = static_cast<size_t>(GGML_OP_COUNT);
 
 static const std::vector<DispatchRegistration> kEmptyRegistrations;
+static const std::vector<DispatchActivationConsumerRegistration> kEmptyActivationConsumers;
 
 static bool valid_root_op(ggml_op op) {
     return op >= 0 && static_cast<size_t>(op) < kOpCount;
@@ -109,6 +110,14 @@ const std::vector<DispatchRegistration> & DispatchRegistry::registrations_for_ro
     return registrations_by_root_[static_cast<size_t>(root_op)].ordered;
 }
 
+const std::vector<DispatchActivationConsumerRegistration> &
+DispatchRegistry::activation_consumers_for_root(ggml_op root_op) const {
+    if (!valid_root_op(root_op) || activation_consumers_by_root_.empty()) {
+        return kEmptyActivationConsumers;
+    }
+    return activation_consumers_by_root_[static_cast<size_t>(root_op)];
+}
+
 void DispatchRegistryBuilder::add(DispatchRegistration registration) {
     if (!valid_root_op(registration.root_op) || registration.matcher == nullptr) {
         return;
@@ -126,9 +135,24 @@ void DispatchRegistryBuilder::add(DispatchRegistration registration) {
     }
 }
 
+void DispatchRegistryBuilder::add_activation_consumer(DispatchActivationConsumerRegistration registration) {
+    if (!valid_root_op(registration.root_op) || registration.accepts == nullptr ||
+        registration.accepted_formats == DispatchActivationInputNone) {
+        return;
+    }
+    if (registry_.activation_consumers_by_root_.empty()) {
+        registry_.activation_consumers_by_root_.resize(kOpCount);
+    }
+    registry_.activation_consumers_by_root_[static_cast<size_t>(registration.root_op)].push_back(
+        std::move(registration));
+}
+
 DispatchRegistry DispatchRegistryBuilder::build() {
     if (registry_.registrations_by_root_.empty()) {
         registry_.registrations_by_root_.resize(kOpCount);
+    }
+    if (registry_.activation_consumers_by_root_.empty()) {
+        registry_.activation_consumers_by_root_.resize(kOpCount);
     }
     for (DispatchRegistry::RegistrationGroup & group : registry_.registrations_by_root_) {
         sort_registrations(group.fused);

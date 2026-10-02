@@ -35,7 +35,7 @@ static bool try_match_registration(const Graph &              graph,
                                    DispatchMatch &            match,
                                    DispatchMatchDiagnostics * diagnostics) {
     const DispatchMatchContext context = {
-        graph, node, node_index, covered_nodes, plan, next_plan_value,
+        graph, node, node_index, covered_nodes, plan, next_plan_value, &registry,
     };
     return registry.match(context, match, diagnostics);
 }

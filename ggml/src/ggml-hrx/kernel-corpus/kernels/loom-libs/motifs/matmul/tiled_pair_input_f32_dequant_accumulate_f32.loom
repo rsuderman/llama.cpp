@@ -1,7 +1,7 @@
 // Shared paired tiled matmul pipeline for contiguous 2D F32 activations.
 // The core preserves the legacy generic paired tile schedule and delegates
 // pair postprocess and publication to the op wrapper.
-template.decl @ggml.matmul.tiled_pair_input_f32_dequant_accumulate_f32.core(%op: index, %epilogue: index, %gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size0: index, %output_size0: index, %channel_tile: index, %token_tile: index, %input: buffer, %gate_weight: buffer, %up_weight: buffer, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer)
+template.decl @ggml.matmul.tiled_pair_input_f32_dequant_accumulate_f32.core(%full_token_tiles: i1, %op: index, %epilogue: index, %gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size0: index, %output_size0: index, %channel_tile: index, %token_tile: index, %input: buffer, %gate_weight: buffer, %up_weight: buffer, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer)
 
 template.decl @ggml.matmul.tiled_pair_input_f32_dequant_accumulate_f32.publish_vector4(%publish_word: i1, %token0: index, %channel: index, %token_count0: index, %output_size0: index, %op: index, %epilogue: index, %lhs: vector<4xf32>, %rhs: vector<4xf32>, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer)
 
@@ -23,7 +23,7 @@ func.decl @ggml_iq3s_grid_f32_halves() -> (vector<32xf32>, vector<32xf32>, vecto
 
 func.decl @ggml_dequant_f16_vector4(%iq4nl_table: vector<16xi8>, %iq3s_grid_low0: vector<32xf32>, %iq3s_grid_low1: vector<32xf32>, %iq3s_grid_low2: vector<32xf32>, %iq3s_grid_low3: vector<32xf32>, %iq3s_grid_low4: vector<32xf32>, %iq3s_grid_low5: vector<32xf32>, %iq3s_grid_low6: vector<32xf32>, %iq3s_grid_low7: vector<32xf32>, %iq3s_grid_low8: vector<32xf32>, %iq3s_grid_low9: vector<32xf32>, %iq3s_grid_low10: vector<32xf32>, %iq3s_grid_low11: vector<32xf32>, %iq3s_grid_low12: vector<32xf32>, %iq3s_grid_low13: vector<32xf32>, %iq3s_grid_low14: vector<32xf32>, %iq3s_grid_low15: vector<32xf32>, %iq3s_grid_high0: vector<32xf32>, %iq3s_grid_high1: vector<32xf32>, %iq3s_grid_high2: vector<32xf32>, %iq3s_grid_high3: vector<32xf32>, %iq3s_grid_high4: vector<32xf32>, %iq3s_grid_high5: vector<32xf32>, %iq3s_grid_high6: vector<32xf32>, %iq3s_grid_high7: vector<32xf32>, %iq3s_grid_high8: vector<32xf32>, %iq3s_grid_high9: vector<32xf32>, %iq3s_grid_high10: vector<32xf32>, %iq3s_grid_high11: vector<32xf32>, %iq3s_grid_high12: vector<32xf32>, %iq3s_grid_high13: vector<32xf32>, %iq3s_grid_high14: vector<32xf32>, %iq3s_grid_high15: vector<32xf32>, %weight_format: index, %weight: buffer, %row_byte_base: offset, %input_size: index, %quant_block: index, %quant_group: index, %packet: index, %k: index) -> (vector<4xf16>)
 
-func.def inline @ggml_matmul_tiled_pair_input_f32_dequant_accumulate_f32(%op: index, %epilogue: index, %gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size0: index, %output_size0: index, %channel_tile: index, %token_tile: index, %input: buffer, %gate_weight: buffer, %up_weight: buffer, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer) {
+func.def inline @ggml_matmul_tiled_pair_input_f32_dequant_accumulate_f32(%full_token_tiles: i1, %op: index, %epilogue: index, %gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size0: index, %output_size0: index, %channel_tile: index, %token_tile: index, %input: buffer, %gate_weight: buffer, %up_weight: buffer, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer) {
   %bounded_token_count = index.assume %token_count [range(%token_count, 2, 2048)] : index
   %bounded_input_size = index.assume %input_size0 [range(%input_size0, 256, 32768), mul(%input_size0, 32)] : index
   %bounded_output_size = index.assume %output_size0 [range(%output_size0, 1, 262144)] : index
@@ -42,6 +42,7 @@ func.def inline @ggml_matmul_tiled_pair_input_f32_dequant_accumulate_f32(%op: in
   %c255 = index.constant 255 : index
   %c256 = index.constant 256 : index
   %c0_offset = index.constant 0 : offset
+  %f32_element_bytes = index.constant 4 : offset
   %weight_stage_bytes = index.constant 5120 : offset
   %activation_stage_bytes = index.constant 2560 : offset
   %wave_result_stage_bytes = index.constant 512 : offset
@@ -57,7 +58,6 @@ func.def inline @ggml_matmul_tiled_pair_input_f32_dequant_accumulate_f32(%op: in
   %gate_weight_row_bytes = func.call @ggml_dequant_weight_row_bytes(%gate_weight_format, %bounded_input_size) : (index, index) -> (offset)
   %up_weight_row_bytes = func.call @ggml_dequant_weight_row_bytes(%up_weight_format, %bounded_input_size) : (index, index) -> (offset)
   %input_noalias, %gate_weight_noalias, %up_weight_noalias = buffer.assume.noalias %input, %gate_weight, %up_weight : buffer, buffer, buffer
-  %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x[%bounded_input_size]xf32>
   %gate_weight_stage = buffer.alloca<workgroup> align(16) %weight_stage_bytes : buffer
   %up_weight_stage = buffer.alloca<workgroup> align(16) %weight_stage_bytes : buffer
   %activation_stage = buffer.alloca<workgroup> align(16) %activation_stage_bytes : buffer
@@ -121,14 +121,17 @@ func.def inline @ggml_matmul_tiled_pair_input_f32_dequant_accumulate_f32(%op: in
         scf.if %is_activation_row {
           %activation_row = index.assume %local_row [range(%local_row, 0, 31)] : index
           %token = index.add %token_tile_base, %activation_row : index
-          %valid_token = index.cmp ult, %token, %bounded_token_count : index
+          %tail_valid_token = index.cmp ult, %token, %bounded_token_count : index
+          %valid_token = scalar.ori %full_token_tiles, %tail_valid_token : i1
           %input_k = index.add %k_origin, %load_k : index
           %valid_input = index.cmp ult, %input_k, %bounded_input_size : index
           %valid_activation = scalar.andi %valid_token, %valid_input : i1
           %activation_values = scf.if %valid_activation -> (vector<4xf16>) {
-            %bounded_token, %input_token_count = index.assume %token, %bounded_token_count [lt(%token, %bounded_token_count)] : index, index
+            %row_element_offset = index.mul %token, %bounded_input_size : index
+            %row_byte_offset = index.scale %row_element_offset, %f32_element_bytes : index, offset -> offset
+            %input_row = buffer.view %input_noalias[%row_byte_offset] : buffer -> view<[%bounded_input_size]xf32>
             %mask = vector.mask.range [%input_k to %bounded_input_size step %c1] : index -> vector<4xi1>
-            %loaded = vector.load.mask %input_view[%bounded_token, %input_k], %mask, %c0_f32x4 : view<[%bounded_token_count]x[%bounded_input_size]xf32>, vector<4xi1>, vector<4xf32>
+            %loaded = vector.load.mask %input_row[%input_k], %mask, %c0_f32x4 : view<[%bounded_input_size]xf32>, vector<4xi1>, vector<4xf32>
             %converted = vector.fptrunc %loaded : vector<4xf32> to vector<4xf16>
             scf.yield %converted : vector<4xf16>
           } else {
@@ -172,8 +175,10 @@ func.def inline @ggml_matmul_tiled_pair_input_f32_dequant_accumulate_f32(%op: in
   %channel0 = index.add %subgroup_channel_base, %publish_channel_add : index
   %channel1_base = index.add %subgroup_channel_base, %c16 : index
   %channel1 = index.add %channel1_base, %publish_channel_add : index
-  %valid_token0 = index.cmp ult, %token0, %bounded_token_count : index
-  %valid_token1 = index.cmp ult, %token1, %bounded_token_count : index
+  %tail_valid_token0 = index.cmp ult, %token0, %bounded_token_count : index
+  %tail_valid_token1 = index.cmp ult, %token1, %bounded_token_count : index
+  %valid_token0 = scalar.ori %full_token_tiles, %tail_valid_token0 : i1
+  %valid_token1 = scalar.ori %full_token_tiles, %tail_valid_token1 : i1
   %valid_channel0 = index.cmp ult, %channel0, %bounded_output_size : index
   %valid_channel1 = index.cmp ult, %channel1, %bounded_output_size : index
   %writes00 = scalar.andi %valid_token0, %valid_channel0 : i1
@@ -226,7 +231,7 @@ func.def inline @ggml_matmul_tiled_pair_input_f32_dequant_accumulate_f32(%op: in
   func.return
 }
 
-template.def<@ggml.matmul.tiled_pair_input_f32_dequant_accumulate_f32.core> device @ggml_matmul_tiled_pair_input_f32_dequant_accumulate_f32_core(%op: index, %epilogue: index, %gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size0: index, %output_size0: index, %channel_tile: index, %token_tile: index, %input: buffer, %gate_weight: buffer, %up_weight: buffer, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer) {
-  func.call @ggml_matmul_tiled_pair_input_f32_dequant_accumulate_f32(%op, %epilogue, %gate_weight_format, %up_weight_format, %token_count, %input_size0, %output_size0, %channel_tile, %token_tile, %input, %gate_weight, %up_weight, %bias, %output, %residual_input, %residual_output) : (index, index, index, index, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
+template.def<@ggml.matmul.tiled_pair_input_f32_dequant_accumulate_f32.core> device @ggml_matmul_tiled_pair_input_f32_dequant_accumulate_f32_core(%full_token_tiles: i1, %op: index, %epilogue: index, %gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size0: index, %output_size0: index, %channel_tile: index, %token_tile: index, %input: buffer, %gate_weight: buffer, %up_weight: buffer, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer) {
+  func.call @ggml_matmul_tiled_pair_input_f32_dequant_accumulate_f32(%full_token_tiles, %op, %epilogue, %gate_weight_format, %up_weight_format, %token_count, %input_size0, %output_size0, %channel_tile, %token_tile, %input, %gate_weight, %up_weight, %bias, %output, %residual_input, %residual_output) : (i1, index, index, index, index, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
   template.return
 }

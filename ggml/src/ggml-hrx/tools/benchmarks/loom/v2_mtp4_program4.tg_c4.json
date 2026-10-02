@@ -309,13 +309,14 @@
     {
       "benchmark": "@v2_mtp4_program4_tg_c4_008_llm_gated_delta_net_projection_epilogue_f32",
       "compile_parameters": {
-        "llm.gated_delta_net.epilogue_element_count": "192",
         "llm.gated_delta_net.epilogue_head_count": "48",
         "llm.gated_delta_net.epilogue_workgroup_size": "256"
       },
       "corpus_dir": "kernel-corpus/kernels/loom-libs",
       "count": 48,
-      "integer_parameters": {},
+      "integer_parameters": {
+        "element_count": 192
+      },
       "kernel": "loom_libs:llm_gated_delta_net_projection_epilogue_f32",
       "library_sources": [],
       "primary_sources": [
@@ -325,7 +326,12 @@
         "ops/gated_delta_net_f32_wmma.loom"
       ],
       "symbol": "llm_gated_delta_net_projection_epilogue_f32",
-      "workload_parameters": []
+      "workload_parameters": [
+        {
+          "name": "element_count",
+          "type": "index"
+        }
+      ]
     },
     {
       "benchmark": "@v2_mtp4_program4_tg_c4_009_llm_gated_delta_net_f32_wmma_head128_snapshot",

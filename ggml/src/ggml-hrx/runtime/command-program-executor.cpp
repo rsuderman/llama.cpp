@@ -1219,8 +1219,8 @@ static Status prepare_kernel_command(const CommandProgramExecutionContext & cont
     }
 
     prepared       = make_prepared_command_shape(command);
-    executable_ref = context.kernel_executables->get_or_compile(
-        { context.device, context.target }, *resolved.definition, dispatch, prepared.kernel.constants);
+    executable_ref =
+        context.kernel_executables->get_or_compile({ context.device, context.target }, *resolved.definition, dispatch);
     if (!executable_ref.valid()) {
         status.log("failed to prepare %s", command_context.c_str());
         return status;
@@ -1248,11 +1248,11 @@ static bool execute_prepared_kernel_command(const CommandProgramExecutionContext
 
     const KernelExecutable & executable = *command.kernel.executable;
     hrx_dispatch_config_t    config     = {
-        { executable.launch.workgroup_count[0], executable.launch.workgroup_count[1],
-         executable.launch.workgroup_count[2] },
-        { executable.launch.workgroup_size[0],  executable.launch.workgroup_size[1],
-         executable.launch.workgroup_size[2]  },
-        executable.launch.subgroup_size,
+        { command.kernel.launch.workgroup_count[0], command.kernel.launch.workgroup_count[1],
+         command.kernel.launch.workgroup_count[2] },
+        { command.kernel.launch.workgroup_size[0], command.kernel.launch.workgroup_size[1],
+         command.kernel.launch.workgroup_size[2] },
+        command.kernel.launch.subgroup_size,
     };
     if (ErrorResult error = take_status(hrx_stream_dispatch(
             context.stream, executable.executable, executable.export_ordinal, &config, command.kernel.constants.data(),
@@ -1290,7 +1290,8 @@ static void materialize_command_list_executables(const CommandProgramExecutionCo
     for (size_t i = 0; i < prepared_commands.size(); ++i) {
         PreparedCommand & command = prepared_commands[i];
         command.kernel.executable = context.kernel_executables->materialize(
-            { context.device, context.target }, executable_refs[i], command.kernel.constants);
+            { context.device, context.target }, executable_refs[i], command.kernel.specialization,
+            command.kernel.constants, command.kernel.launch);
         if (command.kernel.executable == nullptr) {
             status.log("failed to prepare %s", format_prepared_command_context(command).c_str());
         }
@@ -1582,11 +1583,11 @@ static Status record_prepared_kernel_command(hrx_graph_t                  graph,
         executable.executable,
         executable.export_ordinal,
         {
-            { executable.launch.workgroup_count[0], executable.launch.workgroup_count[1],
-              executable.launch.workgroup_count[2] },
-            { executable.launch.workgroup_size[0], executable.launch.workgroup_size[1],
-              executable.launch.workgroup_size[2] },
-            executable.launch.subgroup_size,
+            { command.kernel.launch.workgroup_count[0], command.kernel.launch.workgroup_count[1],
+              command.kernel.launch.workgroup_count[2] },
+            { command.kernel.launch.workgroup_size[0], command.kernel.launch.workgroup_size[1],
+              command.kernel.launch.workgroup_size[2] },
+            command.kernel.launch.subgroup_size,
         },
         command.kernel.constants.data(),
         command.kernel.constants.size(),

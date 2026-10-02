@@ -54,6 +54,27 @@ def source_path(entry: dict[str, Any], source: str) -> Path:
     return HRX_DIR / corpus_dir / source
 
 
+def loom_link_source_args(entry: dict[str, Any]) -> list[str]:
+    sources = entry.get("sources")
+    if sources is None:
+        sources = [*entry.get("primary_sources", []), *entry.get("library_sources", [])]
+    return [str(source_path(entry, source)) for source in sources]
+
+
+def loom_link_provider_source_args(entry: dict[str, Any]) -> list[str]:
+    primary_sources = entry.get("primary_sources")
+    library_sources = entry.get("library_sources")
+    closure = [str(source_path(entry, source)) for source in library_sources or []]
+    providers = [f"--library={source_path(entry, source)}" for source in primary_sources or []]
+    return [*closure, *providers]
+
+
+def missed_exact_source_selection(result: CommandResult) -> bool:
+    if result.state == "ok" or not result.stderr.is_file():
+        return False
+    return "exact link selection missed reachable source symbol ref" in result.stderr.read_text(encoding="utf-8")
+
+
 def manifest_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     if "dispatches" in manifest:
         return manifest.get("dispatches", [])
@@ -384,10 +405,7 @@ def main() -> None:
             stage_results: dict[str, Any] = {}
             config_args = [f"--config={name}={value}" for name, value in sorted(entry.get("compile_parameters", {}).items())]
 
-            sources = entry.get("sources")
-            if sources is None:
-                sources = [*entry.get("primary_sources", []), *entry.get("library_sources", [])]
-            link_inputs = [str(source_path(entry, source)) for source in sources]
+            link_inputs = loom_link_source_args(entry)
             state = "ok"
             error = None
             link_result = run_command(
@@ -407,6 +425,25 @@ def main() -> None:
                 "loom-link",
             )
             stage_results["loom-link"] = command_result_json(link_result)
+            if missed_exact_source_selection(link_result) and entry.get("primary_sources"):
+                provider_link_inputs = loom_link_provider_source_args(entry)
+                link_result = run_command(
+                    [
+                        str(loom_link),
+                        str(loom_source),
+                        *provider_link_inputs,
+                        "--mode=link",
+                        "--to=text",
+                        f"--root={benchmark}",
+                        f"--output={linked_source}",
+                        *config_args,
+                    ],
+                    REPO_DIR,
+                    args.benchmark_timeout_sec,
+                    bench_dir,
+                    "loom-link-provider-retry",
+                )
+                stage_results["loom-link-provider-retry"] = command_result_json(link_result)
             state = link_result.state
             error = link_result.error
             if state == "ok":

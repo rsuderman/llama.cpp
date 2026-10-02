@@ -565,8 +565,9 @@ static bool try_match_binary_fusion(const Graph & graph, SsmConvCoreMatch & matc
 static void set_generic_ssm_conv_parameters(KernelSpecialization & kernel, const SsmConvCoreMatch & match) {
     set_compile_parameter(kernel, "llm.ssm_conv.generic.d_conv", match.d_conv);
     set_compile_parameter(kernel, "llm.ssm_conv.generic.d_inner", match.d_inner);
-    set_compile_parameter(kernel, "llm.ssm_conv.generic.n_t", match.token_count);
-    set_compile_parameter(kernel, "llm.ssm_conv.generic.n_s", match.sequence_count);
+    kernel.integer_parameters.emplace("n_t", match.token_count);
+    kernel.integer_parameters.emplace("n_s", match.sequence_count);
+    kernel.workload_specialization = WorkloadSpecialization::Dynamic;
     set_compile_parameter(kernel, "llm.ssm_conv.generic.unary_op", unary_kind_config_value(match.unary_op));
     set_compile_parameter(kernel, "llm.ssm_conv.generic.workgroup_size", 256);
 }

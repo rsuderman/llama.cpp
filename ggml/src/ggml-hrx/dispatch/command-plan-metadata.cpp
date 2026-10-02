@@ -37,6 +37,7 @@ static bool moe_routing_bundle_matches(const CommandPlanMoeRoutingBundle & lhs,
 void CommandPlanMetadata::clear() {
     generated_resources_.clear();
     alternate_values_.clear();
+    activation_publication_diagnostics_.clear();
     moe_routing_bundles_.clear();
 }
 
@@ -51,12 +52,20 @@ bool CommandPlanMetadata::append(CommandPlanMetadata && other, Status & status) 
             return false;
         }
     }
+    for (CommandPlanActivationPublicationDiagnostic & diagnostic : other.activation_publication_diagnostics_) {
+        append_activation_publication_diagnostic(std::move(diagnostic));
+    }
     for (CommandPlanMoeRoutingBundle & bundle : other.moe_routing_bundles_) {
         if (!append_moe_routing_bundle(std::move(bundle), status)) {
             return false;
         }
     }
     return true;
+}
+
+void CommandPlanMetadata::append_activation_publication_diagnostic(
+    CommandPlanActivationPublicationDiagnostic diagnostic) {
+    activation_publication_diagnostics_.push_back(std::move(diagnostic));
 }
 
 bool CommandPlanMetadata::append_generated_resource(CommandPlanGeneratedResource resource, Status & status) {

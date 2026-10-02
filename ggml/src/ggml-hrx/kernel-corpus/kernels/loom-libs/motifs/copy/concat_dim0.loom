@@ -3,7 +3,6 @@
 
 config.decl @ggml.concat_dim0_f32.lhs_width : %value: index where [range(%value, 1, 65536)]
 config.decl @ggml.concat_dim0_f32.rhs_width : %value: index where [range(%value, 1, 65536)]
-config.decl @ggml.concat_dim0_f32.row_count : %value: index where [range(%value, 1, 1048576)]
 
 config.decl @ggml.concat_dim0_strided_source_f32.lhs_width : %value: index where [range(%value, 1, 65536)]
 config.decl @ggml.concat_dim0_strided_source_f32.rhs_width : %value: index where [range(%value, 1, 65536)]
@@ -19,18 +18,19 @@ config.decl @ggml.concat_dim0_strided_source_f32.rhs_stride1 : %value: index whe
 config.decl @ggml.concat_dim0_strided_source_f32.rhs_stride2 : %value: index where [range(%value, 1, 1073741824)]
 config.decl @ggml.concat_dim0_strided_source_f32.rhs_stride3 : %value: index where [range(%value, 1, 1073741824)]
 
-template.decl @ggml.copy.concat_dim0.f32_body(%lhs: buffer, %rhs: buffer, %output: buffer)
+template.decl @ggml.copy.concat_dim0.f32_body(%row_count: index, %lhs_span: index, %rhs_span: index, %lhs: buffer, %rhs: buffer, %output: buffer)
 template.decl @ggml.copy.concat_dim0.strided_source_f32_body(%lhs_span: index, %rhs_span: index, %lhs: buffer, %rhs: buffer, %output: buffer)
 
-template.def<@ggml.copy.concat_dim0.f32_body> device @ggml_copy_concat_dim0_f32_body(%lhs: buffer, %rhs: buffer, %output: buffer) {
+template.def<@ggml.copy.concat_dim0.f32_body> device @ggml_copy_concat_dim0_f32_body(%row_count0: index, %lhs_span0: index, %rhs_span0: index, %lhs: buffer, %rhs: buffer, %output: buffer) {
   %base = index.constant 0 : offset
   %workgroup_size = index.constant 256 : index
   %lhs_width0 = config.get @ggml.concat_dim0_f32.lhs_width : index
   %rhs_width0 = config.get @ggml.concat_dim0_f32.rhs_width : index
-  %row_count0 = config.get @ggml.concat_dim0_f32.row_count : index
   %lhs_width = index.assume %lhs_width0 [range(%lhs_width0, 1, 65536)] : index
   %rhs_width = index.assume %rhs_width0 [range(%rhs_width0, 1, 65536)] : index
   %row_count = index.assume %row_count0 [range(%row_count0, 1, 1048576)] : index
+  %lhs_span = index.assume %lhs_span0 [range(%lhs_span0, 1, 1073741824)] : index
+  %rhs_span = index.assume %rhs_span0 [range(%rhs_span0, 1, 1073741824)] : index
   %output_width0 = index.add %lhs_width, %rhs_width : index
   %output_width = index.assume %output_width0 [range(%output_width0, 2, 131072)] : index
   %element_count0 = index.mul %output_width, %row_count : index
@@ -45,9 +45,7 @@ template.def<@ggml.copy.concat_dim0.f32_body> device @ggml_copy_concat_dim0_f32_
   %in_bounds = index.cmp ult, %linear, %element_count : index
 
   %lhs_noalias, %rhs_noalias, %output_noalias = buffer.assume.noalias %lhs, %rhs, %output : buffer, buffer, buffer
-  %lhs_view = buffer.view %lhs_noalias[%base] : buffer -> view<1073741824xf32>
-  %rhs_view = buffer.view %rhs_noalias[%base] : buffer -> view<1073741824xf32>
-  %output_view = buffer.view %output_noalias[%base] : buffer -> view<1073741824xf32>
+  %output_view = buffer.view %output_noalias[%base] : buffer -> view<[%element_count]xf32>
 
   scf.if %in_bounds {
     %row = index.div %linear, %output_width : index
@@ -56,18 +54,20 @@ template.def<@ggml.copy.concat_dim0.f32_body> device @ggml_copy_concat_dim0_f32_
     %value = scf.if %from_lhs -> (f32) {
       %lhs_row = index.mul %row, %lhs_width : index
       %lhs_index0 = index.add %lhs_row, %column : index
-      %lhs_index = index.assume %lhs_index0 [range(%lhs_index0, 0, 1073741823)] : index
-      %loaded = view.load %lhs_view[%lhs_index] : view<1073741824xf32> -> f32
+      %lhs_index, %lhs_bound = index.assume %lhs_index0, %lhs_span [lt(%lhs_index0, %lhs_span)] : index, index
+      %lhs_view = buffer.view %lhs_noalias[%base] : buffer -> view<[%lhs_bound]xf32>
+      %loaded = view.load %lhs_view[%lhs_index] : view<[%lhs_bound]xf32> -> f32
       scf.yield %loaded : f32
     } else {
       %rhs_column = index.sub %column, %lhs_width : index
       %rhs_row = index.mul %row, %rhs_width : index
       %rhs_index0 = index.add %rhs_row, %rhs_column : index
-      %rhs_index = index.assume %rhs_index0 [range(%rhs_index0, 0, 1073741823)] : index
-      %loaded = view.load %rhs_view[%rhs_index] : view<1073741824xf32> -> f32
+      %rhs_index, %rhs_bound = index.assume %rhs_index0, %rhs_span [lt(%rhs_index0, %rhs_span)] : index, index
+      %rhs_view = buffer.view %rhs_noalias[%base] : buffer -> view<[%rhs_bound]xf32>
+      %loaded = view.load %rhs_view[%rhs_index] : view<[%rhs_bound]xf32> -> f32
       scf.yield %loaded : f32
     }
-    view.store %value, %output_view[%linear] : f32, view<1073741824xf32>
+    view.store %value, %output_view[%linear] : f32, view<[%element_count]xf32>
   }
   template.return
 }

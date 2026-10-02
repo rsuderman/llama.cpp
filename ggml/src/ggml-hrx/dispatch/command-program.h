@@ -78,6 +78,7 @@ struct CommandProgram {
     TransientPlan                       transients;
     CompletionCounterPlan               completion_counters;
     std::vector<ConstantInitialization> constant_initializations;
+    std::vector<CommandPlanActivationPublicationDiagnostic> activation_publication_diagnostics;
     Status                              status;
 
     bool valid() const { return status.success(); }
