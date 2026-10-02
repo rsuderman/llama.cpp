@@ -207,6 +207,18 @@
       "path": "motifs/matmul/q6_q8_1_x4_decode.loom"
     },
     {
+      "path": "motifs/matmul/q1_0_q8_1_x4_decode.loom"
+    },
+    {
+      "path": "ops/matmul/q1_0_q8_1_x4_packed_test.loom"
+    },
+    {
+      "path": "ops/matmul/vector_q1_0_q8_1_x4_f32.loom"
+    },
+    {
+      "path": "ops/matmul/q1_0_vector_schedule_test.loom"
+    },
+    {
       "path": "motifs/routing/router_projection_storage.loom"
     },
     {
@@ -2486,6 +2498,92 @@
         "motifs/f32_f16.loom",
         "motifs/mul_mat_quantized_f16_prefill.loom",
         "motifs/elementwise/binary_apply.loom"
+      ]
+    },
+    {
+      "name": "ggml_mul_mat_vector_q1_0_q8_1_x4_f32",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_vector_q1_0_q8_1_x4_f32",
+      "source": "ops/matmul/vector_q1_0_q8_1_x4_f32.loom",
+      "workload_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "q8_input",
+        "weight",
+        "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/matmul/vector_q1_0_q8_1_x4_f32.loom"
+        ],
+        "library_sources": [
+          "motifs/matmul/q1_0_q8_1_x4_decode.loom",
+          "motifs/quantize_q8_1_x4_group.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "motifs/matmul/q1_0_q8_1_x4_decode.loom",
+        "motifs/quantize_q8_1_x4_group.loom"
+      ]
+    },
+    {
+      "name": "ggml_mul_mat_vector_q1_0_q8_1_x4_rows2_f32",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_vector_q1_0_q8_1_x4_rows2_f32",
+      "source": "ops/matmul/vector_q1_0_q8_1_x4_f32.loom",
+      "workload_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "q8_input",
+        "weight",
+        "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/matmul/vector_q1_0_q8_1_x4_f32.loom"
+        ],
+        "library_sources": [
+          "motifs/matmul/q1_0_q8_1_x4_decode.loom",
+          "motifs/quantize_q8_1_x4_group.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "motifs/matmul/q1_0_q8_1_x4_decode.loom",
+        "motifs/quantize_q8_1_x4_group.loom"
       ]
     },
     {

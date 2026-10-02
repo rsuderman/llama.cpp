@@ -39,6 +39,10 @@ static constexpr KernelCatalogRef kMulMatAddF32F32DecodeWave64Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_add_f32_f32_decode_wave64");
 static constexpr KernelCatalogRef kMulMatVectorF32F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_f32_f32");
+static constexpr KernelCatalogRef kMulMatVectorQ1_0Q8_1X4F32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_q1_0_q8_1_x4_f32");
+static constexpr KernelCatalogRef kMulMatVectorQ1_0Q8_1X4Rows2F32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_q1_0_q8_1_x4_rows2_f32");
 static constexpr KernelCatalogRef kMulMatVectorIQ2SF32F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_iq2_s_f32_f32");
 static constexpr KernelCatalogRef kMulMatVectorIQ3SF32F32Kernel =
@@ -249,6 +253,33 @@ static bool accepts_preferred_q8_publication(const DispatchMatchContext & contex
     const Value * output = context.graph.values().find(consumer.output);
     return weight != nullptr && output != nullptr &&
            (weight->type == GGML_TYPE_Q4_K || !context.graph.index().consumers(output->id).empty());
+}
+
+static bool is_q1_0_q8_1_x4_vector_consumer(const CommonMulMatActivationConsumerMatch & match) {
+    return match.matched() && match.weight->alias_source.value < 0 && match.token_count == 1 &&
+           match.input_size % 128 == 0 && match.weight_format == CommonMulMatWeightFormat::Q1_0;
+}
+
+static bool accepts_preferred_q1_0_q8_publication(const DispatchMatchContext & context,
+                                                   const GraphNode &            consumer,
+                                                   const Value &                input) {
+    const CommonMulMatActivationConsumerMatch match =
+        common_match_mul_mat_activation_consumer(context.graph, &consumer, input);
+    if (!is_q1_0_q8_1_x4_vector_consumer(match)) {
+        return false;
+    }
+    int64_t compatible_consumer_count = 0;
+    int64_t total_output_size         = 0;
+    for (const GraphNode * candidate : context.graph.index().consumers(input.id)) {
+        const CommonMulMatActivationConsumerMatch candidate_match =
+            common_match_mul_mat_activation_consumer(context.graph, candidate, input);
+        if (!is_q1_0_q8_1_x4_vector_consumer(candidate_match)) {
+            continue;
+        }
+        ++compatible_consumer_count;
+        total_output_size += candidate_match.output_size;
+    }
+    return compatible_consumer_count >= 2 && total_output_size >= std::max<int64_t>(match.input_size, 4096);
 }
 
 static bool accepts_factored_tiled_f16_input(const DispatchMatchContext & context,
@@ -1423,6 +1454,28 @@ static bool build_vector_mul_mat_dispatch(const DispatchMatchContext & context,
         return false;
     }
 
+    if (match.weight_format == CommonMulMatWeightFormat::Q1_0 && match.weight->alias_source.value < 0 &&
+        match.input_size % 128 == 0 && !match.has_fused_unary && !publish.demand.matched()) {
+        DispatchBinding q8_activation;
+        if (common_prepare_q8_1_x4_input(context, *match.input, match.input_size, match.token_count, dispatch_match,
+                                         q8_activation, CommonQ8ActivationPolicy::ExistingAlternateOnly)) {
+            dispatch.kernel = make_kernel_specialization(
+                match.output_size <= 1024 ? kMulMatVectorQ1_0Q8_1X4F32Kernel :
+                                            kMulMatVectorQ1_0Q8_1X4Rows2F32Kernel);
+            dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
+            dispatch.kernel.compile_parameters.emplace("ggml.matmul.q1_0_q8_1_x4.input_size",
+                                                       common_to_config_value(match.input_size));
+            dispatch.kernel.compile_parameters.emplace("ggml.matmul.q1_0_q8_1_x4.output_size",
+                                                       common_to_config_value(match.output_size));
+            dispatch.bindings.push_back(q8_activation);
+            dispatch.bindings.push_back({ match.weight->id, 0, match.weight->byte_count });
+            dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
+            dispatch_match.covered_nodes.push_back(context.root_index);
+            dispatch_match.dispatches.push_back(std::move(dispatch));
+            return true;
+        }
+    }
+
     DispatchBinding          activation;
     CommonMulMatWeightFormat weight_format = match.weight_format;
     const char *             weight_layout = nullptr;
@@ -1943,6 +1996,16 @@ void register_mul_mat_dispatches(DispatchRegistryBuilder & registry) {
         DispatchActivationProducerRequirementFactoredTiledF16,
         DispatchSource::Common,
         accepts_factored_tiled_f16_input,
+    });
+    registry.add_activation_consumer({
+        "common.mul_mat.input.q8_1_x4.q1_0_preferred_publication",
+        GGML_OP_MUL_MAT,
+        DispatchActivationInputQ8_1X4,
+        DispatchActivationConsumerUse::BandwidthLimited,
+        DispatchActivationProducerRequirementNone,
+        DispatchSource::Common,
+        accepts_preferred_q1_0_q8_publication,
+        DispatchActivationConsumerTraitQ8PublicationPreferred,
     });
     registry.add_activation_consumer({
         "common.mul_mat.input.q8_1_x4.preferred_publication",
