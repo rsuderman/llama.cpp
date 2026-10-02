@@ -27,6 +27,8 @@ static constexpr KernelCatalogRef kMulMatTiledIQ3SF32F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_iq3_s_publish_f32");
 static constexpr KernelCatalogRef kMulMatTiledAlignedF32F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_publish_f32_aligned");
+static constexpr KernelCatalogRef kMulMatTiledToken64AlignedF32F32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_publish_f32_token64_aligned");
 static constexpr KernelCatalogRef kMulMatTiledF32F16AlternateKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_publish_f32_f16_alternate");
 static constexpr KernelCatalogRef kMulMatSkinnyF32F32Kernel =
@@ -1212,9 +1214,13 @@ static bool build_mul_mat_dispatch(
     const bool use_aligned_dynamic = match.token_count % 32 == 0 &&
                                      match.kernel.id == kMulMatTiledF32F32Kernel.id && !publish_f16_alternate &&
                                      !use_iq_codebook;
+    const bool use_q1_token64 = use_aligned_dynamic && match.token_count == 64 &&
+                                match.weight_format == CommonMulMatWeightFormat::Q1_0 &&
+                                std::getenv("GGML_HRX_DISABLE_Q1_TOKEN64_MATMUL") == nullptr;
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(
         use_iq_codebook ? tiled_iq_codebook_kernel(match.weight_format) :
+        use_q1_token64 ? kMulMatTiledToken64AlignedF32F32Kernel :
         use_aligned_dynamic ? kMulMatTiledAlignedF32F32Kernel :
         publish_f16_alternate ? kMulMatTiledF32F16AlternateKernel : match.kernel);
     if (use_aligned_dynamic) {
