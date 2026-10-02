@@ -83,7 +83,6 @@ struct ggml_hrx_loom_jit_amdgpu {
     loomc_target_profile_t *            target_profile     = nullptr;
     loomc_compiler_t *                  compiler           = nullptr;
     loomc_pass_program_t *              pass_program       = nullptr;
-    loomc_amdgpu_runtime_global_flags_t runtime_globals    = LOOMC_AMDGPU_RUNTIME_GLOBAL_NONE;
 };
 
 namespace {
@@ -584,17 +583,6 @@ hrx_status_t ggml_hrx_loom_jit_parse_sanitizer_reporting(const char *           
     return ggml_hrx_loom_jit_make_status(HRX_STATUS_INVALID_ARGUMENT, message);
 }
 
-loomc_amdgpu_runtime_global_flags_t ggml_hrx_loom_jit_runtime_globals(loomc_sanitizer_checks_t sanitizer_checks) {
-    if (!sanitizer_checks) {
-        return LOOMC_AMDGPU_RUNTIME_GLOBAL_NONE;
-    }
-    loomc_amdgpu_runtime_global_flags_t runtime_globals = LOOMC_AMDGPU_RUNTIME_GLOBAL_FEEDBACK_CONFIG;
-    if (sanitizer_checks & LOOMC_SANITIZER_CHECK_ACCESS) {
-        runtime_globals |= LOOMC_AMDGPU_RUNTIME_GLOBAL_ASAN_CONFIG;
-    }
-    return runtime_globals;
-}
-
 }  // namespace
 
 void ggml_hrx_loom_jit_launch_program_release(ggml_hrx_loom_jit_launch_program * program) {
@@ -675,7 +663,6 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_create(const ggml_hrx_loom_jit_amdgpu_opti
             return sanitizer_reporting_status;
         }
     }
-    jit->runtime_globals                             = ggml_hrx_loom_jit_runtime_globals(sanitizer_options.checks);
     loomc_target_pipeline_options_t pipeline_options = {};
     pipeline_options.type                            = LOOMC_STRUCTURE_TYPE_TARGET_PIPELINE_OPTIONS;
     pipeline_options.structure_size                  = sizeof(pipeline_options);
@@ -1045,11 +1032,6 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu *        
     }
     result.reset();
 
-    loomc_amdgpu_emit_options_t amdgpu_options = {};
-    amdgpu_options.type                        = LOOMC_STRUCTURE_TYPE_AMDGPU_EMIT_OPTIONS;
-    amdgpu_options.structure_size              = sizeof(amdgpu_options);
-    amdgpu_options.next                        = nullptr;
-    amdgpu_options.runtime_globals             = jit->runtime_globals;
     const loomc_option_entry_t emit_entries[]  = {
         {
          loomc_make_cstring_view(LOOMC_EMIT_OPTION_KEY_IDENTIFIER),
@@ -1059,7 +1041,7 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu *        
     loomc_option_dict_t option_dict                    = {};
     option_dict.type                                   = LOOMC_STRUCTURE_TYPE_OPTION_DICT;
     option_dict.structure_size                         = sizeof(option_dict);
-    option_dict.next                                   = &amdgpu_options;
+    option_dict.next                                   = nullptr;
     option_dict.entries                                = emit_entries;
     option_dict.entry_count                            = options->artifact_identifier ? 1 : 0;
     loomc_artifact_manifest_options_t manifest_options = {};
