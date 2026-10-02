@@ -6660,9 +6660,10 @@ static void run_rmsnorm_binary_f16_output_checks() {
         const ggml::hrx::CommandPlan & plan = scheduler.plan();
         REQUIRE(plan.valid());
         const auto producer = std::find_if(plan.dispatches.begin(), plan.dispatches.end(), [](const auto & dispatch) {
-            return kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_binary_q8_1_x4_f16";
+            return kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_binary_q8_1_x4_publish";
         });
         REQUIRE(producer != plan.dispatches.end());
+        require_compile_parameter(*producer, "ggml.rmsnorm_binary_q8_1_x4.publish_f16", "1");
         REQUIRE(producer->bindings.size() == 5);
         const ggml::hrx::Value * norm_value = imported.graph.values().find_tensor(norm);
         REQUIRE(norm_value != nullptr);
@@ -6714,9 +6715,10 @@ static void run_rmsnorm_binary_f16_output_checks() {
         const ggml::hrx::CommandPlan & plan = scheduler.plan();
         REQUIRE(plan.valid());
         const auto producer = std::find_if(plan.dispatches.begin(), plan.dispatches.end(), [](const auto & dispatch) {
-            return kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_binary_q8_1_x4_f16";
+            return kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_binary_q8_1_x4_publish";
         });
         REQUIRE(producer != plan.dispatches.end());
+        require_compile_parameter(*producer, "ggml.rmsnorm_binary_q8_1_x4.publish_f16", "1");
         REQUIRE(producer->bindings.size() == 5);
         const ggml::hrx::Value * norm_value = imported.graph.values().find_tensor(norm);
         REQUIRE(norm_value != nullptr);
@@ -7011,10 +7013,11 @@ static void run_symmetric_i4_consumer_qualification_checks() {
         });
         REQUIRE(symmetric_producer == plan.dispatches.end());
         const auto q8_producer = std::find_if(plan.dispatches.begin(), plan.dispatches.end(), [](const auto & dispatch) {
-            return kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_binary_q8_1_x4_f16";
+            return kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:ggml_rmsnorm_binary_q8_1_x4_publish";
         });
         REQUIRE((q8_producer != plan.dispatches.end()) == test.q8_publication);
         if (test.q8_publication) {
+            require_compile_parameter(*q8_producer, "ggml.rmsnorm_binary_q8_1_x4.publish_f16", "1");
             const auto * q8 = plan.metadata.find_alternate_value(
                 normalized_value->id, GGML_TYPE_Q8_1, qwen_q8_1_x4_size(tokens, hidden));
             REQUIRE(q8 != nullptr);

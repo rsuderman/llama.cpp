@@ -1108,12 +1108,13 @@ static void run_prefill_fusion_compile_checks() {
                                                { "ggml.rmsnorm_binary_f32.op", "2" },
                                            }));
 
-    const auto & rmsnorm_q8_f16 = find_kernel("ggml_rmsnorm_binary_q8_1_x4_f16");
+    const auto & rmsnorm_q8_f16 = find_kernel("ggml_rmsnorm_binary_q8_1_x4_publish");
     require_compiled_kernel(compile_kernel(*jit, "prefill-rmsnorm-q8-f16", rmsnorm_q8_f16, token_count_workload(512),
                                            {
                                                { "ggml.rmsnorm_binary_q8_1_x4.hidden_size", "2048" },
                                                { "ggml.rmsnorm_binary_q8_1_x4.rms_epsilon", "0.00001" },
                                                { "ggml.rmsnorm_binary_q8_1_x4.op", "2" },
+                                               { "ggml.rmsnorm_binary_q8_1_x4.publish_f16", "1" },
                                            }));
 
     const auto & flash_f16 = find_kernel("ggml_flash_attention_f32_f16_wmma_publish_f16");

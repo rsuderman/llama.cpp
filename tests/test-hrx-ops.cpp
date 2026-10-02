@@ -3816,10 +3816,10 @@ static void run_dense_matmul_cpu_reference_case(ggml_type    weight_type,
     const bool packed_input = packed_q4_input || packed_iq4_xs_input || square_output;
     const bool normalized_packed_input = normalize_input && packed_input;
     if (normalized_packed_input) {
-        require_kernel_subsequence(sequence, { "loom_libs:ggml_rmsnorm_binary_q8_1_x4_f16", expected_kernel });
+        require_kernel_subsequence(sequence, { "loom_libs:ggml_rmsnorm_binary_q8_1_x4_publish", expected_kernel });
         REQUIRE(std::find(sequence.begin(), sequence.end(), "qwen3_moe:ggml_quantize_q8_1_x4_f32") == sequence.end());
     } else if (normalize_input) {
-        REQUIRE(std::find(sequence.begin(), sequence.end(), "loom_libs:ggml_rmsnorm_binary_q8_1_x4_f16") == sequence.end());
+        REQUIRE(std::find(sequence.begin(), sequence.end(), "loom_libs:ggml_rmsnorm_binary_q8_1_x4_publish") == sequence.end());
     }
 
     ggml_backend_buffer_t cpu_buffer = ggml_backend_alloc_ctx_tensors(cpu_ctx, cpu_backend);

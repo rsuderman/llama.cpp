@@ -29,8 +29,8 @@ static constexpr KernelCatalogRef kRmsNormBinaryF32F16Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_f32_f16");
 static constexpr KernelCatalogRef kRmsNormBinaryF32K16Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_f32_k16");
-static constexpr KernelCatalogRef kRmsNormBinaryQ8_1X4F16Kernel =
-    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_q8_1_x4_f16");
+static constexpr KernelCatalogRef kRmsNormBinaryQ8_1X4PublishKernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_binary_q8_1_x4_publish");
 static constexpr KernelCatalogRef kRmsNormF32Kernel = GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_f32");
 static constexpr KernelCatalogRef kRmsNormMulRopeF32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_rmsnorm_mul_rope_f32");
@@ -1086,7 +1086,7 @@ static bool match_rmsnorm_binary_q8_1_x4_dispatch(const DispatchMatchContext & c
     }
 
     Dispatch dispatch;
-    dispatch.kernel = make_kernel_specialization(kRmsNormBinaryQ8_1X4F16Kernel);
+    dispatch.kernel = make_kernel_specialization(kRmsNormBinaryQ8_1X4PublishKernel);
     dispatch.kernel.integer_parameters.emplace("token_count", rms_match.token_count);
     dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_binary_q8_1_x4.hidden_size",
                                                to_config_value(rms_match.hidden_size));
@@ -1094,6 +1094,7 @@ static bool match_rmsnorm_binary_q8_1_x4_dispatch(const DispatchMatchContext & c
                                                to_config_value(rms_match.epsilon));
     dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_binary_q8_1_x4.op",
                                                std::to_string(binary_kind_config_value(rms_match.op)));
+    dispatch.kernel.compile_parameters.emplace("ggml.rmsnorm_binary_q8_1_x4.publish_f16", "1");
     dispatch.bindings.push_back({ rms_match.input->id, 0, rms_match.input->byte_count });
     dispatch.bindings.push_back({ rms_match.rhs->id, 0, rms_match.rhs->byte_count });
     dispatch.bindings.push_back({ rms_match.output->id, 0, rms_match.output->byte_count });

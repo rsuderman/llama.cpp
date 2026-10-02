@@ -84,10 +84,7 @@
       "path": "ops/normalization/rmsnorm_binary_f32_k16.loom"
     },
     {
-      "path": "ops/normalization/rmsnorm_binary_publish_q8_1_x4.loom"
-    },
-    {
-      "path": "ops/normalization/rmsnorm_binary_publish_q8_1_x4_f16.loom"
+      "path": "ops/normalization/rmsnorm_binary_publish_q8_1_x4_configured.loom"
     },
     {
       "path": "ops/normalization/rmsnorm_binary_symmetric_i4_k32.loom"
@@ -1925,61 +1922,10 @@
       ]
     },
     {
-      "name": "ggml_rmsnorm_binary_q8_1_x4",
+      "name": "ggml_rmsnorm_binary_q8_1_x4_publish",
       "family": "loom_libs",
-      "symbol": "ggml_rmsnorm_binary_q8_1_x4",
-      "source": "ops/normalization/rmsnorm_binary_publish_q8_1_x4.loom",
-      "workload_parameters": [
-        {
-          "name": "token_count",
-          "type": "index"
-        }
-      ],
-      "launch_parameters": [
-        {
-          "name": "token_count",
-          "type": "index"
-        }
-      ],
-      "bindings": [
-        "input",
-        "rhs",
-        "output",
-        "q8_output"
-      ],
-      "binding_access": [
-        "read",
-        "read",
-        "read_write",
-        "read_write"
-      ],
-      "target_selector": "",
-      "compile_recipe": {
-        "mode": "direct",
-        "primary_sources": [
-          "ops/normalization/rmsnorm_binary_publish_q8_1_x4.loom"
-        ],
-        "library_sources": [
-          "motifs/normalization/rmsnorm.loom",
-          "motifs/normalization/rmsnorm_binary.loom",
-          "motifs/normalization/publish_q8.loom",
-          "motifs/elementwise/binary_apply.loom",
-          "motifs/quantize_q8_1_x4.loom"
-        ]
-      },
-      "compile_dependencies": [
-        "motifs/normalization/rmsnorm.loom",
-        "motifs/normalization/rmsnorm_binary.loom",
-        "motifs/normalization/publish_q8.loom",
-        "motifs/elementwise/binary_apply.loom",
-        "motifs/quantize_q8_1_x4.loom"
-      ]
-    },
-    {
-      "name": "ggml_rmsnorm_binary_q8_1_x4_f16",
-      "family": "loom_libs",
-      "symbol": "ggml_rmsnorm_binary_q8_1_x4_f16",
-      "source": "ops/normalization/rmsnorm_binary_publish_q8_1_x4_f16.loom",
+      "symbol": "ggml_rmsnorm_binary_q8_1_x4_publish",
+      "source": "ops/normalization/rmsnorm_binary_publish_q8_1_x4_configured.loom",
       "workload_parameters": [
         {
           "name": "token_count",
@@ -2010,7 +1956,7 @@
       "compile_recipe": {
         "mode": "direct",
         "primary_sources": [
-          "ops/normalization/rmsnorm_binary_publish_q8_1_x4_f16.loom"
+          "ops/normalization/rmsnorm_binary_publish_q8_1_x4_configured.loom"
         ],
         "library_sources": [
           "motifs/normalization/rmsnorm.loom",
