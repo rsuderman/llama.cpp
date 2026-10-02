@@ -2,8 +2,10 @@
 
 #include "dispatch-activation-publication.h"
 #include "dispatch-mul-mat-common.h"
+#include "dispatch_registration/immutable-program-resource.h"
 #include "ggml.h"
 #include "graph/graph-matcher.h"
+#include "iq-codebook-resource.h"
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
 #include <cstdint>
@@ -19,6 +21,10 @@ static constexpr KernelCatalogRef kMulMatF32F32WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_f32_f32_wmma");
 static constexpr KernelCatalogRef kMulMatTiledF32F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_publish_f32");
+static constexpr KernelCatalogRef kMulMatTiledIQ2SF32F32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_iq2_s_publish_f32");
+static constexpr KernelCatalogRef kMulMatTiledIQ3SF32F32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_iq3_s_publish_f32");
 static constexpr KernelCatalogRef kMulMatTiledF32F16AlternateKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_publish_f32_f16_alternate");
 static constexpr KernelCatalogRef kMulMatSkinnyF32F32Kernel =
@@ -31,6 +37,10 @@ static constexpr KernelCatalogRef kMulMatAddF32F32DecodeWave64Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_add_f32_f32_decode_wave64");
 static constexpr KernelCatalogRef kMulMatVectorF32F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_f32_f32");
+static constexpr KernelCatalogRef kMulMatVectorIQ2SF32F32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_iq2_s_f32_f32");
+static constexpr KernelCatalogRef kMulMatVectorIQ3SF32F32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_iq3_s_f32_f32");
 static constexpr KernelCatalogRef kMulMatVectorBiasAddF32F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_bias_residual_f32_f32");
 static constexpr KernelCatalogRef kQuantizeQ8_1X4F32Kernel =
@@ -86,6 +96,45 @@ static constexpr int64_t kQwenVectorVocabularyCount = 151936;
 
 static bool deprecated_mul_mat_dispatch_disabled() {
     return std::getenv("GGML_HRX_DISABLE_DEPRECATED_MUL_MAT_DISPATCH") != nullptr;
+}
+
+static bool iq_codebook_matmul_disabled(CommonMulMatWeightFormat format) {
+    if (std::getenv("GGML_HRX_DISABLE_IQ_CODEBOOK_MATMUL") != nullptr) {
+        return true;
+    }
+    if (format == CommonMulMatWeightFormat::IQ2_S) {
+        return std::getenv("GGML_HRX_DISABLE_IQ2_S_GRID_MATMUL") != nullptr;
+    }
+    if (format == CommonMulMatWeightFormat::IQ3_S) {
+        return std::getenv("GGML_HRX_DISABLE_IQ3_S_CODEBOOK_MATMUL") != nullptr;
+    }
+    return false;
+}
+
+static const IQCodebookResourceSpec * iq_codebook_for_weight_format(CommonMulMatWeightFormat format) {
+    switch (format) {
+        case CommonMulMatWeightFormat::IQ2_S:
+            return &iq_codebook_resource_spec(IQCodebookResource::IQ2S);
+        case CommonMulMatWeightFormat::IQ3_S:
+            return &iq_codebook_resource_spec(IQCodebookResource::IQ3S);
+        default:
+            return nullptr;
+    }
+}
+
+static ValueId require_iq_codebook(const DispatchMatchContext &   context,
+                                   DispatchMatch &                dispatch_match,
+                                   const IQCodebookResourceSpec & codebook) {
+    return require_immutable_program_resource(context, dispatch_match,
+                                              { codebook.key, codebook.data, codebook.alignment });
+}
+
+static KernelCatalogRef tiled_iq_codebook_kernel(CommonMulMatWeightFormat format) {
+    return format == CommonMulMatWeightFormat::IQ3_S ? kMulMatTiledIQ3SF32F32Kernel : kMulMatTiledIQ2SF32F32Kernel;
+}
+
+static KernelCatalogRef vector_iq_codebook_kernel(CommonMulMatWeightFormat format) {
+    return format == CommonMulMatWeightFormat::IQ3_S ? kMulMatVectorIQ3SF32F32Kernel : kMulMatVectorIQ2SF32F32Kernel;
 }
 
 struct MulMatPostOpsMatch {
@@ -1123,8 +1172,12 @@ static bool build_mul_mat_dispatch(
     const bool publish_f16_alternate = f16_demand.matched();
     const bool publish_q8_alternate  = q8_demand.matched();
     Dispatch dispatch;
-    dispatch.kernel =
-        make_kernel_specialization(publish_f16_alternate ? kMulMatTiledF32F16AlternateKernel : match.kernel);
+    const IQCodebookResourceSpec * codebook = iq_codebook_for_weight_format(match.weight_format);
+    const bool use_iq_codebook =
+        codebook != nullptr && !publish_f16_alternate && !iq_codebook_matmul_disabled(match.weight_format);
+    dispatch.kernel = make_kernel_specialization(
+        use_iq_codebook ? tiled_iq_codebook_kernel(match.weight_format) :
+        publish_f16_alternate ? kMulMatTiledF32F16AlternateKernel : match.kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
     dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
                                                common_to_config_value(match.token_count));
@@ -1171,6 +1224,13 @@ static bool build_mul_mat_dispatch(
                                       match.input_size, match.output_size, match.weight->byte_count });
     } else {
         dispatch.bindings.push_back({ match.weight->id, 0, match.weight->byte_count });
+    }
+    if (use_iq_codebook) {
+        const ValueId grid = require_iq_codebook(context, dispatch_match, *codebook);
+        if (grid.value < 0) {
+            return false;
+        }
+        dispatch.bindings.push_back({ grid, 0, codebook->data.size() });
     }
     dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
     if (publish_f16_alternate) {
@@ -1344,24 +1404,11 @@ static bool build_vector_mul_mat_dispatch(const DispatchMatchContext & context,
     }
 
     Dispatch dispatch;
-    dispatch.kernel = make_kernel_specialization(kMulMatVectorF32F32Kernel);
-    dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
-    dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
-                                               common_to_config_value(match.token_count));
-    dispatch.kernel.compile_parameters.emplace("ggml.matmul.vector.input_size",
-                                               common_to_config_value(match.input_size));
-    dispatch.kernel.compile_parameters.emplace("ggml.matmul.vector.output_size",
-                                               common_to_config_value(match.output_size));
-    dispatch.kernel.compile_parameters.emplace("ggml.matmul.vector.output_accumulation", "0");
-    dispatch.kernel.compile_parameters.emplace("ggml.matmul.vector.output_unary_op",
-                                               std::to_string(unary_kind_config_value(match.output_unary_op)));
+    const IQCodebookResourceSpec * codebook = iq_codebook_for_weight_format(match.weight_format);
     VectorPublishPlan publish;
     if (!prepare_vector_publish_plan(context, *match.output, dispatch_match, publish)) {
         return false;
     }
-    dispatch.kernel.compile_parameters.emplace(
-        "ggml.matmul.vector.publish_format",
-        common_to_config_value(vector_publish_format_config_value(publish)));
 
     DispatchBinding          activation;
     CommonMulMatWeightFormat weight_format = match.weight_format;
@@ -1372,6 +1419,25 @@ static bool build_vector_mul_mat_dispatch(const DispatchMatchContext & context,
                                            weight_format, weight_layout, uses_q8_activation)) {
         return false;
     }
+
+    const bool use_iq_codebook =
+        codebook != nullptr && !iq_codebook_matmul_disabled(match.weight_format) && !uses_q8_activation &&
+        publish.publication.format != CommonActivationPublicationFormat::F16Row;
+    dispatch.kernel = make_kernel_specialization(
+        use_iq_codebook ? vector_iq_codebook_kernel(match.weight_format) : kMulMatVectorF32F32Kernel);
+    dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
+    dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
+                                               common_to_config_value(match.token_count));
+    dispatch.kernel.compile_parameters.emplace("ggml.matmul.vector.input_size",
+                                               common_to_config_value(match.input_size));
+    dispatch.kernel.compile_parameters.emplace("ggml.matmul.vector.output_size",
+                                               common_to_config_value(match.output_size));
+    dispatch.kernel.compile_parameters.emplace("ggml.matmul.vector.output_accumulation", "0");
+    dispatch.kernel.compile_parameters.emplace("ggml.matmul.vector.output_unary_op",
+                                               std::to_string(unary_kind_config_value(match.output_unary_op)));
+    dispatch.kernel.compile_parameters.emplace(
+        "ggml.matmul.vector.publish_format",
+        common_to_config_value(vector_publish_format_config_value(publish)));
 
     dispatch.kernel.compile_parameters.emplace(
         "ggml.matmul.vector.weight_format", common_to_config_value(common_mul_mat_format_config_value(weight_format)));
@@ -1386,6 +1452,13 @@ static bool build_vector_mul_mat_dispatch(const DispatchMatchContext & context,
                                       match.input_size, match.output_size, match.weight->byte_count });
     } else {
         dispatch.bindings.push_back({ match.weight->id, 0, match.weight->byte_count });
+    }
+    if (use_iq_codebook) {
+        const ValueId grid = require_iq_codebook(context, dispatch_match, *codebook);
+        if (grid.value < 0) {
+            return false;
+        }
+        dispatch.bindings.push_back({ grid, 0, codebook->data.size() });
     }
     dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
     dispatch.bindings.push_back(vector_next_output_binding(*match.output, publish));

@@ -222,8 +222,12 @@ ggml_add_backend_library(ggml-hrx
     dispatch_registration/common/dispatch-scale.h
     dispatch_registration/common/dispatch-unary.cpp
     dispatch_registration/common/dispatch-unary.h
+    dispatch_registration/common/iq-codebook-resource.cpp
+    dispatch_registration/common/iq-codebook-resource.h
     dispatch_registration/dispatch-registry.cpp
     dispatch_registration/dispatch-registry.h
+    dispatch_registration/immutable-program-resource.cpp
+    dispatch_registration/immutable-program-resource.h
     dispatch_registration/llm/dispatch-attention-qkv.cpp
     dispatch_registration/llm/dispatch-attention-qkv.h
     dispatch_registration/llm/dispatch-gated-delta-net.cpp

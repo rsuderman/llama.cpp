@@ -1329,6 +1329,210 @@ func.def inline @ggml_iq2s_f16_vector4(%weight: buffer, %row_byte_base: offset, 
   %values = vector.fptrunc %values_f32 : vector<4xf32> to vector<4xf16>
   func.return %values : vector<4xf16>
 }
+
+// IQ2_S-only decoder backed by the canonical 1024-entry packed grid.
+func.def inline @ggml_iq2s_global_f32_vector4(%grid: buffer, %weight: buffer, %row_byte_base: offset, %iq2_block: index, %iq2_group: index, %packet: index) -> (vector<4xf32>) {
+  %c0 = index.constant 0 : index
+  %c1 = index.constant 1 : index
+  %c2 = index.constant 2 : index
+  %c4 = index.constant 4 : index
+  %c7 = index.constant 7 : index
+  %c8 = index.constant 8 : index
+  %c16 = index.constant 16 : index
+  %c32 = index.constant 32 : index
+  %c0_offset = index.constant 0 : offset
+  %c0_i32 = scalar.constant 0 : i32
+  %c1_i32 = scalar.constant 1 : i32
+  %c2_i32 = scalar.constant 2 : i32
+  %c4_i32 = scalar.constant 4 : i32
+  %c8_i32 = scalar.constant 8 : i32
+  %c15_i32 = scalar.constant 15 : i32
+  %c16_i32 = scalar.constant 16 : i32
+  %c24_i32 = scalar.constant 24 : i32
+  %c32_i32 = scalar.constant 32 : i32
+  %c64_i32 = scalar.constant 64 : i32
+  %c128_i32 = scalar.constant 128 : i32
+  %c768_i32 = scalar.constant 768 : i32
+  %c05_f32 = scalar.constant 0.5 : f32
+  %c025_f32 = scalar.constant 0.25 : f32
+  %block_bytes = index.constant 82 : offset
+  %qs_offset = index.constant 2 : offset
+  %qh_offset = index.constant 66 : offset
+  %scales_offset = index.constant 74 : offset
+  %block_byte_add = index.scale %iq2_block, %block_bytes : index, offset -> offset
+  %block_byte_base = index.add %row_byte_base, %block_byte_add : offset
+  %qs_byte_base = index.add %block_byte_base, %qs_offset : offset
+  %qh_byte_base = index.add %block_byte_base, %qh_offset : offset
+  %scales_byte_base = index.add %block_byte_base, %scales_offset : offset
+  %d_view = buffer.view %weight[%block_byte_base] : buffer -> view<1xf16>
+  %qs_view = buffer.view %weight[%qs_byte_base] : buffer -> view<64xi8>
+  %qh_view = buffer.view %weight[%qh_byte_base] : buffer -> view<8xi8>
+  %scales_view = buffer.view %weight[%scales_byte_base] : buffer -> view<8xi8>
+  %grid_view = buffer.view %grid[%c0_offset] : buffer -> view<2048xi32>
+  %bounded_group = index.assume %iq2_group [range(%iq2_group, 0, 7)] : index
+  %bounded_packet = index.assume %packet [range(%packet, 0, 63)] : index
+  %packet_in_group0 = index.rem %bounded_packet, %c8 : index
+  %l0 = index.div %packet_in_group0, %c2 : index
+  %l = index.assume %l0 [range(%l0, 0, 3)] : index
+  %word_index = index.rem %packet_in_group0, %c2 : index
+  %qs_group_base = index.mul %bounded_group, %c4 : index
+  %qs_index = index.add %qs_group_base, %l : index
+  %signs_index = index.add %qs_index, %c32 : index
+  %scale_half = index.div %l, %c2 : index
+  %uses_high_scale = index.cmp eq, %scale_half, %c1 : index
+  %d_f16 = view.load %d_view[%c0] : view<1xf16> -> f16
+  %d = scalar.extf %d_f16 : f16 to f32
+  %qs_i8 = view.load %qs_view[%qs_index] : view<64xi8> -> i8
+  %qh_i8 = view.load %qh_view[%bounded_group] : view<8xi8> -> i8
+  %signs_i8 = view.load %qs_view[%signs_index] : view<64xi8> -> i8
+  %scale_i8 = view.load %scales_view[%bounded_group] : view<8xi8> -> i8
+  %qs = scalar.extui %qs_i8 : i8 to i32
+  %qh = scalar.extui %qh_i8 : i8 to i32
+  %signs = scalar.extui %signs_i8 : i8 to i32
+  %scale_byte = scalar.extui %scale_i8 : i8 to i32
+  %scale_low = scalar.andi %scale_byte, %c15_i32 : i32
+  %scale_high_shift = scalar.shrui %scale_byte, %c4_i32 : i32
+  %scale_high = scalar.andi %scale_high_shift, %c15_i32 : i32
+  %scale_i32 = scf.select %uses_high_scale, %scale_high, %scale_low : i32
+  %scale_base = scalar.uitofp %scale_i32 : i32 to f32
+  %scale_plus = scalar.addf %scale_base, %c05_f32 : f32
+  %scale_mul = scalar.mulf %d, %scale_plus : f32
+  %scale = scalar.mulf %scale_mul, %c025_f32 : f32
+  %l_i32 = index.cast %l : index to i32
+  %two_l = scalar.muli %l_i32, %c2_i32 : i32
+  %qh_shift = scalar.subi %c8_i32, %two_l : i32
+  %qh_shifted = scalar.shli %qh, %qh_shift : i32
+  %qh_masked = scalar.andi %qh_shifted, %c768_i32 : i32
+  %grid_index_i32 = scalar.ori %qs, %qh_masked : i32
+  %grid_index0 = index.cast %grid_index_i32 : i32 to index
+  %grid_index = index.assume %grid_index0 [range(%grid_index0, 0, 1023)] : index
+  %grid_word_base = index.mul %grid_index, %c2 : index
+  %grid_word_index0 = index.add %grid_word_base, %word_index : index
+  %grid_word_index = index.assume %grid_word_index0 [range(%grid_word_index0, 0, 2047)] : index
+  %grid_word = view.load %grid_view[%grid_word_index] : view<2048xi32> -> i32
+  %uses_word1 = index.cmp eq, %word_index, %c1 : index
+  %sign_bit0 = scf.select %uses_word1, %c16_i32, %c1_i32 : i32
+  %sign_bit1 = scf.select %uses_word1, %c32_i32, %c2_i32 : i32
+  %sign_bit2 = scf.select %uses_word1, %c64_i32, %c4_i32 : i32
+  %sign_bit3 = scf.select %uses_word1, %c128_i32, %c8_i32 : i32
+  %v0 = func.call @ggml_iq2s_value_f32(%grid_word, %c0_i32, %signs, %sign_bit0, %scale) : (i32, i32, i32, i32, f32) -> (f32)
+  %v1 = func.call @ggml_iq2s_value_f32(%grid_word, %c8_i32, %signs, %sign_bit1, %scale) : (i32, i32, i32, i32, f32) -> (f32)
+  %v2 = func.call @ggml_iq2s_value_f32(%grid_word, %c16_i32, %signs, %sign_bit2, %scale) : (i32, i32, i32, i32, f32) -> (f32)
+  %v3 = func.call @ggml_iq2s_value_f32(%grid_word, %c24_i32, %signs, %sign_bit3, %scale) : (i32, i32, i32, i32, f32) -> (f32)
+  %result = vector.from_elements %v0, %v1, %v2, %v3 : vector<4xf32>
+  func.return %result : vector<4xf32>
+}
+
+func.def inline @ggml_iq2s_global_f16_vector4(%grid: buffer, %weight: buffer, %row_byte_base: offset, %iq2_block: index, %iq2_group: index, %packet: index) -> (vector<4xf16>) {
+  %values_f32 = func.call @ggml_iq2s_global_f32_vector4(%grid, %weight, %row_byte_base, %iq2_block, %iq2_group, %packet) : (buffer, buffer, offset, index, index, index) -> (vector<4xf32>)
+  %values = vector.fptrunc %values_f32 : vector<4xf32> to vector<4xf16>
+  func.return %values : vector<4xf16>
+}
+
+// IQ3_S decoder backed by the canonical 512-entry packed grid.
+func.def inline @ggml_iq3s_global_f32_vector4(%grid: buffer, %weight: buffer, %row_byte_base: offset, %iq3_block: index, %iq3_group: index, %packet: index) -> (vector<4xf32>) {
+  %c0 = index.constant 0 : index
+  %c0_offset = index.constant 0 : offset
+  %c0_i32 = scalar.constant 0 : i32
+  %c1_i32 = scalar.constant 1 : i32
+  %c2 = index.constant 2 : index
+  %c2_i32 = scalar.constant 2 : i32
+  %c4_i32 = scalar.constant 4 : i32
+  %c8 = index.constant 8 : index
+  %c8_i32 = scalar.constant 8 : i32
+  %c15_i32 = scalar.constant 15 : i32
+  %c16 = index.constant 16 : index
+  %c16_i32 = scalar.constant 16 : i32
+  %c24_i32 = scalar.constant 24 : i32
+  %c256_i32 = scalar.constant 256 : i32
+  %block_bytes = index.constant 110 : offset
+  %qs_offset = index.constant 2 : offset
+  %qh_offset = index.constant 66 : offset
+  %signs_offset = index.constant 74 : offset
+  %scales_offset = index.constant 106 : offset
+  %bounded_group = index.assume %iq3_group [range(%iq3_group, 0, 7)] : index
+  %bounded_packet = index.assume %packet [range(%packet, 0, 7)] : index
+  %block_byte_add = index.scale %iq3_block, %block_bytes : index, offset -> offset
+  %block_byte_base = index.add %row_byte_base, %block_byte_add : offset
+  %qs_byte_base = index.add %block_byte_base, %qs_offset : offset
+  %qh_byte_base = index.add %block_byte_base, %qh_offset : offset
+  %signs_byte_base = index.add %block_byte_base, %signs_offset : offset
+  %scales_byte_base = index.add %block_byte_base, %scales_offset : offset
+  %d_view = buffer.view %weight[%block_byte_base] : buffer -> view<1xf16>
+  %qs_view = buffer.view %weight[%qs_byte_base] : buffer -> view<64xi8>
+  %qh_view = buffer.view %weight[%qh_byte_base] : buffer -> view<8xi8>
+  %signs_view = buffer.view %weight[%signs_byte_base] : buffer -> view<32xi8>
+  %scales_view = buffer.view %weight[%scales_byte_base] : buffer -> view<4xi8>
+  %grid_view = buffer.view %grid[%c0_offset] : buffer -> view<512xi32>
+  %iqs_group_base = index.mul %bounded_group, %c8 : index
+  %iqs0 = index.add %iqs_group_base, %bounded_packet : index
+  %iqs = index.assume %iqs0 [range(%iqs0, 0, 63)] : index
+  %signs_index0 = index.div %iqs, %c2 : index
+  %signs_index = index.assume %signs_index0 [range(%signs_index0, 0, 31)] : index
+  %scale_index0 = index.div %iqs, %c16 : index
+  %scale_index = index.assume %scale_index0 [range(%scale_index0, 0, 3)] : index
+  %iqs_mod8_index = index.rem %iqs, %c8 : index
+  %high_shift_index = index.sub %c8, %iqs_mod8_index : index
+  %high_shift = index.cast %high_shift_index : index to i32
+  %scale_shift_index = index.rem %bounded_group, %c2 : index
+  %scale_shift_base = index.cast %scale_shift_index : index to i32
+  %scale_shift = scalar.muli %scale_shift_base, %c4_i32 : i32
+  %sign_shift_index = index.rem %bounded_packet, %c2 : index
+  %sign_shift_base = index.cast %sign_shift_index : index to i32
+  %sign_shift = scalar.muli %sign_shift_base, %c4_i32 : i32
+  %q_i8 = view.load %qs_view[%iqs] : view<64xi8> -> i8
+  %qh_i8 = view.load %qh_view[%bounded_group] : view<8xi8> -> i8
+  %signs_i8 = view.load %signs_view[%signs_index] : view<32xi8> -> i8
+  %scale_i8 = view.load %scales_view[%scale_index] : view<4xi8> -> i8
+  %q_i32 = scalar.extui %q_i8 : i8 to i32
+  %qh_i32 = scalar.extui %qh_i8 : i8 to i32
+  %signs_i32 = scalar.extui %signs_i8 : i8 to i32
+  %scale_i32 = scalar.extui %scale_i8 : i8 to i32
+  %qh_shifted = scalar.shli %qh_i32, %high_shift : i32
+  %qh_high = scalar.andi %qh_shifted, %c256_i32 : i32
+  %grid_index_i32 = scalar.ori %q_i32, %qh_high : i32
+  %grid_index0 = index.cast %grid_index_i32 : i32 to index
+  %grid_index = index.assume %grid_index0 [range(%grid_index0, 0, 511)] : index
+  %grid_word = view.load %grid_view[%grid_index] : view<512xi32> -> i32
+  %scale_shifted = scalar.shrui %scale_i32, %scale_shift : i32
+  %local_scale = scalar.andi %scale_shifted, %c15_i32 : i32
+  %local_scale2 = scalar.muli %local_scale, %c2_i32 : i32
+  %scale_code = scalar.addi %local_scale2, %c1_i32 : i32
+  %scale_f32 = scalar.uitofp %scale_code : i32 to f32
+  %d_f16 = view.load %d_view[%c0] : view<1xf16> -> f16
+  %d = scalar.extf %d_f16 : f16 to f32
+  %db = scalar.mulf %d, %scale_f32 : f32
+  %shifted_signs = scalar.shrui %signs_i32, %sign_shift : i32
+  %v0_base = func.call @ggml_iq3s_signed_value_f32(%grid_word, %c0_i32, %shifted_signs, %c1_i32) : (i32, i32, i32, i32) -> (f32)
+  %v1_base = func.call @ggml_iq3s_signed_value_f32(%grid_word, %c8_i32, %shifted_signs, %c2_i32) : (i32, i32, i32, i32) -> (f32)
+  %v2_base = func.call @ggml_iq3s_signed_value_f32(%grid_word, %c16_i32, %shifted_signs, %c4_i32) : (i32, i32, i32, i32) -> (f32)
+  %v3_base = func.call @ggml_iq3s_signed_value_f32(%grid_word, %c24_i32, %shifted_signs, %c8_i32) : (i32, i32, i32, i32) -> (f32)
+  %v0 = scalar.mulf %db, %v0_base : f32
+  %v1 = scalar.mulf %db, %v1_base : f32
+  %v2 = scalar.mulf %db, %v2_base : f32
+  %v3 = scalar.mulf %db, %v3_base : f32
+  %result = vector.from_elements %v0, %v1, %v2, %v3 : vector<4xf32>
+  func.return %result : vector<4xf32>
+}
+
+func.def public inline @ggml_codebook_f32_vector4(%weight_format: index, %codebook: buffer, %weight: buffer, %row_byte_base: offset, %quant_block: index, %quant_group: index, %packet: index) -> (vector<4xf32>) {
+  %iq3_s_format = index.constant 21 : index
+  %is_iq3_s = index.cmp eq, %weight_format, %iq3_s_format : index
+  %result = scf.if %is_iq3_s -> (vector<4xf32>) {
+    %values = func.call @ggml_iq3s_global_f32_vector4(%codebook, %weight, %row_byte_base, %quant_block, %quant_group, %packet) : (buffer, buffer, offset, index, index, index) -> (vector<4xf32>)
+    scf.yield %values : vector<4xf32>
+  } else {
+    %values = func.call @ggml_iq2s_global_f32_vector4(%codebook, %weight, %row_byte_base, %quant_block, %quant_group, %packet) : (buffer, buffer, offset, index, index, index) -> (vector<4xf32>)
+    scf.yield %values : vector<4xf32>
+  }
+  func.return %result : vector<4xf32>
+}
+
+func.def public inline @ggml_codebook_f16_vector4(%weight_format: index, %codebook: buffer, %weight: buffer, %row_byte_base: offset, %quant_block: index, %quant_group: index, %packet: index) -> (vector<4xf16>) {
+  %values_f32 = func.call @ggml_codebook_f32_vector4(%weight_format, %codebook, %weight, %row_byte_base, %quant_block, %quant_group, %packet) : (index, buffer, buffer, offset, index, index, index) -> (vector<4xf32>)
+  %values = vector.fptrunc %values_f32 : vector<4xf32> to vector<4xf16>
+  func.return %values : vector<4xf16>
+}
 func.def inline @ggml_iq3s_grid_f32_halves() -> (vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>, vector<32xf32>) {
   %grid_low0 = scalar.constant 257.0 : f32
   %grid_low1 = scalar.constant 259.0 : f32
@@ -2025,7 +2229,7 @@ func.def inline @ggml_dequant_weight_tile_bytes(%weight_format: index) -> (offse
   func.return %selected : offset
 }
 
-func.def inline @ggml_dequant_weight_row_bytes(%weight_format: index, %hidden_size: index) -> (offset) {
+func.def public inline @ggml_dequant_weight_row_bytes(%weight_format: index, %hidden_size: index) -> (offset) {
   %q1_0_format = index.constant 10 : index
   %c3 = index.constant 11 : index
   %c4 = index.constant 4 : index
