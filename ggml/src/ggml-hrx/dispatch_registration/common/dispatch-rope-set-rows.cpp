@@ -175,6 +175,14 @@ static bool supported_token_count(int64_t token_count) {
     return token_count >= 1 && token_count <= 2048;
 }
 
+static int64_t token_capacity_class(int64_t token_count) {
+    int64_t capacity = 1;
+    while (capacity < token_count) {
+        capacity *= 2;
+    }
+    return capacity;
+}
+
 static bool supported_cache_row_count(int64_t row_count) {
     return row_count >= 1 && row_count <= 1048576;
 }
@@ -444,7 +452,10 @@ static SetRowsMatch match_set_rows_2d(const Graph & graph, const GraphNode * nod
     return match;
 }
 
-static void add_rope_compile_parameters(Dispatch & dispatch, const RopeMatch & match, const char * prefix) {
+static void add_rope_compile_parameters(Dispatch & dispatch,
+                                        const RopeMatch & match,
+                                        const char *      prefix,
+                                        bool              include_input_span = true) {
     dispatch.kernel.compile_parameters.emplace(std::string(prefix) + ".head_size", to_config_value(match.head_size));
     dispatch.kernel.compile_parameters.emplace(std::string(prefix) + ".n_dims", to_config_value(match.n_dims));
     dispatch.kernel.compile_parameters.emplace(std::string(prefix) + ".head_count", to_config_value(match.head_count));
@@ -454,7 +465,10 @@ static void add_rope_compile_parameters(Dispatch & dispatch, const RopeMatch & m
                                                to_config_value(match.input_stride1));
     dispatch.kernel.compile_parameters.emplace(std::string(prefix) + ".input_stride2",
                                                to_config_value(match.input_stride2));
-    dispatch.kernel.compile_parameters.emplace(std::string(prefix) + ".input_span", to_config_value(match.input_span));
+    if (include_input_span) {
+        dispatch.kernel.compile_parameters.emplace(std::string(prefix) + ".input_span",
+                                                   to_config_value(match.input_span));
+    }
     dispatch.kernel.compile_parameters.emplace(std::string(prefix) + ".mscale",
                                                rope_mscale_config_value(match.rope_mscale));
     dispatch.kernel.compile_parameters.emplace(std::string(prefix) + ".mode", to_config_value(match.mode));
@@ -507,8 +521,12 @@ static Dispatch make_rope_dispatch(const DispatchMatchContext & context,
     const auto [theta, freq_factors] = add_rope_frequency_bindings(context, match, dispatch_match, "common.rope");
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kRopeF32Kernel);
+    dispatch.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
     dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
-    add_rope_compile_parameters(dispatch, match, "ggml.rope_f32");
+    dispatch.kernel.integer_parameters.emplace("input_span", match.input_span);
+    add_rope_compile_parameters(dispatch, match, "ggml.rope_f32", false);
+    dispatch.kernel.compile_parameters["ggml.rope_f32.token_capacity"] =
+        to_config_value(token_capacity_class(match.token_count));
     dispatch.bindings.push_back({ match.positions->id, 0, match.positions->byte_count });
     dispatch.bindings.push_back({ match.input->storage_root, match.input->storage_offset, match.input_span_bytes });
     dispatch.bindings.push_back({ theta, 0, match.theta_bytes });

@@ -31,13 +31,13 @@ template.def<@ggml.rope_f32.rotate_scalar_pair> device @ggml_rope_f32_rotate_sca
   template.return %rotated_x, %rotated_y : f32, f32
 }
 
-template.decl @ggml.rope_f32.body(%token_count: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %output: buffer)
+template.decl @ggml.rope_f32.body(%token_count: index, %input_span: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %output: buffer)
 
 template.decl @ggml.rope_scale_f32.body(%token_count: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %output: buffer)
 
 template.decl @ggml.rope_token_scale_f32.body(%token_count: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %scales: buffer, %output: buffer)
 
-template.decl @ggml.rope_f32.scaled_body(%token_count: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %output_scale: f32, %output: buffer)
+template.decl @ggml.rope_f32.scaled_body(%token_count: index, %input_span: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %output_scale: f32, %output: buffer)
 
 template.decl @ggml.rope_set_rows_f32.body(%token_count: index, %cache_row_count: index, %positions: buffer, %indices: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %cache: buffer)
 
@@ -151,18 +151,17 @@ template.def<@ggml.rope_f32.copy_packet> device @ggml_rope_f32_copy_packet(%inpu
   template.return %values : vector<4xf32>
 }
 
-template.def<@ggml.rope_f32.scaled_body> device @ggml_rope_f32_scaled_body(%token_count: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %output_scale: f32, %output: buffer) {
+template.def<@ggml.rope_f32.scaled_body> device @ggml_rope_f32_scaled_body(%token_count: index, %input_span: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %output_scale: f32, %output: buffer) {
   %token_capacity = config.get @ggml.rope_f32.token_capacity : index
   %head_count0 = config.get @ggml.rope_f32.head_count : index
   %head_size0 = config.get @ggml.rope_f32.head_size : index
   %n_dims0 = config.get @ggml.rope_f32.n_dims : index
   %input_stride1_0 = config.get @ggml.rope_f32.input_stride1 : index
   %input_stride2_0 = config.get @ggml.rope_f32.input_stride2 : index
-  %input_span0 = config.get @ggml.rope_f32.input_span : index
   %mscale = config.get @ggml.rope_f32.mscale : f32
   %mode = config.get @ggml.rope_f32.mode : index
   %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048), le(%token_count, %token_capacity)] : index
-  %bounded_input_span = index.assume %input_span0 [range(%input_span0, 1, 1073741824)] : index
+  %bounded_input_span = index.assume %input_span [range(%input_span, 1, 1073741824)] : index
   %head_count, %head_size, %n_dims = index.assume %head_count0, %head_size0, %n_dims0 [range(%head_count0, 1, 64), range(%head_size0, 4, 1024), range(%n_dims0, 4, 1024), mul(%head_size0, 4), mul(%n_dims0, 4), le(%n_dims0, %head_size0)] : index, index, index
   %input_stride1, %input_stride2 = index.assume %input_stride1_0, %input_stride2_0 [range(%input_stride1_0, 4, 1073741824), range(%input_stride2_0, 4, 1073741824)] : index, index
   %head = kernel.workgroup.id<x> : index
@@ -234,15 +233,16 @@ template.def<@ggml.rope_f32.scaled_body> device @ggml_rope_f32_scaled_body(%toke
   template.return
 }
 
-template.def<@ggml.rope_f32.body> device @ggml_rope_f32_body(%token_count: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %output: buffer) {
+template.def<@ggml.rope_f32.body> device @ggml_rope_f32_body(%token_count: index, %input_span: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %output: buffer) {
   %one = scalar.constant 1.0 : f32
-  template.apply<@ggml.rope_f32.scaled_body>(%token_count, %positions, %input, %theta, %freq_factors, %one, %output) : (index, buffer, buffer, buffer, buffer, f32, buffer)
+  template.apply<@ggml.rope_f32.scaled_body>(%token_count, %input_span, %positions, %input, %theta, %freq_factors, %one, %output) : (index, index, buffer, buffer, buffer, buffer, f32, buffer)
   template.return
 }
 
 template.def<@ggml.rope_scale_f32.body> device @ggml_rope_scale_f32_body(%token_count: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %output: buffer) {
   %output_scale = config.get @ggml.rope_scale_f32.scale : f32
-  template.apply<@ggml.rope_f32.scaled_body>(%token_count, %positions, %input, %theta, %freq_factors, %output_scale, %output) : (index, buffer, buffer, buffer, buffer, f32, buffer)
+  %input_span = config.get @ggml.rope_f32.input_span : index
+  template.apply<@ggml.rope_f32.scaled_body>(%token_count, %input_span, %positions, %input, %theta, %freq_factors, %output_scale, %output) : (index, index, buffer, buffer, buffer, buffer, f32, buffer)
   template.return
 }
 
@@ -256,7 +256,8 @@ template.def<@ggml.rope_token_scale_f32.body> device @ggml_rope_token_scale_f32_
   %token = scf.select %valid_token, %token0, %c0 : index
   %scale_view = buffer.view %scales[%c0_offset] : buffer -> view<[%bounded_token_count]xf32>
   %output_scale = view.load %scale_view[%token] : view<[%bounded_token_count]xf32> -> f32
-  template.apply<@ggml.rope_f32.scaled_body>(%token_count, %positions, %input, %theta, %freq_factors, %output_scale, %output) : (index, buffer, buffer, buffer, buffer, f32, buffer)
+  %input_span = config.get @ggml.rope_f32.input_span : index
+  template.apply<@ggml.rope_f32.scaled_body>(%token_count, %input_span, %positions, %input, %theta, %freq_factors, %output_scale, %output) : (index, index, buffer, buffer, buffer, buffer, f32, buffer)
   template.return
 }
 

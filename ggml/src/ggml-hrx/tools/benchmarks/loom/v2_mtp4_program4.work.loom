@@ -26,7 +26,7 @@ kernel.decl target(@ggml_rmsnorm_binary_gfx11_wave32) @ggml_rmsnorm_gate_silu_mu
 kernel.decl target(@ggml_rmsnorm_gfx11_wave32) @ggml_rmsnorm_mul_rope_f32() launch(%input: buffer, %weight: buffer, %positions: buffer, %output: buffer)
 kernel.decl target(@ggml_set_rows_gfx11_wave64) @ggml_set_rows(%token_count: index, %cache_row_count: index, %hidden_size: index) launch(%token_count: index, %cache_row_count: index, %hidden_size: index, %rows: buffer, %indices: buffer, %cache: buffer)
 kernel.decl @llm_gated_delta_net_f32_wmma_head128_snapshot() launch(%q: buffer, %k: buffer, %v: buffer, %g: buffer, %beta: buffer, %state_in: buffer, %snapshot_cache: buffer, %dst: buffer, %rms_scales: buffer)
-kernel.decl @llm_gated_delta_net_projection_epilogue_f32() launch(%alpha_raw: buffer, %beta_raw: buffer, %bias: buffer, %a_scale: buffer, %gate_dst: buffer, %beta_dst: buffer)
+kernel.decl @llm_gated_delta_net_projection_epilogue_f32(%element_count: index) launch(%element_count: index, %alpha_raw: buffer, %beta_raw: buffer, %bias: buffer, %a_scale: buffer, %gate_dst: buffer, %beta_dst: buffer)
 kernel.decl @llm_ssm_conv_dconv4_silu_rollback_f32() launch(%state: buffer, %x: buffer, %filter: buffer, %output: buffer, %cache0: buffer, %cache1: buffer, %cache2: buffer, %cache3: buffer, %cache4: buffer)
 
 
@@ -144,13 +144,14 @@ check.case public @v2_mtp4_program4_tg_c4_007_ggml_get_rows_f32_case {
 check.benchmark<@v2_mtp4_program4_tg_c4_007_ggml_get_rows_f32_case> @v2_mtp4_program4_tg_c4_007_ggml_get_rows_f32
 
 check.case public @v2_mtp4_program4_tg_c4_008_llm_gated_delta_net_projection_epilogue_f32_case {
+  %element_count = check.literal value(192) : index
   %alpha_raw = check.generate.fill value(0) : tensor<768xi8>
   %beta_raw = check.generate.fill value(0) : tensor<768xi8>
   %bias = check.generate.fill value(0) : tensor<192xi8>
   %a_scale = check.generate.fill value(0) : tensor<192xi8>
   %gate_dst = check.generate.fill value(0) : tensor<768xi8>
   %beta_dst = check.generate.fill value(0) : tensor<768xi8>
-  kernel.launch @llm_gated_delta_net_projection_epilogue_f32[](%alpha_raw, %beta_raw, %bias, %a_scale, %gate_dst, %beta_dst) : [](tensor<768xi8>, tensor<768xi8>, tensor<192xi8>, tensor<192xi8>, tensor<768xi8>, tensor<768xi8>)
+  kernel.launch @llm_gated_delta_net_projection_epilogue_f32[%element_count](%element_count, %alpha_raw, %beta_raw, %bias, %a_scale, %gate_dst, %beta_dst) : [index](index, tensor<768xi8>, tensor<768xi8>, tensor<192xi8>, tensor<192xi8>, tensor<768xi8>, tensor<768xi8>)
   check.return
 }
 

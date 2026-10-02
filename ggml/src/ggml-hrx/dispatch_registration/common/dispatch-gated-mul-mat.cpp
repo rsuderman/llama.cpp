@@ -20,10 +20,14 @@ static constexpr KernelCatalogRef kMulMatSwiGLUF32F32WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_f32_f32_wmma");
 static constexpr KernelCatalogRef kMulMatTiledPairF32BinaryPublishF32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_pair_input_f32_binary_publish_f32");
+static constexpr KernelCatalogRef kMulMatTiledPairAlignedF32BinaryPublishF32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_pair_input_f32_binary_publish_f32_aligned");
 static constexpr KernelCatalogRef kMulMatTiledPairF32BinaryPublishF32K16Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_pair_input_f32_binary_publish_f32_k16");
 static constexpr KernelCatalogRef kMulMatTiledPairF32BinaryBiasAddPublishF32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_pair_input_f32_binary_bias_residual_publish_f32");
+static constexpr KernelCatalogRef kMulMatTiledPairAlignedF32BinaryBiasAddPublishF32Kernel = GGML_HRX_KERNEL_REF(
+    "loom_libs", "ggml_mul_mat_tiled_pair_input_f32_binary_bias_residual_publish_f32_aligned");
 static constexpr KernelCatalogRef kMulMatSwiGLUF32F32DecodeWave64Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_f32_f32_decode_wave64");
 static constexpr KernelCatalogRef kMulMatSwiGLUF32F32LowTokenDotKernel =
@@ -351,11 +355,18 @@ static bool match_packed_mul_mat_glu_dispatch(const DispatchMatchContext & conte
         return false;
     }
 
-    Dispatch dispatch;
-    dispatch.kernel = make_kernel_specialization(kMulMatTiledPairF32BinaryPublishF32Kernel);
+    const bool use_aligned_dynamic = match.token_count % 32 == 0;
+    Dispatch   dispatch;
+    dispatch.kernel = make_kernel_specialization(use_aligned_dynamic ? kMulMatTiledPairAlignedF32BinaryPublishF32Kernel :
+                                                                       kMulMatTiledPairF32BinaryPublishF32Kernel);
+    if (use_aligned_dynamic) {
+        dispatch.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
+    }
     dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
-    dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
-                                               common_to_config_value(match.token_count));
+    if (!use_aligned_dynamic) {
+        dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
+                                                   common_to_config_value(match.token_count));
+    }
     dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_swiglu.input_size",
                                                common_to_config_value(match.input_size));
     dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_swiglu.output_size",
@@ -806,13 +817,24 @@ static bool build_tiled_pair_mul_mat_swiglu_dispatch(const DispatchMatchContext 
     const CommonActivationPublicationDemand k16_demand =
         postops == nullptr ? select_swiglu_k16_publication(context, match) : CommonActivationPublicationDemand{};
     const bool publish_k16 = k16_demand.matched();
+    const bool use_aligned_dynamic = match.token_count % 32 == 0 && !publish_k16;
+    const KernelCatalogRef selected_kernel =
+        use_aligned_dynamic ?
+            (postops != nullptr ? kMulMatTiledPairAlignedF32BinaryBiasAddPublishF32Kernel :
+                                  kMulMatTiledPairAlignedF32BinaryPublishF32Kernel) :
+            (postops != nullptr ? postops->kernel :
+             publish_k16        ? kMulMatTiledPairF32BinaryPublishF32K16Kernel :
+                                  kMulMatTiledPairF32BinaryPublishF32Kernel);
     Dispatch   dispatch;
-    dispatch.kernel = make_kernel_specialization(postops != nullptr ? postops->kernel :
-                                                 publish_k16        ? kMulMatTiledPairF32BinaryPublishF32K16Kernel :
-                                                                      kMulMatTiledPairF32BinaryPublishF32Kernel);
+    dispatch.kernel = make_kernel_specialization(selected_kernel);
+    if (use_aligned_dynamic) {
+        dispatch.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
+    }
     dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
-    dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
-                                               common_to_config_value(match.token_count));
+    if (!use_aligned_dynamic) {
+        dispatch.kernel.compile_parameters.emplace("ggml.workload.token_capacity",
+                                                   common_to_config_value(match.token_count));
+    }
     dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_swiglu.input_size",
                                                common_to_config_value(match.input_size));
     dispatch.kernel.compile_parameters.emplace("ggml.mul_mat_swiglu.output_size",

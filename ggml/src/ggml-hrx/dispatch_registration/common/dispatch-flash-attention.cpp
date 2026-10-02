@@ -40,6 +40,11 @@ static bool nearly_equal(float lhs, float rhs) {
     return std::fabs(lhs - rhs) <= 1.0e-6f;
 }
 
+static bool use_exact_prefill_workload(int64_t query_token_count, int64_t key_value_token_count) {
+    // Preserve the measured hot prefill case; other supported totals share dynamic executables.
+    return query_token_count == 256 && key_value_token_count == 256;
+}
+
 static bool is_supported_token_count(int64_t token_count) {
     return token_count >= 1 && token_count <= 2048;
 }
@@ -117,6 +122,14 @@ static std::string to_config_value(int64_t value) {
 
 static int64_t ceil_div(int64_t value, int64_t divisor) {
     return (value + divisor - 1) / divisor;
+}
+
+static int64_t decode_key_value_capacity(int64_t token_count) {
+    int64_t capacity = kDecodeKvTileSize;
+    while (capacity < token_count) {
+        capacity *= 2;
+    }
+    return capacity;
 }
 
 static ValueId match_value(const DispatchMatchContext & context, const DispatchMatch & dispatch_match, int32_t offset) {
@@ -329,7 +342,7 @@ static DecodeSplitFlashAttentionMatch match_decode_split_flash_attention_f32_f16
     match.output_layout         = find_single_layout_alias_consumer(graph, output->id);
     match.query_token_count     = query_token_count;
     match.key_value_token_count = key_value_token_count;
-    match.key_value_capacity    = ceil_div(key_value_token_count, kDecodeKvTileSize) * kDecodeKvTileSize;
+    match.key_value_capacity    = decode_key_value_capacity(key_value_token_count);
     match.query_head_count      = query_head_count;
     match.key_value_head_count  = key_value_head_count;
     match.qk_head_size          = qk_head_size;
@@ -401,8 +414,9 @@ static DispatchBinding prepare_flash_attention_value(const DispatchMatchContext 
 
     Dispatch copy;
     copy.kernel = make_kernel_specialization(kCopyTransposeF16Kernel);
-    copy.kernel.compile_parameters.emplace("ggml.copy_transpose_f16.row_count", to_config_value(match.key_value_token_count));
-    copy.kernel.compile_parameters.emplace("ggml.copy_transpose_f16.column_count", to_config_value(columns));
+    copy.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
+    copy.kernel.integer_parameters.emplace("row_count", match.key_value_token_count);
+    copy.kernel.integer_parameters.emplace("column_count", columns);
     copy.bindings.push_back({ match.value->id, 0, bytes });
     copy.bindings.push_back({ transposed, 0, bytes });
     dispatch_match.dispatches.push_back(std::move(copy));
@@ -477,6 +491,9 @@ static bool match_flash_attention_gate_dispatch(const DispatchMatchContext & con
 
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kFlashAttentionF32F16WmmaKernel);
+    if (!use_exact_prefill_workload(match.query_token_count, match.key_value_token_count)) {
+        dispatch.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
+    }
     dispatch.kernel.integer_parameters.emplace("query_token_count", match.query_token_count);
     dispatch.kernel.integer_parameters.emplace("key_value_token_count", match.key_value_token_count);
     add_flash_attention_compile_parameters(dispatch.kernel, match.query_head_count, match.key_value_head_count,
@@ -512,6 +529,9 @@ static bool match_flash_attention_f32_f16_dispatch(const DispatchMatchContext & 
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(publish_f16 ? kFlashAttentionF32F16WmmaPublishF16Kernel :
                                                                kFlashAttentionF32F16WmmaKernel);
+    if (!use_exact_prefill_workload(match.query_token_count, match.key_value_token_count)) {
+        dispatch.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
+    }
     dispatch.kernel.integer_parameters.emplace("query_token_count", match.query_token_count);
     dispatch.kernel.integer_parameters.emplace("key_value_token_count", match.key_value_token_count);
     add_flash_attention_compile_parameters(dispatch.kernel, match.query_head_count, match.key_value_head_count,
@@ -623,6 +643,7 @@ static bool match_flash_attention_decode_split_next_q8_dispatch(const DispatchMa
     for (int64_t row = 0; row < match.query_token_count; ++row) {
         Dispatch dispatch;
         dispatch.kernel = make_kernel_specialization(kFlashAttentionDecodeSplitNextQ8Kernel);
+        dispatch.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
         dispatch.kernel.integer_parameters.emplace("key_value_token_count", match.key_value_token_count);
         add_flash_attention_decode_compile_parameters(dispatch.kernel, match.query_head_count,
                                                       match.key_value_head_count, match.qk_head_size,

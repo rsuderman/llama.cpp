@@ -26,6 +26,9 @@ template.def<@ggml.flash_attention.prefill.publish_output> device @ggml_flash_at
   // Normalize and publish the lane-owned packets. Query-tail rows never
   // participate in the output store.
   scf.if %lane_has_output {
+    %c4 = index.constant 4 : index
+    %lane_output_end0 = index.add %lane_output_channel, %c4 : index
+    %safe_lane_output_channel, %lane_output_end = index.assume %lane_output_channel, %lane_output_end0 [le(%lane_output_end0, %value_head_size)] : index, index
     %sum0_scalar = vector.extract %final_sum[0] : vector<4xf32> -> f32
     %sum1_scalar = vector.extract %final_sum[1] : vector<4xf32> -> f32
     %sum2_scalar = vector.extract %final_sum[2] : vector<4xf32> -> f32
@@ -55,7 +58,7 @@ template.def<@ggml.flash_attention.prefill.publish_output> device @ggml_flash_at
         %gate_token_offset0 = index.mul %query_token0, %gate_stride_token : index
         %gate_head_offset0 = index.mul %query_head, %gate_stride_head : index
         %gate_head_base0 = index.add %gate_token_offset0, %gate_head_offset0 : index
-        %gate_index0_0 = index.add %gate_head_base0, %lane_output_channel : index
+        %gate_index0_0 = index.add %gate_head_base0, %safe_lane_output_channel : index
         %gate_index0 = index.assume %gate_index0_0 [range(%gate_index0_0, 0, 268435452)] : index
         %raw_gate0 = vector.load %gate_view[%gate_index0] : view<268435456xf32> -> vector<4xf32>
         %negative_gate0 = vector.negf %raw_gate0 : vector<4xf32>
@@ -67,10 +70,10 @@ template.def<@ggml.flash_attention.prefill.publish_output> device @ggml_flash_at
       } else {
         scf.yield %normalized0 : vector<4xf32>
       }
-      vector.store %published0, %output_view[%query_token0, %query_head, %lane_output_channel] : vector<4xf32>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf32>
+      vector.store %published0, %output_view[%query_token0, %query_head, %safe_lane_output_channel] : vector<4xf32>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf32>
       scf.if %publish_f16 {
         %half0 = vector.fptrunc %published0 : vector<4xf32> to vector<4xf16>
-        vector.store %half0, %f16_output_view[%query_token0, %query_head, %lane_output_channel] : vector<4xf16>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf16>
+        vector.store %half0, %f16_output_view[%query_token0, %query_head, %safe_lane_output_channel] : vector<4xf16>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf16>
       }
     }
     scf.if %query_valid1 {
@@ -78,7 +81,7 @@ template.def<@ggml.flash_attention.prefill.publish_output> device @ggml_flash_at
         %gate_token_offset1 = index.mul %query_token1, %gate_stride_token : index
         %gate_head_offset1 = index.mul %query_head, %gate_stride_head : index
         %gate_head_base1 = index.add %gate_token_offset1, %gate_head_offset1 : index
-        %gate_index1_0 = index.add %gate_head_base1, %lane_output_channel : index
+        %gate_index1_0 = index.add %gate_head_base1, %safe_lane_output_channel : index
         %gate_index1 = index.assume %gate_index1_0 [range(%gate_index1_0, 0, 268435452)] : index
         %raw_gate1 = vector.load %gate_view[%gate_index1] : view<268435456xf32> -> vector<4xf32>
         %negative_gate1 = vector.negf %raw_gate1 : vector<4xf32>
@@ -90,10 +93,10 @@ template.def<@ggml.flash_attention.prefill.publish_output> device @ggml_flash_at
       } else {
         scf.yield %normalized1 : vector<4xf32>
       }
-      vector.store %published1, %output_view[%query_token1, %query_head, %lane_output_channel] : vector<4xf32>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf32>
+      vector.store %published1, %output_view[%query_token1, %query_head, %safe_lane_output_channel] : vector<4xf32>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf32>
       scf.if %publish_f16 {
         %half1 = vector.fptrunc %published1 : vector<4xf32> to vector<4xf16>
-        vector.store %half1, %f16_output_view[%query_token1, %query_head, %lane_output_channel] : vector<4xf16>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf16>
+        vector.store %half1, %f16_output_view[%query_token1, %query_head, %safe_lane_output_channel] : vector<4xf16>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf16>
       }
     }
     scf.if %query_valid2 {
@@ -101,7 +104,7 @@ template.def<@ggml.flash_attention.prefill.publish_output> device @ggml_flash_at
         %gate_token_offset2 = index.mul %query_token2, %gate_stride_token : index
         %gate_head_offset2 = index.mul %query_head, %gate_stride_head : index
         %gate_head_base2 = index.add %gate_token_offset2, %gate_head_offset2 : index
-        %gate_index2_0 = index.add %gate_head_base2, %lane_output_channel : index
+        %gate_index2_0 = index.add %gate_head_base2, %safe_lane_output_channel : index
         %gate_index2 = index.assume %gate_index2_0 [range(%gate_index2_0, 0, 268435452)] : index
         %raw_gate2 = vector.load %gate_view[%gate_index2] : view<268435456xf32> -> vector<4xf32>
         %negative_gate2 = vector.negf %raw_gate2 : vector<4xf32>
@@ -113,10 +116,10 @@ template.def<@ggml.flash_attention.prefill.publish_output> device @ggml_flash_at
       } else {
         scf.yield %normalized2 : vector<4xf32>
       }
-      vector.store %published2, %output_view[%query_token2, %query_head, %lane_output_channel] : vector<4xf32>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf32>
+      vector.store %published2, %output_view[%query_token2, %query_head, %safe_lane_output_channel] : vector<4xf32>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf32>
       scf.if %publish_f16 {
         %half2 = vector.fptrunc %published2 : vector<4xf32> to vector<4xf16>
-        vector.store %half2, %f16_output_view[%query_token2, %query_head, %lane_output_channel] : vector<4xf16>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf16>
+        vector.store %half2, %f16_output_view[%query_token2, %query_head, %safe_lane_output_channel] : vector<4xf16>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf16>
       }
     }
     scf.if %query_valid3 {
@@ -124,7 +127,7 @@ template.def<@ggml.flash_attention.prefill.publish_output> device @ggml_flash_at
         %gate_token_offset3 = index.mul %query_token3, %gate_stride_token : index
         %gate_head_offset3 = index.mul %query_head, %gate_stride_head : index
         %gate_head_base3 = index.add %gate_token_offset3, %gate_head_offset3 : index
-        %gate_index3_0 = index.add %gate_head_base3, %lane_output_channel : index
+        %gate_index3_0 = index.add %gate_head_base3, %safe_lane_output_channel : index
         %gate_index3 = index.assume %gate_index3_0 [range(%gate_index3_0, 0, 268435452)] : index
         %raw_gate3 = vector.load %gate_view[%gate_index3] : view<268435456xf32> -> vector<4xf32>
         %negative_gate3 = vector.negf %raw_gate3 : vector<4xf32>
@@ -136,10 +139,10 @@ template.def<@ggml.flash_attention.prefill.publish_output> device @ggml_flash_at
       } else {
         scf.yield %normalized3 : vector<4xf32>
       }
-      vector.store %published3, %output_view[%query_token3, %query_head, %lane_output_channel] : vector<4xf32>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf32>
+      vector.store %published3, %output_view[%query_token3, %query_head, %safe_lane_output_channel] : vector<4xf32>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf32>
       scf.if %publish_f16 {
         %half3 = vector.fptrunc %published3 : vector<4xf32> to vector<4xf16>
-        vector.store %half3, %f16_output_view[%query_token3, %query_head, %lane_output_channel] : vector<4xf16>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf16>
+        vector.store %half3, %f16_output_view[%query_token3, %query_head, %safe_lane_output_channel] : vector<4xf16>, view<[%query_token_count]x[%query_head_count]x[%value_head_size]xf16>
       }
     }
   }

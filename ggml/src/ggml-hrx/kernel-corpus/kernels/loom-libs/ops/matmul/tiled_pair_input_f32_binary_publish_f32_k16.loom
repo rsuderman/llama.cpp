@@ -1,5 +1,5 @@
 // Generic paired tiled GGML matmul with F32 and K16-major F16 publication.
-template.decl @ggml.matmul.tiled_pair_input_f32_dequant_accumulate_f32.core(%op: index, %epilogue: index, %gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size0: index, %output_size0: index, %channel_tile: index, %token_tile: index, %input: buffer, %gate_weight: buffer, %up_weight: buffer, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer)
+template.decl @ggml.matmul.tiled_pair_input_f32_dequant_accumulate_f32.core(%full_token_tiles: i1, %op: index, %epilogue: index, %gate_weight_format: index, %up_weight_format: index, %token_count: index, %input_size0: index, %output_size0: index, %channel_tile: index, %token_tile: index, %input: buffer, %gate_weight: buffer, %up_weight: buffer, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer)
 
 template.decl @ggml.matmul.tiled_pair_input_f32_dequant_accumulate_f32.publish_vector4(%publish_word: i1, %token0: index, %channel: index, %token_count0: index, %output_size0: index, %op: index, %epilogue: index, %lhs: vector<4xf32>, %rhs: vector<4xf32>, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer)
 
@@ -12,10 +12,15 @@ template.decl @ggml.normalization.publish_f16.k16_vector4(%values: vector<4xf32>
 amdgpu.target<gfx11-generic> @ggml_matmul_tiled_pair_input_f32_binary_publish_f32_k16_gfx11_wave64 {subgroup_size = 64}
 
 config.decl @ggml.mul_mat_swiglu.input_size : %value: index where [range(%value, 256, 32768), mul(%value, 32)]
+
 config.decl @ggml.mul_mat_swiglu.output_size : %value: index where [range(%value, 1, 262144)]
+
 config.decl @ggml.mul_mat_swiglu.gate_weight_format : %value: index where [range(%value, 4, 81)]
+
 config.decl @ggml.mul_mat_swiglu.up_weight_format : %value: index where [range(%value, 4, 81)]
+
 config.decl @ggml.mul_mat_swiglu.op : %value: index where [range(%value, 0, 8)]
+
 config.decl @ggml.workload.token_capacity : %value: index where [range(%value, 1, 2048)]
 
 template.def<@ggml.matmul.tiled_pair_input_f32_dequant_accumulate_f32.publish_vector4> device @ggml_matmul_tiled_pair_input_f32_binary_publish_f32_k16_vector4(%publish_word: i1, %token0: index, %channel: index, %token_count0: index, %output_size0: index, %op: index, %epilogue: index, %lhs: vector<4xf32>, %rhs: vector<4xf32>, %bias: buffer, %output: buffer, %residual_input: buffer, %residual_output: buffer) {
@@ -51,9 +56,10 @@ kernel.def target(@ggml_matmul_tiled_pair_input_f32_binary_publish_f32_k16_gfx11
   %up_weight_format = config.get @ggml.mul_mat_swiglu.up_weight_format : index
   %op = config.get @ggml.mul_mat_swiglu.op : index
   %epilogue = index.constant 0 : index
+  %full_token_tiles = scalar.constant false : i1
   %bounded_token_count = index.assume %token_count [range(%token_count, 2, 2048), le(%token_count, %token_capacity)] : index
   %channel_tile = kernel.workgroup.id<x> : index
   %token_tile = kernel.workgroup.id<y> : index
-  template.apply<@ggml.matmul.tiled_pair_input_f32_dequant_accumulate_f32.core>(%op, %epilogue, %gate_weight_format, %up_weight_format, %bounded_token_count, %input_size, %output_size, %channel_tile, %token_tile, %input, %gate_weight, %up_weight, %output, %output, %output, %f16_output) : (index, index, index, index, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
+  template.apply<@ggml.matmul.tiled_pair_input_f32_dequant_accumulate_f32.core>(%full_token_tiles, %op, %epilogue, %gate_weight_format, %up_weight_format, %bounded_token_count, %input_size, %output_size, %channel_tile, %token_tile, %input, %gate_weight, %up_weight, %output, %output, %output, %f16_output) : (i1, index, index, index, index, index, index, index, index, index, buffer, buffer, buffer, buffer, buffer, buffer, buffer)
   kernel.return
 }

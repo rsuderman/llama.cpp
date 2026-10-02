@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Generic GGML ROPE for F32 head-major rows.
-template.decl @ggml.rope_f32.body(%token_count: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %output: buffer)
+template.decl @ggml.rope_f32.body(%token_count: index, %input_span: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %output: buffer)
 
 amdgpu.target<gfx11-generic> @ggml_rope_f32_gfx11_wave32 {subgroup_size = 32}
 
@@ -16,7 +16,7 @@ config.decl @ggml.rope_f32.input_span : %value: index where [range(%value, 1, 10
 config.decl @ggml.rope_f32.mscale : f32
 config.decl @ggml.rope_f32.mode : %value: index where [range(%value, 0, 2)]
 
-kernel.def target(@ggml_rope_f32_gfx11_wave32) @ggml_rope_f32(%token_count: index) {
+kernel.def target(@ggml_rope_f32_gfx11_wave32) @ggml_rope_f32(%token_count: index, %input_span: index) {
   %token_capacity = config.get @ggml.rope_f32.token_capacity : index
   %head_count = config.get @ggml.rope_f32.head_count : index
   %head_size = config.get @ggml.rope_f32.head_size : index
@@ -24,7 +24,7 @@ kernel.def target(@ggml_rope_f32_gfx11_wave32) @ggml_rope_f32(%token_count: inde
   %c4 = index.constant 4 : index
   %pair_packet_count = index.div %head_size, %c4 : index
   kernel.launch.config workgroups(%head_count, %token_capacity, %c1) workgroup_size(%pair_packet_count, %c1, %c1) : index
-} launch(%token_count: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %output: buffer) where [range(%token_count, 1, 2048)] {
-  template.apply<@ggml.rope_f32.body>(%token_count, %positions, %input, %theta, %freq_factors, %output) : (index, buffer, buffer, buffer, buffer, buffer)
+} launch(%token_count: index, %input_span: index, %positions: buffer, %input: buffer, %theta: buffer, %freq_factors: buffer, %output: buffer) where [range(%token_count, 1, 2048), range(%input_span, 1, 1073741824)] {
+  template.apply<@ggml.rope_f32.body>(%token_count, %input_span, %positions, %input, %theta, %freq_factors, %output) : (index, index, buffer, buffer, buffer, buffer, buffer)
   kernel.return
 }

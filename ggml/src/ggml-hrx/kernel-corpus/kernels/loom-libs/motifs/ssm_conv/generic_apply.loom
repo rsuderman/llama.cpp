@@ -3,18 +3,14 @@
 
 template.decl @ggml.unary_f32.apply(%op: index, %value: f32) -> (f32)
 
-template.decl @llm.ssm_conv.generic_apply(%linear: index, %d_conv: index, %d_inner: index, %n_t: index, %unary_op: index, %window: view<1073741824xf32>, %filter: view<1048576xf32>) -> (f32)
+template.decl @llm.ssm_conv.generic_apply(%channel: index, %token: index, %sequence: index, %d_conv: index, %d_inner: index, %n_t: index, %unary_op: index, %window: view<1073741824xf32>, %filter: view<1048576xf32>) -> (f32)
 
-template.def<@llm.ssm_conv.generic_apply> device @llm_ssm_conv_generic_apply(%linear: index, %d_conv: index, %d_inner: index, %n_t: index, %unary_op: index, %window_v: view<1073741824xf32>, %filter_v: view<1048576xf32>) -> (f32) {
+template.def<@llm.ssm_conv.generic_apply> device @llm_ssm_conv_generic_apply(%channel: index, %token: index, %sequence: index, %d_conv: index, %d_inner: index, %n_t: index, %unary_op: index, %window_v: view<1073741824xf32>, %filter_v: view<1048576xf32>) -> (f32) {
   %c0 = index.constant 0 : index
   %c1 = index.constant 1 : index
   %c0_f32 = scalar.constant 0.0 : f32
-  %channel = index.rem %linear, %d_inner : index
-  %linear_div_inner = index.div %linear, %d_inner : index
-  %token = index.rem %linear_div_inner, %n_t : index
-  %sequence = index.div %linear_div_inner, %n_t : index
-
-  %window_rows0 = index.add %n_t, %d_conv : index
+  %bounded_n_t = index.assume %n_t [range(%n_t, 1, 512)] : index
+  %window_rows0 = index.add %bounded_n_t, %d_conv : index
   %window_rows = index.sub %window_rows0, %c1 : index
   %window_sequence_span0 = index.mul %window_rows, %d_inner : index
   %window_sequence_span = index.assume %window_sequence_span0 [range(%window_sequence_span0, 32, 34603008), mul(%window_sequence_span0, 32)] : index

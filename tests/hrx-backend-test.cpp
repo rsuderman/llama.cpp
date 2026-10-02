@@ -5034,6 +5034,9 @@ static void schedule_flash_attention_command(ggml_context * ctx,
         REQUIRE(scheduler.plan().transients.size() == 1);
         const auto & copy = scheduler.plan().dispatches.front();
         REQUIRE(kernel_name_for_id(copy.kernel.kernel_id) == "loom_libs:ggml_copy_transpose_f16");
+        REQUIRE(copy.kernel.workload_specialization == ggml::hrx::WorkloadSpecialization::Dynamic);
+        REQUIRE(copy.kernel.integer_parameters.at("row_count") == key_value_token_count);
+        REQUIRE(copy.kernel.integer_parameters.at("column_count") == key_value_head_count * value_head_size);
         REQUIRE(copy.bindings.size() == 2);
         REQUIRE(copy.bindings[1].value == dispatch.bindings[2].value);
         REQUIRE(copy.bindings[0].value != copy.bindings[1].value);
@@ -7199,6 +7202,11 @@ static void run_generic_ssm_conv_binary_dispatch_checks() {
         REQUIRE(plan.dispatches.size() == 1);
         const auto & dispatch = plan.dispatches.front();
         REQUIRE(kernel_name_for_id(dispatch.kernel.kernel_id) == "loom_libs:llm_ssm_conv_binary_f32");
+        REQUIRE(dispatch.kernel.workload_specialization == ggml::hrx::WorkloadSpecialization::Dynamic);
+        REQUIRE(dispatch.kernel.integer_parameters.at("n_t") == n_t);
+        REQUIRE(dispatch.kernel.integer_parameters.at("n_s") == 1);
+        REQUIRE(dispatch.kernel.compile_parameters.count("llm.ssm_conv.generic.n_t") == 0);
+        REQUIRE(dispatch.kernel.compile_parameters.count("llm.ssm_conv.generic.n_s") == 0);
         REQUIRE(dispatch.bindings.size() == 4);
         require_compile_parameter(dispatch, "llm.ssm_conv.generic.binary_op",
                                   std::to_string(ggml::hrx::binary_kind_config_value(test.kind)));
@@ -7302,6 +7310,7 @@ static void run_gdn_native_projection_pair_dispatch_checks() {
         {2, 5120, 48, false, false, false, GGML_TYPE_Q4_K, false},
         {5, 5120, 48, false, false, false, GGML_TYPE_Q4_K, false},
         {16, 5120, 48, false, false, false, GGML_TYPE_Q4_K, false},
+        {17, 5120, 48, false, false, false, GGML_TYPE_Q4_K, false},
         {1, 3072, 48, false, false, false, GGML_TYPE_Q4_K, false},
         {1, 4352, 48, false, false, false, GGML_TYPE_Q4_K, false},
         {1, 5120, 16, false, false, false, GGML_TYPE_Q4_K, false},
@@ -7381,6 +7390,16 @@ static void run_gdn_native_projection_pair_dispatch_checks() {
             REQUIRE(fused->bindings[2].value == imported.graph.values().find_tensor(second_weight)->id);
             REQUIRE(fused->bindings[3].value == imported.graph.values().find_tensor(alpha)->id);
             REQUIRE(fused->bindings[4].value == imported.graph.values().find_tensor(beta_raw)->id);
+        }
+        const auto epilogue = std::find_if(plan.dispatches.begin(), plan.dispatches.end(), [](const auto & dispatch) {
+            return kernel_name_for_id(dispatch.kernel.kernel_id) ==
+                   "loom_libs:llm_gated_delta_net_projection_epilogue_f32";
+        });
+        REQUIRE((epilogue != plan.dispatches.end()) == (test.tokens > 16));
+        if (epilogue != plan.dispatches.end()) {
+            REQUIRE(epilogue->kernel.workload_specialization == ggml::hrx::WorkloadSpecialization::Dynamic);
+            REQUIRE(epilogue->kernel.integer_parameters.at("element_count") == test.heads * test.tokens);
+            REQUIRE(epilogue->kernel.compile_parameters.count("llm.gated_delta_net.epilogue_element_count") == 0);
         }
         const auto commands =
             ggml::hrx::build_command_program(imported.graph, plan, ggml::hrx::get_qwen_kernel_corpus(), "gfx1151");

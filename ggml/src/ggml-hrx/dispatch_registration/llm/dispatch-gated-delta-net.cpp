@@ -788,9 +788,10 @@ static bool match_gated_delta_net_dispatch(const DispatchMatchContext & context,
     if (match.has_projection_epilogue() && !can_fuse_projection_epilogue) {
         Dispatch epilogue;
         epilogue.kernel = make_kernel_specialization(kGatedDeltaNetProjectionEpilogueKernel);
+        epilogue.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
+        epilogue.kernel.integer_parameters.emplace("element_count",
+                                                   match.head_count * match.token_count * match.sequence_count);
         set_compile_parameter(epilogue.kernel, "llm.gated_delta_net.epilogue_head_count", match.head_count);
-        set_compile_parameter(epilogue.kernel, "llm.gated_delta_net.epilogue_element_count",
-                              match.head_count * match.token_count * match.sequence_count);
         set_compile_parameter(epilogue.kernel, "llm.gated_delta_net.epilogue_workgroup_size", 256);
         epilogue.bindings.push_back({ match.alpha_raw->id, 0, match.alpha_raw->byte_count });
         epilogue.bindings.push_back({ match.beta_raw->id, 0, match.beta_raw->byte_count });

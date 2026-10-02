@@ -220,6 +220,7 @@ static bool match_scale_f32_dispatch(const DispatchMatchContext & context, Dispa
 
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kScaleF32Kernel);
+    dispatch.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
     dispatch.kernel.integer_parameters.emplace("element_count", output->element_count);
     dispatch.kernel.compile_parameters.emplace("ggml.scale_f32.scale", format_float_config(params->scale));
     dispatch.kernel.compile_parameters.emplace("ggml.scale_f32.bias", format_float_config(params->bias));

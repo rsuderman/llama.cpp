@@ -363,13 +363,14 @@
     {
       "benchmark": "@qwen38_27b_udq4kxl_draft_tg_c1_010_llm_gated_delta_net_projection_epilogue_f32",
       "compile_parameters": {
-        "llm.gated_delta_net.epilogue_element_count": "96",
         "llm.gated_delta_net.epilogue_head_count": "48",
         "llm.gated_delta_net.epilogue_workgroup_size": "256"
       },
       "corpus_dir": "kernel-corpus/kernels/loom-libs",
       "count": 96,
-      "integer_parameters": {},
+      "integer_parameters": {
+        "element_count": 96
+      },
       "kernel": "loom_libs:llm_gated_delta_net_projection_epilogue_f32",
       "library_sources": [],
       "primary_sources": [
@@ -379,7 +380,12 @@
         "ops/gated_delta_net_f32_wmma.loom"
       ],
       "symbol": "llm_gated_delta_net_projection_epilogue_f32",
-      "workload_parameters": []
+      "workload_parameters": [
+        {
+          "name": "element_count",
+          "type": "index"
+        }
+      ]
     },
     {
       "benchmark": "@qwen38_27b_udq4kxl_draft_tg_c1_011_llm_gated_delta_net_f32_wmma_head128_snapshot",
@@ -1272,13 +1278,14 @@
     {
       "benchmark": "@qwen38_27b_udq4kxl_draft_tg_c1_038_llm_gated_delta_net_projection_epilogue_f32",
       "compile_parameters": {
-        "llm.gated_delta_net.epilogue_element_count": "192",
         "llm.gated_delta_net.epilogue_head_count": "48",
         "llm.gated_delta_net.epilogue_workgroup_size": "256"
       },
       "corpus_dir": "kernel-corpus/kernels/loom-libs",
       "count": 96,
-      "integer_parameters": {},
+      "integer_parameters": {
+        "element_count": 192
+      },
       "kernel": "loom_libs:llm_gated_delta_net_projection_epilogue_f32",
       "library_sources": [],
       "primary_sources": [
@@ -1288,7 +1295,12 @@
         "ops/gated_delta_net_f32_wmma.loom"
       ],
       "symbol": "llm_gated_delta_net_projection_epilogue_f32",
-      "workload_parameters": []
+      "workload_parameters": [
+        {
+          "name": "element_count",
+          "type": "index"
+        }
+      ]
     },
     {
       "benchmark": "@qwen38_27b_udq4kxl_draft_tg_c1_039_llm_gated_delta_net_f32_wmma_head128_snapshot",
@@ -2081,13 +2093,14 @@
     {
       "benchmark": "@qwen38_27b_udq4kxl_draft_tg_c1_064_llm_gated_delta_net_projection_epilogue_f32",
       "compile_parameters": {
-        "llm.gated_delta_net.epilogue_element_count": "240",
         "llm.gated_delta_net.epilogue_head_count": "48",
         "llm.gated_delta_net.epilogue_workgroup_size": "256"
       },
       "corpus_dir": "kernel-corpus/kernels/loom-libs",
       "count": 48,
-      "integer_parameters": {},
+      "integer_parameters": {
+        "element_count": 240
+      },
       "kernel": "loom_libs:llm_gated_delta_net_projection_epilogue_f32",
       "library_sources": [],
       "primary_sources": [
@@ -2097,7 +2110,12 @@
         "ops/gated_delta_net_f32_wmma.loom"
       ],
       "symbol": "llm_gated_delta_net_projection_epilogue_f32",
-      "workload_parameters": []
+      "workload_parameters": [
+        {
+          "name": "element_count",
+          "type": "index"
+        }
+      ]
     },
     {
       "benchmark": "@qwen38_27b_udq4kxl_draft_tg_c1_065_llm_gated_delta_net_f32_wmma_head128_snapshot",
@@ -2942,13 +2960,14 @@
     {
       "benchmark": "@qwen38_27b_udq4kxl_draft_tg_c1_092_llm_gated_delta_net_projection_epilogue_f32",
       "compile_parameters": {
-        "llm.gated_delta_net.epilogue_element_count": "144",
         "llm.gated_delta_net.epilogue_head_count": "48",
         "llm.gated_delta_net.epilogue_workgroup_size": "256"
       },
       "corpus_dir": "kernel-corpus/kernels/loom-libs",
       "count": 48,
-      "integer_parameters": {},
+      "integer_parameters": {
+        "element_count": 144
+      },
       "kernel": "loom_libs:llm_gated_delta_net_projection_epilogue_f32",
       "library_sources": [],
       "primary_sources": [
@@ -2958,7 +2977,12 @@
         "ops/gated_delta_net_f32_wmma.loom"
       ],
       "symbol": "llm_gated_delta_net_projection_epilogue_f32",
-      "workload_parameters": []
+      "workload_parameters": [
+        {
+          "name": "element_count",
+          "type": "index"
+        }
+      ]
     },
     {
       "benchmark": "@qwen38_27b_udq4kxl_draft_tg_c1_093_llm_gated_delta_net_f32_wmma_head128_snapshot",
@@ -3803,13 +3827,14 @@
     {
       "benchmark": "@qwen38_27b_udq4kxl_draft_tg_c1_120_llm_gated_delta_net_projection_epilogue_f32",
       "compile_parameters": {
-        "llm.gated_delta_net.epilogue_element_count": "768",
         "llm.gated_delta_net.epilogue_head_count": "48",
         "llm.gated_delta_net.epilogue_workgroup_size": "256"
       },
       "corpus_dir": "kernel-corpus/kernels/loom-libs",
       "count": 48,
-      "integer_parameters": {},
+      "integer_parameters": {
+        "element_count": 768
+      },
       "kernel": "loom_libs:llm_gated_delta_net_projection_epilogue_f32",
       "library_sources": [],
       "primary_sources": [
@@ -3819,7 +3844,12 @@
         "ops/gated_delta_net_f32_wmma.loom"
       ],
       "symbol": "llm_gated_delta_net_projection_epilogue_f32",
-      "workload_parameters": []
+      "workload_parameters": [
+        {
+          "name": "element_count",
+          "type": "index"
+        }
+      ]
     },
     {
       "benchmark": "@qwen38_27b_udq4kxl_draft_tg_c1_121_llm_gated_delta_net_f32_wmma_head128",
@@ -5541,13 +5571,14 @@
     {
       "benchmark": "@qwen38_27b_udq4kxl_draft_tg_c1_175_llm_gated_delta_net_projection_epilogue_f32",
       "compile_parameters": {
-        "llm.gated_delta_net.epilogue_element_count": "48",
         "llm.gated_delta_net.epilogue_head_count": "48",
         "llm.gated_delta_net.epilogue_workgroup_size": "256"
       },
       "corpus_dir": "kernel-corpus/kernels/loom-libs",
       "count": 48,
-      "integer_parameters": {},
+      "integer_parameters": {
+        "element_count": 48
+      },
       "kernel": "loom_libs:llm_gated_delta_net_projection_epilogue_f32",
       "library_sources": [],
       "primary_sources": [
@@ -5557,7 +5588,12 @@
         "ops/gated_delta_net_f32_wmma.loom"
       ],
       "symbol": "llm_gated_delta_net_projection_epilogue_f32",
-      "workload_parameters": []
+      "workload_parameters": [
+        {
+          "name": "element_count",
+          "type": "index"
+        }
+      ]
     },
     {
       "benchmark": "@qwen38_27b_udq4kxl_draft_tg_c1_176_llm_gated_delta_net_f32_wmma_head128_inplace",

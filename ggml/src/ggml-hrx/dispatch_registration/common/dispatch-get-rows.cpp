@@ -53,6 +53,14 @@ static bool is_supported_token_count(int64_t token_count) {
     return token_count >= 1 && token_count <= 2048;
 }
 
+static int64_t token_capacity_class(int64_t token_count) {
+    int64_t capacity = 1;
+    while (capacity < token_count) {
+        capacity *= 2;
+    }
+    return capacity;
+}
+
 static bool is_supported_row_count(int64_t row_count) {
     return row_count >= 1 && row_count <= kMaxGetRowsRowCount;
 }
@@ -295,8 +303,13 @@ static GetRowsRmsNormMatch match_get_rows_rmsnorm_binary(const DispatchMatchCont
 static Dispatch make_get_rows_dispatch(const GetRowsMatch & match) {
     Dispatch dispatch;
     dispatch.kernel = make_kernel_specialization(kGetRowsF32Kernel);
+    dispatch.kernel.workload_specialization = WorkloadSpecialization::Dynamic;
     add_common_integer_parameters(dispatch, match);
-    add_common_compile_parameters(dispatch, match);
+    dispatch.kernel.compile_parameters.emplace("ggml.get_rows_f32.token_capacity",
+                                               to_config_value(token_capacity_class(match.token_count)));
+    dispatch.kernel.compile_parameters.emplace("ggml.get_rows_f32.hidden_capacity", to_config_value(match.hidden_size));
+    dispatch.kernel.compile_parameters.emplace("ggml.get_rows_f32.weight_format",
+                                               to_config_value(match.weight_format_value));
     add_primary_bindings(dispatch, match);
     return dispatch;
 }

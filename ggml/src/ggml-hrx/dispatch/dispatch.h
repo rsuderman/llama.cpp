@@ -27,8 +27,14 @@ inline constexpr const char kQ5KSymmetricI8K256Row64Layout[]    = "q5k-symi8-k25
 inline constexpr const char kQ6KI8K32Row64Layout[]              = "q6k-i8-k32-row64";
 inline constexpr const char kQ6KPackedK256Row64ScaleRowLayout[] = "q6k-packed-k256-row64-scalerow";
 
+enum class WorkloadSpecialization : uint8_t {
+    Exact,
+    Dynamic,
+};
+
 struct KernelSpecialization {
     uint64_t                           kernel_id = kUncatalogedKernelId;
+    WorkloadSpecialization             workload_specialization = WorkloadSpecialization::Exact;
     std::map<std::string, int64_t>     integer_parameters;
     std::map<std::string, std::string> compile_parameters;
 };

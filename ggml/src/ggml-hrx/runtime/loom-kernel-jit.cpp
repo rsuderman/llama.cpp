@@ -90,9 +90,11 @@ static bool compile_kernel(ggml_hrx_loom_jit_amdgpu *         jit,
     compile_options.dependency_count                  = request.dependencies.size();
     compile_options.config_bindings                   = configs.data();
     compile_options.config_binding_count              = configs.size();
-    compile_options.workload_arguments                = request.workload.data();
-    compile_options.workload_argument_count           = request.workload.size();
-    compile_options.evaluate_launch_config            = true;
+    compile_options.specialize_workload               = request.specialize_workload;
+    compile_options.workload_arguments = request.specialize_workload ? request.workload.data() : nullptr;
+    compile_options.workload_argument_count = request.specialize_workload ? request.workload.size() : 0;
+    compile_options.load_launch_config                = true;
+    compile_options.evaluate_launch_config            = request.specialize_workload;
 
     if (ErrorResult error = take_status(ggml_hrx_loom_jit_amdgpu_compile(jit, &compile_options, &compiled))) {
         error_message = "compile " + key + ": " + *error;
