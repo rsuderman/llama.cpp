@@ -32,6 +32,8 @@ static constexpr KernelCatalogRef kMulMatSwiGLUF32F32DecodeWave64Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_f32_f32_decode_wave64");
 static constexpr KernelCatalogRef kMulMatSwiGLUF32F32LowTokenDotKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_f32_f32_lowtoken_dot");
+static constexpr KernelCatalogRef kMulMatSwiGLUQ1_0Q8_1X4Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_q1_0_q8_1_x4_f32");
 static constexpr KernelCatalogRef kMulMatSwiGLUQ4Q8LowTokenDotKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_swiglu_q4_q8_1_x4_lowtoken_dot");
 static constexpr KernelCatalogRef kMulMatSwiGLUQ4Q8OutputKernel =
@@ -920,6 +922,40 @@ static bool match_mul_mat_swiglu_dispatch(const DispatchMatchContext & context, 
     }
     if (common_mul_mat_swiglu_is_generic_tiled_pair_route(match)) {
         return false;
+    }
+
+    const bool use_q1_0 = match.token_count == 1 && match.input_size % 128 == 0 &&
+                          match.op == BinaryKind::SwiGLU && match.gate_weight->alias_source.value < 0 &&
+                          match.up_weight->alias_source.value < 0 &&
+                          match.gate_format == CommonMulMatWeightFormat::Q1_0 &&
+                          match.up_format == CommonMulMatWeightFormat::Q1_0 &&
+                          distinct_storage(context.graph, *match.gate_weight, *match.up_weight);
+    if (use_q1_0) {
+        DispatchBinding activation;
+        if (common_prepare_q8_1_x4_input(context, *match.input, match.input_size, match.token_count, dispatch_match,
+                                         activation, CommonQ8ActivationPolicy::ExistingAlternateOnly)) {
+            Dispatch dispatch;
+            dispatch.kernel = make_kernel_specialization(kMulMatSwiGLUQ1_0Q8_1X4Kernel);
+            dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
+            dispatch.kernel.compile_parameters.emplace("ggml.matmul.q1_0_q8_1_x4.input_size",
+                                                       common_to_config_value(match.input_size));
+            dispatch.kernel.compile_parameters.emplace("ggml.matmul.q1_0_q8_1_x4.output_size",
+                                                       common_to_config_value(match.output_size));
+            dispatch.bindings.push_back(activation);
+            dispatch.bindings.push_back({ match.gate_weight->id, 0, match.gate_weight->byte_count });
+            dispatch.bindings.push_back({ match.up_weight->id, 0, match.up_weight->byte_count });
+            dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
+            if (!append_covered_node_index_once(context.graph, context.covered_nodes, match.gate_node,
+                                                dispatch_match.covered_nodes) ||
+                !append_covered_node_index_once(context.graph, context.covered_nodes, match.up_node,
+                                                dispatch_match.covered_nodes) ||
+                !append_covered_node_index_once(context.graph, context.covered_nodes, match.glu_node,
+                                                dispatch_match.covered_nodes)) {
+                return false;
+            }
+            dispatch_match.dispatches.push_back(std::move(dispatch));
+            return true;
+        }
     }
 
     const bool pack_q4 = match.token_count <= 5 && match.output_size % 64 == 0 &&

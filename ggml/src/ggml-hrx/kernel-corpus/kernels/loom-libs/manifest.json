@@ -216,6 +216,9 @@
       "path": "ops/matmul/vector_q1_0_q8_1_x4_f32.loom"
     },
     {
+      "path": "ops/matmul/swiglu_q1_0_q8_1_x4_f32.loom"
+    },
+    {
       "path": "ops/matmul/q1_0_vector_schedule_test.loom"
     },
     {
@@ -2501,6 +2504,51 @@
         "motifs/f32_f16.loom",
         "motifs/mul_mat_quantized_f16_prefill.loom",
         "motifs/elementwise/binary_apply.loom"
+      ]
+    },
+    {
+      "name": "ggml_mul_mat_swiglu_q1_0_q8_1_x4_f32",
+      "family": "loom_libs",
+      "symbol": "ggml_mul_mat_swiglu_q1_0_q8_1_x4_f32",
+      "source": "ops/matmul/swiglu_q1_0_q8_1_x4_f32.loom",
+      "workload_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        }
+      ],
+      "launch_parameters": [
+        {
+          "name": "token_count",
+          "type": "index"
+        }
+      ],
+      "bindings": [
+        "q8_input",
+        "gate_weight",
+        "up_weight",
+        "output"
+      ],
+      "binding_access": [
+        "read",
+        "read",
+        "read",
+        "write"
+      ],
+      "target_selector": "",
+      "compile_recipe": {
+        "mode": "direct",
+        "primary_sources": [
+          "ops/matmul/swiglu_q1_0_q8_1_x4_f32.loom"
+        ],
+        "library_sources": [
+          "motifs/matmul/q1_0_q8_1_x4_decode.loom",
+          "motifs/quantize_q8_1_x4_group.loom"
+        ]
+      },
+      "compile_dependencies": [
+        "motifs/matmul/q1_0_q8_1_x4_decode.loom",
+        "motifs/quantize_q8_1_x4_group.loom"
       ]
     },
     {
