@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -185,6 +186,16 @@ inline ggml_type common_mul_mat_format_type(CommonMulMatWeightFormat format) {
             return GGML_TYPE_Q5_0;
         case CommonMulMatWeightFormat::Q5_1:
             return GGML_TYPE_Q5_1;
+        case CommonMulMatWeightFormat::IQ1_S:
+            return GGML_TYPE_IQ1_S;
+        case CommonMulMatWeightFormat::IQ1_M:
+            return GGML_TYPE_IQ1_M;
+        case CommonMulMatWeightFormat::IQ2_XXS:
+            return GGML_TYPE_IQ2_XXS;
+        case CommonMulMatWeightFormat::IQ2_XS:
+            return GGML_TYPE_IQ2_XS;
+        case CommonMulMatWeightFormat::IQ3_XXS:
+            return GGML_TYPE_IQ3_XXS;
         case CommonMulMatWeightFormat::IQ2_S:
             return GGML_TYPE_IQ2_S;
         case CommonMulMatWeightFormat::IQ3_S:
@@ -380,6 +391,20 @@ inline CommonMulMatMatch common_match_mul_mat_any_format(const Graph &     graph
 
     CommonMulMatWeightFormat format = CommonMulMatWeightFormat::Q4K;
     if (!common_mul_mat_format_for_type(weight->type, format)) {
+        if (weight->type == GGML_TYPE_IQ1_S) {
+            format = CommonMulMatWeightFormat::IQ1_S;
+        } else if (weight->type == GGML_TYPE_IQ1_M) {
+            format = CommonMulMatWeightFormat::IQ1_M;
+        } else {
+            return {};
+        }
+    }
+    if ((format == CommonMulMatWeightFormat::IQ1_S || format == CommonMulMatWeightFormat::IQ1_M) &&
+        (std::getenv("GGML_HRX_DISABLE_IQ_CODEBOOK_MATMUL") != nullptr ||
+         (format == CommonMulMatWeightFormat::IQ1_S &&
+          std::getenv("GGML_HRX_DISABLE_IQ1_S_CODEBOOK_MATMUL") != nullptr) ||
+         (format == CommonMulMatWeightFormat::IQ1_M &&
+          std::getenv("GGML_HRX_DISABLE_IQ1_M_CODEBOOK_MATMUL") != nullptr))) {
         return {};
     }
 

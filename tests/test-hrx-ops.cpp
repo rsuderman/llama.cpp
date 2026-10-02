@@ -4,6 +4,7 @@
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-hrx.h"
+#include "ggml-quants.h"
 #include "ggml.h"
 #include "graph/graph.h"
 #include "kernel-corpus/kernel-corpus.h"
@@ -1053,10 +1054,27 @@ static std::vector<ggml_fp16_t> make_pattern_f16(size_t element_count, int seed,
 static std::vector<uint8_t> make_quantized_rows(ggml_type type, int64_t row_length, int64_t row_count, int seed) {
     const ggml_type_traits * traits = ggml_get_type_traits(type);
     REQUIRE(traits != nullptr);
-    REQUIRE(traits->from_float_ref != nullptr);
     ggml_quantize_init(type);
     const size_t         row_size = ggml_row_size(type, row_length);
     std::vector<uint8_t> data(static_cast<size_t>(row_count) * row_size);
+    if (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS) {
+        std::vector<float> source(static_cast<size_t>(row_length * row_count));
+        std::vector<float> importance(static_cast<size_t>(row_length), 1.0f);
+        for (int64_t r = 0; r < row_count; ++r) {
+            for (int64_t c = 0; c < row_length; ++c) {
+                const int value = static_cast<int>((r * 13 + c * 7 + seed * 31) % 101) - 50;
+                source[static_cast<size_t>(r * row_length + c)] = static_cast<float>(value) * 0.005f;
+            }
+        }
+        const size_t bytes_written = type == GGML_TYPE_IQ2_XXS ?
+                                         quantize_iq2_xxs(source.data(), data.data(), row_count, row_length,
+                                                          importance.data()) :
+                                         quantize_iq2_xs(source.data(), data.data(), row_count, row_length,
+                                                         importance.data());
+        REQUIRE(bytes_written == data.size());
+        return data;
+    }
+    REQUIRE(traits->from_float_ref != nullptr);
     std::vector<float>   row(static_cast<size_t>(row_length));
     for (int64_t r = 0; r < row_count; ++r) {
         for (int64_t c = 0; c < row_length; ++c) {
@@ -1068,7 +1086,59 @@ static std::vector<uint8_t> make_quantized_rows(ggml_type type, int64_t row_leng
     return data;
 }
 
+static std::vector<uint8_t> make_iq1_rows(ggml_type type, int64_t row_length, int64_t row_count, int seed) {
+    REQUIRE(type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M);
+    REQUIRE(row_length % 256 == 0);
+    const size_t row_size   = ggml_row_size(type, row_length);
+    const size_t block_size = type == GGML_TYPE_IQ1_S ? 50 : 56;
+    REQUIRE(row_size == static_cast<size_t>(row_length / 256) * block_size);
+    std::vector<uint8_t> data(static_cast<size_t>(row_count) * row_size);
+    for (int64_t row = 0; row < row_count; ++row) {
+        uint8_t * row_data = data.data() + static_cast<size_t>(row) * row_size;
+        for (int64_t block = 0; block < row_length / 256; ++block) {
+            uint8_t * dst = row_data + static_cast<size_t>(block) * block_size;
+            if (type == GGML_TYPE_IQ1_S) {
+                const ggml_fp16_t d = ggml_fp32_to_fp16(0.015625f);
+                std::memcpy(dst, &d, sizeof(d));
+                for (int i = 0; i < 32; ++i) {
+                    dst[2 + i] = static_cast<uint8_t>((row * 13 + block * 29 + i * 37 + seed) & 0xff);
+                }
+                for (int group = 0; group < 8; ++group) {
+                    uint16_t qh = 0;
+                    for (int entry = 0; entry < 4; ++entry) {
+                        qh |= static_cast<uint16_t>(((row + block + group + entry + seed) & 7) << (3 * entry));
+                    }
+                    qh |= static_cast<uint16_t>(((row + block + group) & 7) << 12);
+                    qh |= static_cast<uint16_t>(((row + group) & 1) << 15);
+                    std::memcpy(dst + 34 + 2 * group, &qh, sizeof(qh));
+                }
+            } else {
+                for (int i = 0; i < 32; ++i) {
+                    dst[i] = static_cast<uint8_t>((row * 17 + block * 31 + i * 41 + seed) & 0xff);
+                }
+                for (int i = 0; i < 16; ++i) {
+                    const uint8_t low  = static_cast<uint8_t>((row + block + i + seed) & 7);
+                    const uint8_t high = static_cast<uint8_t>((row + block + i + seed + 3) & 7);
+                    dst[32 + i] = static_cast<uint8_t>(low | ((i & 1) ? 0x08 : 0) | (high << 4) |
+                                                        ((i & 2) ? 0x80 : 0));
+                }
+                const uint16_t base_bits = ggml_fp32_to_fp16(0.015625f);
+                for (int word = 0; word < 4; ++word) {
+                    const uint16_t local_scales = static_cast<uint16_t>(1 | (2 << 3) | (3 << 6) | (4 << 9));
+                    const uint16_t base_nibble  = static_cast<uint16_t>((base_bits >> (4 * word)) & 0xf);
+                    const uint16_t scales       = static_cast<uint16_t>(local_scales | (base_nibble << 12));
+                    std::memcpy(dst + 48 + 2 * word, &scales, sizeof(scales));
+                }
+            }
+        }
+    }
+    return data;
+}
+
 static std::vector<uint8_t> make_matmul_weight_bytes(ggml_type type, int64_t row_length, int64_t row_count, int seed) {
+    if (type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M) {
+        return make_iq1_rows(type, row_length, row_count, seed);
+    }
     if (type == GGML_TYPE_F32) {
         (void) seed;
         const std::vector<float> weights(static_cast<size_t>(row_length * row_count), 0.00390625f);
@@ -5886,6 +5956,21 @@ static void register_basic_ops_cases(Suite & suite) {
 }
 
 static void register_dense_matmul_cases(Suite & suite) {
+    for (const ggml_type type : { GGML_TYPE_IQ1_S, GGML_TYPE_IQ1_M }) {
+        const char * type_suffix   = type == GGML_TYPE_IQ1_S ? "iq1_s" : "iq1_m";
+        const char * vector_kernel = type == GGML_TYPE_IQ1_S ?
+                                         "loom_libs:ggml_mul_mat_vector_iq1_s_f32_f32" :
+                                         "loom_libs:ggml_mul_mat_vector_iq1_m_f32_f32";
+        const char * tiled_kernel  = type == GGML_TYPE_IQ1_S ?
+                                         "loom_libs:ggml_mul_mat_tiled_input_f32_iq1_s_publish_f32" :
+                                         "loom_libs:ggml_mul_mat_tiled_input_f32_iq1_m_publish_f32";
+        suite.device_case(std::string("dense_matmul.") + type_suffix + ".vector.tokens1.outputs128", [=] {
+            run_dense_matmul_cpu_reference_case(type, vector_kernel, 1, 128, 2048);
+        });
+        suite.device_case(std::string("dense_matmul.") + type_suffix + ".tiled.tokens64.outputs128", [=] {
+            run_dense_matmul_cpu_reference_case(type, tiled_kernel, 64, 128, 2048);
+        });
+    }
     for (const int64_t tokens : { 1, 3, 5 }) {
         for (const int64_t outputs : { 1, 4, 47, 48, 63 }) {
             suite.device_case(
@@ -5924,8 +6009,47 @@ static void register_dense_matmul_cases(Suite & suite) {
     suite.device_case("dense_matmul.q4_k.vector.tokens1.outputs128", [] {
         run_dense_matmul_cpu_reference_case(GGML_TYPE_Q4_K, "loom_libs:ggml_mul_mat_vector_f32_f32", 1, 128);
     });
+    for (const ggml_type type : { GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS }) {
+        suite.device_case("dense_matmul." + type_name(type) + ".codebook.vector.tokens1.outputs128", [type] {
+            run_dense_matmul_cpu_reference_case(type, "loom_libs:ggml_mul_mat_vector_iq2_s_f32_f32", 1, 128,
+                                                2048);
+        });
+        suite.device_case("dense_matmul." + type_name(type) + ".codebook.tiled.tokens64.outputs128", [type] {
+            run_dense_matmul_cpu_reference_case(
+                type, "loom_libs:ggml_mul_mat_tiled_input_f32_iq2_s_publish_f32", 64, 128, 2048);
+        });
+    }
+    suite.device_case("dense_matmul.iq3_xxs.codebook.vector.tokens1.outputs128", [] {
+        run_dense_matmul_cpu_reference_case(GGML_TYPE_IQ3_XXS,
+                                            "loom_libs:ggml_mul_mat_vector_iq3_xxs_f32_f32", 1, 128, 2048);
+    });
+    suite.device_case("dense_matmul.iq3_xxs.codebook.tiled.tokens64.outputs128", [] {
+        run_dense_matmul_cpu_reference_case(GGML_TYPE_IQ3_XXS,
+                                            "loom_libs:ggml_mul_mat_tiled_input_f32_iq3_xxs_publish_f32", 64,
+                                            128, 2048);
+    });
+    for (const ggml_type type : { GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_S }) {
+        const char * vector_kernel = type == GGML_TYPE_IQ2_S ?
+                                         "loom_libs:ggml_mul_mat_vector_iq2_s_f32_f32" :
+                                         "loom_libs:ggml_mul_mat_vector_iq3_s_f32_f32";
+        const char * tiled_kernel = type == GGML_TYPE_IQ2_S ?
+                                        "loom_libs:ggml_mul_mat_tiled_input_f32_iq2_s_publish_f32" :
+                                        "loom_libs:ggml_mul_mat_tiled_input_f32_iq3_s_publish_f32";
+        suite.device_case("dense_matmul." + type_name(type) + ".codebook_control.vector.tokens1.outputs128",
+                          [type, vector_kernel] {
+                              run_dense_matmul_cpu_reference_case(type, vector_kernel, 1, 128, 2048);
+                          });
+        suite.device_case("dense_matmul." + type_name(type) + ".codebook_control.tiled.tokens64.outputs128",
+                          [type, tiled_kernel] {
+                              run_dense_matmul_cpu_reference_case(type, tiled_kernel, 64, 128, 2048);
+                          });
+    }
     suite.device_case("dense_matmul.iq4_xs.vector.tokens1.outputs128", [] {
         run_dense_matmul_cpu_reference_case(GGML_TYPE_IQ4_XS, "loom_libs:ggml_mul_mat_vector_f32_f32", 1, 128);
+    });
+    suite.device_case("dense_matmul.iq4_xs.tiled.tokens64.outputs128", [] {
+        run_dense_matmul_cpu_reference_case(GGML_TYPE_IQ4_XS,
+                                            "loom_libs:ggml_mul_mat_tiled_input_f32_publish_f32_aligned", 64, 128);
     });
     suite.device_case("dense_matmul.iq4_xs.prefill.tokens256.outputs128", [] {
         run_dense_matmul_cpu_reference_case(GGML_TYPE_IQ4_XS,
@@ -5967,6 +6091,11 @@ static void register_dense_matmul_cases(Suite & suite) {
                               run_dense_matmul_cpu_reference_case(type, vector_kernel, 1, outputs, input);
                           });
     }
+    suite.device_case("dense_matmul.iq4_nl.tiled.tokens64.outputs1024", [] {
+        run_dense_matmul_cpu_reference_case(GGML_TYPE_IQ4_NL,
+                                            "loom_libs:ggml_mul_mat_tiled_input_f32_publish_f32_aligned", 64, 1024,
+                                            640);
+    });
     suite.device_case("dense_matmul.q5_0.tiled.tokens2.outputs256.input640", [] {
         run_dense_matmul_cpu_reference_case(GGML_TYPE_Q5_0, "loom_libs:ggml_mul_mat_tiled_input_f32_publish_f32", 2,
                                             256, 640);

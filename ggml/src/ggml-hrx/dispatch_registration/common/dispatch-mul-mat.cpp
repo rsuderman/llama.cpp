@@ -21,6 +21,10 @@ static constexpr KernelCatalogRef kMulMatF32F32WmmaKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_f32_f32_wmma");
 static constexpr KernelCatalogRef kMulMatTiledF32F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_publish_f32");
+static constexpr KernelCatalogRef kMulMatTiledIQ1SF32F32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_iq1_s_publish_f32");
+static constexpr KernelCatalogRef kMulMatTiledIQ1MF32F32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_iq1_m_publish_f32");
 static constexpr KernelCatalogRef kMulMatTiledIQ2SF32F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_iq2_s_publish_f32");
 static constexpr KernelCatalogRef kMulMatTiledIQ3SF32F32Kernel =
@@ -29,6 +33,8 @@ static constexpr KernelCatalogRef kMulMatTiledAlignedF32F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_publish_f32_aligned");
 static constexpr KernelCatalogRef kMulMatTiledToken64AlignedF32F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_publish_f32_token64_aligned");
+static constexpr KernelCatalogRef kMulMatTiledIQ3XXSF32F32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_iq3_xxs_publish_f32");
 static constexpr KernelCatalogRef kMulMatTiledF32F16AlternateKernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_tiled_input_f32_publish_f32_f16_alternate");
 static constexpr KernelCatalogRef kMulMatSkinnyF32F32Kernel =
@@ -45,10 +51,16 @@ static constexpr KernelCatalogRef kMulMatVectorQ1_0Q8_1X4F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_q1_0_q8_1_x4_f32");
 static constexpr KernelCatalogRef kMulMatVectorQ1_0Q8_1X4Rows2F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_q1_0_q8_1_x4_rows2_f32");
+static constexpr KernelCatalogRef kMulMatVectorIQ1SF32F32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_iq1_s_f32_f32");
+static constexpr KernelCatalogRef kMulMatVectorIQ1MF32F32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_iq1_m_f32_f32");
 static constexpr KernelCatalogRef kMulMatVectorIQ2SF32F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_iq2_s_f32_f32");
 static constexpr KernelCatalogRef kMulMatVectorIQ3SF32F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_iq3_s_f32_f32");
+static constexpr KernelCatalogRef kMulMatVectorIQ3XXSF32F32Kernel =
+    GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_iq3_xxs_f32_f32");
 static constexpr KernelCatalogRef kMulMatVectorBiasAddF32F32Kernel =
     GGML_HRX_KERNEL_REF("loom_libs", "ggml_mul_mat_vector_bias_residual_f32_f32");
 static constexpr KernelCatalogRef kQuantizeQ8_1X4F32Kernel =
@@ -112,17 +124,47 @@ static bool iq_codebook_matmul_disabled(CommonMulMatWeightFormat format) {
     if (std::getenv("GGML_HRX_DISABLE_IQ_CODEBOOK_MATMUL") != nullptr) {
         return true;
     }
+    if (format == CommonMulMatWeightFormat::IQ2_XXS) {
+        return std::getenv("GGML_HRX_DISABLE_IQ2_XXS_CODEBOOK_MATMUL") != nullptr;
+    }
+    if (format == CommonMulMatWeightFormat::IQ2_XS) {
+        return std::getenv("GGML_HRX_DISABLE_IQ2_XS_CODEBOOK_MATMUL") != nullptr;
+    }
     if (format == CommonMulMatWeightFormat::IQ2_S) {
         return std::getenv("GGML_HRX_DISABLE_IQ2_S_GRID_MATMUL") != nullptr;
     }
     if (format == CommonMulMatWeightFormat::IQ3_S) {
         return std::getenv("GGML_HRX_DISABLE_IQ3_S_CODEBOOK_MATMUL") != nullptr;
     }
+    if (format == CommonMulMatWeightFormat::IQ3_XXS) {
+        return std::getenv("GGML_HRX_DISABLE_IQ3_XXS_CODEBOOK_MATMUL") != nullptr;
+    }
+    if (format == CommonMulMatWeightFormat::IQ1_S) {
+        return std::getenv("GGML_HRX_DISABLE_IQ1_S_CODEBOOK_MATMUL") != nullptr;
+    }
+    if (format == CommonMulMatWeightFormat::IQ1_M) {
+        return std::getenv("GGML_HRX_DISABLE_IQ1_M_CODEBOOK_MATMUL") != nullptr;
+    }
     return false;
+}
+
+static bool iq_codebook_matmul_required(CommonMulMatWeightFormat format) {
+    return format == CommonMulMatWeightFormat::IQ1_S || format == CommonMulMatWeightFormat::IQ1_M ||
+           format == CommonMulMatWeightFormat::IQ2_XXS || format == CommonMulMatWeightFormat::IQ2_XS ||
+           format == CommonMulMatWeightFormat::IQ3_XXS;
 }
 
 static const IQCodebookResourceSpec * iq_codebook_for_weight_format(CommonMulMatWeightFormat format) {
     switch (format) {
+        case CommonMulMatWeightFormat::IQ1_S:
+        case CommonMulMatWeightFormat::IQ1_M:
+            return &iq_codebook_resource_spec(IQCodebookResource::IQ1);
+        case CommonMulMatWeightFormat::IQ2_XXS:
+            return &iq_codebook_resource_spec(IQCodebookResource::IQ2XXS);
+        case CommonMulMatWeightFormat::IQ2_XS:
+            return &iq_codebook_resource_spec(IQCodebookResource::IQ2XS);
+        case CommonMulMatWeightFormat::IQ3_XXS:
+            return &iq_codebook_resource_spec(IQCodebookResource::IQ3XXS);
         case CommonMulMatWeightFormat::IQ2_S:
             return &iq_codebook_resource_spec(IQCodebookResource::IQ2S);
         case CommonMulMatWeightFormat::IQ3_S:
@@ -140,11 +182,33 @@ static ValueId require_iq_codebook(const DispatchMatchContext &   context,
 }
 
 static KernelCatalogRef tiled_iq_codebook_kernel(CommonMulMatWeightFormat format) {
-    return format == CommonMulMatWeightFormat::IQ3_S ? kMulMatTiledIQ3SF32F32Kernel : kMulMatTiledIQ2SF32F32Kernel;
+    switch (format) {
+        case CommonMulMatWeightFormat::IQ1_S:
+            return kMulMatTiledIQ1SF32F32Kernel;
+        case CommonMulMatWeightFormat::IQ1_M:
+            return kMulMatTiledIQ1MF32F32Kernel;
+        case CommonMulMatWeightFormat::IQ3_XXS:
+            return kMulMatTiledIQ3XXSF32F32Kernel;
+        case CommonMulMatWeightFormat::IQ3_S:
+            return kMulMatTiledIQ3SF32F32Kernel;
+        default:
+            return kMulMatTiledIQ2SF32F32Kernel;
+    }
 }
 
 static KernelCatalogRef vector_iq_codebook_kernel(CommonMulMatWeightFormat format) {
-    return format == CommonMulMatWeightFormat::IQ3_S ? kMulMatVectorIQ3SF32F32Kernel : kMulMatVectorIQ2SF32F32Kernel;
+    switch (format) {
+        case CommonMulMatWeightFormat::IQ1_S:
+            return kMulMatVectorIQ1SF32F32Kernel;
+        case CommonMulMatWeightFormat::IQ1_M:
+            return kMulMatVectorIQ1MF32F32Kernel;
+        case CommonMulMatWeightFormat::IQ3_XXS:
+            return kMulMatVectorIQ3XXSF32F32Kernel;
+        case CommonMulMatWeightFormat::IQ3_S:
+            return kMulMatVectorIQ3SF32F32Kernel;
+        default:
+            return kMulMatVectorIQ2SF32F32Kernel;
+    }
 }
 
 struct MulMatPostOpsMatch {
@@ -1209,8 +1273,18 @@ static bool build_mul_mat_dispatch(
     const bool publish_f16_alternate = f16_demand.matched();
     const bool publish_q8_alternate  = q8_demand.matched();
     const IQCodebookResourceSpec * codebook = iq_codebook_for_weight_format(match.weight_format);
+    if (codebook != nullptr && iq_codebook_matmul_required(match.weight_format) &&
+        iq_codebook_matmul_disabled(match.weight_format)) {
+        return false;
+    }
     const bool use_iq_codebook =
         codebook != nullptr && !publish_f16_alternate && !iq_codebook_matmul_disabled(match.weight_format);
+    if ((match.weight_format == CommonMulMatWeightFormat::IQ1_S ||
+         match.weight_format == CommonMulMatWeightFormat::IQ1_M ||
+         match.weight_format == CommonMulMatWeightFormat::IQ3_XXS) &&
+        (!use_iq_codebook || common_mul_mat_is_skinny_route(match))) {
+        return false;
+    }
     const bool use_aligned_dynamic = match.token_count % 32 == 0 &&
                                      match.kernel.id == kMulMatTiledF32F32Kernel.id && !publish_f16_alternate &&
                                      !use_iq_codebook;
@@ -1455,6 +1529,10 @@ static bool build_vector_mul_mat_dispatch(const DispatchMatchContext & context,
 
     Dispatch dispatch;
     const IQCodebookResourceSpec * codebook = iq_codebook_for_weight_format(match.weight_format);
+    if (codebook != nullptr && iq_codebook_matmul_required(match.weight_format) &&
+        iq_codebook_matmul_disabled(match.weight_format)) {
+        return false;
+    }
     VectorPublishPlan publish;
     if (!prepare_vector_publish_plan(context, *match.output, dispatch_match, publish)) {
         return false;
@@ -1495,6 +1573,12 @@ static bool build_vector_mul_mat_dispatch(const DispatchMatchContext & context,
     const bool use_iq_codebook =
         codebook != nullptr && !iq_codebook_matmul_disabled(match.weight_format) && !uses_q8_activation &&
         publish.publication.format != CommonActivationPublicationFormat::F16Row;
+    if ((match.weight_format == CommonMulMatWeightFormat::IQ1_S ||
+         match.weight_format == CommonMulMatWeightFormat::IQ1_M ||
+         match.weight_format == CommonMulMatWeightFormat::IQ3_XXS) &&
+        !use_iq_codebook) {
+        return false;
+    }
     dispatch.kernel = make_kernel_specialization(
         use_iq_codebook ? vector_iq_codebook_kernel(match.weight_format) : kMulMatVectorF32F32Kernel);
     dispatch.kernel.integer_parameters.emplace("token_count", match.token_count);
@@ -1546,6 +1630,9 @@ static bool build_vector_mul_mat_dispatch(const DispatchMatchContext & context,
 static bool build_vector_mul_mat_postops_dispatch(const DispatchMatchContext & context,
                                                   const MulMatPostOpsMatch & match,
                                                   DispatchMatch &           dispatch_match) {
+    if (iq_codebook_matmul_required(match.weight_format)) {
+        return false;
+    }
     if (match.token_count != 1 || match.input_size % 32 != 0 ||
         match.output_size > vector_max_output_size(match.weight_format)) {
         return false;
@@ -1693,6 +1780,9 @@ static bool build_mul_mat_postops_dispatch(const DispatchMatchContext & context,
                                            const MulMatPostOpsMatch &   match,
                                            DispatchMatch &              dispatch_match) {
     if (!match.matched()) {
+        return false;
+    }
+    if (iq_codebook_matmul_required(match.weight_format)) {
         return false;
     }
     if (vector_postops_route_supports(match)) {
@@ -1951,6 +2041,9 @@ static bool match_decode_mul_mat_dispatch(const DispatchMatchContext & context, 
     if (!match.matched()) {
         return false;
     }
+    if (iq_codebook_matmul_required(match.weight_format)) {
+        return false;
+    }
     if (vector_mul_mat_route_supports(match)) {
         return false;
     }
@@ -1973,6 +2066,9 @@ static bool match_decode_mul_mat_add_dispatch(const DispatchMatchContext & conte
     }
     const DecodeMulMatAddMatch match = match_decode_mul_mat_add(context);
     if (!match.matched()) {
+        return false;
+    }
+    if (iq_codebook_matmul_required(match.root.weight_format)) {
         return false;
     }
     MulMatPostOpsMatch postops;

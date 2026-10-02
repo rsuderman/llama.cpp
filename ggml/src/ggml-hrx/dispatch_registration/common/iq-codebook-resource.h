@@ -7,6 +7,10 @@
 namespace ggml::hrx {
 
 enum class IQCodebookResource {
+    IQ1,
+    IQ2XXS,
+    IQ2XS,
+    IQ3XXS,
     IQ2S,
     IQ3S,
 };
