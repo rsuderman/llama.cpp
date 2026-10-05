@@ -183,7 +183,7 @@ func.def inline @ggml_q1_0_load_scale(%weight: buffer, %row_byte_base: offset, %
   func.return %d_vector : vector<1xf16>
 }
 
-func.def inline @ggml_q1_0_f32_vector4(%weight: buffer, %row_byte_base: offset, %k: index, %d_vector: vector<1xf16>) -> (vector<4xf32>) {
+func.def inline @ggml_q1_0_preloaded_f32_vector4(%weight: buffer, %row_byte_base: offset, %k: index, %d_vector: vector<1xf16>) -> (vector<4xf32>) {
   %c1_i32 = scalar.constant 1 : i32
   %c2_i32 = scalar.constant 2 : i32
   %c3_i32 = scalar.constant 3 : i32
@@ -231,9 +231,14 @@ func.def inline @ggml_q1_0_f32_vector4(%weight: buffer, %row_byte_base: offset, 
   func.return %result : vector<4xf32>
 }
 
+func.def inline @ggml_q1_0_f32_vector4(%weight: buffer, %row_byte_base: offset, %k: index) -> (vector<4xf32>) {
+  %d = func.call @ggml_q1_0_load_scale(%weight, %row_byte_base, %k) : (buffer, offset, index) -> (vector<1xf16>)
+  %values = func.call @ggml_q1_0_preloaded_f32_vector4(%weight, %row_byte_base, %k, %d) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
+  func.return %values : vector<4xf32>
+}
+
 func.def inline @ggml_q1_0_f16_vector4(%weight: buffer, %row_byte_base: offset, %k: index) -> (vector<4xf16>) {
-  %values_f32_scale = func.call @ggml_q1_0_load_scale(%weight, %row_byte_base, %k) : (buffer, offset, index) -> (vector<1xf16>)
-  %values_f32 = func.call @ggml_q1_0_f32_vector4(%weight, %row_byte_base, %k, %values_f32_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
+  %values_f32 = func.call @ggml_q1_0_f32_vector4(%weight, %row_byte_base, %k) : (buffer, offset, index) -> (vector<4xf32>)
   %values = vector.fptrunc %values_f32 : vector<4xf32> to vector<4xf16>
   func.return %values : vector<4xf16>
 }
@@ -3078,8 +3083,7 @@ func.def inline @ggml_dequant_f32_vector4(%iq4nl_table: vector<16xi8>, %iq3s_gri
   %q8_block_base = index.mul %quant_block, %c8 : index
   %q8_block = index.add %q8_block_base, %quant_group : index
   %q1_0_values = scf.if %is_q1_0 -> (vector<4xf32>) {
-    %values_scale = func.call @ggml_q1_0_load_scale(%weight, %row_byte_base, %k) : (buffer, offset, index) -> (vector<1xf16>)
-    %values = func.call @ggml_q1_0_f32_vector4(%weight, %row_byte_base, %k, %values_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
+    %values = func.call @ggml_q1_0_f32_vector4(%weight, %row_byte_base, %k) : (buffer, offset, index) -> (vector<4xf32>)
     scf.yield %values : vector<4xf32>
   } else {
     scf.yield %zero : vector<4xf32>

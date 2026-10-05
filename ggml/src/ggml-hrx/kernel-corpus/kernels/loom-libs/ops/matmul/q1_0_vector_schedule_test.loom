@@ -1,6 +1,5 @@
 // Test-only controls for the Q1_0 vector schedule used by Vulkan.
-func.decl @ggml_q1_0_load_scale(%weight: buffer, %row_byte_base: offset, %k: index) -> (vector<1xf16>)
-func.decl @ggml_q1_0_f32_vector4(%weight: buffer, %row_byte_base: offset, %k: index, %d_vector: vector<1xf16>) -> (vector<4xf32>)
+func.decl @ggml_q1_0_f32_vector4(%weight: buffer, %row_byte_base: offset, %k: index) -> (vector<4xf32>)
 
 amdgpu.target<gfx11-generic> @ggml_q1_0_vector_schedule_gfx11_wave32 {subgroup_size = 32}
 
@@ -22,8 +21,7 @@ func.def inline @ggml_q1_0_f32_x4_row_lane(%input_size: index, %input: buffer, %
     %iteration_k = index.mul %iteration, %c128 : index
     %k0 = index.add %iteration_k, %lane_k : index
     %k = index.assume %k0 [range(%k0, 0, %last_vector_origin)] : index
-    %weights_scale = func.call @ggml_q1_0_load_scale(%weight, %weight_row_byte_base, %k) : (buffer, offset, index) -> (vector<1xf16>)
-    %weights = func.call @ggml_q1_0_f32_vector4(%weight, %weight_row_byte_base, %k, %weights_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
+    %weights = func.call @ggml_q1_0_f32_vector4(%weight, %weight_row_byte_base, %k) : (buffer, offset, index) -> (vector<4xf32>)
     %mask = vector.mask.range [%k to %bounded_input_size step %c1] : index -> vector<4xi1>
     %activations = vector.load.mask %input_view[%k], %mask, %c0_f32x4 : view<[%bounded_input_size]xf32>, vector<4xi1>, vector<4xf32>
     %products = vector.mulf %weights, %activations : vector<4xf32>
@@ -55,10 +53,8 @@ func.def inline @ggml_q1_0_f32_x8_row_lane(%input_size: index, %input: buffer, %
     %k10 = index.add %k00, %c4 : index
     %k0 = index.assume %k00 [range(%k00, 0, %last_vector_origin)] : index
     %k1 = index.assume %k10 [range(%k10, 0, %last_vector_origin)] : index
-    %weights0_scale = func.call @ggml_q1_0_load_scale(%weight, %weight_row_byte_base, %k0) : (buffer, offset, index) -> (vector<1xf16>)
-    %weights0 = func.call @ggml_q1_0_f32_vector4(%weight, %weight_row_byte_base, %k0, %weights0_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
-    %weights1_scale = func.call @ggml_q1_0_load_scale(%weight, %weight_row_byte_base, %k1) : (buffer, offset, index) -> (vector<1xf16>)
-    %weights1 = func.call @ggml_q1_0_f32_vector4(%weight, %weight_row_byte_base, %k1, %weights1_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
+    %weights0 = func.call @ggml_q1_0_f32_vector4(%weight, %weight_row_byte_base, %k0) : (buffer, offset, index) -> (vector<4xf32>)
+    %weights1 = func.call @ggml_q1_0_f32_vector4(%weight, %weight_row_byte_base, %k1) : (buffer, offset, index) -> (vector<4xf32>)
     %mask0 = vector.mask.range [%k0 to %bounded_input_size step %c1] : index -> vector<4xi1>
     %mask1 = vector.mask.range [%k1 to %bounded_input_size step %c1] : index -> vector<4xi1>
     %activations0 = vector.load.mask %input_view[%k0], %mask0, %c0_f32x4 : view<[%bounded_input_size]xf32>, vector<4xi1>, vector<4xf32>
@@ -95,10 +91,8 @@ func.def inline @ggml_q1_0_f16_x8_row_lane(%input_size: index, %input: buffer, %
     %k10 = index.add %k00, %c4 : index
     %k0 = index.assume %k00 [range(%k00, 0, %last_vector_origin)] : index
     %k1 = index.assume %k10 [range(%k10, 0, %last_vector_origin)] : index
-    %weights0_scale = func.call @ggml_q1_0_load_scale(%weight, %weight_row_byte_base, %k0) : (buffer, offset, index) -> (vector<1xf16>)
-    %weights0 = func.call @ggml_q1_0_f32_vector4(%weight, %weight_row_byte_base, %k0, %weights0_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
-    %weights1_scale = func.call @ggml_q1_0_load_scale(%weight, %weight_row_byte_base, %k1) : (buffer, offset, index) -> (vector<1xf16>)
-    %weights1 = func.call @ggml_q1_0_f32_vector4(%weight, %weight_row_byte_base, %k1, %weights1_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
+    %weights0 = func.call @ggml_q1_0_f32_vector4(%weight, %weight_row_byte_base, %k0) : (buffer, offset, index) -> (vector<4xf32>)
+    %weights1 = func.call @ggml_q1_0_f32_vector4(%weight, %weight_row_byte_base, %k1) : (buffer, offset, index) -> (vector<4xf32>)
     %mask0 = vector.mask.range [%k0 to %bounded_input_size step %c1] : index -> vector<4xi1>
     %mask1 = vector.mask.range [%k1 to %bounded_input_size step %c1] : index -> vector<4xi1>
     %activations0_f16 = vector.load.mask %input_view[%k0], %mask0, %c0_f16x4 : view<[%bounded_input_size]xf16>, vector<4xi1>, vector<4xf16>
@@ -143,14 +137,10 @@ func.def inline @ggml_q1_0_f16_x8_rows2_lane(%input_size: index, %input: buffer,
     %activations1_f16 = vector.load.mask %input_view[%k1], %mask1, %c0_f16x4 : view<[%bounded_input_size]xf16>, vector<4xi1>, vector<4xf16>
     %activations0 = vector.extf %activations0_f16 : vector<4xf16> to vector<4xf32>
     %activations1 = vector.extf %activations1_f16 : vector<4xf16> to vector<4xf32>
-    %weights00_scale = func.call @ggml_q1_0_load_scale(%weight, %row0_byte_base, %k0) : (buffer, offset, index) -> (vector<1xf16>)
-    %weights00 = func.call @ggml_q1_0_f32_vector4(%weight, %row0_byte_base, %k0, %weights00_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
-    %weights01_scale = func.call @ggml_q1_0_load_scale(%weight, %row0_byte_base, %k1) : (buffer, offset, index) -> (vector<1xf16>)
-    %weights01 = func.call @ggml_q1_0_f32_vector4(%weight, %row0_byte_base, %k1, %weights01_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
-    %weights10_scale = func.call @ggml_q1_0_load_scale(%weight, %row1_byte_base, %k0) : (buffer, offset, index) -> (vector<1xf16>)
-    %weights10 = func.call @ggml_q1_0_f32_vector4(%weight, %row1_byte_base, %k0, %weights10_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
-    %weights11_scale = func.call @ggml_q1_0_load_scale(%weight, %row1_byte_base, %k1) : (buffer, offset, index) -> (vector<1xf16>)
-    %weights11 = func.call @ggml_q1_0_f32_vector4(%weight, %row1_byte_base, %k1, %weights11_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
+    %weights00 = func.call @ggml_q1_0_f32_vector4(%weight, %row0_byte_base, %k0) : (buffer, offset, index) -> (vector<4xf32>)
+    %weights01 = func.call @ggml_q1_0_f32_vector4(%weight, %row0_byte_base, %k1) : (buffer, offset, index) -> (vector<4xf32>)
+    %weights10 = func.call @ggml_q1_0_f32_vector4(%weight, %row1_byte_base, %k0) : (buffer, offset, index) -> (vector<4xf32>)
+    %weights11 = func.call @ggml_q1_0_f32_vector4(%weight, %row1_byte_base, %k1) : (buffer, offset, index) -> (vector<4xf32>)
     %p00 = vector.mulf %weights00, %activations0 : vector<4xf32>
     %p01 = vector.mulf %weights01, %activations1 : vector<4xf32>
     %p10 = vector.mulf %weights10, %activations0 : vector<4xf32>
@@ -195,22 +185,14 @@ func.def inline @ggml_q1_0_f16_x8_rows4_lane(%input_size: index, %input: buffer,
     %a1_f16 = vector.load.mask %input_view[%k1], %mask1, %c0_f16x4 : view<[%bounded_input_size]xf16>, vector<4xi1>, vector<4xf16>
     %a0 = vector.extf %a0_f16 : vector<4xf16> to vector<4xf32>
     %a1 = vector.extf %a1_f16 : vector<4xf16> to vector<4xf32>
-    %w00_scale = func.call @ggml_q1_0_load_scale(%weight, %row0_byte_base, %k0) : (buffer, offset, index) -> (vector<1xf16>)
-    %w00 = func.call @ggml_q1_0_f32_vector4(%weight, %row0_byte_base, %k0, %w00_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
-    %w01_scale = func.call @ggml_q1_0_load_scale(%weight, %row0_byte_base, %k1) : (buffer, offset, index) -> (vector<1xf16>)
-    %w01 = func.call @ggml_q1_0_f32_vector4(%weight, %row0_byte_base, %k1, %w01_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
-    %w10_scale = func.call @ggml_q1_0_load_scale(%weight, %row1_byte_base, %k0) : (buffer, offset, index) -> (vector<1xf16>)
-    %w10 = func.call @ggml_q1_0_f32_vector4(%weight, %row1_byte_base, %k0, %w10_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
-    %w11_scale = func.call @ggml_q1_0_load_scale(%weight, %row1_byte_base, %k1) : (buffer, offset, index) -> (vector<1xf16>)
-    %w11 = func.call @ggml_q1_0_f32_vector4(%weight, %row1_byte_base, %k1, %w11_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
-    %w20_scale = func.call @ggml_q1_0_load_scale(%weight, %row2_byte_base, %k0) : (buffer, offset, index) -> (vector<1xf16>)
-    %w20 = func.call @ggml_q1_0_f32_vector4(%weight, %row2_byte_base, %k0, %w20_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
-    %w21_scale = func.call @ggml_q1_0_load_scale(%weight, %row2_byte_base, %k1) : (buffer, offset, index) -> (vector<1xf16>)
-    %w21 = func.call @ggml_q1_0_f32_vector4(%weight, %row2_byte_base, %k1, %w21_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
-    %w30_scale = func.call @ggml_q1_0_load_scale(%weight, %row3_byte_base, %k0) : (buffer, offset, index) -> (vector<1xf16>)
-    %w30 = func.call @ggml_q1_0_f32_vector4(%weight, %row3_byte_base, %k0, %w30_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
-    %w31_scale = func.call @ggml_q1_0_load_scale(%weight, %row3_byte_base, %k1) : (buffer, offset, index) -> (vector<1xf16>)
-    %w31 = func.call @ggml_q1_0_f32_vector4(%weight, %row3_byte_base, %k1, %w31_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
+    %w00 = func.call @ggml_q1_0_f32_vector4(%weight, %row0_byte_base, %k0) : (buffer, offset, index) -> (vector<4xf32>)
+    %w01 = func.call @ggml_q1_0_f32_vector4(%weight, %row0_byte_base, %k1) : (buffer, offset, index) -> (vector<4xf32>)
+    %w10 = func.call @ggml_q1_0_f32_vector4(%weight, %row1_byte_base, %k0) : (buffer, offset, index) -> (vector<4xf32>)
+    %w11 = func.call @ggml_q1_0_f32_vector4(%weight, %row1_byte_base, %k1) : (buffer, offset, index) -> (vector<4xf32>)
+    %w20 = func.call @ggml_q1_0_f32_vector4(%weight, %row2_byte_base, %k0) : (buffer, offset, index) -> (vector<4xf32>)
+    %w21 = func.call @ggml_q1_0_f32_vector4(%weight, %row2_byte_base, %k1) : (buffer, offset, index) -> (vector<4xf32>)
+    %w30 = func.call @ggml_q1_0_f32_vector4(%weight, %row3_byte_base, %k0) : (buffer, offset, index) -> (vector<4xf32>)
+    %w31 = func.call @ggml_q1_0_f32_vector4(%weight, %row3_byte_base, %k1) : (buffer, offset, index) -> (vector<4xf32>)
     %p00 = vector.mulf %w00, %a0 : vector<4xf32>
     %p01 = vector.mulf %w01, %a1 : vector<4xf32>
     %p10 = vector.mulf %w10, %a0 : vector<4xf32>
