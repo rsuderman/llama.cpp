@@ -1,6 +1,7 @@
 // Test-only direct comparison between the existing Q1_0 F32 decoder and the
 // inactive native Q1_0 x Q8_1 x4 packed contraction motif.
-func.decl @ggml_q1_0_f32_vector4(%weight: buffer, %row_byte_base: offset, %k: index) -> (vector<4xf32>)
+func.decl @ggml_q1_0_load_scale(%weight: buffer, %row_byte_base: offset, %k: index) -> (vector<1xf16>)
+func.decl @ggml_q1_0_f32_vector4(%weight: buffer, %row_byte_base: offset, %k: index, %d_vector: vector<1xf16>) -> (vector<4xf32>)
 
 func.decl @ggml_q8_1_x4_word(%q8_input: buffer, %row_byte_base: offset, %q8_block: index, %word_in_block: index) -> (vector<4xi8>, f32)
 
@@ -28,7 +29,8 @@ func.def inline @ggml_q1_0_q8_1_x4_generic_row_lane(%input_size: index, %weight:
   %result = scf.for %block = [%c0 to %block_count step %c1](%accumulator = %c0_f32 : f32) -> (f32) {
     %block_k = index.mul %block, %c128 : index
     %k = index.add %block_k, %lane_k : index
-    %weight_values = func.call @ggml_q1_0_f32_vector4(%weight, %weight_row_byte_base, %k) : (buffer, offset, index) -> (vector<4xf32>)
+    %weight_values_scale = func.call @ggml_q1_0_load_scale(%weight, %weight_row_byte_base, %k) : (buffer, offset, index) -> (vector<1xf16>)
+    %weight_values = func.call @ggml_q1_0_f32_vector4(%weight, %weight_row_byte_base, %k, %weight_values_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
     %q8_block_base = index.mul %block, %c4 : index
     %q8_block = index.add %q8_block_base, %block_in_q1 : index
     %q8_values_i8, %q8_d = func.call @ggml_q8_1_x4_word(%q8_input, %q8_row_byte_base, %q8_block, %word_in_block) : (buffer, offset, index, index) -> (vector<4xi8>, f32)

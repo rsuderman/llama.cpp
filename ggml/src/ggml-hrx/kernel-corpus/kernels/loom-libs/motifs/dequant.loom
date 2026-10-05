@@ -171,12 +171,22 @@ func.def inline @ggml_q5_legacy_high_bit_f32(%qh: i32, %bit: i32) -> (f32) {
   func.return %high_f32 : f32
 }
 
-func.def inline @ggml_q1_0_f32_vector4(%weight: buffer, %row_byte_base: offset, %k: index) -> (vector<4xf32>) {
+func.def inline @ggml_q1_0_load_scale(%weight: buffer, %row_byte_base: offset, %k: index) -> (vector<1xf16>) {
   %c0 = index.constant 0 : index
+  %c128 = index.constant 128 : index
+  %block_bytes = index.constant 18 : offset
+  %block = index.div %k, %c128 : index
+  %block_byte_add = index.scale %block, %block_bytes : index, offset -> offset
+  %block_byte_base = index.add %row_byte_base, %block_byte_add : offset
+  %d_view = buffer.view %weight[%block_byte_base] : buffer -> view<1xf16>
+  %d_vector = vector.load %d_view[%c0] : view<1xf16> -> vector<1xf16>
+  func.return %d_vector : vector<1xf16>
+}
+
+func.def inline @ggml_q1_0_f32_vector4(%weight: buffer, %row_byte_base: offset, %k: index, %d_vector: vector<1xf16>) -> (vector<4xf32>) {
   %c1_i32 = scalar.constant 1 : i32
   %c2_i32 = scalar.constant 2 : i32
   %c3_i32 = scalar.constant 3 : i32
-  %c4 = index.constant 4 : index
   %c8 = index.constant 8 : index
   %c128 = index.constant 128 : index
   %c0_i32 = scalar.constant 0 : i32
@@ -185,7 +195,6 @@ func.def inline @ggml_q1_0_f32_vector4(%weight: buffer, %row_byte_base: offset, 
   %code_offset = index.constant 2 : offset
   %block = index.div %k, %c128 : index
   %k_in_block = index.rem %k, %c128 : index
-  %packet = index.div %k_in_block, %c4 : index
   %byte_index0 = index.div %k_in_block, %c8 : index
   %byte_index = index.assume %byte_index0 [range(%byte_index0, 0, 15)] : index
   %bit_base_index = index.rem %k_in_block, %c8 : index
@@ -193,9 +202,7 @@ func.def inline @ggml_q1_0_f32_vector4(%weight: buffer, %row_byte_base: offset, 
   %block_byte_add = index.scale %block, %block_bytes : index, offset -> offset
   %block_byte_base = index.add %row_byte_base, %block_byte_add : offset
   %code_byte_base = index.add %block_byte_base, %code_offset : offset
-  %d_view = buffer.view %weight[%block_byte_base] : buffer -> view<1xf16>
   %code_view = buffer.view %weight[%code_byte_base] : buffer -> view<16xi8>
-  %d_vector = vector.load %d_view[%c0] : view<1xf16> -> vector<1xf16>
   %d_f16 = vector.extract %d_vector[0] : vector<1xf16> -> f16
   %d = scalar.extf %d_f16 : f16 to f32
   %neg_d = scalar.subf %c0_f32, %d : f32
@@ -225,7 +232,8 @@ func.def inline @ggml_q1_0_f32_vector4(%weight: buffer, %row_byte_base: offset, 
 }
 
 func.def inline @ggml_q1_0_f16_vector4(%weight: buffer, %row_byte_base: offset, %k: index) -> (vector<4xf16>) {
-  %values_f32 = func.call @ggml_q1_0_f32_vector4(%weight, %row_byte_base, %k) : (buffer, offset, index) -> (vector<4xf32>)
+  %values_f32_scale = func.call @ggml_q1_0_load_scale(%weight, %row_byte_base, %k) : (buffer, offset, index) -> (vector<1xf16>)
+  %values_f32 = func.call @ggml_q1_0_f32_vector4(%weight, %row_byte_base, %k, %values_f32_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
   %values = vector.fptrunc %values_f32 : vector<4xf32> to vector<4xf16>
   func.return %values : vector<4xf16>
 }
@@ -3070,7 +3078,8 @@ func.def inline @ggml_dequant_f32_vector4(%iq4nl_table: vector<16xi8>, %iq3s_gri
   %q8_block_base = index.mul %quant_block, %c8 : index
   %q8_block = index.add %q8_block_base, %quant_group : index
   %q1_0_values = scf.if %is_q1_0 -> (vector<4xf32>) {
-    %values = func.call @ggml_q1_0_f32_vector4(%weight, %row_byte_base, %k) : (buffer, offset, index) -> (vector<4xf32>)
+    %values_scale = func.call @ggml_q1_0_load_scale(%weight, %row_byte_base, %k) : (buffer, offset, index) -> (vector<1xf16>)
+    %values = func.call @ggml_q1_0_f32_vector4(%weight, %row_byte_base, %k, %values_scale) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
     scf.yield %values : vector<4xf32>
   } else {
     scf.yield %zero : vector<4xf32>
