@@ -1,4 +1,4 @@
-func.decl @ggml_q1_0_load_scale(%weight: buffer, %row_byte_base: offset, %k: index) -> (vector<1xf16>)
+func.decl @ggml_q1_0_load_decode_state(%weight: buffer, %row_byte_base: offset, %k: index) -> (vector<1xf16>)
 func.decl @ggml_q1_0_preloaded_f32_vector4(%weight: buffer, %row_byte_base: offset, %k: index, %d_vector: vector<1xf16>) -> (vector<4xf32>)
 template.decl @ggml.matmul.vector_activation.publish_pair2(%arg0: i1, %arg1: index, %arg2: index, %arg3: index, %arg4: index, %arg5: i1, %arg6: f32, %arg7: f32, %arg8: index, %arg9: index, %arg10: index, %arg11: buffer, %arg12: buffer, %arg13: buffer, %arg14: buffer, %arg15: buffer, %arg16: buffer, %arg17: buffer, %arg18: buffer)
 
@@ -104,7 +104,7 @@ func.def inline @ggml_matmul_vector_decode_pair_block_row(%iq4nl_table: vector<1
   %metadata_block_safe = scalar.andi %metadata_enabled, %valid_block : i1
   %metadata_safe = scalar.andi %metadata_block_safe, %valid_k0 : i1
   %cached0 = scf.if %metadata_safe -> (vector<1xf16>) {
-    %cached0 = func.call @ggml_q1_0_load_scale(%weight, %row_base, %k0) : (buffer, offset, index) -> (vector<1xf16>)
+    %cached0 = func.call @ggml_q1_0_load_decode_state(%weight, %row_base, %k0) : (buffer, offset, index) -> (vector<1xf16>)
     scf.yield %cached0 : vector<1xf16>
   } else {
     %cached0 = vector.constant 0.0 : vector<1xf16>

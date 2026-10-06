@@ -171,7 +171,7 @@ func.def inline @ggml_q5_legacy_high_bit_f32(%qh: i32, %bit: i32) -> (f32) {
   func.return %high_f32 : f32
 }
 
-func.def inline @ggml_q1_0_load_scale(%weight: buffer, %row_byte_base: offset, %k: index) -> (vector<1xf16>) {
+func.def inline @ggml_q1_0_load_decode_state(%weight: buffer, %row_byte_base: offset, %k: index) -> (vector<1xf16>) {
   %c0 = index.constant 0 : index
   %c128 = index.constant 128 : index
   %block_bytes = index.constant 18 : offset
@@ -232,7 +232,7 @@ func.def inline @ggml_q1_0_preloaded_f32_vector4(%weight: buffer, %row_byte_base
 }
 
 func.def inline @ggml_q1_0_f32_vector4(%weight: buffer, %row_byte_base: offset, %k: index) -> (vector<4xf32>) {
-  %d = func.call @ggml_q1_0_load_scale(%weight, %row_byte_base, %k) : (buffer, offset, index) -> (vector<1xf16>)
+  %d = func.call @ggml_q1_0_load_decode_state(%weight, %row_byte_base, %k) : (buffer, offset, index) -> (vector<1xf16>)
   %values = func.call @ggml_q1_0_preloaded_f32_vector4(%weight, %row_byte_base, %k, %d) : (buffer, offset, index, vector<1xf16>) -> (vector<4xf32>)
   func.return %values : vector<4xf32>
 }
