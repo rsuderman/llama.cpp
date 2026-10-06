@@ -3212,7 +3212,7 @@ func.def inline @ggml_dequant_f32_vector4(%iq4nl_table: vector<16xi8>, %iq3s_gri
 }
 
 // Reuse immutable Q5 metadata across all four 64-element quarters.
-func.def inline @ggml_q5k_load_block_header(%weight: buffer, %row_base: offset, %block: index, %packet: index) -> (vector<2xf16>, vector<3xi32>, vector<4xi8>) {
+func.def inline @ggml_q5k_load_decode_state(%weight: buffer, %row_base: offset, %block: index, %packet: index) -> (vector<2xf16>, vector<3xi32>, vector<4xi8>) {
   %c0 = index.constant 0 : index
   %c4 = index.constant 4 : index
   %block_bytes = index.constant 176 : offset
@@ -3335,7 +3335,7 @@ func.def inline @ggml_q5k_preloaded_f32_vector4(%weight: buffer, %row_byte_base:
 }
 
 // Reuse the IQ4 header across all four 64-element quarters.
-func.def inline @ggml_iq4xs_load_block_header(%weight: buffer, %row_base: offset, %block: index) -> (i32, i32) {
+func.def inline @ggml_iq4xs_load_decode_state(%weight: buffer, %row_base: offset, %block: index) -> (i32, i32) {
   %c0 = index.constant 0 : index
   %block_bytes = index.constant 136 : offset
   %block_add = index.scale %block, %block_bytes : index, offset -> offset

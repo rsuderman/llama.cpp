@@ -1,9 +1,9 @@
 // Dense GGML gate/up matmul fused with an ordered binary op for contiguous 2D F32 activations.
-func.decl @ggml_iq4xs_load_block_header(%weight: buffer, %row_base: offset, %block: index) -> (i32, i32)
+func.decl @ggml_iq4xs_load_decode_state(%weight: buffer, %row_base: offset, %block: index) -> (i32, i32)
 
 func.decl @ggml_iq4xs_preloaded_f32_vector4(%iq4nl_table: vector<16xi8>, %weight: buffer, %row_byte_base: offset, %iq4_block: index, %iq4_group: index, %packet: index, %header: i32, %scales_l: i32) -> (vector<4xf32>)
 
-func.decl @ggml_q5k_load_block_header(%weight: buffer, %row_base: offset, %block: index, %packet: index) -> (vector<2xf16>, vector<3xi32>, vector<4xi8>)
+func.decl @ggml_q5k_load_decode_state(%weight: buffer, %row_base: offset, %block: index, %packet: index) -> (vector<2xf16>, vector<3xi32>, vector<4xi8>)
 
 func.decl @ggml_q5k_preloaded_f32_vector4(%weight: buffer, %row_byte_base: offset, %q5_block: index, %q5_group: index, %packet: index, %dm: vector<2xf16>, %scales: vector<3xi32>, %qh_bytes: vector<4xi8>) -> (vector<4xf32>)
 
@@ -455,8 +455,8 @@ func.def inline @ggml_mul_mat_swiglu_lowtoken_dot(%op: index, %gate_format: inde
     %q5_pair = scalar.andi %gate_is_q5, %same_weight_format : i1
     %total_g0, %total_u0, %total_g1, %total_u1, %total_g2, %total_u2, %total_g3, %total_u3, %total_g4, %total_u4 = scf.if %q5_pair -> (vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>) {
       %branch_total_g0, %branch_total_u0, %branch_total_g1, %branch_total_u1, %branch_total_g2, %branch_total_u2, %branch_total_g3, %branch_total_u3, %branch_total_g4, %branch_total_u4 = scf.for %block = [%c0 to %blocks step %c1](%block_acc_g0 = %zero : vector<4xf32>, %block_acc_u0 = %zero : vector<4xf32>, %block_acc_g1 = %zero : vector<4xf32>, %block_acc_u1 = %zero : vector<4xf32>, %block_acc_g2 = %zero : vector<4xf32>, %block_acc_u2 = %zero : vector<4xf32>, %block_acc_g3 = %zero : vector<4xf32>, %block_acc_u3 = %zero : vector<4xf32>, %block_acc_g4 = %zero : vector<4xf32>, %block_acc_u4 = %zero : vector<4xf32>) -> (vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>) {
-        %g_dm, %g_scales, %g_qh = func.call @ggml_q5k_load_block_header(%g_na, %gate_base, %block, %packet) : (buffer, offset, index, index) -> (vector<2xf16>, vector<3xi32>, vector<4xi8>)
-        %u_dm, %u_scales, %u_qh = func.call @ggml_q5k_load_block_header(%u_na, %up_base, %block, %packet) : (buffer, offset, index, index) -> (vector<2xf16>, vector<3xi32>, vector<4xi8>)
+        %g_dm, %g_scales, %g_qh = func.call @ggml_q5k_load_decode_state(%g_na, %gate_base, %block, %packet) : (buffer, offset, index, index) -> (vector<2xf16>, vector<3xi32>, vector<4xi8>)
+        %u_dm, %u_scales, %u_qh = func.call @ggml_q5k_load_decode_state(%u_na, %up_base, %block, %packet) : (buffer, offset, index, index) -> (vector<2xf16>, vector<3xi32>, vector<4xi8>)
         %quarter_total_g0, %quarter_total_u0, %quarter_total_g1, %quarter_total_u1, %quarter_total_g2, %quarter_total_u2, %quarter_total_g3, %quarter_total_u3, %quarter_total_g4, %quarter_total_u4 = scf.for %quarter = [%c0 to %c4 step %c1](%acc_g0 = %block_acc_g0 : vector<4xf32>, %acc_u0 = %block_acc_u0 : vector<4xf32>, %acc_g1 = %block_acc_g1 : vector<4xf32>, %acc_u1 = %block_acc_u1 : vector<4xf32>, %acc_g2 = %block_acc_g2 : vector<4xf32>, %acc_u2 = %block_acc_u2 : vector<4xf32>, %acc_g3 = %block_acc_g3 : vector<4xf32>, %acc_u3 = %block_acc_u3 : vector<4xf32>, %acc_g4 = %block_acc_g4 : vector<4xf32>, %acc_u4 = %block_acc_u4 : vector<4xf32>) -> (vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>) unroll(%c4) {
           %step_base = index.mul %block, %c4 : index
           %step = index.add %step_base, %quarter : index
@@ -485,8 +485,8 @@ func.def inline @ggml_mul_mat_swiglu_lowtoken_dot(%op: index, %gate_format: inde
       %iq4_pair = scalar.andi %gate_is_iq4xs, %same_weight_format : i1
       %branch_total_g0, %branch_total_u0, %branch_total_g1, %branch_total_u1, %branch_total_g2, %branch_total_u2, %branch_total_g3, %branch_total_u3, %branch_total_g4, %branch_total_u4 = scf.if %iq4_pair -> (vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>) {
         %iq4_total_g0, %iq4_total_u0, %iq4_total_g1, %iq4_total_u1, %iq4_total_g2, %iq4_total_u2, %iq4_total_g3, %iq4_total_u3, %iq4_total_g4, %iq4_total_u4 = scf.for %block = [%c0 to %blocks step %c1](%block_acc_g0 = %zero : vector<4xf32>, %block_acc_u0 = %zero : vector<4xf32>, %block_acc_g1 = %zero : vector<4xf32>, %block_acc_u1 = %zero : vector<4xf32>, %block_acc_g2 = %zero : vector<4xf32>, %block_acc_u2 = %zero : vector<4xf32>, %block_acc_g3 = %zero : vector<4xf32>, %block_acc_u3 = %zero : vector<4xf32>, %block_acc_g4 = %zero : vector<4xf32>, %block_acc_u4 = %zero : vector<4xf32>) -> (vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>) {
-          %g_header, %g_scales_l = func.call @ggml_iq4xs_load_block_header(%g_na, %gate_base, %block) : (buffer, offset, index) -> (i32, i32)
-          %u_header, %u_scales_l = func.call @ggml_iq4xs_load_block_header(%u_na, %up_base, %block) : (buffer, offset, index) -> (i32, i32)
+          %g_header, %g_scales_l = func.call @ggml_iq4xs_load_decode_state(%g_na, %gate_base, %block) : (buffer, offset, index) -> (i32, i32)
+          %u_header, %u_scales_l = func.call @ggml_iq4xs_load_decode_state(%u_na, %up_base, %block) : (buffer, offset, index) -> (i32, i32)
           %quarter_total_g0, %quarter_total_u0, %quarter_total_g1, %quarter_total_u1, %quarter_total_g2, %quarter_total_u2, %quarter_total_g3, %quarter_total_u3, %quarter_total_g4, %quarter_total_u4 = scf.for %quarter = [%c0 to %c4 step %c1](%acc_g0 = %block_acc_g0 : vector<4xf32>, %acc_u0 = %block_acc_u0 : vector<4xf32>, %acc_g1 = %block_acc_g1 : vector<4xf32>, %acc_u1 = %block_acc_u1 : vector<4xf32>, %acc_g2 = %block_acc_g2 : vector<4xf32>, %acc_u2 = %block_acc_u2 : vector<4xf32>, %acc_g3 = %block_acc_g3 : vector<4xf32>, %acc_u3 = %block_acc_u3 : vector<4xf32>, %acc_g4 = %block_acc_g4 : vector<4xf32>, %acc_u4 = %block_acc_u4 : vector<4xf32>) -> (vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>, vector<4xf32>) unroll(%c4) {
             %step_base = index.mul %block, %c4 : index
             %step = index.add %step_base, %quarter : index
