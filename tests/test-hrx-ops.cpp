@@ -5956,6 +5956,14 @@ static void register_basic_ops_cases(Suite & suite) {
 }
 
 static void register_dense_matmul_cases(Suite & suite) {
+    // K=384 exercises a partial 256-weight tile; N=65 exercises an unpaired output row.
+    for (const int64_t input_size : { 256, 384, 768 }) {
+        suite.device_case("dense_matmul.q1_0.vector_tail.k" + std::to_string(input_size), [input_size] {
+            run_dense_matmul_cpu_reference_case(
+                GGML_TYPE_Q1_0, "loom_libs:ggml_mul_mat_vector_f32_f32", 1, 65, input_size);
+        });
+    }
+
     for (const ggml_type type : { GGML_TYPE_IQ1_S, GGML_TYPE_IQ1_M }) {
         const char * type_suffix   = type == GGML_TYPE_IQ1_S ? "iq1_s" : "iq1_m";
         const char * vector_kernel = type == GGML_TYPE_IQ1_S ?
